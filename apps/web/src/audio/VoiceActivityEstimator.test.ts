@@ -88,4 +88,18 @@ describe("VoiceActivityEstimator", () => {
     estimator.pushRms(0.06, true, 5_250);
     expect(estimator.active).toBe(true);
   });
+
+  it("resetBaseline clears active speech so a resume can re-learn the noise floor", () => {
+    const estimator = new VoiceActivityEstimator();
+    pushQuiet(estimator, 0.01, 100);
+    estimator.pushRms(0.08, false, 5_100);
+    estimator.pushRms(0.09, false, 5_150);
+    expect(estimator.active).toBe(true);
+
+    estimator.resetBaseline();
+    expect(estimator.active).toBe(false);
+
+    for (let i = 0; i < 200; i++) estimator.pushRms(0.02, false, 6_000 + i * 50);
+    expect(estimator.active).toBe(false);
+  });
 });

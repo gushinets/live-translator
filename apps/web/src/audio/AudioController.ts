@@ -121,6 +121,10 @@ export class AudioController {
     return this.captureStream;
   }
 
+  resetVoiceActivityBaseline(): void {
+    this.voiceActivityMonitor.resetBaseline();
+  }
+
   async startCapture(): Promise<void> {
     if (this.captureTrack !== null) {
       throw new Error("Microphone capture has already started");

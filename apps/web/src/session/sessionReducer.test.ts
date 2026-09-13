@@ -112,6 +112,18 @@ describe("sessionReducer: expectedSpeaker changes only after TURN_CLOSED", () =>
     expect(next.lastSpeaker).toBe("B");
   });
 
+  it("marks the completed speaker as having accepted conversation speech for hint fade", () => {
+    const next = sessionReducer(stateWithCompletedTurn("A"), { type: "TURN_CLOSED", speaker: "A" });
+    expect(next.participantA.hasAcceptedConversationSpeech).toBe(true);
+    expect(next.participantB.hasAcceptedConversationSpeech).toBe(false);
+  });
+
+  it("does not fade the language hint on a failed turn", () => {
+    const next = sessionReducer(stateWithCompletedTurn("A"), { type: "TURN_FAILED" });
+    expect(next.participantA.hasAcceptedConversationSpeech).toBe(false);
+    expect(next.expectedSpeaker).toBe("A");
+  });
+
   it("returns to listening after a turn closes", () => {
     const next = sessionReducer(stateWithCompletedTurn("A"), { type: "TURN_CLOSED", speaker: "A" });
     expect(next.state).toBe("listening");

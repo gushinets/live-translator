@@ -19,6 +19,10 @@ export class VoiceActivityMonitor {
     return this.estimator.active;
   }
 
+  resetBaseline(): void {
+    this.estimator.resetBaseline();
+  }
+
   pushRms(rms: number, playbackActive: boolean, atMs: number): void {
     const wasActive = this.estimator.active;
     this.estimator.pushRms(rms, playbackActive, atMs);

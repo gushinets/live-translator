@@ -38,6 +38,8 @@ export type TranscriptDeltaType =
 export interface TranscriptDeltaEvent {
   type: TranscriptDeltaType;
   delta: string;
+  start_ms?: number;
+  end_ms?: number;
 }
 
 export type AppendAcknowledgedType =

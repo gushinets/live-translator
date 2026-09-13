@@ -3,6 +3,7 @@ import {
   buildAuthoritativeContext,
   buildInterpreterInstructions,
   buildSteering,
+  buildUnfinishedTurnWarning,
 } from "./LivePrompts";
 
 describe("buildSteering", () => {
@@ -50,6 +51,14 @@ describe("buildAuthoritativeContext", () => {
   it("wraps the edited visible context as the trusted factual source", () => {
     expect(buildAuthoritativeContext("We are ordering lunch.")).toBe(
       "Authoritative conversation context: We are ordering lunch. If earlier context-capture speech conflicts with this text, use this text.",
+    );
+  });
+});
+
+describe("buildUnfinishedTurnWarning", () => {
+  it("tells the model the unfinished utterance is not a completed turn", () => {
+    expect(buildUnfinishedTurnWarning()).toBe(
+      "The previous source utterance was interrupted and is not a completed conversation turn. Do not treat it as finished interpretation or advance the conversation. Wait for the same speaker to resume or repeat.",
     );
   });
 });

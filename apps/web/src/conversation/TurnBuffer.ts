@@ -21,6 +21,27 @@ const TERMINAL_STATUSES: ReadonlySet<Turn["status"]> = new Set([
   "failed",
 ]);
 
+/** Pure constructor for a stored transcript fragment, keeping optional timing. */
+export function createTranscriptFragment(input: {
+  text: string;
+  nowMs: number;
+  startMs?: number;
+  endMs?: number;
+}): TranscriptFragment {
+  const fragment: TranscriptFragment = {
+    id: crypto.randomUUID(),
+    text: input.text,
+    receivedAtMs: input.nowMs,
+  };
+  if (input.startMs !== undefined) {
+    fragment.startMs = input.startMs;
+  }
+  if (input.endMs !== undefined) {
+    fragment.endMs = input.endMs;
+  }
+  return fragment;
+}
+
 /** Pure constructor for a fresh, still-streaming turn. */
 export function createTurn(params: StartTurnParams): Turn {
   return {
@@ -85,10 +106,12 @@ export function appendOutputTextToTurn(turn: Turn, text: string, nowMs: number):
 
 /** Pure marker for the first audible playback byte of this turn's output. */
 export function markAudioOutputStarted(turn: Turn, nowMs: number): Turn {
-  if (turn.audioOutputStarted) {
-    return turn;
-  }
-  return { ...turn, audioOutputStarted: true, firstAudibleOutputAtMs: nowMs };
+  return {
+    ...turn,
+    audioOutputStarted: true,
+    firstAudibleOutputAtMs: turn.firstAudibleOutputAtMs ?? nowMs,
+    playbackEndAtMs: undefined,
+  };
 }
 
 /** Pure marker for local playback finishing for this turn. */

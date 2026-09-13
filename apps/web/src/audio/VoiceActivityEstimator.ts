@@ -25,6 +25,13 @@ export class VoiceActivityEstimator {
     return this.isActive;
   }
 
+  resetBaseline(): void {
+    this.isActive = false;
+    this.noiseFloor = null;
+    this.consecutiveEnterFrames = 0;
+    this.quietStartedAtMs = null;
+  }
+
   pushRms(rms: number, playbackActive: boolean, atMs: number): void {
     if (!Number.isFinite(rms) || rms < 0) {
       throw new Error(`RMS must be a finite non-negative number, received ${String(rms)}`);

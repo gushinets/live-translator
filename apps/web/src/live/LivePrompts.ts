@@ -39,3 +39,7 @@ Manual speaker-side corrections sent by the application override previous speake
 export function buildAuthoritativeContext(editedText: string): string {
   return `Authoritative conversation context: ${editedText} If earlier context-capture speech conflicts with this text, use this text.`;
 }
+
+export function buildUnfinishedTurnWarning(): string {
+  return "The previous source utterance was interrupted and is not a completed conversation turn. Do not treat it as finished interpretation or advance the conversation. Wait for the same speaker to resume or repeat.";
+}

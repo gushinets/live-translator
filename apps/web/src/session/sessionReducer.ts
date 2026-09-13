@@ -178,6 +178,22 @@ function handleSourceFragment(
   return { ...session, activeTurn: appendSourceFragmentToTurn(requireActiveTurn(session), action.fragment) };
 }
 
+function withAcceptedSpeech(
+  session: TranslationSession,
+  speaker: Side,
+): TranslationSession {
+  if (speaker === "A") {
+    return {
+      ...session,
+      participantA: { ...session.participantA, hasAcceptedConversationSpeech: true },
+    };
+  }
+  return {
+    ...session,
+    participantB: { ...session.participantB, hasAcceptedConversationSpeech: true },
+  };
+}
+
 function handleTurnClosed(
   session: TranslationSession,
   action: Extract<SessionAction, { type: "TURN_CLOSED" }>,
@@ -191,16 +207,19 @@ function handleTurnClosed(
   }
 
   const completed = completeTurn(activeTurn, Date.now());
-  return {
-    ...session,
-    // Drain while ending stays in ending; otherwise return to listening.
-    state: session.state === "ending" ? "ending" : "listening",
-    activeTurn: undefined,
-    recentTurns: pushRecentTurn(session.recentTurns, completed),
-    lastSpeaker: action.speaker,
-    // Expected-alternation prior (§7.4): only advances once a turn actually closes.
-    expectedSpeaker: nextExpectedSpeaker(action.speaker),
-  };
+  return withAcceptedSpeech(
+    {
+      ...session,
+      // Drain while ending stays in ending; otherwise return to listening.
+      state: session.state === "ending" ? "ending" : "listening",
+      activeTurn: undefined,
+      recentTurns: pushRecentTurn(session.recentTurns, completed),
+      lastSpeaker: action.speaker,
+      // Expected-alternation prior (§7.4): only advances once a turn actually closes.
+      expectedSpeaker: nextExpectedSpeaker(action.speaker),
+    },
+    action.speaker,
+  );
 }
 
 function handleTurnFailed(session: TranslationSession): TranslationSession {

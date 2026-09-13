@@ -4,6 +4,7 @@ import type { Turn } from "./Turn";
 import {
   TurnBuffer,
   clearSourceIdle,
+  createTranscriptFragment,
   createTurn,
   markAudioOutputStarted,
   markPlaybackEnded,
@@ -13,6 +14,25 @@ import {
 function fragment(text: string, nowMs: number): TranscriptFragment {
   return { id: `frag-${nowMs}`, text, receivedAtMs: nowMs };
 }
+
+describe("createTranscriptFragment", () => {
+  it("keeps available start/end timing and omits missing timestamps", () => {
+    const withTiming = createTranscriptFragment({
+      text: "Hello",
+      nowMs: 1100,
+      startMs: 1000,
+      endMs: 1400,
+    });
+    expect(withTiming.text).toBe("Hello");
+    expect(withTiming.receivedAtMs).toBe(1100);
+    expect(withTiming.startMs).toBe(1000);
+    expect(withTiming.endMs).toBe(1400);
+
+    const withoutTiming = createTranscriptFragment({ text: "Hi", nowMs: 1200 });
+    expect(withoutTiming.startMs).toBeUndefined();
+    expect(withoutTiming.endMs).toBeUndefined();
+  });
+});
 
 describe("TurnBuffer.start", () => {
   it("creates a streaming turn with no output yet", () => {
@@ -186,6 +206,16 @@ describe("markAudioOutputStarted / markPlaybackEnded", () => {
     expect(started.audioOutputStarted).toBe(true);
     expect(started.firstAudibleOutputAtMs).toBe(1600);
     expect(again.firstAudibleOutputAtMs).toBe(1600);
+  });
+
+  it("clears playbackEndAtMs when audible output resumes after an early idle", () => {
+    const turn = createTurn({ id: "t1", speaker: "A", sideSource: "prior", nowMs: 1000 });
+    const ended = markPlaybackEnded(markAudioOutputStarted(turn, 1600), 2100);
+    const resumed = markAudioOutputStarted(ended, 2200);
+
+    expect(ended.playbackEndAtMs).toBe(2100);
+    expect(resumed.playbackEndAtMs).toBeUndefined();
+    expect(resumed.firstAudibleOutputAtMs).toBe(1600);
   });
 
   it("records playbackEndAtMs", () => {
