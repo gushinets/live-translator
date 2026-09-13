@@ -1099,7 +1099,11 @@ describe("SessionController turn engine", () => {
   it("still arms no-output timeout when Gate B mute ack times out", async () => {
     const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
     const { controller, live, audio } = createController();
-    live.setInputMuted.mockRejectedValue(new AckTimeoutError("evt-mute"));
+    live.setInputMuted.mockImplementation(async (muted: boolean) => {
+      if (muted) {
+        throw new AckTimeoutError("evt-mute");
+      }
+    });
     await enterListening(controller);
     emitVoice(audio, true);
     live.emit({ type: "session.input_transcript.delta", delta: "Hello" });
@@ -1121,6 +1125,7 @@ describe("SessionController turn engine", () => {
     expect(controller.session.recentTurns[0]?.status).toBe("failed");
     expect(controller.session.expectedSpeaker).toBe("A");
     expect(controller.recoveryPrompt).toBe("repeat");
+    expect(live.setInputMuted).toHaveBeenLastCalledWith(false);
     expect(errorSpy).toHaveBeenCalled();
   });
 

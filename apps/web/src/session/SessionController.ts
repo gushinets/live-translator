@@ -1008,6 +1008,9 @@ export class SessionController {
       await this.live.setInputMuted(true);
     } catch (error) {
       console.error("Gate B mute failed", { error, state: this.currentSession.state });
+      if (error instanceof AckTimeoutError) {
+        this.gateBMuted = true;
+      }
       throw error;
     }
     this.gateBMuted = true;
