@@ -206,7 +206,7 @@ function handleCorrectionStart(session: TranslationSession): TranslationSession 
   return {
     ...session,
     state: "correcting",
-    activeTurn: { ...latest, status: "correcting", turnCompletedAtMs: undefined },
+    activeTurn: { ...latest, status: "correcting" },
     recentTurns: session.recentTurns.slice(0, -1),
   };
 }
@@ -230,13 +230,28 @@ function handleCorrectionApplied(
 }
 
 function handleSuspend(session: TranslationSession): TranslationSession {
-  if (session.state === "idle" || session.state === "ended" || session.state === "suspended") {
+  if (
+    session.state === "idle" ||
+    session.state === "ended" ||
+    session.state === "suspended" ||
+    session.state === "error" ||
+    session.state === "ending"
+  ) {
     throw new Error(`Cannot suspend a session in state "${session.state}".`);
   }
   if (session.activeTurn === undefined) {
     return { ...session, state: "suspended" };
   }
-  // §11.3: an unfinished active turn is discarded, never silently resumed.
+  // §11.3 discards an unfinished source turn. A completed utterance promoted
+  // onto activeTurn for correction must return to recentTurns as completed.
+  if (session.activeTurn.status === "correcting" && session.activeTurn.turnCompletedAtMs !== undefined) {
+    return {
+      ...session,
+      state: "suspended",
+      activeTurn: undefined,
+      recentTurns: pushRecentTurn(session.recentTurns, { ...session.activeTurn, status: "completed" }),
+    };
+  }
   const discarded = discardTurn(session.activeTurn, Date.now());
   return {
     ...session,

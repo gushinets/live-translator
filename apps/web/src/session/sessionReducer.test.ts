@@ -358,6 +358,20 @@ describe("sessionReducer: suspension flow (§11.3)", () => {
     expect(next.recentTurns[0]?.status).toBe("discarded");
   });
 
+  it("does not discard a completed turn promoted for correction on SUSPEND", () => {
+    const closed = sessionReducer(stateWithCompletedTurn("A"), { type: "TURN_CLOSED", speaker: "A" });
+    const correcting = sessionReducer(closed, { type: "CORRECTION_START" });
+    expect(correcting.activeTurn?.status).toBe("correcting");
+
+    const next = sessionReducer(correcting, { type: "SUSPEND" });
+
+    expect(next.state).toBe("suspended");
+    expect(next.activeTurn).toBeUndefined();
+    expect(next.recentTurns).toHaveLength(1);
+    expect(next.recentTurns[0]?.id).toBe("active-turn");
+    expect(next.recentTurns[0]?.status).toBe("completed");
+  });
+
   it("keeps expectedSpeaker unchanged across suspend/resume so the same speaker can repeat", () => {
     const suspended = sessionReducer(
       listeningState({ expectedSpeaker: "A", sourceActive: true, speaker: "A" }),
@@ -367,6 +381,32 @@ describe("sessionReducer: suspension flow (§11.3)", () => {
 
     expect(resumed.expectedSpeaker).toBe("A");
     expect(resumed.state).toBe("listening");
+  });
+
+  it("rejects SUSPEND from error", () => {
+    const errored = sessionReducer(
+      listeningState({ expectedSpeaker: "A", sourceActive: false }),
+      { type: "SESSION_ERROR", message: "boom" },
+    );
+    expect(() => sessionReducer(errored, { type: "SUSPEND" })).toThrow(/error/);
+  });
+
+  it("rejects SUSPEND from ending", () => {
+    const ending = sessionReducer(listeningState({ expectedSpeaker: "A", sourceActive: false }), { type: "END" });
+    expect(() => sessionReducer(ending, { type: "SUSPEND" })).toThrow(/ending/);
+  });
+
+  it("does not resume an error session into listening", () => {
+    const errored = sessionReducer(
+      listeningState({ expectedSpeaker: "A", sourceActive: false }),
+      { type: "SESSION_ERROR", message: "boom" },
+    );
+    expect(() => sessionReducer(errored, { type: "RESUME" })).toThrow();
+  });
+
+  it("does not resume an ending session into listening", () => {
+    const ending = sessionReducer(listeningState({ expectedSpeaker: "A", sourceActive: false }), { type: "END" });
+    expect(() => sessionReducer(ending, { type: "RESUME" })).toThrow();
   });
 });
 
