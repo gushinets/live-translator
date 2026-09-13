@@ -68,6 +68,17 @@ function outputtingStateWithStaleEpoch(speaker: Side): TranslationSession {
 }
 
 const SOURCE_APPEND_BLOCKED_STATES = ["correcting", "ending", "ended", "error", "suspended"] as const;
+const TURN_CLOSE_BLOCKED_STATES = ["error", "ended", "suspended", "correcting"] as const;
+
+function sessionWithActiveTurnIn(state: (typeof TURN_CLOSE_BLOCKED_STATES)[number]): TranslationSession {
+  if (state === "correcting") {
+    return sessionReducer(stateWithCompletedTurn("A"), { type: "CORRECTION_START" });
+  }
+  if (state === "error") {
+    return sessionReducer(stateWithCompletedTurn("A"), { type: "SESSION_ERROR", message: "boom" });
+  }
+  return { ...stateWithCompletedTurn("A"), state };
+}
 
 describe("sessionReducer: OUTPUT_IDLE never changes expectedSpeaker or state", () => {
   it("does not change expected speaker when output ends before source idle", () => {
@@ -114,6 +125,34 @@ describe("sessionReducer: expectedSpeaker changes only after TURN_CLOSED", () =>
   it("throws if TURN_CLOSED arrives with no active turn", () => {
     const state = listeningState({ expectedSpeaker: "A", sourceActive: false });
     expect(() => sessionReducer(state, { type: "TURN_CLOSED", speaker: "A" })).toThrow(/no active turn/i);
+  });
+
+  it.each(TURN_CLOSE_BLOCKED_STATES)("rejects TURN_CLOSED while session state is %s", (blockedState) => {
+    const state = sessionWithActiveTurnIn(blockedState);
+    expect(() => sessionReducer(state, { type: "TURN_CLOSED", speaker: "A" })).toThrow(new RegExp(blockedState));
+  });
+
+  it.each(TURN_CLOSE_BLOCKED_STATES)("rejects TURN_FAILED while session state is %s", (blockedState) => {
+    const state = sessionWithActiveTurnIn(blockedState);
+    expect(() => sessionReducer(state, { type: "TURN_FAILED" })).toThrow(new RegExp(blockedState));
+  });
+
+  it("completes a draining turn while ending without returning to listening", () => {
+    const ending = sessionReducer(stateWithCompletedTurn("A"), { type: "END" });
+    const next = sessionReducer(ending, { type: "TURN_CLOSED", speaker: "A" });
+
+    expect(next.state).toBe("ending");
+    expect(next.activeTurn).toBeUndefined();
+    expect(next.recentTurns[0]?.status).toBe("completed");
+  });
+
+  it("fails a draining turn while ending without returning to listening", () => {
+    const ending = sessionReducer(stateWithCompletedTurn("A"), { type: "END" });
+    const next = sessionReducer(ending, { type: "TURN_FAILED" });
+
+    expect(next.state).toBe("ending");
+    expect(next.activeTurn).toBeUndefined();
+    expect(next.recentTurns[0]?.status).toBe("failed");
   });
 });
 
@@ -345,6 +384,32 @@ describe("sessionReducer: output epoch actions", () => {
     expect(() => sessionReducer(state, { type: "OUTPUT_DELTA", text: "Hola", nowMs: 1500 })).toThrow(
       /no active turn/i,
     );
+  });
+
+  it("rejects OUTPUT_DELTA, AUDIO_STARTED, PLAYBACK_ENDED, and SOURCE_IDLE while correcting", () => {
+    const correcting = sessionReducer(stateWithCompletedTurn("A"), { type: "CORRECTION_START" });
+
+    expect(() => sessionReducer(correcting, { type: "OUTPUT_DELTA", text: "stale", nowMs: 1500 })).toThrow(
+      /correcting/,
+    );
+    expect(() => sessionReducer(correcting, { type: "AUDIO_STARTED", nowMs: 1600 })).toThrow(/correcting/);
+    expect(() => sessionReducer(correcting, { type: "PLAYBACK_ENDED", nowMs: 2100 })).toThrow(/correcting/);
+    expect(() => sessionReducer(correcting, { type: "SOURCE_IDLE" })).toThrow(/correcting/);
+  });
+
+  it("accepts output events after CORRECTION_APPLIED starts a fresh epoch", () => {
+    const correcting = sessionReducer(stateWithCompletedTurn("A"), { type: "CORRECTION_START" });
+    const applied = sessionReducer(correcting, { type: "CORRECTION_APPLIED", speaker: "B" });
+
+    const withText = sessionReducer(applied, { type: "OUTPUT_DELTA", text: "Hello", nowMs: 3000 });
+    expect(withText.activeTurn?.translatedText).toBe("Hello");
+    expect(withText.state).toBe("outputting");
+
+    const withAudio = sessionReducer(withText, { type: "AUDIO_STARTED", nowMs: 3100 });
+    expect(withAudio.activeTurn?.audioOutputStarted).toBe(true);
+
+    const withPlayback = sessionReducer(withAudio, { type: "PLAYBACK_ENDED", nowMs: 3200 });
+    expect(withPlayback.activeTurn?.playbackEndAtMs).toBe(3200);
   });
 });
 

@@ -78,6 +78,25 @@ function assertSourceAppendAllowed(session: TranslationSession): void {
   }
 }
 
+const TURN_CLOSE_BLOCKED_STATES: ReadonlySet<SessionState> = new Set([
+  "error",
+  "ended",
+  "suspended",
+  "correcting",
+]);
+
+function assertTurnCloseAllowed(session: TranslationSession): void {
+  if (TURN_CLOSE_BLOCKED_STATES.has(session.state)) {
+    throw new Error(`Cannot close or fail a turn while session state is "${session.state}".`);
+  }
+}
+
+function assertFreshOutputEpoch(session: TranslationSession): void {
+  if (session.state === "correcting") {
+    throw new Error(`Cannot accept output or source-idle events while session state is "correcting".`);
+  }
+}
+
 function isRecentCorrectable(turn: Turn): boolean {
   return turn.status === "completed" || turn.status === "outputting";
 }
@@ -146,6 +165,7 @@ function handleTurnClosed(
   session: TranslationSession,
   action: Extract<SessionAction, { type: "TURN_CLOSED" }>,
 ): TranslationSession {
+  assertTurnCloseAllowed(session);
   const activeTurn = requireActiveTurn(session);
   if (activeTurn.speaker !== action.speaker) {
     throw new Error(
@@ -156,7 +176,8 @@ function handleTurnClosed(
   const completed = completeTurn(activeTurn, Date.now());
   return {
     ...session,
-    state: "listening",
+    // Drain while ending stays in ending; otherwise return to listening.
+    state: session.state === "ending" ? "ending" : "listening",
     activeTurn: undefined,
     recentTurns: pushRecentTurn(session.recentTurns, completed),
     lastSpeaker: action.speaker,
@@ -166,11 +187,12 @@ function handleTurnClosed(
 }
 
 function handleTurnFailed(session: TranslationSession): TranslationSession {
+  assertTurnCloseAllowed(session);
   const activeTurn = requireActiveTurn(session);
   const failed = failTurn(activeTurn, Date.now());
   return {
     ...session,
-    state: "listening",
+    state: session.state === "ending" ? "ending" : "listening",
     activeTurn: undefined,
     recentTurns: pushRecentTurn(session.recentTurns, failed),
     // §10.3: keep expectedSpeaker on the same source side so they can repeat.
@@ -279,6 +301,7 @@ export function sessionReducer(session: TranslationSession, action: SessionActio
     case "SOURCE_FRAGMENT":
       return handleSourceFragment(session, action);
     case "SOURCE_IDLE":
+      assertFreshOutputEpoch(session);
       if (session.activeTurn === undefined) {
         return session;
       }
@@ -288,15 +311,18 @@ export function sessionReducer(session: TranslationSession, action: SessionActio
       return withOutputtingIfListening(session, updated);
     }
     case "OUTPUT_DELTA": {
+      assertFreshOutputEpoch(session);
       const updated = appendOutputTextToTurn(requireActiveTurn(session), action.text, action.nowMs);
       return withOutputtingIfListening(session, updated);
     }
     case "AUDIO_STARTED": {
+      assertFreshOutputEpoch(session);
       const outputting = markOutputActive(requireActiveTurn(session));
       const updated = markAudioOutputStarted(outputting, action.nowMs);
       return withOutputtingIfListening(session, updated);
     }
     case "PLAYBACK_ENDED":
+      assertFreshOutputEpoch(session);
       return { ...session, activeTurn: markPlaybackEnded(requireActiveTurn(session), action.nowMs) };
     case "OUTPUT_IDLE":
       // Informational only: never changes `state` or `expectedSpeaker` (only
