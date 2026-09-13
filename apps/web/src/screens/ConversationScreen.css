@@ -1,0 +1,117 @@
+.conversation-screen {
+  display: flex;
+  flex-direction: column;
+  min-height: 100dvh;
+  padding: env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom)
+    env(safe-area-inset-left);
+  background: #14110e;
+  color: #f4ead5;
+  font-family: "Iowan Old Style", "Palatino Linotype", Palatino, serif;
+}
+
+.conversation-center {
+  display: flex;
+  flex-shrink: 0;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: center;
+  gap: 0.5rem;
+  padding: 0.4rem 0.75rem;
+  background: #2a2218;
+}
+
+.conversation-center button {
+  font: inherit;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  background: #f4ead5;
+  color: #14110e;
+  border: 0;
+  padding: 0.35rem 0.8rem;
+}
+
+.participant-pane {
+  flex: 1 1 0;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  overflow: hidden;
+  width: 100%;
+  margin: 0;
+  padding: 0.75rem 1rem;
+  cursor: pointer;
+}
+
+.participant-status {
+  margin: 0 0 0.5rem;
+  font-family: Bahnschrift, "DIN Alternate", "Segoe UI", sans-serif;
+  font-size: 0.8rem;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+}
+
+.participant-recent {
+  list-style: none;
+  margin: 0 0 0.5rem;
+  padding: 0;
+  overflow: hidden;
+}
+
+.recent-turn {
+  overflow: hidden;
+  opacity: 0.4;
+  font-size: 0.75rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+}
+
+.recent-turn-secondary {
+  font-size: 0.7rem;
+  opacity: 0.85;
+}
+
+.current-message {
+  overflow: hidden;
+  margin: 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+  line-height: 1.15;
+}
+
+.current-message--xl {
+  font-size: 2rem;
+}
+
+.current-message--lg {
+  font-size: 1.55rem;
+}
+
+.current-message--md {
+  font-size: 1.25rem;
+}
+
+.current-message--sm {
+  font-size: 1.05rem;
+}
+
+.current-message--xs {
+  font-size: 0.9rem;
+}
+
+.current-secondary {
+  overflow: hidden;
+  margin: 0.35rem 0 0;
+  font-size: 0.85rem;
+  opacity: 0.78;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.error-overlay {
+  width: 100%;
+  padding: 0.4rem 0.6rem;
+  background: #7a2e1f;
+  color: #f4ead5;
+}

@@ -4,22 +4,26 @@ import { PrivacyDisclosure } from "../components/PrivacyDisclosure";
 import { ContextTooLongError } from "../live/LiveEvents";
 import {
   createDefaultSessionController,
+  type RecoveryPrompt,
   type SessionController,
 } from "../session/SessionController";
-import type { SessionState } from "../session/SessionState";
+import type { TranslationSession } from "../session/SessionState";
+import type { Side } from "../conversation/Turn";
+import { ConversationScreen } from "./ConversationScreen";
 
 /**
  * Owner start-flow surface used by ContextScreen. SessionController implements
  * this; tests inject a fake so UI behavior can be asserted without Live/audio.
  */
 export interface ContextScreenController {
-  readonly session: { state: SessionState };
+  readonly session: TranslationSession;
   readonly contextText: string;
   readonly bootstrapText: string;
   readonly ownerError?: string;
   readonly isConnectInFlight?: boolean;
   readonly isInterpreterStarting?: boolean;
   readonly audioElement?: HTMLAudioElement;
+  readonly recoveryPrompt?: RecoveryPrompt;
   subscribe(listener: () => void): () => void;
   startContextCapture(): Promise<void>;
   finishContextCapture(): void;
@@ -30,6 +34,9 @@ export interface ContextScreenController {
   acceptBootstrap(text: string): void;
   beginInterpreter(): Promise<void>;
   cancel(): Promise<void>;
+  correctLastTurn(side: Side): Promise<void>;
+  endConversation(): Promise<void>;
+  resumeFromSourceTimeout(): Promise<void>;
 }
 
 export function ContextScreen({
@@ -116,12 +123,13 @@ export function ContextScreen({
 
   const sessionState = controller.session.state;
   const isBootstrap = sessionState === "bootstrap";
-  const isOwnerSetup =
-    sessionState === "idle" ||
-    sessionState === "connecting" ||
-    sessionState === "context" ||
-    sessionState === "bootstrap" ||
-    sessionState === "error";
+  const isConversation =
+    sessionState === "listening" ||
+    sessionState === "outputting" ||
+    sessionState === "correcting" ||
+    sessionState === "suspended" ||
+    sessionState === "ending";
+  const isOwnerSetup = !isConversation;
   const isBusy =
     sessionState === "connecting" ||
     sessionState === "error" ||
@@ -131,17 +139,7 @@ export function ContextScreen({
     <section>
       <div ref={audioHostRef} hidden />
       {!isOwnerSetup ? (
-        <>
-          <p>Interpreter active</p>
-          <button
-            type="button"
-            onClick={() => {
-              void controller.cancel();
-            }}
-          >
-            Cancel
-          </button>
-        </>
+        <ConversationScreen controller={controller} />
       ) : (
         <>
       {controller.ownerError !== undefined ? (

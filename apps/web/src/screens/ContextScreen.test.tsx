@@ -1,12 +1,19 @@
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type { SessionState } from "../session/SessionState";
+import { createInitialSession, type TranslationSession } from "../session/SessionState";
 import { ContextScreen, type ContextScreenController } from "./ContextScreen";
 
 afterEach(cleanup);
 
+function idleSession(): TranslationSession {
+  return createInitialSession(
+    { side: "A", hasAcceptedConversationSpeech: false },
+    { side: "B", hasAcceptedConversationSpeech: false },
+  );
+}
+
 class FakeOwnerController implements ContextScreenController {
-  session: { state: SessionState } = { state: "idle" };
+  session: TranslationSession = idleSession();
   contextText = "";
   bootstrapText = "";
   ownerError: string | undefined;
@@ -23,7 +30,7 @@ class FakeOwnerController implements ContextScreenController {
   }
 
   async startContextCapture(): Promise<void> {
-    this.session = { state: "context" };
+    this.session = { ...this.session, state: "context" };
     this.notify();
   }
 
@@ -40,7 +47,7 @@ class FakeOwnerController implements ContextScreenController {
   }
 
   async startBootstrap(): Promise<void> {
-    this.session = { state: "bootstrap" };
+    this.session = { ...this.session, state: "bootstrap" };
     this.bootstrapText = "";
     this.notify();
   }
@@ -53,13 +60,19 @@ class FakeOwnerController implements ContextScreenController {
 
   beginInterpreter = vi.fn(async () => {});
 
+  correctLastTurn = vi.fn(async () => {});
+
+  endConversation = vi.fn(async () => {});
+
+  resumeFromSourceTimeout = vi.fn(async () => {});
+
   setBootstrapText(text: string): void {
     this.bootstrapText = text;
     this.notify();
   }
 
   async cancel(): Promise<void> {
-    this.session = { state: "idle" };
+    this.session = { ...this.session, state: "idle" };
     this.notify();
   }
 
@@ -87,7 +100,7 @@ describe("ContextScreen", () => {
   it("lets the user edit and clear recognized context", () => {
     const controller = new FakeOwnerController();
     controller.contextText = "I'm Russian and a courier is at my door.";
-    controller.session = { state: "context" };
+    controller.session = { ...controller.session, state: "context" };
 
     render(<ContextScreen controller={controller} />);
 
@@ -161,7 +174,7 @@ describe("ContextScreen", () => {
 
   it("disables Skip and Accept while interpreter start is in flight and keeps Cancel enabled", async () => {
     const controller = new FakeOwnerController();
-    controller.session = { state: "bootstrap" };
+    controller.session = { ...controller.session, state: "bootstrap" };
     controller.bootstrapText = "Spanish";
     controller.isInterpreterStarting = true;
 
@@ -174,7 +187,7 @@ describe("ContextScreen", () => {
 
   it("shows Cancel while connect is in flight from idle", () => {
     const controller = new FakeOwnerController();
-    controller.session = { state: "idle" };
+    controller.session = { ...controller.session, state: "idle" };
     controller.isConnectInFlight = true;
 
     render(<ContextScreen controller={controller} />);
@@ -185,7 +198,7 @@ describe("ContextScreen", () => {
 
   it("shows ownerError after a connect failure and keeps Cancel enabled", () => {
     const controller = new FakeOwnerController();
-    controller.session = { state: "idle" };
+    controller.session = { ...controller.session, state: "idle" };
     controller.ownerError = "Microphone access is required for translation.";
 
     render(<ContextScreen controller={controller} />);
@@ -194,5 +207,18 @@ describe("ContextScreen", () => {
       "Microphone access is required for translation.",
     );
     expect(screen.getByRole("button", { name: "Cancel" })).toBeEnabled();
+  });
+
+  it("shows the conversation screen instead of the interpreter stub once listening", () => {
+    const controller = new FakeOwnerController();
+    controller.session = { ...controller.session, state: "listening" };
+
+    render(<ContextScreen controller={controller} />);
+
+    expect(screen.queryByText("Interpreter active")).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "End conversation" })).toBeInTheDocument();
+    expect(screen.getByTestId("participant-pane-B")).toHaveStyle({
+      transform: "rotate(180deg)",
+    });
   });
 });

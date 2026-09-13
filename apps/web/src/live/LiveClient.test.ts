@@ -1198,6 +1198,22 @@ describe("LiveClient trusted control commands", () => {
     await expect(pending).resolves.toEqual({ eventId: "evt-2", degraded: true });
   });
 
+  it("retries a correction append once after ack timeout, then throws", async () => {
+    const { client, channel } = await connectedClient();
+    vi.useFakeTimers();
+
+    const pending = client.appendInstructions(
+      "Stop speaking. The latest human utterance was from Participant B, not A. Update the assignment. Do not speak until prompted.",
+      { kind: "correction" },
+    );
+    await vi.advanceTimersByTimeAsync(runtime.steeringAckTimeoutMs);
+    expect(channel.sendCalls).toHaveLength(2);
+
+    const assertion = expect(pending).rejects.toBeInstanceOf(AckTimeoutError);
+    await vi.advanceTimersByTimeAsync(runtime.steeringAckTimeoutMs);
+    await assertion;
+  });
+
   it("succeeds on the retry acknowledgment after the first attempt times out", async () => {
     const { client, channel } = await connectedClient();
     vi.useFakeTimers();

@@ -43,3 +43,14 @@ export function buildAuthoritativeContext(editedText: string): string {
 export function buildUnfinishedTurnWarning(): string {
   return "The previous source utterance was interrupted and is not a completed conversation turn. Do not treat it as finished interpretation or advance the conversation. Wait for the same speaker to resume or repeat.";
 }
+
+export function buildCorrectionInstruction(input: {
+  actualSpeaker: "A" | "B";
+  previousSpeaker: "A" | "B";
+}): string {
+  return `Stop speaking. The latest human utterance was from Participant ${input.actualSpeaker}, not ${input.previousSpeaker}. Update the assignment. Do not speak until prompted.`;
+}
+
+export function buildCorrectionCommentaryTrigger(): string {
+  return "Please produce a fresh spoken interpretation.";
+}

@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 import {
   buildAuthoritativeContext,
+  buildCorrectionCommentaryTrigger,
+  buildCorrectionInstruction,
   buildInterpreterInstructions,
   buildSteering,
   buildUnfinishedTurnWarning,
@@ -59,6 +61,22 @@ describe("buildUnfinishedTurnWarning", () => {
   it("tells the model the unfinished utterance is not a completed turn", () => {
     expect(buildUnfinishedTurnWarning()).toBe(
       "The previous source utterance was interrupted and is not a completed conversation turn. Do not treat it as finished interpretation or advance the conversation. Wait for the same speaker to resume or repeat.",
+    );
+  });
+});
+
+describe("buildCorrectionInstruction", () => {
+  it("tells the model to stop and reassign the latest utterance", () => {
+    expect(buildCorrectionInstruction({ actualSpeaker: "B", previousSpeaker: "A" })).toBe(
+      "Stop speaking. The latest human utterance was from Participant B, not A. Update the assignment. Do not speak until prompted.",
+    );
+  });
+});
+
+describe("buildCorrectionCommentaryTrigger", () => {
+  it("requests a fresh spoken interpretation after the correction boundary", () => {
+    expect(buildCorrectionCommentaryTrigger()).toBe(
+      "Please produce a fresh spoken interpretation.",
     );
   });
 });

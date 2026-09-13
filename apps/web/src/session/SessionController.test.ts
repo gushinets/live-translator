@@ -9,6 +9,8 @@ import {
 } from "../live/LiveEvents";
 import {
   buildAuthoritativeContext,
+  buildCorrectionCommentaryTrigger,
+  buildCorrectionInstruction,
   buildInterpreterInstructions,
   buildSteering,
   buildUnfinishedTurnWarning,
@@ -38,6 +40,10 @@ class FakeLive {
   readonly appendInstructions = vi.fn(async (text: string, _policy?: { kind: string }) => {
     this.callOrder.push(`instructions:${text}`);
     return { eventId: "evt-instructions" };
+  });
+  readonly appendCommentary = vi.fn(async (text: string, _policy?: { kind: string }) => {
+    this.callOrder.push(`commentary:${text}`);
+    return { eventId: "evt-commentary" };
   });
   readonly setInputMuted = vi.fn(async () => {
     this.callOrder.push("setInputMuted");
@@ -1263,5 +1269,175 @@ describe("SessionController turn engine", () => {
 
     expect(controller.session.activeTurn?.translatedText).toBe("Siguiente");
     expect(controller.session.expectedSpeaker).toBe("A");
+  });
+});
+
+describe("SessionController correction", () => {
+  beforeEach(() => {
+    setDeviceLanguage("ru-RU");
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-01-01T00:00:00.000Z"));
+  });
+
+  async function startAudibleTurnAssignedA(
+    controller: SessionController,
+    live: FakeLive,
+    audio: ReturnType<typeof createFakeAudio>,
+  ): Promise<void> {
+    await enterListening(controller);
+    emitVoice(audio, true);
+    live.emit({ type: "session.input_transcript.delta", delta: "Hello" });
+    live.emit({ type: "session.output_transcript.delta", delta: "Hola" });
+    emitPlayback(audio, true);
+    await flushMicrotasks();
+    emitVoice(audio, false);
+    await flushMicrotasks();
+    expect(controller.session.activeTurn?.speaker).toBe("A");
+    expect(controller.session.state).toBe("outputting");
+    expect(audio.setOutputAudible).toHaveBeenLastCalledWith(true);
+  }
+
+  it("closes Gate C immediately, waits for correction ack before commentary, and reopens Gate C only after a fresh epoch", async () => {
+    const { controller, live, audio } = createController();
+    let releaseCorrection: (() => void) | undefined;
+    live.appendInstructions.mockImplementation(async (text: string, policy?: { kind: string }) => {
+      live.callOrder.push(`instructions:${text}`);
+      if (policy?.kind === "correction") {
+        await new Promise<void>((resolve) => {
+          releaseCorrection = resolve;
+        });
+      }
+      return { eventId: "evt-correction" };
+    });
+
+    await startAudibleTurnAssignedA(controller, live, audio);
+
+    const pending = controller.correctLastTurn("B");
+    expect(audio.setOutputAudible).toHaveBeenLastCalledWith(false);
+    expect(controller.session.state).toBe("correcting");
+    expect(controller.session.activeTurn?.status).toBe("correcting");
+    await flushMicrotasks();
+    expect(live.appendCommentary).not.toHaveBeenCalled();
+    expect(live.appendInstructions).toHaveBeenCalledWith(
+      buildCorrectionInstruction({ actualSpeaker: "B", previousSpeaker: "A" }),
+      { kind: "correction" },
+    );
+
+    live.emit({ type: "session.output_transcript.delta", delta: "stale" });
+    emitPlayback(audio, true);
+    await flushMicrotasks();
+    expect(controller.session.activeTurn?.translatedText).toBe("Hola");
+    expect(audio.setOutputAudible).toHaveBeenLastCalledWith(false);
+
+    if (releaseCorrection === undefined) {
+      throw new Error("correction instruction append was not started");
+    }
+    releaseCorrection();
+    await pending;
+
+    expect(live.appendCommentary).toHaveBeenCalledWith(buildCorrectionCommentaryTrigger(), {
+      kind: "correction",
+    });
+    const commentaryIndex = live.callOrder.findIndex((entry) =>
+      entry.startsWith("commentary:"),
+    );
+    const instructionIndex = live.callOrder.findIndex((entry) =>
+      entry.startsWith(`instructions:${buildCorrectionInstruction({ actualSpeaker: "B", previousSpeaker: "A" })}`),
+    );
+    expect(instructionIndex).toBeGreaterThanOrEqual(0);
+    expect(commentaryIndex).toBeGreaterThan(instructionIndex);
+    expect(controller.session.state).toBe("outputting");
+    expect(controller.session.activeTurn?.speaker).toBe("B");
+    expect(controller.session.activeTurn?.corrected).toBe(true);
+    expect(controller.session.activeTurn?.translatedText).toBeUndefined();
+    expect(audio.setOutputAudible).toHaveBeenLastCalledWith(false);
+
+    live.emit({ type: "session.output_transcript.delta", delta: "Hello there" });
+    expect(controller.session.activeTurn?.translatedText).toBe("Hello there");
+    expect(audio.setOutputAudible).toHaveBeenLastCalledWith(true);
+  });
+
+  it("reopens Gate C on fresh playback onset for the new epoch without a transcript delta", async () => {
+    const { controller, live, audio } = createController();
+    await startAudibleTurnAssignedA(controller, live, audio);
+    await controller.correctLastTurn("B");
+    expect(audio.setOutputAudible).toHaveBeenLastCalledWith(false);
+
+    emitPlayback(audio, true);
+    await flushMicrotasks();
+    expect(controller.session.activeTurn?.audioOutputStarted).toBe(true);
+    expect(audio.setOutputAudible).toHaveBeenLastCalledWith(true);
+  });
+
+  it("after corrected output completes, next steering uses corrected B then A", async () => {
+    const { controller, live, audio } = createController();
+    await startAudibleTurnAssignedA(controller, live, audio);
+    await controller.correctLastTurn("B");
+    live.emit({ type: "session.output_transcript.delta", delta: "Hello there" });
+    emitPlayback(audio, false);
+    await flushMicrotasks();
+    await vi.advanceTimersByTimeAsync(runtime.audioStartGraceMs);
+    await flushMicrotasks();
+
+    expect(controller.session.state).toBe("listening");
+    expect(controller.session.lastSpeaker).toBe("B");
+    expect(controller.session.expectedSpeaker).toBe("A");
+    expect(live.appendInstructions).toHaveBeenLastCalledWith(
+      buildSteering({ expectedSource: "A", recipient: "B" }),
+      { kind: "later_steering", sessionState: "listening" },
+    );
+  });
+
+  it("ignores a same-side tap and a tap with no correctable turn", async () => {
+    const { controller, live, audio } = createController();
+    await enterListening(controller);
+    await expect(controller.correctLastTurn("B")).resolves.toBeUndefined();
+    expect(controller.session.state).toBe("listening");
+    expect(live.appendInstructions).not.toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ kind: "correction" }),
+    );
+
+    emitVoice(audio, true);
+    live.emit({ type: "session.input_transcript.delta", delta: "Hello" });
+    live.emit({ type: "session.output_transcript.delta", delta: "Hola" });
+    emitPlayback(audio, true);
+    await flushMicrotasks();
+    const audibleCalls = audio.setOutputAudible.mock.calls.length;
+    await expect(controller.correctLastTurn("A")).resolves.toBeUndefined();
+    expect(controller.session.state).toBe("outputting");
+    expect(controller.session.activeTurn?.speaker).toBe("A");
+    expect(audio.setOutputAudible.mock.calls.length).toBe(audibleCalls);
+  });
+});
+
+describe("SessionController endConversation", () => {
+  beforeEach(() => {
+    setDeviceLanguage("ru-RU");
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-01-01T00:00:00.000Z"));
+  });
+
+  it("enters ending, closes Live, releases audio, and returns to idle start state", async () => {
+    const { controller, live, audio } = createController();
+    await enterListening(controller);
+    controller.setContextText("We are ordering lunch.");
+    live.close.mockImplementation(async () => {
+      expect(controller.session.state).toBe("ending");
+      live.callOrder.push("close");
+      return { finalized: true };
+    });
+
+    await controller.endConversation();
+
+    expect(live.close).toHaveBeenCalledOnce();
+    expect(audio.setOutputAudible).toHaveBeenLastCalledWith(false);
+    expect(audio.stopCapture).toHaveBeenCalled();
+    expect(audio.getCaptureStream()).toBeNull();
+    expect(controller.session.state).toBe("idle");
+    expect(controller.session.recentTurns).toEqual([]);
+    expect(controller.session.activeTurn).toBeUndefined();
+    expect(controller.contextText).toBe("");
+    expect(controller.session.contextText).toBe("");
   });
 });
