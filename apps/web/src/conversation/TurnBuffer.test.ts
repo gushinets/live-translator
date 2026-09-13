@@ -1,6 +1,14 @@
 import { describe, expect, it } from "vitest";
 import type { TranscriptFragment } from "./TranscriptFragment";
-import { TurnBuffer } from "./TurnBuffer";
+import type { Turn } from "./Turn";
+import {
+  TurnBuffer,
+  clearSourceIdle,
+  createTurn,
+  markAudioOutputStarted,
+  markPlaybackEnded,
+  startFreshOutputEpoch,
+} from "./TurnBuffer";
 
 function fragment(text: string, nowMs: number): TranscriptFragment {
   return { id: `frag-${nowMs}`, text, receivedAtMs: nowMs };
@@ -129,5 +137,59 @@ describe("TurnBuffer.complete / fail / discard", () => {
 
     const turn2 = buffer.start({ id: "t2", speaker: "B", sideSource: "prior", nowMs: 1200 });
     expect(turn2.id).toBe("t2");
+  });
+});
+
+describe("clearSourceIdle", () => {
+  it("removes sourceIdleAtMs so a continued utterance is not latched idle", () => {
+    const turn: Turn = {
+      ...createTurn({ id: "t1", speaker: "A", sideSource: "prior", nowMs: 1000 }),
+      sourceIdleAtMs: 1200,
+    };
+    expect(clearSourceIdle(turn).sourceIdleAtMs).toBeUndefined();
+  });
+});
+
+describe("startFreshOutputEpoch", () => {
+  it("clears stale output-epoch fields and marks the turn corrected", () => {
+    const turn: Turn = {
+      ...createTurn({ id: "t1", speaker: "B", sideSource: "prior", nowMs: 1000 }),
+      status: "correcting",
+      translatedText: "Hola",
+      firstOutputTextAtMs: 1500,
+      outputTextEndAtMs: 1800,
+      audioOutputStarted: true,
+      firstAudibleOutputAtMs: 1600,
+      playbackEndAtMs: 2000,
+    };
+    const next = startFreshOutputEpoch(turn, "A");
+
+    expect(next.speaker).toBe("A");
+    expect(next.sideSource).toBe("manual");
+    expect(next.corrected).toBe(true);
+    expect(next.status).toBe("outputting");
+    expect(next.translatedText).toBeUndefined();
+    expect(next.firstOutputTextAtMs).toBeUndefined();
+    expect(next.outputTextEndAtMs).toBeUndefined();
+    expect(next.audioOutputStarted).toBe(false);
+    expect(next.firstAudibleOutputAtMs).toBeUndefined();
+    expect(next.playbackEndAtMs).toBeUndefined();
+  });
+});
+
+describe("markAudioOutputStarted / markPlaybackEnded", () => {
+  it("records first audible output once", () => {
+    const turn = createTurn({ id: "t1", speaker: "A", sideSource: "prior", nowMs: 1000 });
+    const started = markAudioOutputStarted(turn, 1600);
+    const again = markAudioOutputStarted(started, 1700);
+
+    expect(started.audioOutputStarted).toBe(true);
+    expect(started.firstAudibleOutputAtMs).toBe(1600);
+    expect(again.firstAudibleOutputAtMs).toBe(1600);
+  });
+
+  it("records playbackEndAtMs", () => {
+    const turn = createTurn({ id: "t1", speaker: "A", sideSource: "prior", nowMs: 1000 });
+    expect(markPlaybackEnded(turn, 2100).playbackEndAtMs).toBe(2100);
   });
 });

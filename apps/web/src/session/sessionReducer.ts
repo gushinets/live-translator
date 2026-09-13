@@ -1,14 +1,19 @@
 import type { TranscriptFragment } from "../conversation/TranscriptFragment";
 import type { Side, Turn } from "../conversation/Turn";
 import {
+  appendOutputTextToTurn,
   appendSourceFragmentToTurn,
+  clearSourceIdle,
   completeTurn,
   createTurn,
   discardTurn,
   failTurn,
+  markAudioOutputStarted,
   markOutputActive,
+  markPlaybackEnded,
   markSourceIdle,
   pushRecentTurn,
+  startFreshOutputEpoch,
 } from "../conversation/TurnBuffer";
 import { nextExpectedSpeaker } from "../side/SideResolver";
 import type { SessionState, TranslationSession } from "./SessionState";
@@ -31,6 +36,9 @@ export type SessionAction =
   | { type: "SOURCE_FRAGMENT"; fragment: TranscriptFragment }
   | { type: "SOURCE_IDLE" }
   | { type: "OUTPUT_ACTIVE" }
+  | { type: "OUTPUT_DELTA"; text: string; nowMs: number }
+  | { type: "AUDIO_STARTED"; nowMs: number }
+  | { type: "PLAYBACK_ENDED"; nowMs: number }
   | { type: "OUTPUT_IDLE" }
   | { type: "TURN_CLOSED"; speaker: Side }
   | { type: "TURN_FAILED" }
@@ -56,6 +64,32 @@ function requireActiveTurn(session: TranslationSession): Turn {
   return session.activeTurn;
 }
 
+const SOURCE_APPEND_BLOCKED_STATES: ReadonlySet<SessionState> = new Set([
+  "correcting",
+  "ending",
+  "ended",
+  "error",
+  "suspended",
+]);
+
+function assertSourceAppendAllowed(session: TranslationSession): void {
+  if (SOURCE_APPEND_BLOCKED_STATES.has(session.state)) {
+    throw new Error(`Cannot accept source input while session state is "${session.state}".`);
+  }
+}
+
+function isRecentCorrectable(turn: Turn): boolean {
+  return turn.status === "completed" || turn.status === "outputting";
+}
+
+function withOutputtingIfListening(session: TranslationSession, activeTurn: Turn): TranslationSession {
+  return {
+    ...session,
+    state: session.state === "listening" ? "outputting" : session.state,
+    activeTurn,
+  };
+}
+
 function transitionLifecycle(
   session: TranslationSession,
   from: SessionState,
@@ -71,6 +105,7 @@ function handleSourceActive(
   session: TranslationSession,
   action: Extract<SessionAction, { type: "SOURCE_ACTIVE" }>,
 ): TranslationSession {
+  assertSourceAppendAllowed(session);
   const { activeTurn } = session;
 
   if (activeTurn !== undefined) {
@@ -80,7 +115,8 @@ function handleSourceActive(
           `turn ("${activeTurn.id}", status "${activeTurn.status}") has not been closed.`,
       );
     }
-    const updated = action.fragment ? appendSourceFragmentToTurn(activeTurn, action.fragment) : activeTurn;
+    const resumed = clearSourceIdle(activeTurn);
+    const updated = action.fragment ? appendSourceFragmentToTurn(resumed, action.fragment) : resumed;
     return { ...session, activeTurn: updated };
   }
 
@@ -96,6 +132,14 @@ function handleSourceActive(
   });
   const withFragment = action.fragment ? appendSourceFragmentToTurn(created, action.fragment) : created;
   return { ...session, activeTurn: withFragment };
+}
+
+function handleSourceFragment(
+  session: TranslationSession,
+  action: Extract<SessionAction, { type: "SOURCE_FRAGMENT" }>,
+): TranslationSession {
+  assertSourceAppendAllowed(session);
+  return { ...session, activeTurn: appendSourceFragmentToTurn(requireActiveTurn(session), action.fragment) };
 }
 
 function handleTurnClosed(
@@ -138,14 +182,28 @@ function handleCorrectionStart(session: TranslationSession): TranslationSession 
   if (session.state !== "outputting" && session.state !== "listening") {
     throw new Error(`Cannot start a correction while session state is "${session.state}".`);
   }
-  const correctable = session.activeTurn ?? session.recentTurns.at(-1);
-  if (correctable === undefined) {
+
+  if (session.activeTurn !== undefined) {
+    if (session.activeTurn.status === "failed" || session.activeTurn.status === "discarded") {
+      throw new Error("Cannot start a correction: no correctable turn exists.");
+    }
+    return {
+      ...session,
+      state: "correcting",
+      activeTurn: { ...session.activeTurn, status: "correcting" },
+    };
+  }
+
+  const latest = session.recentTurns.at(-1);
+  if (latest === undefined || !isRecentCorrectable(latest)) {
     throw new Error("Cannot start a correction: no correctable turn exists.");
   }
+
   return {
     ...session,
     state: "correcting",
-    activeTurn: session.activeTurn ? { ...session.activeTurn, status: "correcting" } : session.activeTurn,
+    activeTurn: { ...latest, status: "correcting", turnCompletedAtMs: undefined },
+    recentTurns: session.recentTurns.slice(0, -1),
   };
 }
 
@@ -156,34 +214,14 @@ function handleCorrectionApplied(
   if (session.state !== "correcting") {
     throw new Error(`Cannot apply a correction while session state is "${session.state}"; expected "correcting".`);
   }
-
-  if (session.activeTurn !== undefined) {
-    const corrected: Turn = {
-      ...session.activeTurn,
-      speaker: action.speaker,
-      sideSource: "manual",
-      corrected: true,
-      status: "outputting",
-    };
-    return { ...session, state: "outputting", activeTurn: corrected };
+  if (session.activeTurn === undefined || session.activeTurn.status !== "correcting") {
+    throw new Error("Cannot apply a correction: no active correcting turn exists.");
   }
 
-  const lastTurn = session.recentTurns.at(-1);
-  if (lastTurn === undefined) {
-    throw new Error("Cannot apply a correction: no recent turn exists.");
-  }
-  const corrected: Turn = {
-    ...lastTurn,
-    speaker: action.speaker,
-    sideSource: "manual",
-    corrected: true,
-    status: "outputting",
-  };
   return {
     ...session,
     state: "outputting",
-    activeTurn: corrected,
-    recentTurns: session.recentTurns.slice(0, -1),
+    activeTurn: startFreshOutputEpoch(session.activeTurn, action.speaker),
   };
 }
 
@@ -220,18 +258,30 @@ export function sessionReducer(session: TranslationSession, action: SessionActio
     case "SOURCE_ACTIVE":
       return handleSourceActive(session, action);
     case "SOURCE_FRAGMENT":
-      return { ...session, activeTurn: appendSourceFragmentToTurn(requireActiveTurn(session), action.fragment) };
+      return handleSourceFragment(session, action);
     case "SOURCE_IDLE":
-      return { ...session, activeTurn: markSourceIdle(requireActiveTurn(session), Date.now()) };
+      if (session.activeTurn === undefined) {
+        return session;
+      }
+      return { ...session, activeTurn: markSourceIdle(session.activeTurn, Date.now()) };
     case "OUTPUT_ACTIVE": {
-      const activeTurn = requireActiveTurn(session);
-      const updated = markOutputActive(activeTurn);
-      return { ...session, state: session.state === "listening" ? "outputting" : session.state, activeTurn: updated };
+      const updated = markOutputActive(requireActiveTurn(session));
+      return withOutputtingIfListening(session, updated);
     }
+    case "OUTPUT_DELTA": {
+      const updated = appendOutputTextToTurn(requireActiveTurn(session), action.text, action.nowMs);
+      return withOutputtingIfListening(session, updated);
+    }
+    case "AUDIO_STARTED": {
+      const outputting = markOutputActive(requireActiveTurn(session));
+      const updated = markAudioOutputStarted(outputting, action.nowMs);
+      return withOutputtingIfListening(session, updated);
+    }
+    case "PLAYBACK_ENDED":
+      return { ...session, activeTurn: markPlaybackEnded(requireActiveTurn(session), action.nowMs) };
     case "OUTPUT_IDLE":
       // Informational only: never changes `state` or `expectedSpeaker` (only
-      // an explicit TURN_CLOSED does that, per §11.1).
-      requireActiveTurn(session);
+      // an explicit TURN_CLOSED does that, per §11.1). No-op with no active turn.
       return session;
     case "TURN_CLOSED":
       return handleTurnClosed(session, action);

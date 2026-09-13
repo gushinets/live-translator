@@ -96,6 +96,38 @@ export function markPlaybackEnded(turn: Turn, nowMs: number): Turn {
   return { ...turn, playbackEndAtMs: nowMs };
 }
 
+/**
+ * Same-speaker source continuation: a premature idle must not stay latched
+ * once VAM reports source activity again.
+ */
+export function clearSourceIdle(turn: Turn): Turn {
+  if (TERMINAL_STATUSES.has(turn.status)) {
+    throw new Error(`Cannot clear source idle on a turn with terminal status "${turn.status}".`);
+  }
+  return { ...turn, sourceIdleAtMs: undefined };
+}
+
+/**
+ * §11.2 / P0 Risk 6: after a side correction is accepted, discard the stale
+ * output epoch so the next text/audio onset is observed as fresh.
+ */
+export function startFreshOutputEpoch(turn: Turn, speaker: Side): Turn {
+  return {
+    ...turn,
+    speaker,
+    sideSource: "manual",
+    corrected: true,
+    status: "outputting",
+    translatedText: undefined,
+    firstOutputTextAtMs: undefined,
+    outputTextEndAtMs: undefined,
+    audioOutputStarted: false,
+    firstAudibleOutputAtMs: undefined,
+    playbackEndAtMs: undefined,
+    turnCompletedAtMs: undefined,
+  };
+}
+
 /** Pure transition: the §10 completion predicate succeeded. */
 export function completeTurn(turn: Turn, nowMs: number): Turn {
   return { ...turn, status: "completed", turnCompletedAtMs: nowMs };
