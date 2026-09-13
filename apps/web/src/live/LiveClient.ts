@@ -349,18 +349,22 @@ export class LiveClient {
    * even if a close()/session.closed teardown is already in flight), so a
    * data channel closing unexpectedly doesn't leave the peer connection —
    * and the microphone tracks attached to it — alive indefinitely.
+   * `closing`/`rejectPendingConnect()`/`teardownTransport()` all run
+   * BEFORE the `onError` callback below: consumer callbacks are never
+   * wrapped in try/catch, so this class's own internal cleanup must not
+   * depend on a well-behaved callback returning normally.
    */
   private handleChannelClose(): void {
     if (this.closing) return;
     this.closing = true;
-    this.onError?.({
-      type: "error",
-      error: { message: "Live data channel closed unexpectedly" },
-    });
     this.rejectPendingConnect(
       new Error("Data channel closed before session.started"),
     );
     this.teardownTransport();
+    this.onError?.({
+      type: "error",
+      error: { message: "Live data channel closed unexpectedly" },
+    });
   }
 
   /**
@@ -375,23 +379,25 @@ export class LiveClient {
    * longer usable after this, so `closing` is set to disable further
    * `send()` calls (reusing the same flag/error `send()` already uses for
    * a graceful close in progress). The transport is also proactively torn
-   * down for the same reason as `handleChannelClose()` above.
+   * down for the same reason as `handleChannelClose()` above, and — for
+   * the same reason as there — this all runs BEFORE the `onError`
+   * callback below.
    */
   private handleConnectionStateChange(): void {
     if (this.closing) return;
     const state = this.peer?.connectionState;
     if (state !== "failed" && state !== "closed") return;
     this.closing = true;
-    this.onError?.({
-      type: "error",
-      error: { message: `Peer connection state changed to "${state}"` },
-    });
     this.rejectPendingConnect(
       new Error(
         `Peer connection state changed to "${state}" before session.started`,
       ),
     );
     this.teardownTransport();
+    this.onError?.({
+      type: "error",
+      error: { message: `Peer connection state changed to "${state}"` },
+    });
   }
 
   private handleChannelMessage(event: MessageEvent<string>): void {
@@ -433,7 +439,13 @@ export class LiveClient {
         // so, and caches the final result so a later close() call is
         // idempotent instead of throwing or re-sending session.close (§23).
         // If this arrives before session.started, the pending connect() is
-        // rejected instead of hanging forever.
+        // rejected instead of hanging forever. All of that — closing,
+        // resolving the session-closed waiter, rejecting a pending
+        // connect(), and tearing down the transport — completes BEFORE the
+        // onSessionClosed/onUsage callbacks below: consumer callbacks are
+        // never wrapped in try/catch, so this class's own internal
+        // cleanup must not depend on a well-behaved callback returning
+        // normally.
         this.closing = true;
         const result: LiveCloseResult = {
           finalized: true,
@@ -445,23 +457,26 @@ export class LiveClient {
         this.rejectPendingConnect(
           new Error("session.closed received before session.started"),
         );
+        this.teardownTransport();
         this.onSessionClosed?.(serverEvent);
         if (serverEvent.usage !== undefined) this.onUsage?.(serverEvent.usage);
-        this.teardownTransport();
         return;
       }
       case "error":
-        this.onError?.(serverEvent);
         // A server-reported error before session.started means the
         // session never actually started; reject the pending connect()
         // instead of leaving it waiting for a session.started that will
         // now never arrive (same class of hang as an early channel close,
         // peer failure, or session.closed — see rejectPendingConnect()).
+        // This rejection completes BEFORE the onError callback below, for
+        // the same not-dependent-on-a-well-behaved-callback reason as
+        // above.
         this.rejectPendingConnect(
           new Error(
             `Live session reported an error before session.started: ${serverEvent.error.message}`,
           ),
         );
+        this.onError?.(serverEvent);
         return;
     }
   }

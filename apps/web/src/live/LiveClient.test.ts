@@ -544,6 +544,27 @@ describe("LiveClient event dispatch", () => {
     expect(onSessionClosed).toHaveBeenCalledWith(closedEvent);
     expect(onUsage).toHaveBeenCalledWith({ seconds: 42 });
   });
+
+  it("tears down the transport before invoking onSessionClosed and onUsage for a server-initiated session.closed", async () => {
+    const { client, peer, channel } = await connectedClient();
+    let peerCloseCallsInOnSessionClosed = -1;
+    let peerCloseCallsInOnUsage = -1;
+    client.onSessionClosed = () => {
+      peerCloseCallsInOnSessionClosed = peer.closeCalls;
+    };
+    client.onUsage = () => {
+      peerCloseCallsInOnUsage = peer.closeCalls;
+    };
+
+    channel.emitMessage({
+      type: "session.closed",
+      reason: "user_requested",
+      usage: { seconds: 42 },
+    });
+
+    expect(peerCloseCallsInOnSessionClosed).toBe(1);
+    expect(peerCloseCallsInOnUsage).toBe(1);
+  });
 });
 
 describe("LiveClient transport failure handling", () => {
@@ -702,6 +723,36 @@ describe("LiveClient transport failure handling", () => {
     expect(() =>
       client.send({ type: "session.input_audio.mute", event_id: "evt-1" }),
     ).toThrow("Cannot send a Live event while the session is closing");
+  });
+
+  it("tears down the transport before invoking onError for an unexpected data channel close", async () => {
+    const { client, peer, channel } = await connectedClient();
+    let peerCloseCallsInOnError = -1;
+    let channelCloseCallsInOnError = -1;
+    client.onError = () => {
+      peerCloseCallsInOnError = peer.closeCalls;
+      channelCloseCallsInOnError = channel.closeCalls;
+    };
+
+    channel.emitClose();
+
+    expect(peerCloseCallsInOnError).toBe(1);
+    expect(channelCloseCallsInOnError).toBe(1);
+  });
+
+  it("tears down the transport before invoking onError for an unexpected peer connection failure", async () => {
+    const { client, peer, channel } = await connectedClient();
+    let peerCloseCallsInOnError = -1;
+    let channelCloseCallsInOnError = -1;
+    client.onError = () => {
+      peerCloseCallsInOnError = peer.closeCalls;
+      channelCloseCallsInOnError = channel.closeCalls;
+    };
+
+    peer.emitConnectionStateChange("failed");
+
+    expect(peerCloseCallsInOnError).toBe(1);
+    expect(channelCloseCallsInOnError).toBe(1);
   });
 });
 
