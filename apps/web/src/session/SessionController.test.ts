@@ -615,4 +615,58 @@ describe("SessionController", () => {
     expect(audio.startCapture).toHaveBeenCalledTimes(2);
     expect(controller.session.state).toBe("context");
   });
+
+  it("swallows a late primeOutput rejection after cancel and still stops a late capture stream", async () => {
+    const audio = createFakeAudio();
+    let stream: MediaStream | null = null;
+    audio.getCaptureStream.mockImplementation(() => stream);
+    audio.stopCapture.mockImplementation(() => {
+      stream = null;
+    });
+    let rejectPrime: ((error: Error) => void) | undefined;
+    audio.primeOutput.mockImplementation(
+      () =>
+        new Promise<void>((_, reject) => {
+          rejectPrime = reject;
+        }),
+    );
+
+    const { controller } = createController({ audio });
+    const starting = controller.startContextCapture();
+    await vi.waitFor(() => {
+      expect(audio.primeOutput).toHaveBeenCalledOnce();
+    });
+
+    const cancelling = controller.cancel();
+    if (rejectPrime === undefined) {
+      throw new Error("primeOutput was not started");
+    }
+    stream = audio.captureStream;
+    rejectPrime(new Error("AudioContext resume failed"));
+    await expect(cancelling).resolves.toBeUndefined();
+    await expect(starting).resolves.toBeUndefined();
+
+    expect(controller.session.state).toBe("idle");
+    expect(controller.ownerError).toBeUndefined();
+    expect(audio.stopCapture).toHaveBeenCalledOnce();
+    expect(audio.getCaptureStream()).toBeNull();
+  });
+
+  it("clears ownerError when a later connect attempt succeeds", async () => {
+    const audio = createFakeAudio();
+    audio.startCapture.mockRejectedValueOnce(
+      new Error("Microphone access is required for translation."),
+    );
+    const { controller } = createController({ audio });
+
+    await expect(controller.startContextCapture()).rejects.toThrow(
+      "Microphone access is required for translation.",
+    );
+    expect(controller.ownerError).toBe("Microphone access is required for translation.");
+
+    await controller.startContextCapture();
+
+    expect(controller.session.state).toBe("context");
+    expect(controller.ownerError).toBeUndefined();
+  });
 });

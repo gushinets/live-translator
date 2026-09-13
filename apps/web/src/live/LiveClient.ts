@@ -319,6 +319,9 @@ export class LiveClient {
     channel: RTCDataChannel,
   ): Promise<LiveCloseResult> {
     this.closing = true;
+    this.rejectPendingConnect(
+      new Error("Live session close started before session.started"),
+    );
 
     try {
       const sessionClosedPromise = this.getSessionClosedPromise();

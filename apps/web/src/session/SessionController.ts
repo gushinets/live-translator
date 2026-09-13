@@ -338,7 +338,14 @@ export class SessionController {
     }
     this.resetToIdle();
     if (shouldWaitForMic) {
-      await pendingConnect;
+      try {
+        await pendingConnect;
+      } catch (error) {
+        console.error("Cancelled connect attempt rejected after reset", {
+          error,
+          state: this.currentSession.state,
+        });
+      }
       if (this.audio.getCaptureStream() !== null) {
         this.audio.stopCapture();
       }
@@ -379,6 +386,9 @@ export class SessionController {
     try {
       await this.audio.primeOutput();
     } catch (error) {
+      if (this.sessionGeneration !== generation) {
+        return;
+      }
       console.error("Audio output priming failed", {
         error,
         state: this.currentSession.state,
@@ -459,6 +469,7 @@ export class SessionController {
 
   private async runStartContextCapture(): Promise<void> {
     const generation = this.sessionGeneration;
+    this.ownerErrorMessage = undefined;
     this.connectInFlight = true;
     this.notify();
     try {
@@ -490,6 +501,7 @@ export class SessionController {
 
   private async runStartBootstrap(): Promise<void> {
     const generation = this.sessionGeneration;
+    this.ownerErrorMessage = undefined;
     this.connectInFlight = true;
     this.notify();
     try {

@@ -448,6 +448,22 @@ describe("LiveClient.connect", () => {
     );
   });
 
+  it("rejects connect() (instead of hanging) if close() is called before session.started arrives", async () => {
+    const { backend } = makeFakeBackend();
+    const client = makeClient(backend);
+    const connectPromise = client.connect(makeFakeStream());
+    await vi.waitFor(() => {
+      expect(peer.calls).toContain("setRemoteDescription");
+    });
+
+    const closePromise = client.close();
+    await expect(connectPromise).rejects.toThrow(
+      "Live session close started before session.started",
+    );
+    peer.dataChannel?.emitMessage({ type: "session.closed" });
+    await closePromise;
+  });
+
   it("aborts signaling and never POSTs the SDP if the data channel closes during ICE gathering", async () => {
     vi.useFakeTimers();
     peer.setLocalDescription = async (
