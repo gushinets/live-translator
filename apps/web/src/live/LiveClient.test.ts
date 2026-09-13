@@ -317,6 +317,60 @@ describe("LiveClient.connect", () => {
     });
     await firstConnectPromise;
   });
+
+  it("rejects connect() (instead of hanging) if the data channel closes before session.started arrives, and tears down", async () => {
+    const { backend } = makeFakeBackend();
+    const client = makeClient(backend);
+    const connectPromise = client.connect(makeFakeStream());
+    await vi.waitFor(() => {
+      expect(peer.calls).toContain("setRemoteDescription");
+    });
+
+    peer.dataChannel?.emitClose();
+
+    await expect(connectPromise).rejects.toThrow(
+      "Data channel closed before session.started",
+    );
+    expect(peer.dataChannel?.closeCalls).toBe(1);
+    expect(peer.closeCalls).toBe(1);
+  });
+
+  it("rejects connect() (instead of hanging) if the peer connection fails before session.started arrives, and tears down", async () => {
+    const { backend } = makeFakeBackend();
+    const client = makeClient(backend);
+    const connectPromise = client.connect(makeFakeStream());
+    await vi.waitFor(() => {
+      expect(peer.calls).toContain("setRemoteDescription");
+    });
+
+    peer.emitConnectionStateChange("failed");
+
+    await expect(connectPromise).rejects.toThrow(
+      'Peer connection state changed to "failed" before session.started',
+    );
+    expect(peer.dataChannel?.closeCalls).toBe(1);
+    expect(peer.closeCalls).toBe(1);
+  });
+
+  it("rejects connect() (instead of hanging) if session.closed arrives before session.started, and tears down", async () => {
+    const { backend } = makeFakeBackend();
+    const client = makeClient(backend);
+    const connectPromise = client.connect(makeFakeStream());
+    await vi.waitFor(() => {
+      expect(peer.calls).toContain("setRemoteDescription");
+    });
+
+    peer.dataChannel?.emitMessage({
+      type: "session.closed",
+      reason: "server_ended",
+    });
+
+    await expect(connectPromise).rejects.toThrow(
+      "session.closed received before session.started",
+    );
+    expect(peer.dataChannel?.closeCalls).toBe(1);
+    expect(peer.closeCalls).toBe(1);
+  });
 });
 
 describe("LiveClient event dispatch", () => {
@@ -463,11 +517,13 @@ describe("LiveClient transport failure handling", () => {
       error: { message: 'Peer connection state changed to "failed"' },
     });
 
-    peer.dataChannel?.emitMessage({
-      type: "session.started",
-      session: { id: "sess_123" },
-    });
-    await connectPromise;
+    // A terminal connection-state failure before session.started also
+    // rejects the in-flight connect() instead of leaving it hanging (see
+    // the dedicated "rejects connect() ... if the peer connection fails"
+    // test for full coverage of that behavior).
+    await expect(connectPromise).rejects.toThrow(
+      'Peer connection state changed to "failed" before session.started',
+    );
   });
 
   it("invokes onError when the data channel closes unexpectedly", async () => {
@@ -755,5 +811,26 @@ describe("LiveClient.close", () => {
         (call) => call === JSON.stringify({ type: "session.close" }),
       ),
     ).toHaveLength(1);
+  });
+
+  it("still tears down the transport if sending session.close throws, and does not leave close() stuck on a rejected promise", async () => {
+    const { client, peer, channel } = await connectedClient();
+    channel.send = () => {
+      throw new Error("channel is not open");
+    };
+
+    await expect(client.close()).resolves.toEqual({
+      finalized: false,
+      reason: "channel is not open",
+    });
+    expect(channel.closeCalls).toBe(1);
+    expect(peer.closeCalls).toBe(1);
+
+    // A second call must return the cached result immediately, not the
+    // same broken send attempt again.
+    await expect(client.close()).resolves.toEqual({
+      finalized: false,
+      reason: "channel is not open",
+    });
   });
 });

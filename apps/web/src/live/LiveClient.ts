@@ -67,6 +67,12 @@ export class LiveClient {
   private sessionClosedDeferred: Deferred<SessionClosedEvent> | null = null;
   private pendingSessionStarted: ((event: SessionStartedEvent) => void) | null =
     null;
+  /**
+   * Rejects the in-flight connect() if the transport fails/closes before
+   * session.started arrives, so connect() never hangs forever waiting for
+   * an event that can no longer come.
+   */
+  private pendingConnectReject: ((error: Error) => void) | null = null;
   /** True only once a `session.started` message has actually been received. */
   private started = false;
   private closing = false;
@@ -119,8 +125,9 @@ export class LiveClient {
       });
 
       const sessionStartedPromise = new Promise<SessionStartedEvent>(
-        (resolve) => {
+        (resolve, reject) => {
           this.pendingSessionStarted = resolve;
+          this.pendingConnectReject = reject;
         },
       );
 
@@ -192,22 +199,42 @@ export class LiveClient {
     return this.closePromise;
   }
 
+  /**
+   * If sending `session.close` itself throws (e.g. the channel is already
+   * closing), the session cannot be finalized cleanly, but the transport
+   * must still be torn down and close() must still settle: it resolves
+   * (rather than rejects) with `finalized: false` and the send error's
+   * message as `reason`, following the same "close finished, but not
+   * cleanly" shape already used for the 15s timeout below. The result is
+   * cached so a later close() call returns it immediately instead of
+   * retrying the same broken send.
+   */
   private async performLocalClose(
     channel: RTCDataChannel,
   ): Promise<LiveCloseResult> {
     this.closing = true;
 
-    const sessionClosedPromise = this.getSessionClosedPromise();
-    channel.send(JSON.stringify({ type: "session.close" }));
+    try {
+      const sessionClosedPromise = this.getSessionClosedPromise();
+      channel.send(JSON.stringify({ type: "session.close" }));
 
-    const result = await this.waitForSessionClosedOrTimeout(
-      sessionClosedPromise,
-      SESSION_CLOSE_TIMEOUT_MS,
-    );
+      const result = await this.waitForSessionClosedOrTimeout(
+        sessionClosedPromise,
+        SESSION_CLOSE_TIMEOUT_MS,
+      );
 
-    this.teardownTransport();
-    this.closeResult = result;
-    return result;
+      this.teardownTransport();
+      this.closeResult = result;
+      return result;
+    } catch (error) {
+      this.teardownTransport();
+      const result: LiveCloseResult = {
+        finalized: false,
+        reason: error instanceof Error ? error.message : String(error),
+      };
+      this.closeResult = result;
+      return result;
+    }
   }
 
   /** Closes the data channel and peer at most once. */
@@ -216,6 +243,19 @@ export class LiveClient {
     this.torndown = true;
     this.channel?.close();
     this.peer?.close();
+  }
+
+  /**
+   * Rejects the in-flight connect() with `error`, if one is still pending.
+   * A no-op once session.started has arrived (connect() already resolved)
+   * or connect() has already been rejected.
+   */
+  private rejectPendingConnect(error: Error): void {
+    const reject = this.pendingConnectReject;
+    if (reject === null) return;
+    this.pendingConnectReject = null;
+    this.pendingSessionStarted = null;
+    reject(error);
   }
 
   private getSessionClosedPromise(): Promise<SessionClosedEvent> {
@@ -253,7 +293,9 @@ export class LiveClient {
    * Reported via the existing `onError` callback rather than a new
    * product-level event; both a local `close()` and a server-initiated
    * `session.closed` set `closing` before the transport tears down, so
-   * expected closure is never reported as an error.
+   * expected closure is never reported as an error. If this happens while
+   * connect() is still waiting for session.started, that connect() is
+   * rejected instead of hanging forever.
    */
   private handleChannelClose(): void {
     if (this.closing) return;
@@ -261,6 +303,9 @@ export class LiveClient {
       type: "error",
       error: { message: "Live data channel closed unexpectedly" },
     });
+    this.rejectPendingConnect(
+      new Error("Data channel closed before session.started"),
+    );
   }
 
   /**
@@ -269,7 +314,9 @@ export class LiveClient {
    * "connecting"/"connected"/"disconnected" are not reported, and a
    * transition to "closed" caused by a graceful close (local `close()` or a
    * server-initiated `session.closed`) is suppressed by the `closing` guard
-   * for the same reason as above.
+   * for the same reason as above. If a terminal state is reached while
+   * connect() is still waiting for session.started, that connect() is
+   * rejected instead of hanging forever.
    */
   private handleConnectionStateChange(): void {
     if (this.closing) return;
@@ -279,6 +326,11 @@ export class LiveClient {
       type: "error",
       error: { message: `Peer connection state changed to "${state}"` },
     });
+    this.rejectPendingConnect(
+      new Error(
+        `Peer connection state changed to "${state}" before session.started`,
+      ),
+    );
   }
 
   private handleChannelMessage(event: MessageEvent<string>): void {
@@ -295,6 +347,7 @@ export class LiveClient {
         this.started = true;
         this.pendingSessionStarted?.(serverEvent);
         this.pendingSessionStarted = null;
+        this.pendingConnectReject = null;
         this.onSessionStarted?.(serverEvent);
         return;
       case "session.input_transcript.delta":
@@ -318,6 +371,8 @@ export class LiveClient {
         // the channel/peer instead of relying on the network layer to do
         // so, and caches the final result so a later close() call is
         // idempotent instead of throwing or re-sending session.close (§23).
+        // If this arrives before session.started, the pending connect() is
+        // rejected instead of hanging forever.
         this.closing = true;
         const result: LiveCloseResult = {
           finalized: true,
@@ -326,6 +381,9 @@ export class LiveClient {
         };
         this.closeResult = result;
         this.sessionClosedDeferred?.resolve(serverEvent);
+        this.rejectPendingConnect(
+          new Error("session.closed received before session.started"),
+        );
         this.onSessionClosed?.(serverEvent);
         if (serverEvent.usage !== undefined) this.onUsage?.(serverEvent.usage);
         this.teardownTransport();
