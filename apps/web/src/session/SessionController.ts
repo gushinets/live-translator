@@ -72,6 +72,9 @@ export class SessionController {
   private maxSourceTimer: number | null = null;
   private completionTimer: number | null = null;
   private captionIdleTimer: number | null = null;
+  private leftoverDrainTimer: number | null = null;
+  private leftoverOutputDraining = false;
+  private leftoverCaptionIdle = true;
   private gateBMuted = false;
   private playbackActive = false;
   private turnClosing = false;
@@ -201,6 +204,7 @@ export class SessionController {
     this.audio.setOutputAudible(true);
     this.recoveryPromptKind = undefined;
     this.playbackActive = false;
+    this.maybeFinishLeftoverOutputDrain();
     await this.unmuteGateB();
     this.dispatch({ type: "RESUME" });
   }
@@ -474,6 +478,10 @@ export class SessionController {
     if (event.delta.length === 0) {
       return;
     }
+    if (this.leftoverOutputDraining) {
+      this.noteLeftoverCaption();
+      return;
+    }
     if (this.currentSession.state !== "listening" && this.currentSession.state !== "outputting") {
       return;
     }
@@ -542,6 +550,13 @@ export class SessionController {
   }
 
   private async handlePlaybackActivity(event: AudioActivityEvent): Promise<void> {
+    if (this.leftoverOutputDraining) {
+      this.playbackActive = event.active;
+      if (!event.active) {
+        this.maybeFinishLeftoverOutputDrain();
+      }
+      return;
+    }
     if (this.currentSession.state !== "listening" && this.currentSession.state !== "outputting") {
       return;
     }
@@ -605,6 +620,7 @@ export class SessionController {
     }
     const speaker = turn.speaker;
     this.dispatch({ type: "TURN_CLOSED", speaker });
+    this.beginLeftoverOutputDrain();
     const session = this.currentSession;
     const expectedSource = session.expectedSpeaker;
     const recipient = expectedSource === "A" ? "B" : "A";
@@ -650,6 +666,7 @@ export class SessionController {
 
   private async failTurnNoOutput(): Promise<void> {
     this.dispatch({ type: "TURN_FAILED" });
+    this.beginLeftoverOutputDrain();
     this.recoveryPromptKind = "repeat";
     await this.unmuteGateB();
     this.notify();
@@ -672,8 +689,12 @@ export class SessionController {
         return;
       }
       this.audio.setOutputAudible(false);
+      this.playbackActive = false;
       this.dispatch({ type: "TURN_FAILED" });
+      this.beginLeftoverOutputDrain();
+      this.dispatch({ type: "SUSPEND" });
       this.recoveryPromptKind = "resume-repeat";
+      this.turnClosing = false;
       this.notify();
       try {
         await this.live.appendInstructions(buildUnfinishedTurnWarning(), {
@@ -689,11 +710,6 @@ export class SessionController {
           state: this.currentSession.state,
         });
       }
-      if (this.sessionGeneration !== generation) {
-        return;
-      }
-      this.dispatch({ type: "SUSPEND" });
-      this.notify();
     } finally {
       if (this.sessionGeneration === generation) {
         this.turnClosing = false;
@@ -756,10 +772,46 @@ export class SessionController {
     }, runtime.captionIdleMs);
   }
 
+  private beginLeftoverOutputDrain(): void {
+    this.leftoverOutputDraining = true;
+    this.leftoverCaptionIdle = false;
+    this.armLeftoverDrainTimer();
+  }
+
+  private noteLeftoverCaption(): void {
+    this.leftoverCaptionIdle = false;
+    this.armLeftoverDrainTimer();
+  }
+
+  private armLeftoverDrainTimer(): void {
+    this.clearLeftoverDrainTimer();
+    this.leftoverDrainTimer = window.setTimeout(() => {
+      this.leftoverCaptionIdle = true;
+      this.maybeFinishLeftoverOutputDrain();
+    }, runtime.captionIdleMs);
+  }
+
+  private maybeFinishLeftoverOutputDrain(): void {
+    if (!this.leftoverOutputDraining || !this.leftoverCaptionIdle || this.playbackActive) {
+      return;
+    }
+    this.leftoverOutputDraining = false;
+    this.clearLeftoverDrainTimer();
+  }
+
+  private clearLeftoverDrainTimer(): void {
+    if (this.leftoverDrainTimer === null) {
+      return;
+    }
+    window.clearTimeout(this.leftoverDrainTimer);
+    this.leftoverDrainTimer = null;
+  }
+
   private clearTurnEngineTimers(): void {
     this.clearMaxSourceTimer();
     this.clearCompletionTimer();
     this.clearCaptionIdleTimer();
+    this.clearLeftoverDrainTimer();
   }
 
   private clearMaxSourceTimer(): void {
@@ -969,6 +1021,8 @@ export class SessionController {
     this.gateBMuted = false;
     this.playbackActive = false;
     this.turnClosing = false;
+    this.leftoverOutputDraining = false;
+    this.leftoverCaptionIdle = true;
     this.recoveryPromptKind = undefined;
     this.steeringDegradedFlag = false;
     this.clearTurnEngineTimers();

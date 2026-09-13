@@ -910,7 +910,7 @@ describe("SessionController turn engine", () => {
     expect(controller.recoveryPrompt).toBe("resume-repeat");
     expect(live.appendInstructions).toHaveBeenCalledWith(buildUnfinishedTurnWarning(), {
       kind: "later_steering",
-      sessionState: "listening",
+      sessionState: "suspended",
     });
   });
 
@@ -1100,5 +1100,123 @@ describe("SessionController turn engine", () => {
     live.emit({ type: "session.input_transcript.delta", delta: "Next" });
     expect(controller.session.activeTurn?.originalText).toBe("Next");
     expect(controller.session.expectedSpeaker).toBe("B");
+  });
+
+  it("does not attach residual output to the next source turn before leftover drain", async () => {
+    const { controller, live, audio } = createController();
+    await enterListening(controller);
+    await completeTextOnlyTurn(controller, live, audio);
+    expect(controller.session.expectedSpeaker).toBe("B");
+
+    emitVoice(audio, true);
+    live.emit({ type: "session.input_transcript.delta", delta: "Next" });
+    live.emit({ type: "session.output_transcript.delta", delta: "stale leftover" });
+
+    expect(controller.session.activeTurn?.originalText).toBe("Next");
+    expect(controller.session.activeTurn?.translatedText).toBeUndefined();
+    expect(controller.session.activeTurn?.status).toBe("streaming");
+    expect(controller.session.expectedSpeaker).toBe("B");
+    expect(controller.session.recentTurns).toHaveLength(1);
+  });
+
+  it("does not treat leftover captions as success after a no-output fail", async () => {
+    const { controller, live, audio } = createController();
+    await enterListening(controller);
+    const laterSteeringBefore = live.appendInstructions.mock.calls.filter(
+      (call) => call[1]?.kind === "later_steering",
+    ).length;
+    emitVoice(audio, true);
+    live.emit({ type: "session.input_transcript.delta", delta: "Hello" });
+    emitVoice(audio, false);
+    await flushMicrotasks();
+    await vi.advanceTimersByTimeAsync(runtime.noOutputTimeoutMs);
+    await flushMicrotasks();
+    expect(controller.session.recentTurns[0]?.status).toBe("failed");
+    expect(controller.session.expectedSpeaker).toBe("A");
+
+    emitVoice(audio, true);
+    live.emit({ type: "session.input_transcript.delta", delta: "Hello again" });
+    live.emit({ type: "session.output_transcript.delta", delta: "stale leftover" });
+    expect(controller.session.activeTurn?.translatedText).toBeUndefined();
+
+    emitVoice(audio, false);
+    await flushMicrotasks();
+    await vi.advanceTimersByTimeAsync(runtime.noOutputTimeoutMs);
+    await flushMicrotasks();
+
+    expect(controller.session.state).toBe("listening");
+    expect(controller.session.expectedSpeaker).toBe("A");
+    expect(controller.session.recentTurns.at(-1)?.status).toBe("failed");
+    expect(
+      live.appendInstructions.mock.calls.filter((call) => call[1]?.kind === "later_steering").length,
+    ).toBe(laterSteeringBefore);
+  });
+
+  it("does not mark AUDIO_STARTED on the next turn from residual playback during drain", async () => {
+    const { controller, live, audio } = createController();
+    await enterListening(controller);
+    await completeTextOnlyTurn(controller, live, audio);
+
+    emitVoice(audio, true);
+    live.emit({ type: "session.input_transcript.delta", delta: "Next" });
+    emitPlayback(audio, true);
+    await flushMicrotasks();
+
+    expect(controller.session.activeTurn?.audioOutputStarted).toBe(false);
+    expect(controller.session.activeTurn?.firstAudibleOutputAtMs).toBeUndefined();
+    expect(controller.session.expectedSpeaker).toBe("B");
+  });
+
+  it("attaches genuine output to the new turn after leftover caption and playback drain", async () => {
+    const { controller, live, audio } = createController();
+    await enterListening(controller);
+    await completeTextOnlyTurn(controller, live, audio);
+
+    emitVoice(audio, true);
+    live.emit({ type: "session.input_transcript.delta", delta: "Next" });
+    live.emit({ type: "session.output_transcript.delta", delta: "stale leftover" });
+    expect(controller.session.activeTurn?.translatedText).toBeUndefined();
+
+    await vi.advanceTimersByTimeAsync(runtime.captionIdleMs);
+    await flushMicrotasks();
+    live.emit({ type: "session.output_transcript.delta", delta: "Siguiente" });
+
+    expect(controller.session.activeTurn?.translatedText).toBe("Siguiente");
+    expect(controller.session.expectedSpeaker).toBe("B");
+  });
+
+  it("advertises resume-repeat only after suspend and allows resume during warning append", async () => {
+    const { controller, live, audio } = createController();
+    let releaseWarning: (() => void) | undefined;
+    live.appendInstructions.mockImplementation(async (text: string, policy?: { kind: string }) => {
+      live.callOrder.push(`instructions:${text}`);
+      if (policy?.kind === "later_steering" && text === buildUnfinishedTurnWarning()) {
+        await new Promise<void>((resolve) => {
+          releaseWarning = resolve;
+        });
+      }
+      return { eventId: "evt-warn" };
+    });
+    await enterListening(controller);
+    emitVoice(audio, true);
+
+    await vi.advanceTimersByTimeAsync(runtime.maxSourceMs);
+    await flushMicrotasks();
+    await vi.waitFor(() => {
+      expect(controller.recoveryPrompt).toBe("resume-repeat");
+    });
+
+    expect(controller.session.state).toBe("suspended");
+    expect(controller.session.expectedSpeaker).toBe("A");
+    await controller.resumeFromSourceTimeout();
+    expect(controller.session.state).toBe("listening");
+    expect(controller.recoveryPrompt).toBeUndefined();
+
+    if (releaseWarning === undefined) {
+      throw new Error("MAX_SOURCE_MS warning append was not started");
+    }
+    releaseWarning();
+    await flushMicrotasks();
+    expect(controller.session.state).toBe("listening");
   });
 });
