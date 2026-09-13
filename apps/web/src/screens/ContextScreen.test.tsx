@@ -252,4 +252,22 @@ describe("ContextScreen", () => {
       transform: "rotate(180deg)",
     });
   });
+
+  it("shows the translator title on the owner start screen", () => {
+    render(<ContextScreen controller={new FakeOwnerController()} />);
+
+    expect(
+      screen.getByRole("heading", { level: 1, name: "Live Translator" }),
+    ).toBeInTheDocument();
+  });
+
+  it("does not render an h1 during conversation", () => {
+    const controller = new FakeOwnerController();
+    controller.session = { ...controller.session, state: "listening" };
+
+    render(<ContextScreen controller={controller} />);
+
+    expect(screen.queryByRole("heading", { level: 1 })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "End conversation" })).toBeInTheDocument();
+  });
 });

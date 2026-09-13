@@ -147,6 +147,7 @@ export function ContextScreen({
         <ConversationScreen controller={controller} />
       ) : (
         <>
+      <h1>Live Translator</h1>
       {controller.ownerError !== undefined ? (
         <ErrorOverlay message={controller.ownerError} />
       ) : null}

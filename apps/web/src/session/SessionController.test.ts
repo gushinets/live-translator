@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { AudioController } from "../audio/AudioController";
 import { runtime } from "../config/runtime";
+import { AckTimeoutError } from "../live/AckRegistry";
 import type { LiveClient } from "../live/LiveClient";
 import {
   APPEND_CHAR_BUDGET,
@@ -1093,6 +1094,34 @@ describe("SessionController turn engine", () => {
     expect(controller.recoveryPrompt).toBe("repeat");
     expect(live.setInputMuted).toHaveBeenLastCalledWith(false);
     expect(live.appendInstructions.mock.calls.length).toBe(appendCountAfterStart);
+  });
+
+  it("still arms no-output timeout when Gate B mute ack times out", async () => {
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    const { controller, live, audio } = createController();
+    live.setInputMuted.mockRejectedValue(new AckTimeoutError("evt-mute"));
+    await enterListening(controller);
+    emitVoice(audio, true);
+    live.emit({ type: "session.input_transcript.delta", delta: "Hello" });
+    emitVoice(audio, false);
+    await flushMicrotasks();
+
+    expect(controller.session.activeTurn?.sourceIdleAtMs).toBeDefined();
+    expect(live.setInputMuted).toHaveBeenCalledWith(true);
+
+    await vi.advanceTimersByTimeAsync(runtime.noOutputTimeoutMs - 1);
+    await flushMicrotasks();
+    expect(controller.session.activeTurn).toBeDefined();
+    expect(controller.session.recentTurns).toHaveLength(0);
+
+    await vi.advanceTimersByTimeAsync(1);
+    await flushMicrotasks();
+
+    expect(controller.session.state).toBe("listening");
+    expect(controller.session.recentTurns[0]?.status).toBe("failed");
+    expect(controller.session.expectedSpeaker).toBe("A");
+    expect(controller.recoveryPrompt).toBe("repeat");
+    expect(errorSpy).toHaveBeenCalled();
   });
 
   it("MAX_SOURCE_MS mutes, closes output, fails, warns, and suspends with Resume/Repeat", async () => {

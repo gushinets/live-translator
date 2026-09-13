@@ -22,11 +22,13 @@ export function App({
 
   return (
     <main>
-      <h1>Live Translator</h1>
       {shouldShowSpikeScreen && DevSpikeScreen !== null ? (
-        <Suspense fallback={<p>Loading DEV transport spike…</p>}>
-          <DevSpikeScreen createSession={createSpikeSession} />
-        </Suspense>
+        <>
+          <h1>Live Translator</h1>
+          <Suspense fallback={<p>Loading DEV transport spike…</p>}>
+            <DevSpikeScreen createSession={createSpikeSession} />
+          </Suspense>
+        </>
       ) : (
         <ContextScreen />
       )}

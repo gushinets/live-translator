@@ -8,6 +8,7 @@ import {
 } from "../conversation/TurnCompletion";
 import { createTranscriptFragment } from "../conversation/TurnBuffer";
 import type { Side, Turn } from "../conversation/Turn";
+import { AckTimeoutError } from "../live/AckRegistry";
 import { LiveClient } from "../live/LiveClient";
 import {
   APPEND_CHAR_BUDGET,
@@ -770,7 +771,17 @@ export class SessionController {
     }
     this.clearMaxSourceTimer();
     this.dispatch({ type: "SOURCE_IDLE" });
-    await this.muteGateB();
+    try {
+      await this.muteGateB();
+    } catch (error) {
+      if (!(error instanceof AckTimeoutError)) {
+        throw error;
+      }
+      console.error("Gate B mute ack timed out; continuing turn completion", {
+        error,
+        state: this.currentSession.state,
+      });
+    }
     if (this.sessionGeneration !== generation) {
       return;
     }

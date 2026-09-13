@@ -1,3 +1,6 @@
+import { readFileSync } from "node:fs";
+import { dirname, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { MAX_RECENT_TURNS } from "../conversation/TurnBuffer";
@@ -11,6 +14,11 @@ import {
 import { ConversationScreen, type ConversationScreenController } from "./ConversationScreen";
 
 afterEach(cleanup);
+
+const conversationCss = readFileSync(
+  resolve(dirname(fileURLToPath(import.meta.url)), "./ConversationScreen.css"),
+  "utf8",
+);
 
 function participant(side: Side) {
   return { side, hasAcceptedConversationSpeech: false };
@@ -85,6 +93,23 @@ describe("ConversationScreen orientation and status", () => {
 
     expect(screen.getByTestId("participant-status-A")).toHaveTextContent("LISTENING");
     expect(screen.getByTestId("participant-status-B")).toHaveTextContent(/TRANSLATING|SPEAKING/);
+    expect(screen.getByTestId("participant-pane-B")).toHaveStyle({
+      transform: "rotate(180deg)",
+    });
+  });
+
+  it("fills the phone viewport and keeps B at the physical top", () => {
+    const controller = new FakeConversationController();
+    render(<ConversationScreen controller={controller} />);
+
+    const root = document.querySelector(".conversation-screen");
+    expect(root).not.toBeNull();
+    expect(conversationCss).toMatch(/\.conversation-screen\s*\{[^}]*height:\s*100svh/s);
+    expect(conversationCss).toMatch(/\.conversation-screen\s*\{[^}]*height:\s*100dvh/s);
+    expect(conversationCss).toMatch(/\.conversation-screen\s*\{[^}]*overflow:\s*hidden/s);
+    expect(screen.queryByRole("heading", { level: 1 })).not.toBeInTheDocument();
+    const panes = [...root!.querySelectorAll("[data-testid^='participant-pane-']")];
+    expect(panes[0]).toHaveAttribute("data-testid", "participant-pane-B");
     expect(screen.getByTestId("participant-pane-B")).toHaveStyle({
       transform: "rotate(180deg)",
     });

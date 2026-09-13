@@ -1,8 +1,18 @@
+html,
+body,
+#root {
+  margin: 0;
+  height: 100%;
+}
+
 .conversation-screen {
   position: relative;
+  box-sizing: border-box;
   display: flex;
   flex-direction: column;
-  min-height: 100dvh;
+  height: 100svh;
+  height: 100dvh;
+  overflow: hidden;
   padding: env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom)
     env(safe-area-inset-left);
   background: #14110e;

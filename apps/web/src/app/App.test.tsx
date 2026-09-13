@@ -1,3 +1,6 @@
+import { readFileSync } from "node:fs";
+import { dirname, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { TranscriptDeltaEvent } from "../live/LiveEvents";
@@ -12,6 +15,14 @@ describe("App", () => {
     expect(
       screen.getByRole("heading", { name: "Live Translator" }),
     ).toBeInTheDocument();
+  });
+
+  it("declares viewport-fit=cover for safe-area insets", () => {
+    const indexHtml = readFileSync(
+      resolve(dirname(fileURLToPath(import.meta.url)), "../../index.html"),
+      "utf8",
+    );
+    expect(indexHtml).toMatch(/viewport-fit=cover/);
   });
 
   it("exposes the transport spike controls in development", async () => {
