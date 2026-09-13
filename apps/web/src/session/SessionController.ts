@@ -87,6 +87,8 @@ export class SessionController {
   private gateCHeldForCorrectionEpoch: number | null = null;
   private correctionWork: Promise<void> | null = null;
   private endWork: Promise<void> | null = null;
+  private playbackIdleWaitResolve: (() => void) | null = null;
+  private playbackIdleWaitTimer: number | null = null;
   private readonly listeners = new Set<() => void>();
 
   constructor(private readonly deps: SessionControllerDeps) {
@@ -467,9 +469,9 @@ export class SessionController {
     }
     const previousSpeaker = target.speaker;
     const generation = this.sessionGeneration;
-    this.clearTurnEngineTimers();
-    this.leftoverOutputDraining = false;
-    this.leftoverCaptionIdle = true;
+    this.clearMaxSourceTimer();
+    this.clearCompletionTimer();
+    this.clearCaptionIdleTimer();
     this.audio.setOutputAudible(false);
     this.dispatch({ type: "CORRECTION_START" });
     try {
@@ -477,6 +479,10 @@ export class SessionController {
         buildCorrectionInstruction({ actualSpeaker: side, previousSpeaker }),
         { kind: "correction" },
       );
+      if (this.sessionGeneration !== generation || this.currentSession.state !== "correcting") {
+        return;
+      }
+      await this.waitForPlaybackIdleOrSettle();
       if (this.sessionGeneration !== generation || this.currentSession.state !== "correcting") {
         return;
       }
@@ -489,10 +495,20 @@ export class SessionController {
       this.dispatch({ type: "CORRECTION_APPLIED", speaker: side });
       this.correctionEpoch += 1;
       this.gateCHeldForCorrectionEpoch = this.correctionEpoch;
+      if (this.playbackActive && this.currentSession.activeTurn !== undefined) {
+        this.dispatch({ type: "AUDIO_STARTED", nowMs: Date.now() });
+        this.releaseGateCAfterFreshCorrectionOutput();
+      }
     } catch (error) {
       if (this.sessionGeneration !== generation) {
         return;
       }
+      this.finishPlaybackIdleWait();
+      this.ownerErrorMessage = error instanceof Error ? error.message : String(error);
+      this.dispatch({
+        type: "SESSION_ERROR",
+        message: this.ownerErrorMessage,
+      });
       console.error("Correction append failed", {
         error,
         state: this.currentSession.state,
@@ -679,7 +695,13 @@ export class SessionController {
 
   private async handlePlaybackActivity(event: AudioActivityEvent): Promise<void> {
     this.playbackActive = event.active;
+    if (!event.active) {
+      this.finishPlaybackIdleWait();
+    }
     if (this.leftoverOutputDraining) {
+      if (this.tryEstablishCorrectionEpochFromPlayback(event.atMs)) {
+        return;
+      }
       if (!event.active) {
         this.maybeFinishLeftoverOutputDrain();
       }
@@ -951,7 +973,48 @@ export class SessionController {
       return;
     }
     this.gateCHeldForCorrectionEpoch = null;
+    this.finishLeftoverOutputDrain();
     this.audio.setOutputAudible(true);
+  }
+
+  private tryEstablishCorrectionEpochFromPlayback(atMs: number): boolean {
+    if (!this.playbackActive || this.gateCHeldForCorrectionEpoch === null) {
+      return false;
+    }
+    if (this.currentSession.state !== "outputting" || this.currentSession.activeTurn === undefined) {
+      return false;
+    }
+    this.dispatch({ type: "AUDIO_STARTED", nowMs: atMs });
+    this.releaseGateCAfterFreshCorrectionOutput();
+    return true;
+  }
+
+  private async waitForPlaybackIdleOrSettle(): Promise<void> {
+    if (!this.playbackActive) {
+      return;
+    }
+    await new Promise<void>((resolve) => {
+      this.playbackIdleWaitResolve = resolve;
+      this.playbackIdleWaitTimer = window.setTimeout(() => {
+        this.finishPlaybackIdleWait();
+      }, runtime.outputSettleGraceMs);
+    });
+  }
+
+  private finishPlaybackIdleWait(): void {
+    if (this.playbackIdleWaitTimer !== null) {
+      window.clearTimeout(this.playbackIdleWaitTimer);
+      this.playbackIdleWaitTimer = null;
+    }
+    const resolve = this.playbackIdleWaitResolve;
+    this.playbackIdleWaitResolve = null;
+    resolve?.();
+  }
+
+  private finishLeftoverOutputDrain(): void {
+    this.leftoverOutputDraining = false;
+    this.leftoverCaptionIdle = true;
+    this.clearLeftoverDrainTimer();
   }
 
   private clearTurnEngineTimers(): void {
@@ -959,6 +1022,7 @@ export class SessionController {
     this.clearCompletionTimer();
     this.clearCaptionIdleTimer();
     this.clearLeftoverDrainTimer();
+    this.finishPlaybackIdleWait();
   }
 
   private clearMaxSourceTimer(): void {
@@ -1176,6 +1240,7 @@ export class SessionController {
     this.gateCHeldForCorrectionEpoch = null;
     this.correctionWork = null;
     this.endWork = null;
+    this.finishPlaybackIdleWait();
     this.clearTurnEngineTimers();
     this.sessionGeneration += 1;
     this.currentSession = createSessionFromDeviceLocale();

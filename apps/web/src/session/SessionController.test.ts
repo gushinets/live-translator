@@ -1333,6 +1333,12 @@ describe("SessionController correction", () => {
       throw new Error("correction instruction append was not started");
     }
     releaseCorrection();
+    await flushMicrotasks();
+    expect(live.appendCommentary).not.toHaveBeenCalled();
+    expect(audio.setOutputAudible).toHaveBeenLastCalledWith(false);
+
+    emitPlayback(audio, false);
+    await flushMicrotasks();
     await pending;
 
     expect(live.appendCommentary).toHaveBeenCalledWith(buildCorrectionCommentaryTrigger(), {
@@ -1360,6 +1366,8 @@ describe("SessionController correction", () => {
   it("reopens Gate C on fresh playback onset for the new epoch without a transcript delta", async () => {
     const { controller, live, audio } = createController();
     await startAudibleTurnAssignedA(controller, live, audio);
+    emitPlayback(audio, false);
+    await flushMicrotasks();
     await controller.correctLastTurn("B");
     expect(audio.setOutputAudible).toHaveBeenLastCalledWith(false);
 
@@ -1372,6 +1380,8 @@ describe("SessionController correction", () => {
   it("after corrected output completes, next steering uses corrected B then A", async () => {
     const { controller, live, audio } = createController();
     await startAudibleTurnAssignedA(controller, live, audio);
+    emitPlayback(audio, false);
+    await flushMicrotasks();
     await controller.correctLastTurn("B");
     live.emit({ type: "session.output_transcript.delta", delta: "Hello there" });
     emitPlayback(audio, false);
@@ -1408,6 +1418,70 @@ describe("SessionController correction", () => {
     expect(controller.session.state).toBe("outputting");
     expect(controller.session.activeTurn?.speaker).toBe("A");
     expect(audio.setOutputAudible.mock.calls.length).toBe(audibleCalls);
+  });
+
+  it("sends commentary after the settle timeout if playback stays active", async () => {
+    const { controller, live, audio } = createController();
+    await startAudibleTurnAssignedA(controller, live, audio);
+
+    const pending = controller.correctLastTurn("B");
+    await flushMicrotasks();
+    expect(live.appendCommentary).not.toHaveBeenCalled();
+
+    await vi.advanceTimersByTimeAsync(runtime.outputSettleGraceMs - 1);
+    await flushMicrotasks();
+    expect(live.appendCommentary).not.toHaveBeenCalled();
+
+    await vi.advanceTimersByTimeAsync(1);
+    await pending;
+
+    expect(live.appendCommentary).toHaveBeenCalledWith(buildCorrectionCommentaryTrigger(), {
+      kind: "correction",
+    });
+    expect(controller.session.state).toBe("outputting");
+    expect(controller.session.activeTurn?.speaker).toBe("B");
+    expect(audio.setOutputAudible).toHaveBeenLastCalledWith(true);
+    expect(controller.session.activeTurn?.audioOutputStarted).toBe(true);
+  });
+
+  it("does not treat leftover captions as the new correction epoch", async () => {
+    const { controller, live, audio } = createController();
+    await enterListening(controller);
+    await completeTextOnlyTurn(controller, live, audio);
+    expect(controller.session.expectedSpeaker).toBe("B");
+
+    await controller.correctLastTurn("B");
+    expect(controller.session.state).toBe("outputting");
+    expect(controller.session.activeTurn?.speaker).toBe("B");
+    expect(audio.setOutputAudible).toHaveBeenLastCalledWith(false);
+
+    live.emit({ type: "session.output_transcript.delta", delta: "stale leftover" });
+    expect(controller.session.activeTurn?.translatedText).toBeUndefined();
+    expect(audio.setOutputAudible).toHaveBeenLastCalledWith(false);
+
+    await vi.advanceTimersByTimeAsync(runtime.captionIdleMs);
+    await flushMicrotasks();
+    live.emit({ type: "session.output_transcript.delta", delta: "Hello there" });
+    expect(controller.session.activeTurn?.translatedText).toBe("Hello there");
+    expect(audio.setOutputAudible).toHaveBeenLastCalledWith(true);
+  });
+
+  it("recovers to error when the correction instruction append fails", async () => {
+    const { controller, live, audio } = createController();
+    live.appendInstructions.mockImplementation(async (text: string, policy?: { kind: string }) => {
+      live.callOrder.push(`instructions:${text}`);
+      if (policy?.kind === "correction") {
+        throw new Error("correction ack timeout");
+      }
+      return { eventId: "evt-ok" };
+    });
+    await startAudibleTurnAssignedA(controller, live, audio);
+
+    await expect(controller.correctLastTurn("B")).rejects.toThrow("correction ack timeout");
+    expect(controller.session.state).toBe("error");
+    expect(controller.ownerError).toBe("correction ack timeout");
+    expect(audio.setOutputAudible).toHaveBeenLastCalledWith(false);
+    expect(live.appendCommentary).not.toHaveBeenCalled();
   });
 });
 
