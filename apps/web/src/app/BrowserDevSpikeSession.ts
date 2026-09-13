@@ -1,6 +1,7 @@
 import { BackendClient } from "../api/BackendClient";
 import { DeviceDiagnostics } from "../diagnostics/DeviceDiagnostics";
 import { LiveClient, type LiveCloseResult } from "../live/LiveClient";
+import type { TranscriptDeltaEvent } from "../live/LiveEvents";
 import type {
   DevSpikeConnection,
   DevSpikeSession,
@@ -13,6 +14,7 @@ export class BrowserDevSpikeSession implements DevSpikeSession {
 
   async connect(
     onRemoteStream: (stream: MediaStream) => void,
+    onTranscriptDelta: (event: TranscriptDeltaEvent) => void,
   ): Promise<DevSpikeConnection> {
     try {
       const microphoneStream = await navigator.mediaDevices.getUserMedia({
@@ -34,6 +36,7 @@ export class BrowserDevSpikeSession implements DevSpikeSession {
         onRemoteStream,
       });
       this.liveClient = liveClient;
+      liveClient.onTranscriptDelta = onTranscriptDelta;
       liveClient.onUsage = (usage) => {
         if (usage.seconds !== undefined) {
           this.diagnostics.recordUsageSeconds(usage.seconds);

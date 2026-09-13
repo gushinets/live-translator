@@ -1,5 +1,6 @@
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import type { TranscriptDeltaEvent } from "../live/LiveEvents";
 import { App } from "./App";
 import type { DevSpikeConnection } from "./DevSpikeScreen";
 
@@ -24,6 +25,7 @@ describe("App", () => {
     expect(screen.getByText("Session: none")).toBeInTheDocument();
     expect(screen.getByTestId("remote-audio")).toBeInTheDocument();
     expect(screen.getByText("Microphone settings: not captured")).toBeInTheDocument();
+    expect(screen.getByText("Transcript/caption deltas: none")).toBeInTheDocument();
   });
 
   it("keeps the production app limited to the title", () => {
@@ -43,8 +45,17 @@ describe("App", () => {
     const connect = vi.fn(
       async (
         onRemoteStream: (stream: MediaStream) => void,
+        onTranscriptDelta: (event: TranscriptDeltaEvent) => void,
       ): Promise<DevSpikeConnection> => {
         onRemoteStream(remoteStream);
+        onTranscriptDelta({
+          type: "session.input_transcript.delta",
+          delta: "hello",
+        });
+        onTranscriptDelta({
+          type: "session.output_transcript.delta",
+          delta: "hola",
+        });
         return {
           sessionId: "sess_device",
           microphoneSettings: {
@@ -81,6 +92,14 @@ describe("App", () => {
     expect(screen.getByText("Session: sess_device")).toBeInTheDocument();
     expect(screen.getByText(/"echoCancellation": true/)).toBeInTheDocument();
     expect(screen.getByText(/"dataChannelState": "open"/)).toBeInTheDocument();
+    expect(
+      screen.getByText(/"type": "session.input_transcript.delta"/),
+    ).toBeInTheDocument();
+    expect(screen.getByText(/"delta": "hello"/)).toBeInTheDocument();
+    expect(
+      screen.getByText(/"type": "session.output_transcript.delta"/),
+    ).toBeInTheDocument();
+    expect(screen.getByText(/"delta": "hola"/)).toBeInTheDocument();
     expect(screen.getByTestId("remote-audio")).toHaveProperty(
       "srcObject",
       remoteStream,

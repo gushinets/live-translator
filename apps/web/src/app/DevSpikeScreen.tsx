@@ -1,6 +1,7 @@
 import { useRef, useState } from "react";
 import type { DeviceDiagnosticsSnapshot } from "../diagnostics/DeviceDiagnostics";
 import type { LiveCloseResult } from "../live/LiveClient";
+import type { TranscriptDeltaEvent } from "../live/LiveEvents";
 import { createBrowserDevSpikeSession } from "./BrowserDevSpikeSession";
 
 export interface DevSpikeConnection {
@@ -12,6 +13,7 @@ export interface DevSpikeConnection {
 export interface DevSpikeSession {
   connect(
     onRemoteStream: (stream: MediaStream) => void,
+    onTranscriptDelta: (event: TranscriptDeltaEvent) => void,
   ): Promise<DevSpikeConnection>;
   close(): Promise<LiveCloseResult>;
 }
@@ -38,17 +40,29 @@ export function DevSpikeScreen({
   const [hasReceivedSessionClosed, setHasReceivedSessionClosed] = useState<
     boolean | null
   >(null);
+  const [transcriptDeltas, setTranscriptDeltas] = useState<
+    TranscriptDeltaEvent[]
+  >([]);
   const audioRef = useRef<HTMLAudioElement>(null);
+
+  function handleRemoteStream(stream: MediaStream): void {
+    if (audioRef.current === null) {
+      throw new Error("Remote audio element is unavailable");
+    }
+    audioRef.current.srcObject = stream;
+  }
+
+  function handleTranscriptDelta(event: TranscriptDeltaEvent): void {
+    setTranscriptDeltas((currentDeltas) => [...currentDeltas, event]);
+  }
 
   async function connect(): Promise<void> {
     setConnectionStatus("connecting");
     try {
-      const nextConnection = await session.connect((stream) => {
-        if (audioRef.current === null) {
-          throw new Error("Remote audio element is unavailable");
-        }
-        audioRef.current.srcObject = stream;
-      });
+      const nextConnection = await session.connect(
+        handleRemoteStream,
+        handleTranscriptDelta,
+      );
       setConnection(nextConnection);
       setConnectionStatus("connected");
     } catch (error) {
@@ -98,6 +112,14 @@ export function DevSpikeScreen({
           <pre>{JSON.stringify(connection.microphoneSettings, null, 2)}</pre>
           <p>Transport diagnostics:</p>
           <pre>{JSON.stringify(connection.diagnostics, null, 2)}</pre>
+        </>
+      )}
+      {transcriptDeltas.length === 0 ? (
+        <p>Transcript/caption deltas: none</p>
+      ) : (
+        <>
+          <p>Transcript/caption deltas:</p>
+          <pre>{JSON.stringify(transcriptDeltas, null, 2)}</pre>
         </>
       )}
       {hasReceivedSessionClosed === null ? null : (
