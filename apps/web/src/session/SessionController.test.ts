@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { AudioController } from "../audio/AudioController";
+import { AudioController } from "../audio/AudioController";
 import { runtime } from "../config/runtime";
 import type { LiveClient } from "../live/LiveClient";
 import {
@@ -151,15 +151,98 @@ function setDeviceLanguage(language: string): void {
   });
 }
 
-function createController(options: {
+class DispatchableMicTrack extends EventTarget {
+  kind = "audio";
+  enabled = true;
+  readyState: MediaStreamTrackState = "live";
+  stop = vi.fn(() => {
+    this.readyState = "ended";
+  });
+  getSettings = (): MediaTrackSettings => ({
+    echoCancellation: true,
+    noiseSuppression: false,
+  });
+  end(): void {
+    this.readyState = "ended";
+    this.dispatchEvent(new Event("ended"));
+  }
+}
+
+class DispatchableAudioNode {
+  connect(): DispatchableAudioNode {
+    return this;
+  }
+  disconnect(): void {}
+}
+
+class DispatchableAnalyser extends DispatchableAudioNode {
+  fftSize = 2048;
+  getFloatTimeDomainData(output: Float32Array): void {
+    output.fill(0);
+  }
+}
+
+class DispatchableAudioContext extends EventTarget {
+  state: AudioContextState | "interrupted" = "running";
+  resume = vi.fn(async () => {
+    this.state = "running";
+  });
+  close = vi.fn(async () => {
+    this.state = "closed";
+  });
+  createAnalyser(): DispatchableAnalyser {
+    return new DispatchableAnalyser();
+  }
+  createMediaStreamSource(): DispatchableAudioNode {
+    return new DispatchableAudioNode();
+  }
+  setState(state: AudioContextState | "interrupted"): void {
+    this.state = state;
+    this.dispatchEvent(new Event("statechange"));
+  }
+}
+
+function createDispatchableAudio(): {
+  audio: AudioController;
+  track: DispatchableMicTrack;
+  audioContext: DispatchableAudioContext;
+} {
+  const track = new DispatchableMicTrack();
+  const audioContext = new DispatchableAudioContext();
+  const audioElement = document.createElement("audio");
+  audioElement.play = vi.fn().mockResolvedValue(undefined);
+  const audio = new AudioController({
+    getUserMedia: async () =>
+      ({
+        getAudioTracks: () => [track],
+        getTracks: () => [track],
+        clone: () => ({
+          getAudioTracks: () => [new DispatchableMicTrack()],
+          getTracks: () => [new DispatchableMicTrack()],
+          clone: () => {
+            throw new Error("Nested MediaStream.clone is not used");
+          },
+        }),
+      }) as unknown as MediaStream,
+    createAudioContext: () => audioContext as unknown as AudioContext,
+    audioElement,
+  });
+  return { audio, track, audioContext };
+}
+
+function createController<
+  TAudio extends ReturnType<typeof createFakeAudio> | AudioController = ReturnType<
+    typeof createFakeAudio
+  >,
+>(options: {
   live?: FakeLive;
-  audio?: ReturnType<typeof createFakeAudio>;
+  audio?: TAudio;
   orientation?: FakeOrientation;
   visibility?: FakeVisibility;
   wakeLock?: FakeWakeLock;
 } = {}) {
   const live = options.live ?? new FakeLive();
-  const audio = options.audio ?? createFakeAudio();
+  const audio = (options.audio ?? createFakeAudio()) as TAudio;
   const orientation = options.orientation ?? new FakeOrientation();
   const visibility = options.visibility ?? new FakeVisibility();
   const wakeLock = options.wakeLock ?? new FakeWakeLock();
@@ -767,7 +850,7 @@ async function enterListening(
 }
 
 function emitVoice(
-  audio: ReturnType<typeof createFakeAudio>,
+  audio: { onVoiceActivity: ((event: { active: boolean; atMs: number }) => void) | null },
   active: boolean,
   atMs = Date.now(),
 ): void {
@@ -1676,7 +1759,7 @@ describe("SessionController PWA lifecycle suspension (§11.3 / §19)", () => {
   async function startSourceTurn(
     controller: SessionController,
     live: FakeLive,
-    audio: ReturnType<typeof createFakeAudio>,
+    audio: ReturnType<typeof createFakeAudio> | AudioController,
   ): Promise<void> {
     await enterListening(controller);
     emitVoice(audio, true);
@@ -1971,6 +2054,46 @@ describe("SessionController PWA lifecycle suspension (§11.3 / §19)", () => {
 
     expect(audio.primeOutput.mock.calls.length).toBeGreaterThan(primeCount);
     expect(controller.session.state).toBe("listening");
+  });
+
+  it("resumes from AudioContext interrupted to suspended via statechange", async () => {
+    const { audio, audioContext } = createDispatchableAudio();
+    const { controller, live } = createController({
+      audio,
+      orientation: new FakeOrientation(),
+      visibility: new FakeVisibility(),
+      wakeLock: new FakeWakeLock(),
+    });
+    await startSourceTurn(controller, live, audio);
+    const primeOutput = vi.spyOn(audio, "primeOutput");
+    const primeCount = primeOutput.mock.calls.length;
+
+    audioContext.setState("interrupted");
+    await flushMicrotasks();
+    expect(controller.session.state).toBe("suspended");
+
+    audioContext.setState("suspended");
+    await flushLifecycle();
+
+    expect(primeOutput.mock.calls.length).toBeGreaterThan(primeCount);
+    expect(controller.session.state).toBe("listening");
+  });
+
+  it("errors immediately when the mic track ends while visible", async () => {
+    const { audio, track } = createDispatchableAudio();
+    const { controller, live } = createController({
+      audio,
+      orientation: new FakeOrientation(),
+      visibility: new FakeVisibility(),
+      wakeLock: new FakeWakeLock(),
+    });
+    await startSourceTurn(controller, live, audio);
+
+    track.end();
+    await flushLifecycle();
+
+    expect(controller.session.state).toBe("error");
+    expect(controller.ownerError).toMatch(/microphone/i);
   });
 
   it("resumes after AudioContext leaves interrupted when media is still live", async () => {

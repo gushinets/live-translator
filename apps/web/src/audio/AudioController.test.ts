@@ -213,6 +213,29 @@ describe("AudioController", () => {
     await pending;
   });
 
+  it("treats leaving interrupted for suspended as restore", async () => {
+    const onAudioInterruption = vi.fn();
+    const onAudioRestored = vi.fn();
+    controller.onAudioInterruption = onAudioInterruption;
+    controller.onAudioRestored = onAudioRestored;
+    await controller.startCapture();
+    const listener = audioContext.addEventListener.mock.calls.find(
+      (call) => call[0] === "statechange",
+    )?.[1] as (() => void) | undefined;
+    if (listener === undefined) {
+      throw new Error("AudioContext statechange listener was not installed");
+    }
+
+    (audioContext as { state: string }).state = "interrupted";
+    listener();
+    expect(onAudioInterruption).toHaveBeenCalledOnce();
+    expect(onAudioRestored).not.toHaveBeenCalled();
+
+    audioContext.state = "suspended";
+    listener();
+    expect(onAudioRestored).toHaveBeenCalledOnce();
+  });
+
   it("resumes the analyser AudioContext from a user-gesture prime", async () => {
     await controller.startCapture();
     controller.attachRemoteStream(fakeStream(new FakeAudioTrack()));

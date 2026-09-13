@@ -254,6 +254,7 @@ export class AudioController {
 
   private readonly handleCaptureEnded = (): void => {
     this.onAudioInterruption?.();
+    this.onAudioRestored?.();
   };
 
   private readonly handleContextStateChange = (): void => {
@@ -265,7 +266,7 @@ export class AudioController {
       this.onAudioInterruption?.();
       return;
     }
-    if (this.audioContext.state === "running" && this.contextWasInterrupted) {
+    if (this.contextWasInterrupted) {
       this.contextWasInterrupted = false;
       this.onAudioRestored?.();
     }
