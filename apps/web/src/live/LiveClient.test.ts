@@ -256,7 +256,7 @@ describe("LiveClient.connect", () => {
     await connectPromise;
   });
 
-  it("rejects when ICE gathering never completes within the timeout", async () => {
+  it("rejects when ICE gathering never completes within the timeout, and tears down the peer and data channel", async () => {
     vi.useFakeTimers();
     peer.setLocalDescription = async (
       description: RTCSessionDescriptionInit,
@@ -275,6 +275,47 @@ describe("LiveClient.connect", () => {
     await vi.advanceTimersByTimeAsync(10_000);
     await assertion;
     vi.useRealTimers();
+
+    expect(peer.dataChannel?.closeCalls).toBe(1);
+    expect(peer.closeCalls).toBe(1);
+  });
+
+  it("tears down the peer and data channel if the backend rejects session creation", async () => {
+    const backend: BackendClient = {
+      createLiveSession: async () => {
+        throw new Error("Live session creation failed");
+      },
+    } as unknown as BackendClient;
+    const client = makeClient(backend);
+
+    await expect(client.connect(makeFakeStream())).rejects.toThrow(
+      "Live session creation failed",
+    );
+
+    expect(peer.dataChannel?.closeCalls).toBe(1);
+    expect(peer.closeCalls).toBe(1);
+  });
+
+  it("throws when connect() is called a second time on the same instance", async () => {
+    const { backend } = makeFakeBackend();
+    const client = makeClient(backend);
+    const stream = makeFakeStream();
+
+    const firstConnectPromise = client.connect(stream);
+    // connect() is async, so a synchronous guard still surfaces as a
+    // rejected promise rather than a thrown error.
+    await expect(client.connect(stream)).rejects.toThrow(
+      "connect() has already been called on this LiveClient",
+    );
+
+    await vi.waitFor(() => {
+      expect(peer.calls).toContain("setRemoteDescription");
+    });
+    peer.dataChannel?.emitMessage({
+      type: "session.started",
+      session: { id: "sess_123" },
+    });
+    await firstConnectPromise;
   });
 });
 

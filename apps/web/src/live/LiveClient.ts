@@ -79,56 +79,79 @@ export class LiveClient {
 
   constructor(private readonly deps: LiveClientDeps) {}
 
+  /**
+   * Runs the official connect sequence exactly once per instance (binding
+   * spec 1.2.1 §14.3). If any step fails — ICE-gathering timeout, the
+   * backend rejecting session creation, or a signaling error such as
+   * `setRemoteDescription` throwing — the peer and data channel created for
+   * this attempt are torn down before the error is re-raised, so a failed
+   * connect() never leaves a lingering peer connection with microphone
+   * tracks still attached.
+   */
   async connect(stream: MediaStream): Promise<{ sessionId: string }> {
-    const peer = this.deps.peerFactory();
-    this.peer = peer;
-
-    // Data channel must exist before offer creation so the SDP advertises it.
-    const channel = peer.createDataChannel(DATA_CHANNEL_LABEL);
-    this.channel = channel;
-    this.sessionClosedDeferred = createDeferred<SessionClosedEvent>();
-
-    channel.addEventListener("message", (event) => {
-      this.handleChannelMessage(event as MessageEvent<string>);
-    });
-    channel.addEventListener("close", () => {
-      this.handleChannelClose();
-    });
-
-    peer.addEventListener("track", (event) => {
-      const trackEvent = event as RTCTrackEvent;
-      const [remoteStream] = trackEvent.streams;
-      if (remoteStream !== undefined) this.deps.onRemoteStream(remoteStream);
-    });
-    peer.addEventListener("connectionstatechange", () => {
-      this.handleConnectionStateChange();
-    });
-
-    const sessionStartedPromise = new Promise<SessionStartedEvent>(
-      (resolve) => {
-        this.pendingSessionStarted = resolve;
-      },
-    );
-
-    for (const track of stream.getTracks()) {
-      peer.addTrack(track, stream);
+    if (this.peer !== null || this.channel !== null) {
+      throw new Error("connect() has already been called on this LiveClient");
     }
 
-    const offer = await peer.createOffer();
-    await peer.setLocalDescription(offer);
+    try {
+      const peer = this.deps.peerFactory();
+      this.peer = peer;
 
-    await waitForIceComplete(peer, ICE_GATHER_TIMEOUT_MS);
+      // Data channel must exist before offer creation so the SDP advertises it.
+      const channel = peer.createDataChannel(DATA_CHANNEL_LABEL);
+      this.channel = channel;
+      this.sessionClosedDeferred = createDeferred<SessionClosedEvent>();
 
-    const localSdp = peer.localDescription?.sdp;
-    if (localSdp === undefined) {
-      throw new Error("Missing local SDP after ICE gathering completed");
+      channel.addEventListener("message", (event) => {
+        this.handleChannelMessage(event as MessageEvent<string>);
+      });
+      channel.addEventListener("close", () => {
+        this.handleChannelClose();
+      });
+
+      peer.addEventListener("track", (event) => {
+        const trackEvent = event as RTCTrackEvent;
+        const [remoteStream] = trackEvent.streams;
+        if (remoteStream !== undefined) this.deps.onRemoteStream(remoteStream);
+      });
+      peer.addEventListener("connectionstatechange", () => {
+        this.handleConnectionStateChange();
+      });
+
+      const sessionStartedPromise = new Promise<SessionStartedEvent>(
+        (resolve) => {
+          this.pendingSessionStarted = resolve;
+        },
+      );
+
+      for (const track of stream.getTracks()) {
+        peer.addTrack(track, stream);
+      }
+
+      const offer = await peer.createOffer();
+      await peer.setLocalDescription(offer);
+
+      await waitForIceComplete(peer, ICE_GATHER_TIMEOUT_MS);
+
+      const localSdp = peer.localDescription?.sdp;
+      if (localSdp === undefined) {
+        throw new Error("Missing local SDP after ICE gathering completed");
+      }
+
+      const { transport } =
+        await this.deps.backend.createLiveSession(localSdp);
+      await peer.setRemoteDescription({ type: "answer", sdp: transport.sdp });
+
+      const startedEvent = await sessionStartedPromise;
+      return { sessionId: startedEvent.session.id };
+    } catch (error) {
+      // Suppress the close/connectionstatechange handlers below while
+      // tearing down after a failed connect, for the same reason a local
+      // close() or a remote session.closed suppress them (§23).
+      this.closing = true;
+      this.teardownTransport();
+      throw error;
     }
-
-    const { transport } = await this.deps.backend.createLiveSession(localSdp);
-    await peer.setRemoteDescription({ type: "answer", sdp: transport.sdp });
-
-    const startedEvent = await sessionStartedPromise;
-    return { sessionId: startedEvent.session.id };
   }
 
   send(event: LiveClientEvent): void {
