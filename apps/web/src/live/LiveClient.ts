@@ -1,5 +1,11 @@
 import type { BackendClient } from "../api/BackendClient";
+import { runtime } from "../config/runtime";
+import type { SessionState } from "../session/SessionState";
+import { AckRegistry, AckTimeoutError } from "./AckRegistry";
 import {
+  buildCommentaryAppendCommand,
+  buildInstructionsAppendCommand,
+  buildThinkingAppendCommand,
   isLiveServerEvent,
   type AppendAcknowledgedEvent,
   type LiveClientEvent,
@@ -30,6 +36,21 @@ export interface LiveCloseResult {
   finalized: boolean;
   reason?: string;
   usageSeconds?: number;
+}
+
+export type AppendPolicyKind =
+  | "startup_interpreter"
+  | "first_steering"
+  | "later_steering";
+
+export interface AppendPolicy {
+  kind: AppendPolicyKind;
+  sessionState?: SessionState;
+}
+
+export interface AckResult {
+  eventId: string;
+  degraded?: boolean;
 }
 
 interface Deferred<T> {
@@ -105,8 +126,51 @@ export class LiveClient {
    * threw and `this.peer`/`this.channel` were therefore never assigned.
    */
   private connectCalled = false;
+  private readonly ackRegistry = new AckRegistry();
 
   constructor(private readonly deps: LiveClientDeps) {}
+
+  async appendInstructions(
+    text: string,
+    policy: AppendPolicy,
+  ): Promise<AckResult> {
+    return this.appendWithPolicy(policy, (eventId) =>
+      buildInstructionsAppendCommand(eventId, text),
+    );
+  }
+
+  async appendThinking(text: string, policy: AppendPolicy): Promise<AckResult> {
+    return this.appendWithPolicy(policy, (eventId) =>
+      buildThinkingAppendCommand(eventId, text),
+    );
+  }
+
+  async appendCommentary(
+    text: string,
+    policy: AppendPolicy,
+  ): Promise<AckResult> {
+    return this.appendWithPolicy(policy, (eventId) =>
+      buildCommentaryAppendCommand(eventId, text),
+    );
+  }
+
+  /**
+   * Mutes or unmutes GPT-Live input (Gate B). This never completes local
+   * model output (Gate C / spec §8): mute acknowledgments only fulfill this
+   * waiter and are not output-lifecycle events.
+   */
+  async setInputMuted(muted: boolean): Promise<void> {
+    const eventId = crypto.randomUUID();
+    const wait = this.ackRegistry.waitFor(
+      eventId,
+      runtime.steeringAckTimeoutMs,
+    );
+    this.send({
+      type: muted ? "session.input_audio.mute" : "session.input_audio.unmute",
+      event_id: eventId,
+    });
+    await wait;
+  }
 
   /**
    * Runs the official connect sequence exactly once per instance (binding
@@ -287,6 +351,7 @@ export class LiveClient {
   private teardownTransport(): void {
     if (this.torndown) return;
     this.torndown = true;
+    this.ackRegistry.rejectAll(new Error("Live session is no longer connected"));
     this.channel?.close();
     this.peer?.close();
   }
@@ -424,10 +489,13 @@ export class LiveClient {
       case "session.instructions.appended":
       case "session.thinking.appended":
       case "session.commentary.appended":
+        this.ackRegistry.accept(serverEvent);
         this.onAppendAcknowledged?.(serverEvent);
         return;
       case "session.input_audio.muted":
       case "session.input_audio.unmuted":
+        // Gate B only. Mute/unmute acks never complete local output (Gate C).
+        this.ackRegistry.accept(serverEvent);
         this.onMuteAcknowledged?.(serverEvent);
         return;
       case "session.closed": {
@@ -486,8 +554,63 @@ export class LiveClient {
           );
           this.teardownTransport();
         }
+        this.ackRegistry.fail({
+          client_event_id: serverEvent.client_event_id,
+          message: serverEvent.error.message,
+        });
         this.onError?.(serverEvent);
         return;
+    }
+  }
+
+  private assertSteeringAllowed(policy: AppendPolicy): void {
+    if (policy.kind !== "first_steering" && policy.kind !== "later_steering") {
+      return;
+    }
+    if (policy.sessionState === undefined) {
+      throw new Error("Steering appends require sessionState");
+    }
+    if (policy.sessionState === "outputting") {
+      throw new Error("Cannot send steering while session state is outputting");
+    }
+  }
+
+  private async appendWithPolicy(
+    policy: AppendPolicy,
+    build: (eventId: string) => LiveClientEvent,
+  ): Promise<AckResult> {
+    this.assertSteeringAllowed(policy);
+    const first = await this.attemptAppend(build);
+    if (first.ok) return { eventId: first.eventId };
+    const retry = await this.attemptAppend(build);
+    if (retry.ok) return { eventId: retry.eventId };
+    if (policy.kind === "later_steering") {
+      return { eventId: retry.eventId, degraded: true };
+    }
+    throw retry.error;
+  }
+
+  private async attemptAppend(
+    build: (eventId: string) => LiveClientEvent,
+  ): Promise<
+    | { ok: true; eventId: string }
+    | { ok: false; eventId: string; error: AckTimeoutError }
+  > {
+    const eventId = crypto.randomUUID();
+    const command = build(eventId);
+    const wait = this.ackRegistry.waitFor(
+      eventId,
+      runtime.steeringAckTimeoutMs,
+    );
+    this.send(command);
+    try {
+      await wait;
+      return { ok: true, eventId };
+    } catch (error) {
+      if (error instanceof AckTimeoutError) {
+        return { ok: false, eventId, error };
+      }
+      throw error;
     }
   }
 }

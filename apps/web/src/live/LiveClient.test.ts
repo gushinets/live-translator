@@ -1,7 +1,13 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { BackendClient } from "../api/BackendClient";
+import { runtime } from "../config/runtime";
+import { AckTimeoutError } from "./AckRegistry";
 import { LiveClient } from "./LiveClient";
-import type { SessionClosedEvent } from "./LiveEvents";
+import {
+  APPEND_CHAR_BUDGET,
+  ContextTooLongError,
+  type SessionClosedEvent,
+} from "./LiveEvents";
 
 class FakeDataChannel extends EventTarget {
   readyState: RTCDataChannelState = "open";
@@ -1014,5 +1020,250 @@ describe("LiveClient.close", () => {
       finalized: false,
       reason: "channel is not open",
     });
+  });
+});
+
+describe("LiveClient trusted control commands", () => {
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.restoreAllMocks();
+  });
+
+  async function connectedClient() {
+    const peer = new FakePeerConnection();
+    const { backend } = makeFakeBackend();
+    const client = new LiveClient({
+      backend,
+      peerFactory: () => peer as unknown as RTCPeerConnection,
+      onRemoteStream: vi.fn(),
+    });
+    const connectPromise = client.connect(makeFakeStream());
+    await vi.waitFor(() => {
+      expect(peer.calls).toContain("setRemoteDescription");
+    });
+    peer.dataChannel?.emitMessage({
+      type: "session.started",
+      session: { id: "sess_123" },
+    });
+    await connectPromise;
+    if (peer.dataChannel === null) throw new Error("data channel missing");
+    let uuidSeq = 0;
+    vi.spyOn(crypto, "randomUUID").mockImplementation(() => {
+      uuidSeq += 1;
+      return `evt-${uuidSeq}` as ReturnType<typeof crypto.randomUUID>;
+    });
+    return { client, peer, channel: peer.dataChannel };
+  }
+
+  it("sends instructions.append with a unique event_id and resolves on the matching client_event_id", async () => {
+    const { client, channel } = await connectedClient();
+
+    const pending = client.appendInstructions("BEGIN_INTERPRETER_MODE.", {
+      kind: "startup_interpreter",
+    });
+    expect(channel.sendCalls).toEqual([
+      JSON.stringify({
+        type: "session.instructions.append",
+        event_id: "evt-1",
+        delegation_id: null,
+        instructions: "BEGIN_INTERPRETER_MODE.",
+      }),
+    ]);
+
+    channel.emitMessage({
+      type: "session.thinking.appended",
+      client_event_id: "evt-other",
+    });
+    channel.emitMessage({
+      type: "session.instructions.appended",
+      client_event_id: "evt-1",
+    });
+
+    await expect(pending).resolves.toEqual({ eventId: "evt-1" });
+  });
+
+  it("sends thinking.append and commentary.append and waits for their acks", async () => {
+    const { client, channel } = await connectedClient();
+
+    const thinking = client.appendThinking("Authoritative conversation context: hello.", {
+      kind: "startup_interpreter",
+    });
+    channel.emitMessage({
+      type: "session.thinking.appended",
+      client_event_id: "evt-1",
+    });
+    await expect(thinking).resolves.toEqual({ eventId: "evt-1" });
+
+    const commentary = client.appendCommentary("Please produce a fresh spoken interpretation.", {
+      kind: "first_steering",
+      sessionState: "correcting",
+    });
+    channel.emitMessage({
+      type: "session.commentary.appended",
+      client_event_id: "evt-2",
+    });
+    await expect(commentary).resolves.toEqual({ eventId: "evt-2" });
+  });
+
+  it("does not send oversized append text", async () => {
+    const { client, channel } = await connectedClient();
+    const oversized = "a".repeat(APPEND_CHAR_BUDGET + 1);
+
+    await expect(
+      client.appendInstructions(oversized, { kind: "startup_interpreter" }),
+    ).rejects.toBeInstanceOf(ContextTooLongError);
+    expect(channel.sendCalls).toEqual([]);
+  });
+
+  it("refuses steering while session state is outputting and does not send", async () => {
+    const { client, channel } = await connectedClient();
+
+    await expect(
+      client.appendInstructions("The next expected source speaker is Participant A.", {
+        kind: "first_steering",
+        sessionState: "outputting",
+      }),
+    ).rejects.toThrow("Cannot send steering while session state is outputting");
+    await expect(
+      client.appendInstructions("The next expected source speaker is Participant B.", {
+        kind: "later_steering",
+        sessionState: "outputting",
+      }),
+    ).rejects.toThrow("Cannot send steering while session state is outputting");
+    expect(channel.sendCalls).toEqual([]);
+  });
+
+  it("retries a startup interpreter append once after ack timeout, then throws", async () => {
+    const { client, channel } = await connectedClient();
+    vi.useFakeTimers();
+
+    const pending = client.appendInstructions("BEGIN_INTERPRETER_MODE.", {
+      kind: "startup_interpreter",
+    });
+    expect(channel.sendCalls).toHaveLength(1);
+
+    await vi.advanceTimersByTimeAsync(runtime.steeringAckTimeoutMs);
+    expect(channel.sendCalls).toHaveLength(2);
+    expect(JSON.parse(channel.sendCalls[1] as string).event_id).toBe("evt-2");
+
+    const assertion = expect(pending).rejects.toBeInstanceOf(AckTimeoutError);
+    await vi.advanceTimersByTimeAsync(runtime.steeringAckTimeoutMs);
+    await assertion;
+  });
+
+  it("retries first steering once after ack timeout, then throws", async () => {
+    const { client, channel } = await connectedClient();
+    vi.useFakeTimers();
+
+    const pending = client.appendInstructions("steer", {
+      kind: "first_steering",
+      sessionState: "listening",
+    });
+    await vi.advanceTimersByTimeAsync(runtime.steeringAckTimeoutMs);
+    expect(channel.sendCalls).toHaveLength(2);
+
+    const assertion = expect(pending).rejects.toBeInstanceOf(AckTimeoutError);
+    await vi.advanceTimersByTimeAsync(runtime.steeringAckTimeoutMs);
+    await assertion;
+  });
+
+  it("retries later steering once after ack timeout, then returns degraded and continues", async () => {
+    const { client, channel } = await connectedClient();
+    vi.useFakeTimers();
+
+    const pending = client.appendInstructions("steer", {
+      kind: "later_steering",
+      sessionState: "listening",
+    });
+    await vi.advanceTimersByTimeAsync(runtime.steeringAckTimeoutMs);
+    expect(channel.sendCalls).toHaveLength(2);
+
+    await vi.advanceTimersByTimeAsync(runtime.steeringAckTimeoutMs);
+    await expect(pending).resolves.toEqual({ eventId: "evt-2", degraded: true });
+  });
+
+  it("succeeds on the retry acknowledgment after the first attempt times out", async () => {
+    const { client, channel } = await connectedClient();
+    vi.useFakeTimers();
+
+    const pending = client.appendInstructions("BEGIN_INTERPRETER_MODE.", {
+      kind: "startup_interpreter",
+    });
+    await vi.advanceTimersByTimeAsync(runtime.steeringAckTimeoutMs);
+    channel.emitMessage({
+      type: "session.instructions.appended",
+      client_event_id: "evt-2",
+    });
+    await expect(pending).resolves.toEqual({ eventId: "evt-2" });
+  });
+
+  it("sends mute/unmute with event_id and waits for the matching mute ack", async () => {
+    const { client, channel } = await connectedClient();
+
+    const muted = client.setInputMuted(true);
+    expect(JSON.parse(channel.sendCalls[0] as string)).toEqual({
+      type: "session.input_audio.mute",
+      event_id: "evt-1",
+    });
+    channel.emitMessage({
+      type: "session.input_audio.muted",
+      client_event_id: "evt-1",
+    });
+    await expect(muted).resolves.toBeUndefined();
+
+    const unmuted = client.setInputMuted(false);
+    expect(JSON.parse(channel.sendCalls[1] as string)).toEqual({
+      type: "session.input_audio.unmute",
+      event_id: "evt-2",
+    });
+    channel.emitMessage({
+      type: "session.input_audio.unmuted",
+      client_event_id: "evt-2",
+    });
+    await expect(unmuted).resolves.toBeUndefined();
+  });
+
+  it("does not treat mute acknowledgment as output completion", async () => {
+    const { client, channel } = await connectedClient();
+    const onAppendAcknowledged = vi.fn();
+    const onTranscriptDelta = vi.fn();
+    const onSessionClosed = vi.fn();
+    client.onAppendAcknowledged = onAppendAcknowledged;
+    client.onTranscriptDelta = onTranscriptDelta;
+    client.onSessionClosed = onSessionClosed;
+
+    const appendPending = client.appendInstructions("BEGIN_INTERPRETER_MODE.", {
+      kind: "startup_interpreter",
+    });
+    const mutePending = client.setInputMuted(true);
+
+    channel.emitMessage({
+      type: "session.input_audio.muted",
+      client_event_id: "evt-2",
+    });
+    await expect(mutePending).resolves.toBeUndefined();
+
+    expect(onAppendAcknowledged).not.toHaveBeenCalled();
+    expect(onTranscriptDelta).not.toHaveBeenCalled();
+    expect(onSessionClosed).not.toHaveBeenCalled();
+
+    channel.emitMessage({
+      type: "session.instructions.appended",
+      client_event_id: "evt-1",
+    });
+    await expect(appendPending).resolves.toEqual({ eventId: "evt-1" });
+  });
+
+  it("fails the matching waiter when a correlated error arrives", async () => {
+    const { client, channel } = await connectedClient();
+    const pending = client.appendInstructions("BEGIN_INTERPRETER_MODE.", {
+      kind: "startup_interpreter",
+    });
+    channel.emitMessage({
+      type: "error",
+      client_event_id: "evt-1",
+      error: { message: "append rejected" },
+    });
+    await expect(pending).rejects.toThrow("append rejected");
   });
 });

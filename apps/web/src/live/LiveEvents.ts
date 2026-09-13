@@ -2,11 +2,29 @@
  * Typed shapes for the JSON events exchanged over the GPT-Live `oai-events`
  * WebRTC data channel. Field names follow binding spec 1.2.1 §13.
  *
- * This file intentionally covers only the categories needed for session
- * lifecycle and diagnostics (Task 3). Event correlation via `event_id` /
- * `client_event_id` and the trusted control-command builders are added in a
- * later task.
+ * Application-generated control events use unique `event_id` values.
+ * Acknowledgments are correlated by `client_event_id`. Append payloads are
+ * preflighted against a conservative character budget standing in for the
+ * Live 500-token event limit; oversized text is rejected, never truncated.
  */
+
+/** Conservative character stand-in for the Live 500-token append limit. */
+export const APPEND_CHAR_BUDGET = 1800;
+
+export class ContextTooLongError extends Error {
+  constructor() {
+    super(
+      "This text is too long to send. Please shorten the context and try again.",
+    );
+    this.name = "ContextTooLongError";
+  }
+}
+
+function assertAppendWithinBudget(text: string): void {
+  if (text.length > APPEND_CHAR_BUDGET) {
+    throw new ContextTooLongError();
+  }
+}
 
 export interface SessionStartedEvent {
   type: "session.started";
@@ -54,6 +72,7 @@ export interface SessionClosedEvent {
 export interface LiveErrorEvent {
   type: "error";
   error: { message: string; code?: string };
+  client_event_id?: string;
 }
 
 export type LiveServerEvent =
@@ -79,8 +98,7 @@ const KNOWN_SERVER_EVENT_TYPES: ReadonlySet<LiveServerEvent["type"]> = new Set([
 
 /**
  * Narrows an arbitrary parsed JSON payload to a known `LiveServerEvent`.
- * Payloads with an unrecognized `type` are not narrowed (Task 3 only
- * "at minimum" handles the categories above; later tasks add more).
+ * Payloads with an unrecognized `type` are not narrowed.
  */
 export function isLiveServerEvent(value: unknown): value is LiveServerEvent {
   if (typeof value !== "object" || value === null || !("type" in value)) {
@@ -136,3 +154,42 @@ export type LiveClientEvent =
   | CommentaryAppendCommand
   | InputAudioMuteCommand
   | InputAudioUnmuteCommand;
+
+export function buildInstructionsAppendCommand(
+  eventId: string,
+  instructions: string,
+): InstructionsAppendCommand {
+  assertAppendWithinBudget(instructions);
+  return {
+    type: "session.instructions.append",
+    event_id: eventId,
+    delegation_id: null,
+    instructions,
+  };
+}
+
+export function buildThinkingAppendCommand(
+  eventId: string,
+  content: string,
+): ThinkingAppendCommand {
+  assertAppendWithinBudget(content);
+  return {
+    type: "session.thinking.append",
+    event_id: eventId,
+    delegation_id: null,
+    content,
+  };
+}
+
+export function buildCommentaryAppendCommand(
+  eventId: string,
+  content: string,
+): CommentaryAppendCommand {
+  assertAppendWithinBudget(content);
+  return {
+    type: "session.commentary.append",
+    event_id: eventId,
+    delegation_id: null,
+    content,
+  };
+}
