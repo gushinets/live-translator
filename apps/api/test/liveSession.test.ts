@@ -160,4 +160,30 @@ describe("POST /api/live/session", () => {
       { status: 429 },
     );
   });
+
+  it("maps status-less OpenAI API errors to 502 and releases the lease", async () => {
+    const release = vi.fn();
+    const leaseRegistry = {
+      acquire: vi.fn().mockReturnValue({ leaseId: "lease-1", release }),
+    };
+    const connectionError = new OpenAI.APIConnectionError({
+      message: "sensitive connection failure",
+    });
+    const createLiveSession = vi.fn().mockRejectedValue(connectionError);
+    const logger = { error: vi.fn() };
+    const response = await request(
+      createApp({ createLiveSession, leaseRegistry, logger }),
+    )
+      .post("/api/live/session")
+      .set("Origin", "http://localhost:5173")
+      .send({ sdp: "sensitive-sdp" });
+
+    expect(response.status).toBe(502);
+    expect(response.body).toEqual({ error: "Live session creation failed" });
+    expect(release).toHaveBeenCalledOnce();
+    expect(logger.error).toHaveBeenCalledWith(
+      "OpenAI Live session creation failed",
+      { status: 502 },
+    );
+  });
 });

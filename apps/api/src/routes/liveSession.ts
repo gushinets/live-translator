@@ -64,11 +64,12 @@ export function createLiveSessionRouter(
     } catch (error) {
       lease.release();
       if (error instanceof OpenAI.APIError) {
+        const status = error.status ?? 502;
         logger.error("OpenAI Live session creation failed", {
-          status: error.status,
+          status,
         });
         response
-          .status(error.status)
+          .status(status)
           .json({ error: "Live session creation failed" });
         return;
       }
