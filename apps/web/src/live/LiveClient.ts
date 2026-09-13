@@ -161,15 +161,11 @@ export class LiveClient {
    */
   async setInputMuted(muted: boolean): Promise<void> {
     const eventId = crypto.randomUUID();
-    const wait = this.ackRegistry.waitFor(
-      eventId,
-      runtime.steeringAckTimeoutMs,
-    );
     this.send({
       type: muted ? "session.input_audio.mute" : "session.input_audio.unmute",
       event_id: eventId,
     });
-    await wait;
+    await this.ackRegistry.waitFor(eventId, runtime.steeringAckTimeoutMs);
   }
 
   /**
@@ -598,11 +594,11 @@ export class LiveClient {
   > {
     const eventId = crypto.randomUUID();
     const command = build(eventId);
+    this.send(command);
     const wait = this.ackRegistry.waitFor(
       eventId,
       runtime.steeringAckTimeoutMs,
     );
-    this.send(command);
     try {
       await wait;
       return { ok: true, eventId };

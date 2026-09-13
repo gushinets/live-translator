@@ -1066,7 +1066,7 @@ describe("LiveClient trusted control commands", () => {
         type: "session.instructions.append",
         event_id: "evt-1",
         delegation_id: null,
-        instructions: "BEGIN_INTERPRETER_MODE.",
+        content: "BEGIN_INTERPRETER_MODE.",
       }),
     ]);
 
@@ -1265,5 +1265,33 @@ describe("LiveClient trusted control commands", () => {
       error: { message: "append rejected" },
     });
     await expect(pending).rejects.toThrow("append rejected");
+  });
+
+  it("does not leak an ack waiter if send() throws", async () => {
+    const { client, channel } = await connectedClient();
+    vi.useFakeTimers();
+    channel.send = () => {
+      throw new Error("channel is not open");
+    };
+
+    const unhandled: unknown[] = [];
+    const onUnhandled = (reason: unknown) => {
+      unhandled.push(reason);
+    };
+    process.on("unhandledRejection", onUnhandled);
+
+    await expect(
+      client.appendInstructions("BEGIN_INTERPRETER_MODE.", {
+        kind: "startup_interpreter",
+      }),
+    ).rejects.toThrow("channel is not open");
+    await expect(client.setInputMuted(true)).rejects.toThrow(
+      "channel is not open",
+    );
+
+    await vi.advanceTimersByTimeAsync(runtime.steeringAckTimeoutMs);
+    process.off("unhandledRejection", onUnhandled);
+
+    expect(unhandled).toEqual([]);
   });
 });

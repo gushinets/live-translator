@@ -120,7 +120,7 @@ export interface InstructionsAppendCommand {
   type: "session.instructions.append";
   event_id: string;
   delegation_id: null;
-  instructions: string;
+  content: string;
 }
 
 export interface ThinkingAppendCommand {
@@ -157,14 +157,14 @@ export type LiveClientEvent =
 
 export function buildInstructionsAppendCommand(
   eventId: string,
-  instructions: string,
+  content: string,
 ): InstructionsAppendCommand {
-  assertAppendWithinBudget(instructions);
+  assertAppendWithinBudget(content);
   return {
     type: "session.instructions.append",
     event_id: eventId,
     delegation_id: null,
-    instructions,
+    content,
   };
 }
 

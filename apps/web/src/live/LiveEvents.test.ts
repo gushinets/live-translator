@@ -13,7 +13,7 @@ describe("append payload builders", () => {
       type: "session.instructions.append",
       event_id: "evt-1",
       delegation_id: null,
-      instructions: "BEGIN_INTERPRETER_MODE.",
+      content: "BEGIN_INTERPRETER_MODE.",
     });
   });
 
@@ -36,7 +36,7 @@ describe("append payload builders", () => {
 
   it("accepts text at the conservative character budget", () => {
     const text = "a".repeat(APPEND_CHAR_BUDGET);
-    expect(buildInstructionsAppendCommand("evt-budget", text).instructions).toBe(
+    expect(buildInstructionsAppendCommand("evt-budget", text).content).toBe(
       text,
     );
   });

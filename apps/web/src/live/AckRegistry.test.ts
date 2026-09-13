@@ -64,4 +64,17 @@ describe("AckRegistry", () => {
     await expect(wait).rejects.toThrow("session closed");
     expect(registry.pendingCount).toBe(0);
   });
+
+  it("clears the timeout when fail() rejects the waiter", async () => {
+    vi.useFakeTimers();
+    const registry = new AckRegistry();
+    const wait = registry.waitFor("event-1", 3000);
+    registry.fail({
+      client_event_id: "event-1",
+      message: "channel is not open",
+    });
+    await expect(wait).rejects.toThrow("channel is not open");
+    await vi.advanceTimersByTimeAsync(3000);
+    expect(registry.pendingCount).toBe(0);
+  });
 });
