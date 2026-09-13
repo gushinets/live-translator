@@ -97,6 +97,23 @@ function assertFreshOutputEpoch(session: TranslationSession): void {
   }
 }
 
+const OUTPUT_EVENT_BLOCKED_STATES: ReadonlySet<SessionState> = new Set([
+  "error",
+  "ended",
+  "suspended",
+  "correcting",
+]);
+
+function assertOutputEventAllowed(session: TranslationSession): void {
+  if (OUTPUT_EVENT_BLOCKED_STATES.has(session.state)) {
+    throw new Error(`Cannot accept output events while session state is "${session.state}".`);
+  }
+}
+
+function isPreservedCompletedTarget(turn: Turn): boolean {
+  return turn.turnCompletedAtMs !== undefined || turn.corrected;
+}
+
 function isRecentCorrectable(turn: Turn): boolean {
   return turn.status === "completed" || turn.status === "outputting";
 }
@@ -264,9 +281,10 @@ function handleSuspend(session: TranslationSession): TranslationSession {
   if (session.activeTurn === undefined) {
     return { ...session, state: "suspended" };
   }
-  // §11.3 discards an unfinished source turn. A completed utterance promoted
-  // onto activeTurn for correction must return to recentTurns as completed.
-  if (session.activeTurn.status === "correcting" && session.activeTurn.turnCompletedAtMs !== undefined) {
+  // §11.3 discards an unfinished source turn. A completed or already-corrected
+  // utterance must return to recentTurns as completed, including after
+  // CORRECTION_APPLIED (which clears turnCompletedAtMs for the fresh epoch).
+  if (isPreservedCompletedTarget(session.activeTurn)) {
     return {
       ...session,
       state: "suspended",
@@ -307,22 +325,23 @@ export function sessionReducer(session: TranslationSession, action: SessionActio
       }
       return { ...session, activeTurn: markSourceIdle(session.activeTurn, Date.now()) };
     case "OUTPUT_ACTIVE": {
+      assertOutputEventAllowed(session);
       const updated = markOutputActive(requireActiveTurn(session));
       return withOutputtingIfListening(session, updated);
     }
     case "OUTPUT_DELTA": {
-      assertFreshOutputEpoch(session);
+      assertOutputEventAllowed(session);
       const updated = appendOutputTextToTurn(requireActiveTurn(session), action.text, action.nowMs);
       return withOutputtingIfListening(session, updated);
     }
     case "AUDIO_STARTED": {
-      assertFreshOutputEpoch(session);
+      assertOutputEventAllowed(session);
       const outputting = markOutputActive(requireActiveTurn(session));
       const updated = markAudioOutputStarted(outputting, action.nowMs);
       return withOutputtingIfListening(session, updated);
     }
     case "PLAYBACK_ENDED":
-      assertFreshOutputEpoch(session);
+      assertOutputEventAllowed(session);
       return { ...session, activeTurn: markPlaybackEnded(requireActiveTurn(session), action.nowMs) };
     case "OUTPUT_IDLE":
       // Informational only: never changes `state` or `expectedSpeaker` (only

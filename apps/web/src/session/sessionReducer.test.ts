@@ -69,6 +69,7 @@ function outputtingStateWithStaleEpoch(speaker: Side): TranslationSession {
 
 const SOURCE_APPEND_BLOCKED_STATES = ["correcting", "ending", "ended", "error", "suspended"] as const;
 const TURN_CLOSE_BLOCKED_STATES = ["error", "ended", "suspended", "correcting"] as const;
+const OUTPUT_EVENT_BLOCKED_STATES = ["error", "ended", "suspended", "correcting"] as const;
 
 function sessionWithActiveTurnIn(state: (typeof TURN_CLOSE_BLOCKED_STATES)[number]): TranslationSession {
   if (state === "correcting") {
@@ -386,7 +387,7 @@ describe("sessionReducer: output epoch actions", () => {
     );
   });
 
-  it("rejects OUTPUT_DELTA, AUDIO_STARTED, PLAYBACK_ENDED, and SOURCE_IDLE while correcting", () => {
+  it("rejects OUTPUT_DELTA, AUDIO_STARTED, PLAYBACK_ENDED, SOURCE_IDLE, and OUTPUT_ACTIVE while correcting", () => {
     const correcting = sessionReducer(stateWithCompletedTurn("A"), { type: "CORRECTION_START" });
 
     expect(() => sessionReducer(correcting, { type: "OUTPUT_DELTA", text: "stale", nowMs: 1500 })).toThrow(
@@ -395,6 +396,36 @@ describe("sessionReducer: output epoch actions", () => {
     expect(() => sessionReducer(correcting, { type: "AUDIO_STARTED", nowMs: 1600 })).toThrow(/correcting/);
     expect(() => sessionReducer(correcting, { type: "PLAYBACK_ENDED", nowMs: 2100 })).toThrow(/correcting/);
     expect(() => sessionReducer(correcting, { type: "SOURCE_IDLE" })).toThrow(/correcting/);
+    expect(() => sessionReducer(correcting, { type: "OUTPUT_ACTIVE" })).toThrow(/correcting/);
+  });
+
+  it.each(OUTPUT_EVENT_BLOCKED_STATES)("rejects OUTPUT_DELTA while session state is %s", (blockedState) => {
+    const state = sessionWithActiveTurnIn(blockedState);
+    expect(() => sessionReducer(state, { type: "OUTPUT_DELTA", text: "stale", nowMs: 1500 })).toThrow(
+      new RegExp(blockedState),
+    );
+  });
+
+  it.each(OUTPUT_EVENT_BLOCKED_STATES)("rejects AUDIO_STARTED while session state is %s", (blockedState) => {
+    const state = sessionWithActiveTurnIn(blockedState);
+    expect(() => sessionReducer(state, { type: "AUDIO_STARTED", nowMs: 1600 })).toThrow(new RegExp(blockedState));
+  });
+
+  it.each(OUTPUT_EVENT_BLOCKED_STATES)("rejects PLAYBACK_ENDED while session state is %s", (blockedState) => {
+    const state = sessionWithActiveTurnIn(blockedState);
+    expect(() => sessionReducer(state, { type: "PLAYBACK_ENDED", nowMs: 2100 })).toThrow(new RegExp(blockedState));
+  });
+
+  it.each(OUTPUT_EVENT_BLOCKED_STATES)("rejects OUTPUT_ACTIVE while session state is %s", (blockedState) => {
+    const state = sessionWithActiveTurnIn(blockedState);
+    expect(() => sessionReducer(state, { type: "OUTPUT_ACTIVE" })).toThrow(new RegExp(blockedState));
+  });
+
+  it("accepts OUTPUT_DELTA while ending so a turn can drain", () => {
+    const ending = sessionReducer(stateWithCompletedTurn("A"), { type: "END" });
+    const next = sessionReducer(ending, { type: "OUTPUT_DELTA", text: "tail", nowMs: 4000 });
+    expect(next.state).toBe("ending");
+    expect(next.activeTurn?.translatedText).toBe("tail");
   });
 
   it("accepts output events after CORRECTION_APPLIED starts a fresh epoch", () => {
@@ -435,6 +466,20 @@ describe("sessionReducer: suspension flow (§11.3)", () => {
     expect(next.recentTurns).toHaveLength(1);
     expect(next.recentTurns[0]?.id).toBe("active-turn");
     expect(next.recentTurns[0]?.status).toBe("completed");
+  });
+
+  it("does not discard a corrected turn after CORRECTION_APPLIED on SUSPEND", () => {
+    const closed = sessionReducer(stateWithCompletedTurn("A"), { type: "TURN_CLOSED", speaker: "A" });
+    const correcting = sessionReducer(closed, { type: "CORRECTION_START" });
+    const applied = sessionReducer(correcting, { type: "CORRECTION_APPLIED", speaker: "B" });
+
+    const next = sessionReducer(applied, { type: "SUSPEND" });
+
+    expect(next.state).toBe("suspended");
+    expect(next.activeTurn).toBeUndefined();
+    expect(next.recentTurns).toHaveLength(1);
+    expect(next.recentTurns[0]?.status).toBe("completed");
+    expect(next.recentTurns[0]?.corrected).toBe(true);
   });
 
   it("keeps expectedSpeaker unchanged across suspend/resume so the same speaker can repeat", () => {
