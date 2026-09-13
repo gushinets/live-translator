@@ -1,4 +1,4 @@
-import { useEffect, useReducer, useState } from "react";
+import { useEffect, useReducer, useRef, useState } from "react";
 import { BootstrapPrompt } from "../components/BootstrapPrompt";
 import { PrivacyDisclosure } from "../components/PrivacyDisclosure";
 import { ContextTooLongError } from "../live/LiveEvents";
@@ -17,6 +17,8 @@ export interface ContextScreenController {
   readonly contextText: string;
   readonly bootstrapText: string;
   readonly ownerError?: string;
+  readonly isConnectInFlight?: boolean;
+  readonly audioElement?: HTMLAudioElement;
   subscribe(listener: () => void): () => void;
   startContextCapture(): Promise<void>;
   finishContextCapture(): void;
@@ -44,7 +46,21 @@ export function ContextScreen({
   const controller: ContextScreenController = resolvedController;
 
   const [, rerender] = useReducer((count: number) => count + 1, 0);
+  const audioHostRef = useRef<HTMLDivElement>(null);
   useEffect(() => controller.subscribe(rerender), [controller]);
+  useEffect(() => {
+    const host = audioHostRef.current;
+    const element = controller.audioElement;
+    if (host === null || element === undefined) {
+      return;
+    }
+    host.appendChild(element);
+    return () => {
+      if (element.parentNode === host) {
+        host.removeChild(element);
+      }
+    };
+  }, [controller.audioElement]);
 
   async function handleStart(): Promise<void> {
     if (controller.session.state === "context") {
@@ -73,15 +89,11 @@ export function ContextScreen({
         error,
         state: controller.session.state,
       });
-      throw error;
     }
   }
 
-  async function handleBootstrapMicrophone(): Promise<void> {
+  async function handleAccept(): Promise<void> {
     const hint = controller.bootstrapText.trim();
-    if (hint.length === 0) {
-      return;
-    }
     controller.acceptBootstrap(hint);
     try {
       await controller.beginInterpreter();
@@ -89,11 +101,10 @@ export function ContextScreen({
       if (error instanceof ContextTooLongError) {
         return;
       }
-      console.error("Failed to begin interpreter after bootstrap answer", {
+      console.error("Failed to begin interpreter after bootstrap accept", {
         error,
         state: controller.session.state,
       });
-      throw error;
     }
   }
 
@@ -105,37 +116,40 @@ export function ContextScreen({
     sessionState === "context" ||
     sessionState === "bootstrap" ||
     sessionState === "error";
-  const isBusy = sessionState === "connecting" || sessionState === "error";
-
-  if (!isOwnerSetup) {
-    return (
-      <section>
-        <p>Interpreter active</p>
-        <button
-          type="button"
-          onClick={() => {
-            void controller.cancel();
-          }}
-        >
-          Cancel
-        </button>
-      </section>
-    );
-  }
+  const isBusy =
+    sessionState === "connecting" ||
+    sessionState === "error" ||
+    controller.isConnectInFlight === true;
 
   return (
     <section>
+      <div ref={audioHostRef} hidden />
+      {!isOwnerSetup ? (
+        <>
+          <p>Interpreter active</p>
+          <button
+            type="button"
+            onClick={() => {
+              void controller.cancel();
+            }}
+          >
+            Cancel
+          </button>
+        </>
+      ) : (
+        <>
       {controller.ownerError !== undefined ? (
         <p role="alert">{controller.ownerError}</p>
       ) : null}
       {isBootstrap ? (
         <BootstrapPrompt
           transcript={controller.bootstrapText}
-          onMicrophone={() => {
-            void handleBootstrapMicrophone();
-          }}
+          onMicrophone={() => undefined}
           onSkip={() => {
             void handleSkip();
+          }}
+          onAccept={() => {
+            void handleAccept();
           }}
         />
       ) : (
@@ -189,6 +203,8 @@ export function ContextScreen({
         >
           Cancel
         </button>
+      )}
+        </>
       )}
     </section>
   );

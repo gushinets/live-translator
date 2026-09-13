@@ -27,6 +27,8 @@ export interface SessionControllerDeps {
     | "startCapture"
     | "stopCapture"
     | "getCaptureStream"
+    | "attachRemoteStream"
+    | "audioElement"
   >;
 }
 
@@ -43,7 +45,11 @@ export class SessionController {
   private degradedBootstrap = false;
   private capturingContext = false;
   private capturingBootstrap = false;
+  private contextFrozenByUser = false;
+  private authoritativeContextSent = false;
   private hasConnected = false;
+  private connectInFlight = false;
+  private connectWork: Promise<void> | null = null;
   private idleTimer: number | null = null;
   private readonly listeners = new Set<() => void>();
 
@@ -73,6 +79,14 @@ export class SessionController {
     return this.degradedBootstrap;
   }
 
+  get isConnectInFlight(): boolean {
+    return this.connectInFlight;
+  }
+
+  get audioElement(): HTMLAudioElement {
+    return this.audio.audioElement;
+  }
+
   subscribe(listener: () => void): () => void {
     this.listeners.add(listener);
     return () => {
@@ -81,9 +95,9 @@ export class SessionController {
   }
 
   setContextText(text: string): void {
-    this.contextBuffer = text;
-    this.currentSession = { ...this.currentSession, contextText: text };
-    this.notify();
+    this.contextFrozenByUser = true;
+    this.finishContextCapture();
+    this.applyContextText(text);
   }
 
   clearContext(): void {
@@ -91,17 +105,16 @@ export class SessionController {
   }
 
   async startContextCapture(): Promise<void> {
-    await this.ensureConnected();
-    if (this.currentSession.state === "connecting") {
-      this.dispatch({ type: "CONTEXT_READY" });
-    } else if (this.currentSession.state !== "context") {
-      throw new Error(
-        `Cannot start context capture from "${this.currentSession.state}"`,
-      );
+    if (this.connectWork !== null) {
+      await this.connectWork;
+      return;
     }
-    this.capturingContext = true;
-    this.capturingBootstrap = false;
-    this.armIdleTimer("context");
+    this.connectWork = this.runStartContextCapture();
+    try {
+      await this.connectWork;
+    } finally {
+      this.connectWork = null;
+    }
   }
 
   finishContextCapture(): void {
@@ -109,19 +122,24 @@ export class SessionController {
   }
 
   async startBootstrap(): Promise<void> {
-    await this.ensureConnected();
-    this.finishContextCapture();
-    this.bootstrapBuffer = "";
-    this.capturingBootstrap = true;
-    this.audio.setOutputAudible(false);
-    if (this.currentSession.state === "connecting") {
-      this.dispatch({ type: "SKIP_CONTEXT" });
-    } else if (this.currentSession.state === "context") {
-      this.dispatch({ type: "BOOTSTRAP_READY" });
-    } else if (this.currentSession.state !== "bootstrap") {
-      throw new Error(`Cannot start bootstrap from "${this.currentSession.state}"`);
+    if (this.connectWork !== null) {
+      await this.connectWork;
+      return;
     }
-    this.armIdleTimer("bootstrap");
+    this.connectWork = this.runStartBootstrap();
+    try {
+      await this.connectWork;
+    } finally {
+      this.connectWork = null;
+    }
+  }
+
+  handleRemoteStream(stream: MediaStream): void {
+    this.audio.attachRemoteStream(stream);
+    void this.audio.audioElement.play().catch((error: unknown) => {
+      console.error("Remote audio play failed", { error });
+      throw error;
+    });
   }
 
   acceptBootstrap(text: string): void {
@@ -167,7 +185,7 @@ export class SessionController {
 
     this.ownerErrorMessage = undefined;
     const edited = this.contextBuffer.trim();
-    if (edited.length > 0) {
+    if (edited.length > 0 && !this.authoritativeContextSent) {
       const payload = buildAuthoritativeContext(edited);
       if (payload.length > APPEND_CHAR_BUDGET) {
         this.ownerErrorMessage = new ContextTooLongError().message;
@@ -176,12 +194,9 @@ export class SessionController {
       }
       try {
         await this.live.appendThinking(payload, { kind: "startup_interpreter" });
+        this.authoritativeContextSent = true;
       } catch (error) {
-        console.error("Authoritative context append failed", {
-          error,
-          state: this.currentSession.state,
-        });
-        throw error;
+        this.failOwnerRequest("Authoritative context append failed", error);
       }
     }
 
@@ -190,11 +205,7 @@ export class SessionController {
         kind: "startup_interpreter",
       });
     } catch (error) {
-      console.error("BEGIN_INTERPRETER_MODE append failed", {
-        error,
-        state: this.currentSession.state,
-      });
-      throw error;
+      this.failOwnerRequest("BEGIN_INTERPRETER_MODE append failed", error);
     }
 
     const recipientHint = this.degradedBootstrap
@@ -213,11 +224,7 @@ export class SessionController {
         },
       );
     } catch (error) {
-      console.error("First steering append failed", {
-        error,
-        state: this.currentSession.state,
-      });
-      throw error;
+      this.failOwnerRequest("First steering append failed", error);
     }
 
     this.clearIdleTimer();
@@ -261,8 +268,12 @@ export class SessionController {
     if (event.type !== "session.input_transcript.delta") {
       return;
     }
-    if (this.capturingContext && this.currentSession.state === "context") {
-      this.setContextText(this.contextBuffer + event.delta);
+    if (
+      this.capturingContext &&
+      !this.contextFrozenByUser &&
+      this.currentSession.state === "context"
+    ) {
+      this.applyContextText(this.contextBuffer + event.delta);
       return;
     }
     if (this.capturingBootstrap && this.currentSession.state === "bootstrap") {
@@ -301,8 +312,9 @@ export class SessionController {
       return;
     }
     this.dispatch({ type: "CONNECT" });
+    const live = this.live;
     try {
-      await this.live.connect(stream);
+      await live.connect(stream);
     } catch (error) {
       console.error("Live connect failed", {
         error,
@@ -313,6 +325,9 @@ export class SessionController {
         message: error instanceof Error ? error.message : String(error),
       });
       throw error;
+    }
+    if (this.live !== live) {
+      return;
     }
     this.hasConnected = true;
   }
@@ -334,12 +349,80 @@ export class SessionController {
     this.idleTimer = null;
   }
 
+  private async runStartContextCapture(): Promise<void> {
+    this.connectInFlight = true;
+    this.notify();
+    try {
+      await this.ensureConnected();
+      if (this.currentSession.state === "idle") {
+        return;
+      }
+      if (this.currentSession.state === "connecting") {
+        this.dispatch({ type: "CONTEXT_READY" });
+      } else if (this.currentSession.state !== "context") {
+        throw new Error(
+          `Cannot start context capture from "${this.currentSession.state}"`,
+        );
+      }
+      this.contextFrozenByUser = false;
+      this.capturingContext = true;
+      this.capturingBootstrap = false;
+      this.armIdleTimer("context");
+    } finally {
+      this.connectInFlight = false;
+      this.notify();
+    }
+  }
+
+  private async runStartBootstrap(): Promise<void> {
+    this.connectInFlight = true;
+    this.notify();
+    try {
+      await this.ensureConnected();
+      if (this.currentSession.state === "idle") {
+        return;
+      }
+      this.finishContextCapture();
+      this.bootstrapBuffer = "";
+      this.capturingBootstrap = true;
+      this.audio.setOutputAudible(false);
+      if (this.currentSession.state === "connecting") {
+        this.dispatch({ type: "SKIP_CONTEXT" });
+      } else if (this.currentSession.state === "context") {
+        this.dispatch({ type: "BOOTSTRAP_READY" });
+      } else if (this.currentSession.state !== "bootstrap") {
+        throw new Error(`Cannot start bootstrap from "${this.currentSession.state}"`);
+      }
+      this.armIdleTimer("bootstrap");
+    } finally {
+      this.connectInFlight = false;
+      this.notify();
+    }
+  }
+
+  private applyContextText(text: string): void {
+    this.contextBuffer = text;
+    this.currentSession = { ...this.currentSession, contextText: text };
+    this.notify();
+  }
+
+  private failOwnerRequest(context: string, error: unknown): never {
+    this.ownerErrorMessage = error instanceof Error ? error.message : String(error);
+    this.notify();
+    console.error(context, { error, state: this.currentSession.state });
+    throw error;
+  }
+
   private resetToIdle(): void {
     this.hasConnected = false;
     this.contextBuffer = "";
     this.bootstrapBuffer = "";
     this.ownerErrorMessage = undefined;
     this.degradedBootstrap = false;
+    this.contextFrozenByUser = false;
+    this.authoritativeContextSent = false;
+    this.connectInFlight = false;
+    this.connectWork = null;
     this.currentSession = createSessionFromDeviceLocale();
     this.live = this.deps.createLive();
     this.bindLive();
@@ -360,17 +443,18 @@ export class SessionController {
 
 export function createDefaultSessionController(): SessionController {
   const audio = new AudioController();
-  return new SessionController({
+  const controller = new SessionController({
     createLive: () =>
       new LiveClient({
         backend: new BackendClient(),
         peerFactory: () => new RTCPeerConnection(),
         onRemoteStream: (stream) => {
-          audio.attachRemoteStream(stream);
+          controller.handleRemoteStream(stream);
         },
       }),
     audio,
   });
+  return controller;
 }
 
 function createSessionFromDeviceLocale(): TranslationSession {

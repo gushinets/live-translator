@@ -65,6 +65,9 @@ function createFakeAudio() {
     }),
     getCaptureStream: vi.fn(() => stream),
     attachRemoteStream: vi.fn(),
+    audioElement: {
+      play: vi.fn(async () => {}),
+    } as unknown as HTMLAudioElement,
   };
 }
 
@@ -316,5 +319,90 @@ describe("SessionController", () => {
     expect(controller.session.state).toBe("idle");
     await vi.advanceTimersByTimeAsync(runtime.contextIdleTimeoutMs);
     expect(live.close).toHaveBeenCalledOnce();
+  });
+
+  it("freezes context against later ASR after the user edits the buffer", async () => {
+    const { controller, live } = createController();
+    await controller.startContextCapture();
+    live.emit({ type: "session.input_transcript.delta", delta: "Courier at the door" });
+
+    controller.setContextText("Courier at the door in Madrid");
+    live.emit({ type: "session.input_transcript.delta", delta: " extra ASR" });
+
+    expect(controller.contextText).toBe("Courier at the door in Madrid");
+  });
+
+  it("shares one in-flight connect and ignores a second Start/context while connecting", async () => {
+    const live = new FakeLive();
+    let finishConnect: ((value: { sessionId: string }) => void) | undefined;
+    live.connect.mockImplementation(
+      () =>
+        new Promise<{ sessionId: string }>((resolve) => {
+          finishConnect = resolve;
+        }),
+    );
+    const { controller, audio } = createController({ live });
+
+    const first = controller.startContextCapture();
+    const secondCapture = controller.startContextCapture();
+    const startDuringConnect = controller.startBootstrap();
+
+    await vi.waitFor(() => {
+      expect(audio.startCapture).toHaveBeenCalledOnce();
+      expect(live.connect).toHaveBeenCalledOnce();
+    });
+    if (finishConnect === undefined) {
+      throw new Error("connect was not started");
+    }
+    finishConnect({ sessionId: "sess_1" });
+
+    await first;
+    await secondCapture;
+    await startDuringConnect;
+
+    expect(audio.startCapture).toHaveBeenCalledOnce();
+    expect(live.connect).toHaveBeenCalledOnce();
+    expect(controller.session.state).toBe("context");
+  });
+
+  it("plays the primed remote audio element when the stream attaches", async () => {
+    const { controller, audio } = createController();
+    const remoteStream = { id: "remote" } as MediaStream;
+
+    controller.handleRemoteStream(remoteStream);
+
+    expect(audio.attachRemoteStream).toHaveBeenCalledExactlyOnceWith(remoteStream);
+    expect(audio.audioElement.play).toHaveBeenCalledOnce();
+  });
+
+  it("sets ownerError on interpreter failure, stays on the owner screen, and does not resend thinking", async () => {
+    const { controller, live } = createController();
+    await controller.startContextCapture();
+    controller.setContextText("We are ordering lunch.");
+    await controller.startBootstrap();
+    controller.skipBootstrap();
+
+    live.appendInstructions.mockRejectedValueOnce(new Error("ack timeout"));
+
+    await expect(controller.beginInterpreter()).rejects.toThrow("ack timeout");
+    expect(controller.session.state).toBe("bootstrap");
+    expect(controller.ownerError).toBe("ack timeout");
+    expect(live.appendThinking).toHaveBeenCalledOnce();
+    expect(live.appendInstructions).toHaveBeenCalledOnce();
+
+    live.appendInstructions.mockResolvedValue({ eventId: "evt-retry" });
+    await controller.beginInterpreter();
+
+    expect(live.appendThinking).toHaveBeenCalledOnce();
+    expect(live.appendInstructions).toHaveBeenCalledTimes(3);
+    expect(controller.session.state).toBe("listening");
+  });
+
+  it("rejects an empty bootstrap language hint", async () => {
+    const { controller } = createController();
+    await controller.startBootstrap();
+
+    expect(() => controller.acceptBootstrap("   ")).toThrow("Bootstrap language hint is empty");
+    expect(controller.session.participantB.initialLanguageHint).toBeUndefined();
   });
 });

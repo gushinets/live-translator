@@ -1,5 +1,5 @@
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import type { SessionState } from "../session/SessionState";
 import { ContextScreen, type ContextScreenController } from "./ContextScreen";
 
@@ -10,6 +10,8 @@ class FakeOwnerController implements ContextScreenController {
   contextText = "";
   bootstrapText = "";
   ownerError: string | undefined;
+  isConnectInFlight = false;
+  audioElement: HTMLAudioElement | undefined;
   private readonly listeners = new Set<() => void>();
 
   subscribe(listener: () => void): () => void {
@@ -42,13 +44,18 @@ class FakeOwnerController implements ContextScreenController {
     this.notify();
   }
 
-  skipBootstrap(): void {}
+  skipBootstrap = vi.fn(() => {});
 
-  acceptBootstrap(text: string): void {
+  acceptBootstrap = vi.fn((text: string) => {
     void text;
-  }
+  });
 
-  async beginInterpreter(): Promise<void> {}
+  beginInterpreter = vi.fn(async () => {});
+
+  setBootstrapText(text: string): void {
+    this.bootstrapText = text;
+    this.notify();
+  }
 
   async cancel(): Promise<void> {
     this.session = { state: "idle" };
@@ -109,5 +116,45 @@ describe("ContextScreen", () => {
     expect(screen.queryByRole("combobox")).not.toBeInTheDocument();
     expect(screen.queryByRole("listbox")).not.toBeInTheDocument();
     expect(document.querySelector("select")).toBeNull();
+  });
+
+  it("Skip begins interpreter without accepting a language hint", async () => {
+    const controller = new FakeOwnerController();
+    render(<ContextScreen controller={controller} />);
+
+    fireEvent.click(screen.getByRole("button", { name: "Start translation" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Skip" }));
+
+    expect(controller.skipBootstrap).toHaveBeenCalledOnce();
+    expect(controller.acceptBootstrap).not.toHaveBeenCalled();
+    expect(controller.beginInterpreter).toHaveBeenCalledOnce();
+  });
+
+  it("shows Accept only after bootstrap transcript exists and uses that hint", async () => {
+    const controller = new FakeOwnerController();
+    render(<ContextScreen controller={controller} />);
+
+    fireEvent.click(screen.getByRole("button", { name: "Start translation" }));
+    await screen.findByRole("button", { name: "Skip" });
+
+    expect(screen.queryByRole("button", { name: "Accept" })).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "microphone" }));
+    expect(controller.acceptBootstrap).not.toHaveBeenCalled();
+    expect(controller.beginInterpreter).not.toHaveBeenCalled();
+
+    controller.setBootstrapText("Spanish");
+    fireEvent.click(await screen.findByRole("button", { name: "Accept" }));
+
+    expect(controller.acceptBootstrap).toHaveBeenCalledExactlyOnceWith("Spanish");
+    expect(controller.beginInterpreter).toHaveBeenCalledOnce();
+  });
+
+  it("mounts the Gate C audio element in the document", () => {
+    const controller = new FakeOwnerController();
+    controller.audioElement = document.createElement("audio");
+
+    render(<ContextScreen controller={controller} />);
+
+    expect(controller.audioElement).toBeInTheDocument();
   });
 });

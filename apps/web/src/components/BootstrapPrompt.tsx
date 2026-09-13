@@ -6,11 +6,14 @@ export function BootstrapPrompt({
   transcript,
   onMicrophone,
   onSkip,
+  onAccept,
 }: {
   transcript: string;
   onMicrophone: () => void;
   onSkip: () => void;
+  onAccept: () => void;
 }) {
+  const hint = transcript.trim();
   return (
     <section>
       <p>What language does the other person most likely speak?</p>
@@ -18,6 +21,11 @@ export function BootstrapPrompt({
         Say the language
       </button>
       {transcript.length > 0 ? <p>{transcript}</p> : null}
+      {hint.length > 0 ? (
+        <button type="button" onClick={onAccept}>
+          Accept
+        </button>
+      ) : null}
       <button type="button" onClick={onSkip}>
         Skip
       </button>
