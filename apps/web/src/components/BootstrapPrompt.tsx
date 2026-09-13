@@ -7,11 +7,13 @@ export function BootstrapPrompt({
   onMicrophone,
   onSkip,
   onAccept,
+  actionsDisabled = false,
 }: {
   transcript: string;
   onMicrophone: () => void;
   onSkip: () => void;
   onAccept: () => void;
+  actionsDisabled?: boolean;
 }) {
   const hint = transcript.trim();
   return (
@@ -22,11 +24,11 @@ export function BootstrapPrompt({
       </button>
       {transcript.length > 0 ? <p>{transcript}</p> : null}
       {hint.length > 0 ? (
-        <button type="button" onClick={onAccept}>
+        <button type="button" disabled={actionsDisabled} onClick={onAccept}>
           Accept
         </button>
       ) : null}
-      <button type="button" onClick={onSkip}>
+      <button type="button" disabled={actionsDisabled} onClick={onSkip}>
         Skip
       </button>
     </section>

@@ -405,4 +405,109 @@ describe("SessionController", () => {
     expect(() => controller.acceptBootstrap("   ")).toThrow("Bootstrap language hint is empty");
     expect(controller.session.participantB.initialLanguageHint).toBeUndefined();
   });
+
+  it("closes the in-flight LiveClient on cancel during connecting and ignores a late connect", async () => {
+    const created: FakeLive[] = [];
+    const audio = createFakeAudio();
+    const controller = new SessionController({
+      createLive: () => {
+        const live = new FakeLive();
+        created.push(live);
+        return live as unknown as LiveClient;
+      },
+      audio: audio as unknown as AudioController,
+    });
+    const first = created[0];
+    if (first === undefined) {
+      throw new Error("LiveClient was not created");
+    }
+    let finishConnect: ((value: { sessionId: string }) => void) | undefined;
+    first.connect.mockImplementation(
+      () =>
+        new Promise<{ sessionId: string }>((resolve) => {
+          finishConnect = resolve;
+        }),
+    );
+
+    const starting = controller.startContextCapture();
+    await vi.waitFor(() => {
+      expect(first.connect).toHaveBeenCalledOnce();
+    });
+
+    await controller.cancel();
+
+    expect(first.close).toHaveBeenCalledOnce();
+    expect(controller.session.state).toBe("idle");
+    expect(created).toHaveLength(2);
+    expect(created[1]?.close).not.toHaveBeenCalled();
+
+    if (finishConnect === undefined) {
+      throw new Error("connect was not started");
+    }
+    finishConnect({ sessionId: "late" });
+    await starting;
+
+    expect(controller.session.state).toBe("idle");
+    expect(created[1]?.connect).not.toHaveBeenCalled();
+
+    await controller.startContextCapture();
+    expect(created[1]?.connect).toHaveBeenCalledOnce();
+    expect(first.connect).toHaveBeenCalledOnce();
+    expect(controller.session.state).toBe("context");
+  });
+
+  it("serializes beginInterpreter and ignores a second activation while one is in flight", async () => {
+    const { controller, live } = createController();
+    await controller.startBootstrap();
+    controller.skipBootstrap();
+
+    let releaseFirstAppend: (() => void) | undefined;
+    let appendCalls = 0;
+    live.appendInstructions.mockImplementation(async () => {
+      appendCalls += 1;
+      if (appendCalls === 1) {
+        await new Promise<void>((resolve) => {
+          releaseFirstAppend = resolve;
+        });
+      }
+      return { eventId: `evt-${appendCalls}` };
+    });
+
+    const first = controller.beginInterpreter();
+    const second = controller.beginInterpreter();
+    await vi.waitFor(() => {
+      expect(appendCalls).toBe(1);
+      expect(controller.isInterpreterStarting).toBe(true);
+    });
+    if (releaseFirstAppend === undefined) {
+      throw new Error("first interpreter append was not started");
+    }
+    releaseFirstAppend();
+    await first;
+    await second;
+
+    expect(appendCalls).toBe(2);
+    expect(controller.session.state).toBe("listening");
+    expect(controller.isInterpreterStarting).toBe(false);
+  });
+
+  it("sets ownerError on microphone and connect failures", async () => {
+    const audio = createFakeAudio();
+    audio.startCapture.mockRejectedValueOnce(new Error("Microphone access is required for translation."));
+    const { controller: micController } = createController({ audio });
+
+    await expect(micController.startContextCapture()).rejects.toThrow(
+      "Microphone access is required for translation.",
+    );
+    expect(micController.ownerError).toBe("Microphone access is required for translation.");
+
+    const live = new FakeLive();
+    live.connect.mockRejectedValueOnce(new Error("Unable to establish live connection"));
+    const { controller: connectController } = createController({ live });
+
+    await expect(connectController.startContextCapture()).rejects.toThrow(
+      "Unable to establish live connection",
+    );
+    expect(connectController.ownerError).toBe("Unable to establish live connection");
+  });
 });

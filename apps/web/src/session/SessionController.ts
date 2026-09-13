@@ -48,8 +48,11 @@ export class SessionController {
   private contextFrozenByUser = false;
   private authoritativeContextSent = false;
   private hasConnected = false;
+  private liveConnectStarted = false;
   private connectInFlight = false;
   private connectWork: Promise<void> | null = null;
+  private interpreterInFlight = false;
+  private interpreterWork: Promise<void> | null = null;
   private idleTimer: number | null = null;
   private readonly listeners = new Set<() => void>();
 
@@ -83,6 +86,10 @@ export class SessionController {
     return this.connectInFlight;
   }
 
+  get isInterpreterStarting(): boolean {
+    return this.interpreterInFlight;
+  }
+
   get audioElement(): HTMLAudioElement {
     return this.audio.audioElement;
   }
@@ -109,11 +116,14 @@ export class SessionController {
       await this.connectWork;
       return;
     }
-    this.connectWork = this.runStartContextCapture();
+    const work = this.runStartContextCapture();
+    this.connectWork = work;
     try {
-      await this.connectWork;
+      await work;
     } finally {
-      this.connectWork = null;
+      if (this.connectWork === work) {
+        this.connectWork = null;
+      }
     }
   }
 
@@ -126,11 +136,14 @@ export class SessionController {
       await this.connectWork;
       return;
     }
-    this.connectWork = this.runStartBootstrap();
+    const work = this.runStartBootstrap();
+    this.connectWork = work;
     try {
-      await this.connectWork;
+      await work;
     } finally {
-      this.connectWork = null;
+      if (this.connectWork === work) {
+        this.connectWork = null;
+      }
     }
   }
 
@@ -179,65 +192,88 @@ export class SessionController {
   }
 
   async beginInterpreter(): Promise<void> {
+    if (this.interpreterWork !== null) {
+      await this.interpreterWork;
+      return;
+    }
+    const work = this.runBeginInterpreter();
+    this.interpreterWork = work;
+    try {
+      await work;
+    } finally {
+      if (this.interpreterWork === work) {
+        this.interpreterWork = null;
+      }
+    }
+  }
+
+  private async runBeginInterpreter(): Promise<void> {
     if (this.currentSession.state !== "bootstrap") {
       throw new Error(`Cannot begin interpreter from "${this.currentSession.state}"`);
     }
 
+    this.interpreterInFlight = true;
     this.ownerErrorMessage = undefined;
-    const edited = this.contextBuffer.trim();
-    if (edited.length > 0 && !this.authoritativeContextSent) {
-      const payload = buildAuthoritativeContext(edited);
-      if (payload.length > APPEND_CHAR_BUDGET) {
-        this.ownerErrorMessage = new ContextTooLongError().message;
-        this.notify();
-        throw new ContextTooLongError();
+    this.notify();
+    try {
+      const edited = this.contextBuffer.trim();
+      if (edited.length > 0 && !this.authoritativeContextSent) {
+        const payload = buildAuthoritativeContext(edited);
+        if (payload.length > APPEND_CHAR_BUDGET) {
+          this.ownerErrorMessage = new ContextTooLongError().message;
+          this.notify();
+          throw new ContextTooLongError();
+        }
+        try {
+          await this.live.appendThinking(payload, { kind: "startup_interpreter" });
+          this.authoritativeContextSent = true;
+        } catch (error) {
+          this.failOwnerRequest("Authoritative context append failed", error);
+        }
       }
+
       try {
-        await this.live.appendThinking(payload, { kind: "startup_interpreter" });
-        this.authoritativeContextSent = true;
+        await this.live.appendInstructions(buildInterpreterInstructions(), {
+          kind: "startup_interpreter",
+        });
       } catch (error) {
-        this.failOwnerRequest("Authoritative context append failed", error);
+        this.failOwnerRequest("BEGIN_INTERPRETER_MODE append failed", error);
       }
-    }
 
-    try {
-      await this.live.appendInstructions(buildInterpreterInstructions(), {
-        kind: "startup_interpreter",
-      });
-    } catch (error) {
-      this.failOwnerRequest("BEGIN_INTERPRETER_MODE append failed", error);
-    }
+      const recipientHint = this.degradedBootstrap
+        ? undefined
+        : this.currentSession.participantB.initialLanguageHint;
+      try {
+        await this.live.appendInstructions(
+          buildSteering({
+            expectedSource: "A",
+            recipient: "B",
+            initialRecipientHint: recipientHint,
+          }),
+          {
+            kind: "first_steering",
+            sessionState: this.currentSession.state,
+          },
+        );
+      } catch (error) {
+        this.failOwnerRequest("First steering append failed", error);
+      }
 
-    const recipientHint = this.degradedBootstrap
-      ? undefined
-      : this.currentSession.participantB.initialLanguageHint;
-    try {
-      await this.live.appendInstructions(
-        buildSteering({
-          expectedSource: "A",
-          recipient: "B",
-          initialRecipientHint: recipientHint,
-        }),
-        {
-          kind: "first_steering",
-          sessionState: this.currentSession.state,
-        },
-      );
-    } catch (error) {
-      this.failOwnerRequest("First steering append failed", error);
+      this.clearIdleTimer();
+      this.capturingBootstrap = false;
+      this.audio.setOutputAudible(true);
+      this.dispatch({ type: "INTERPRETER_READY" });
+    } finally {
+      this.interpreterInFlight = false;
+      this.notify();
     }
-
-    this.clearIdleTimer();
-    this.capturingBootstrap = false;
-    this.audio.setOutputAudible(true);
-    this.dispatch({ type: "INTERPRETER_READY" });
   }
 
   async cancel(): Promise<void> {
     this.clearIdleTimer();
     this.capturingContext = false;
     this.capturingBootstrap = false;
-    if (this.hasConnected) {
+    if (this.hasConnected || this.liveConnectStarted) {
       try {
         await this.live.close();
       } catch (error) {
@@ -283,6 +319,7 @@ export class SessionController {
   }
 
   private async ensureConnected(): Promise<void> {
+    const live = this.live;
     try {
       await this.audio.primeOutput();
     } catch (error) {
@@ -292,37 +329,49 @@ export class SessionController {
       });
       throw error;
     }
+    if (this.live !== live) {
+      return;
+    }
     this.audio.setOutputAudible(false);
     if (this.audio.getCaptureStream() === null) {
       try {
         await this.audio.startCapture();
       } catch (error) {
-        console.error("Microphone capture failed", {
-          error,
-          state: this.currentSession.state,
-        });
-        throw error;
+        if (this.live !== live) {
+          return;
+        }
+        this.failOwnerRequest("Microphone capture failed", error);
       }
+    }
+    if (this.live !== live) {
+      return;
     }
     const stream = this.audio.getCaptureStream();
     if (stream === null) {
-      throw new Error("Microphone capture stream is missing");
+      this.failOwnerRequest(
+        "Microphone capture failed",
+        new Error("Microphone capture stream is missing"),
+      );
     }
     if (this.currentSession.state !== "idle") {
       return;
     }
     this.dispatch({ type: "CONNECT" });
-    const live = this.live;
+    this.liveConnectStarted = true;
     try {
       await live.connect(stream);
     } catch (error) {
+      if (this.live !== live) {
+        return;
+      }
       console.error("Live connect failed", {
         error,
         state: this.currentSession.state,
       });
+      this.ownerErrorMessage = error instanceof Error ? error.message : String(error);
       this.dispatch({
         type: "SESSION_ERROR",
-        message: error instanceof Error ? error.message : String(error),
+        message: this.ownerErrorMessage,
       });
       throw error;
     }
@@ -350,10 +399,14 @@ export class SessionController {
   }
 
   private async runStartContextCapture(): Promise<void> {
+    const live = this.live;
     this.connectInFlight = true;
     this.notify();
     try {
       await this.ensureConnected();
+      if (this.live !== live) {
+        return;
+      }
       if (this.currentSession.state === "idle") {
         return;
       }
@@ -369,16 +422,22 @@ export class SessionController {
       this.capturingBootstrap = false;
       this.armIdleTimer("context");
     } finally {
-      this.connectInFlight = false;
-      this.notify();
+      if (this.live === live) {
+        this.connectInFlight = false;
+        this.notify();
+      }
     }
   }
 
   private async runStartBootstrap(): Promise<void> {
+    const live = this.live;
     this.connectInFlight = true;
     this.notify();
     try {
       await this.ensureConnected();
+      if (this.live !== live) {
+        return;
+      }
       if (this.currentSession.state === "idle") {
         return;
       }
@@ -395,8 +454,10 @@ export class SessionController {
       }
       this.armIdleTimer("bootstrap");
     } finally {
-      this.connectInFlight = false;
-      this.notify();
+      if (this.live === live) {
+        this.connectInFlight = false;
+        this.notify();
+      }
     }
   }
 
@@ -421,8 +482,11 @@ export class SessionController {
     this.degradedBootstrap = false;
     this.contextFrozenByUser = false;
     this.authoritativeContextSent = false;
+    this.liveConnectStarted = false;
     this.connectInFlight = false;
     this.connectWork = null;
+    this.interpreterInFlight = false;
+    this.interpreterWork = null;
     this.currentSession = createSessionFromDeviceLocale();
     this.live = this.deps.createLive();
     this.bindLive();

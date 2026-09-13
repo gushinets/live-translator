@@ -18,6 +18,7 @@ export interface ContextScreenController {
   readonly bootstrapText: string;
   readonly ownerError?: string;
   readonly isConnectInFlight?: boolean;
+  readonly isInterpreterStarting?: boolean;
   readonly audioElement?: HTMLAudioElement;
   subscribe(listener: () => void): () => void;
   startContextCapture(): Promise<void>;
@@ -73,11 +74,13 @@ export function ContextScreen({
         error,
         state: controller.session.state,
       });
-      throw error;
     }
   }
 
   async function handleSkip(): Promise<void> {
+    if (controller.isInterpreterStarting === true) {
+      return;
+    }
     controller.skipBootstrap();
     try {
       await controller.beginInterpreter();
@@ -93,6 +96,9 @@ export function ContextScreen({
   }
 
   async function handleAccept(): Promise<void> {
+    if (controller.isInterpreterStarting === true) {
+      return;
+    }
     const hint = controller.bootstrapText.trim();
     controller.acceptBootstrap(hint);
     try {
@@ -144,6 +150,7 @@ export function ContextScreen({
       {isBootstrap ? (
         <BootstrapPrompt
           transcript={controller.bootstrapText}
+          actionsDisabled={controller.isInterpreterStarting === true}
           onMicrophone={() => undefined}
           onSkip={() => {
             void handleSkip();
@@ -162,7 +169,6 @@ export function ContextScreen({
                 error,
                 state: controller.session.state,
               });
-              throw error;
             });
           }}
         >
@@ -194,7 +200,7 @@ export function ContextScreen({
         </button>
       )}
       <PrivacyDisclosure />
-      {controller.session.state === "idle" ? null : (
+      {controller.session.state === "idle" && controller.ownerError === undefined ? null : (
         <button
           type="button"
           onClick={() => {

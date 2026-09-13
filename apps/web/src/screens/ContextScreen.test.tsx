@@ -11,6 +11,7 @@ class FakeOwnerController implements ContextScreenController {
   bootstrapText = "";
   ownerError: string | undefined;
   isConnectInFlight = false;
+  isInterpreterStarting = false;
   audioElement: HTMLAudioElement | undefined;
   private readonly listeners = new Set<() => void>();
 
@@ -156,5 +157,31 @@ describe("ContextScreen", () => {
     render(<ContextScreen controller={controller} />);
 
     expect(controller.audioElement).toBeInTheDocument();
+  });
+
+  it("disables Skip and Accept while interpreter start is in flight and keeps Cancel enabled", async () => {
+    const controller = new FakeOwnerController();
+    controller.session = { state: "bootstrap" };
+    controller.bootstrapText = "Spanish";
+    controller.isInterpreterStarting = true;
+
+    render(<ContextScreen controller={controller} />);
+
+    expect(screen.getByRole("button", { name: "Skip" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Accept" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Cancel" })).toBeEnabled();
+  });
+
+  it("shows ownerError after a connect failure and keeps Cancel enabled", () => {
+    const controller = new FakeOwnerController();
+    controller.session = { state: "idle" };
+    controller.ownerError = "Microphone access is required for translation.";
+
+    render(<ContextScreen controller={controller} />);
+
+    expect(screen.getByRole("alert")).toHaveTextContent(
+      "Microphone access is required for translation.",
+    );
+    expect(screen.getByRole("button", { name: "Cancel" })).toBeEnabled();
   });
 });
