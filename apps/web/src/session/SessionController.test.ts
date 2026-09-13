@@ -43,15 +43,19 @@ class FakeLive {
     this.callOrder.push(`thinking:${text}`);
     return { eventId: "evt-thinking" };
   });
-  readonly appendInstructions = vi.fn(async (text: string, _policy?: { kind: string }) => {
+  readonly appendInstructions = vi.fn<
+    (text: string, policy?: { kind: string }) => Promise<{ eventId: string }>
+  >(async (text: string) => {
     this.callOrder.push(`instructions:${text}`);
     return { eventId: "evt-instructions" };
   });
-  readonly appendCommentary = vi.fn(async (text: string, _policy?: { kind: string }) => {
+  readonly appendCommentary = vi.fn<
+    (text: string, policy?: { kind: string }) => Promise<{ eventId: string }>
+  >(async (text: string) => {
     this.callOrder.push(`commentary:${text}`);
     return { eventId: "evt-commentary" };
   });
-  readonly setInputMuted = vi.fn(async (_muted: boolean) => {
+  readonly setInputMuted = vi.fn<(muted: boolean) => Promise<void>>(async () => {
     this.callOrder.push("setInputMuted");
   });
   peerConnectionState: RTCPeerConnectionState | null = "connected";

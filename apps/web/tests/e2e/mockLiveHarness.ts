@@ -466,7 +466,7 @@ export class MockLiveHarness {
         value: orientation,
       });
 
-      let visibilityState: DocumentVisibilityState = "visible";
+      const visibilityState: DocumentVisibilityState = "visible";
       Object.defineProperty(document, "visibilityState", {
         configurable: true,
         get: () => visibilityState,

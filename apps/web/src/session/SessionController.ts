@@ -880,6 +880,7 @@ export class SessionController {
       ? undefined
       : recipientProfile.initialLanguageHint;
     const generation = this.sessionGeneration;
+    let appendError: unknown;
     try {
       const result = await this.live.appendInstructions(
         buildSteering({
@@ -906,26 +907,29 @@ export class SessionController {
         error,
         state: this.currentSession.state,
       });
-      throw error;
-    } finally {
-      if (this.sessionGeneration === generation) {
-        await this.unmuteGateB();
-        if (sourceIdleAtMs === undefined) {
-          throw new Error("Cannot complete a turn without sourceIdleAtMs");
-        }
-        if (firstOutputTextAtMs !== undefined) {
-          this.conversationMetrics.recordTurn({
-            sourceIdleAtMs,
-            firstOutputTextAtMs,
-            firstAudibleOutputAtMs,
-            playbackEndAtMs,
-            turnCompletedAtMs,
-            listeningRestoredAtMs: Date.now(),
-            audioOutputStarted,
-          });
-        }
-        this.notify();
-      }
+      appendError = error;
+    }
+    if (this.sessionGeneration !== generation) {
+      return;
+    }
+    await this.unmuteGateB();
+    if (sourceIdleAtMs === undefined) {
+      throw new Error("Cannot complete a turn without sourceIdleAtMs");
+    }
+    if (firstOutputTextAtMs !== undefined) {
+      this.conversationMetrics.recordTurn({
+        sourceIdleAtMs,
+        firstOutputTextAtMs,
+        firstAudibleOutputAtMs,
+        playbackEndAtMs,
+        turnCompletedAtMs,
+        listeningRestoredAtMs: Date.now(),
+        audioOutputStarted,
+      });
+    }
+    this.notify();
+    if (appendError !== undefined) {
+      throw appendError;
     }
   }
 

@@ -41,7 +41,7 @@ class FakeConversationController implements ConversationScreenController {
   recoveryPrompt: RecoveryPrompt | undefined;
   ownerError: string | undefined;
   suspendReason: LifecycleSuspendReason | undefined;
-  readonly correctLastTurn = vi.fn(async (_side: Side) => {});
+  readonly correctLastTurn = vi.fn<(side: Side) => Promise<void>>(async () => {});
   readonly endConversation = vi.fn(async () => {});
   readonly resumeFromSourceTimeout = vi.fn(async () => {});
   private readonly listeners = new Set<() => void>();
