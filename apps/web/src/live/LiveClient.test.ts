@@ -490,6 +490,19 @@ describe("LiveClient transport failure handling", () => {
 
     expect(onError).not.toHaveBeenCalled();
   });
+
+  it("does not invoke onError when the server ends the session and the transport subsequently closes, without close() ever being called", async () => {
+    const { client, peer, channel } = await connectedClient();
+    const onError = vi.fn();
+    client.onError = onError;
+
+    // Server-initiated graceful end: no local close() call precedes this.
+    channel.emitMessage({ type: "session.closed", reason: "server_ended" });
+    channel.emitClose();
+    peer.emitConnectionStateChange("closed");
+
+    expect(onError).not.toHaveBeenCalled();
+  });
 });
 
 describe("LiveClient.send", () => {
@@ -516,6 +529,38 @@ describe("LiveClient.send", () => {
     expect(peer.dataChannel?.sendCalls).toEqual([
       JSON.stringify({ type: "session.input_audio.mute", event_id: "evt-1" }),
     ]);
+  });
+
+  it("throws while connect() is in flight and the data channel exists, but session.started has not arrived yet", async () => {
+    const peer = new FakePeerConnection();
+    const { backend } = makeFakeBackend();
+    const client = new LiveClient({
+      backend,
+      peerFactory: () => peer as unknown as RTCPeerConnection,
+      onRemoteStream: vi.fn(),
+    });
+
+    const connectPromise = client.connect(makeFakeStream());
+    await vi.waitFor(() => {
+      expect(peer.calls).toContain("setRemoteDescription");
+    });
+    // The data channel already exists at this point (created at the start
+    // of connect()), but session.started has not arrived yet.
+    expect(peer.dataChannel).not.toBeNull();
+    expect(() =>
+      client.send({ type: "session.input_audio.mute", event_id: "evt-1" }),
+    ).toThrow("Cannot send a Live event before session.started");
+
+    peer.dataChannel?.emitMessage({
+      type: "session.started",
+      session: { id: "sess_123" },
+    });
+    await connectPromise;
+
+    // Once started, sending is allowed.
+    expect(() =>
+      client.send({ type: "session.input_audio.mute", event_id: "evt-1" }),
+    ).not.toThrow();
   });
 
   it("throws when called before connect() has resolved", () => {

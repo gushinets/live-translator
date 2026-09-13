@@ -67,6 +67,8 @@ export class LiveClient {
   private sessionClosedDeferred: Deferred<SessionClosedEvent> | null = null;
   private pendingSessionStarted: ((event: SessionStartedEvent) => void) | null =
     null;
+  /** True only once a `session.started` message has actually been received. */
+  private started = false;
   private closing = false;
 
   constructor(private readonly deps: LiveClientDeps) {}
@@ -126,6 +128,12 @@ export class LiveClient {
   send(event: LiveClientEvent): void {
     if (this.channel === null) {
       throw new Error("Cannot send a Live event before connect() completes");
+    }
+    // `this.channel` is assigned at the very start of connect(), well
+    // before session.started arrives, so it is not a sufficient readiness
+    // check on its own (binding spec 1.2.1 §14.3 step 11).
+    if (!this.started) {
+      throw new Error("Cannot send a Live event before session.started");
     }
     if (this.closing) {
       throw new Error("Cannot send a Live event while the session is closing");
@@ -189,8 +197,9 @@ export class LiveClient {
    * Fires when the data channel closes without going through our own
    * graceful `close()` (e.g. the remote side or the network dropped it).
    * Reported via the existing `onError` callback rather than a new
-   * product-level event; `close()` sets `closing` before it tears down the
-   * channel itself, so that expected closure is not reported as an error.
+   * product-level event; both a local `close()` and a server-initiated
+   * `session.closed` set `closing` before the transport tears down, so
+   * expected closure is never reported as an error.
    */
   private handleChannelClose(): void {
     if (this.closing) return;
@@ -204,8 +213,9 @@ export class LiveClient {
    * Fires on every `RTCPeerConnection` state transition. Only the terminal
    * failure states are surfaced (via `onError`); transient states such as
    * "connecting"/"connected"/"disconnected" are not reported, and a
-   * transition to "closed" caused by our own graceful `close()` is
-   * suppressed by the `closing` guard for the same reason as above.
+   * transition to "closed" caused by a graceful close (local `close()` or a
+   * server-initiated `session.closed`) is suppressed by the `closing` guard
+   * for the same reason as above.
    */
   private handleConnectionStateChange(): void {
     if (this.closing) return;
@@ -228,6 +238,7 @@ export class LiveClient {
   private dispatchServerEvent(serverEvent: LiveServerEvent): void {
     switch (serverEvent.type) {
       case "session.started":
+        this.started = true;
         this.pendingSessionStarted?.(serverEvent);
         this.pendingSessionStarted = null;
         this.onSessionStarted?.(serverEvent);
@@ -246,6 +257,11 @@ export class LiveClient {
         this.onMuteAcknowledged?.(serverEvent);
         return;
       case "session.closed":
+        // A server-initiated session.closed enters the same non-error
+        // closing path as a local close(): it stops new sends and
+        // suppresses the close/connectionstatechange handlers below from
+        // reporting the resulting transport teardown as an error (§23).
+        this.closing = true;
         this.sessionClosedDeferred?.resolve(serverEvent);
         this.onSessionClosed?.(serverEvent);
         if (serverEvent.usage !== undefined) this.onUsage?.(serverEvent.usage);
