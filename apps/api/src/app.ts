@@ -1,4 +1,5 @@
 import express from "express";
+import { rateLimit } from "express-rate-limit";
 import { apiConfig } from "./config.js";
 import type { LiveSessionCreator } from "./openai/createLiveSession.js";
 import { createLiveSessionRouter } from "./routes/liveSession.js";
@@ -21,11 +22,20 @@ export function createApp(dependencies: AppDependencies = {}) {
       apiConfig.maxConcurrentSessions,
       apiConfig.leaseMs,
     );
+  const sessionCreationLimiter = rateLimit({
+    windowMs: 10 * 60 * 1000,
+    limit: 20,
+    standardHeaders: "draft-8",
+    legacyHeaders: false,
+    message: { error: "Too many session creation attempts" },
+  });
 
+  app.set("trust proxy", 1);
   app.use(express.json({ limit: "64kb" }));
   app.get("/health", (_request, response) => response.json({ status: "ok" }));
   app.use(
     "/api/live/session",
+    sessionCreationLimiter,
     createLiveSessionRouter({
       createLiveSession: dependencies.createLiveSession,
       leaseRegistry,

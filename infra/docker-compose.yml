@@ -1,0 +1,24 @@
+name: live-translator
+
+services:
+  api:
+    build:
+      context: ..
+      dockerfile: infra/Dockerfile.api
+    env_file:
+      - ../.env
+    environment:
+      NODE_ENV: production
+    ports:
+      - "3001:3001"
+
+  web:
+    build:
+      context: ..
+      dockerfile: infra/Dockerfile.web
+    env_file:
+      - ../.env
+    ports:
+      - "80:80"
+    depends_on:
+      - api

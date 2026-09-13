@@ -1,0 +1,18 @@
+FROM node:24-bookworm-slim AS build
+WORKDIR /src
+RUN corepack enable && corepack prepare pnpm@10.34.1 --activate
+COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
+COPY tsconfig.base.json ./
+COPY apps/api/package.json apps/api/package.json
+COPY apps/web/package.json apps/web/package.json
+RUN pnpm install --frozen-lockfile --filter @live-translator/api...
+COPY apps/api apps/api
+RUN pnpm --filter @live-translator/api build
+RUN pnpm --filter @live-translator/api deploy --prod --legacy /opt/api
+
+FROM node:24-bookworm-slim AS runtime
+WORKDIR /opt/api
+ENV NODE_ENV=production
+COPY --from=build /opt/api ./
+USER node
+CMD ["node", "dist/server.js"]

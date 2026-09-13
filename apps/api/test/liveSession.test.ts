@@ -115,7 +115,38 @@ describe("POST /api/live/session", () => {
       .send({ sdp: "sixth-offer" });
 
     expect(response.status).toBe(429);
+    expect(response.body).toEqual({ error: "Concurrent session limit reached" });
     expect(createLiveSession).toHaveBeenCalledTimes(5);
+  });
+
+  it("rate-limits the 21st session creation attempt from the same IP", async () => {
+    const createLiveSession = vi.fn().mockResolvedValue(sessionResult);
+    const leaseRegistry = {
+      acquire: vi.fn().mockReturnValue({
+        leaseId: "unlimited-lease",
+        release: vi.fn(),
+      }),
+    };
+    const app = createApp({ createLiveSession, leaseRegistry });
+
+    for (let requestNumber = 0; requestNumber < 20; requestNumber += 1) {
+      const response = await request(app)
+        .post("/api/live/session")
+        .set("Origin", "http://localhost:5173")
+        .send({ sdp: `offer-${requestNumber}` });
+      expect(response.status).toBe(201);
+    }
+
+    const response = await request(app)
+      .post("/api/live/session")
+      .set("Origin", "http://localhost:5173")
+      .send({ sdp: "offer-20" });
+
+    expect(response.status).toBe(429);
+    expect(response.body).toEqual({
+      error: "Too many session creation attempts",
+    });
+    expect(createLiveSession).toHaveBeenCalledTimes(20);
   });
 
   it("releases the lease when session creation fails", async () => {

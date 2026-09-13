@@ -1,0 +1,13 @@
+.git
+.superpowers
+.worktrees
+**/.git
+**/node_modules
+**/dist
+**/.vite
+**/test-results
+**/playwright-report
+**/.env
+**/.env.local
+apps/web/tests
+**/*.md
