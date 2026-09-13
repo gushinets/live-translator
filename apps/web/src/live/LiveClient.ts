@@ -131,6 +131,22 @@ export class LiveClient {
 
   constructor(private readonly deps: LiveClientDeps) {}
 
+  /** Actual RTCPeerConnection.connectionState, or null if no peer exists. */
+  get peerConnectionState(): RTCPeerConnectionState | null {
+    if (this.peer === null) {
+      return null;
+    }
+    return this.peer.connectionState;
+  }
+
+  /** Actual RTCDataChannel.readyState, or null if no channel exists. */
+  get dataChannelReadyState(): RTCDataChannelState | null {
+    if (this.channel === null) {
+      return null;
+    }
+    return this.channel.readyState;
+  }
+
   async appendInstructions(
     text: string,
     policy: AppendPolicy,

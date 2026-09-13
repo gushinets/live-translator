@@ -879,6 +879,42 @@ describe("LiveClient.send", () => {
   });
 });
 
+describe("LiveClient resume validation getters", () => {
+  it("exposes peer connectionState and data channel readyState after connect", async () => {
+    const peer = new FakePeerConnection();
+    peer.connectionState = "connected";
+    const { backend } = makeFakeBackend();
+    const client = new LiveClient({
+      backend,
+      peerFactory: () => peer as unknown as RTCPeerConnection,
+      onRemoteStream: vi.fn(),
+    });
+    const connectPromise = client.connect(makeFakeStream());
+    await vi.waitFor(() => {
+      expect(peer.calls).toContain("setRemoteDescription");
+    });
+    peer.dataChannel?.emitMessage({
+      type: "session.started",
+      session: { id: "sess_123" },
+    });
+    await connectPromise;
+
+    expect(client.peerConnectionState).toBe("connected");
+    expect(client.dataChannelReadyState).toBe("open");
+  });
+
+  it("returns null for peer and channel state before connect instead of inventing healthy values", () => {
+    const client = new LiveClient({
+      backend: makeFakeBackend().backend,
+      peerFactory: () => new FakePeerConnection() as unknown as RTCPeerConnection,
+      onRemoteStream: vi.fn(),
+    });
+
+    expect(client.peerConnectionState).toBeNull();
+    expect(client.dataChannelReadyState).toBeNull();
+  });
+});
+
 describe("LiveClient.close", () => {
   afterEach(() => {
     vi.useRealTimers();

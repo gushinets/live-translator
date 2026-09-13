@@ -15,6 +15,9 @@ import {
   buildSteering,
   buildUnfinishedTurnWarning,
 } from "../live/LivePrompts";
+import type { OrientationController } from "../platform/OrientationController";
+import type { VisibilityController } from "../platform/VisibilityController";
+import type { WakeLockController } from "../platform/WakeLockController";
 import { SessionController } from "./SessionController";
 
 afterEach(() => {
@@ -48,6 +51,8 @@ class FakeLive {
   readonly setInputMuted = vi.fn(async () => {
     this.callOrder.push("setInputMuted");
   });
+  peerConnectionState: RTCPeerConnectionState | null = "connected";
+  dataChannelReadyState: RTCDataChannelState | null = "open";
 
   emit(event: TranscriptDeltaEvent): void {
     if (this.onTranscriptDelta === null) {
@@ -58,10 +63,23 @@ class FakeLive {
 }
 
 function createFakeAudio() {
-  const captureStream = { id: "mic-stream" } as MediaStream;
+  const captureTrack = {
+    kind: "audio",
+    readyState: "live" as MediaStreamTrackState,
+    enabled: true,
+    addEventListener: vi.fn(),
+    removeEventListener: vi.fn(),
+    stop: vi.fn(),
+  };
+  const captureStream = {
+    id: "mic-stream",
+    getAudioTracks: () => [captureTrack],
+    getTracks: () => [captureTrack],
+  } as unknown as MediaStream;
   let stream: MediaStream | null = null;
   return {
     captureStream,
+    captureTrack,
     primeOutput: vi.fn(async () => {}),
     setOutputAudible: vi.fn(),
     startCapture: vi.fn(async () => {
@@ -77,8 +95,52 @@ function createFakeAudio() {
     } as unknown as HTMLAudioElement,
     onVoiceActivity: null as ((event: { active: boolean; atMs: number }) => void) | null,
     onPlaybackActivity: null as ((event: { active: boolean; atMs: number }) => void) | null,
+    onAudioInterruption: null as (() => void) | null,
     resetVoiceActivityBaseline: vi.fn(),
   };
+}
+
+class FakeOrientation {
+  onChange: ((orientation: "portrait" | "landscape") => void) | null = null;
+  private orientation: "portrait" | "landscape" = "portrait";
+  readonly start = vi.fn();
+  readonly stop = vi.fn();
+  readonly lockPortrait = vi.fn(async () => {});
+  getOrientation(): "portrait" | "landscape" {
+    return this.orientation;
+  }
+  isPortrait(): boolean {
+    return this.orientation === "portrait";
+  }
+  emit(orientation: "portrait" | "landscape"): void {
+    this.orientation = orientation;
+    this.onChange?.(orientation);
+  }
+}
+
+class FakeVisibility {
+  onHidden: (() => void) | null = null;
+  onVisible: (() => void) | null = null;
+  private hidden = false;
+  readonly start = vi.fn();
+  readonly stop = vi.fn();
+  isHidden(): boolean {
+    return this.hidden;
+  }
+  hide(): void {
+    this.hidden = true;
+    this.onHidden?.();
+  }
+  show(): void {
+    this.hidden = false;
+    this.onVisible?.();
+  }
+}
+
+class FakeWakeLock {
+  readonly request = vi.fn(async () => {});
+  readonly reacquire = vi.fn(async () => {});
+  readonly release = vi.fn(async () => {});
 }
 
 function setDeviceLanguage(language: string): void {
@@ -91,14 +153,23 @@ function setDeviceLanguage(language: string): void {
 function createController(options: {
   live?: FakeLive;
   audio?: ReturnType<typeof createFakeAudio>;
+  orientation?: FakeOrientation;
+  visibility?: FakeVisibility;
+  wakeLock?: FakeWakeLock;
 } = {}) {
   const live = options.live ?? new FakeLive();
   const audio = options.audio ?? createFakeAudio();
+  const orientation = options.orientation ?? new FakeOrientation();
+  const visibility = options.visibility ?? new FakeVisibility();
+  const wakeLock = options.wakeLock ?? new FakeWakeLock();
   const controller = new SessionController({
     createLive: () => live as unknown as LiveClient,
     audio: audio as unknown as AudioController,
+    orientation: orientation as unknown as OrientationController,
+    visibility: visibility as unknown as VisibilityController,
+    wakeLock: wakeLock as unknown as WakeLockController,
   });
-  return { controller, live, audio };
+  return { controller, live, audio, orientation, visibility, wakeLock };
 }
 
 describe("SessionController", () => {
@@ -717,6 +788,17 @@ function emitPlayback(
 }
 
 async function flushMicrotasks(): Promise<void> {
+  await Promise.resolve();
+  await Promise.resolve();
+}
+
+async function flushLifecycle(): Promise<void> {
+  await Promise.resolve();
+  await Promise.resolve();
+  await Promise.resolve();
+  await Promise.resolve();
+  await Promise.resolve();
+  await Promise.resolve();
   await Promise.resolve();
   await Promise.resolve();
 }
@@ -1585,5 +1667,278 @@ describe("SessionController endConversation", () => {
     expect(controller.session.activeTurn).toBeUndefined();
     expect(controller.contextText).toBe("");
     expect(controller.session.contextText).toBe("");
+  });
+});
+
+describe("SessionController PWA lifecycle suspension (§11.3 / §19)", () => {
+  beforeEach(() => {
+    setDeviceLanguage("ru-RU");
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-01-01T00:00:00.000Z"));
+  });
+
+  async function startSourceTurn(
+    controller: SessionController,
+    live: FakeLive,
+    audio: ReturnType<typeof createFakeAudio>,
+  ): Promise<void> {
+    await enterListening(controller);
+    emitVoice(audio, true);
+    live.emit({ type: "session.input_transcript.delta", delta: "Hello" });
+    expect(controller.session.activeTurn?.status).toBe("streaming");
+    expect(controller.session.expectedSpeaker).toBe("A");
+  }
+
+  it("landscape while a source turn is active discards, closes Gate C, mutes Gate B, and suspends", async () => {
+    const orientation = new FakeOrientation();
+    const visibility = new FakeVisibility();
+    const wakeLock = new FakeWakeLock();
+    const { controller, live, audio } = createController({
+      orientation,
+      visibility,
+      wakeLock,
+    });
+    await startSourceTurn(controller, live, audio);
+
+    orientation.emit("landscape");
+    await flushMicrotasks();
+
+    expect(controller.session.state).toBe("suspended");
+    expect(controller.session.activeTurn).toBeUndefined();
+    expect(controller.session.recentTurns[0]?.status).toBe("discarded");
+    expect(controller.session.expectedSpeaker).toBe("A");
+    expect(audio.setOutputAudible).toHaveBeenLastCalledWith(false);
+    expect(live.setInputMuted).toHaveBeenCalledWith(true);
+    expect(controller.recoveryPrompt).toBeUndefined();
+  });
+
+  it("background while a source turn is active discards, closes Gate C, mutes Gate B, and suspends", async () => {
+    const orientation = new FakeOrientation();
+    const visibility = new FakeVisibility();
+    const { controller, live, audio } = createController({
+      orientation,
+      visibility,
+      wakeLock: new FakeWakeLock(),
+    });
+    await startSourceTurn(controller, live, audio);
+
+    visibility.hide();
+    await flushMicrotasks();
+
+    expect(controller.session.state).toBe("suspended");
+    expect(controller.session.recentTurns[0]?.status).toBe("discarded");
+    expect(audio.setOutputAudible).toHaveBeenLastCalledWith(false);
+    expect(live.setInputMuted).toHaveBeenCalledWith(true);
+    expect(controller.session.expectedSpeaker).toBe("A");
+  });
+
+  it("audio interruption while a source turn is active suspends and discards the unfinished turn", async () => {
+    const { controller, live, audio } = createController({
+      orientation: new FakeOrientation(),
+      visibility: new FakeVisibility(),
+      wakeLock: new FakeWakeLock(),
+    });
+    await startSourceTurn(controller, live, audio);
+    if (audio.onAudioInterruption === null) {
+      throw new Error("Audio interruption handler was not installed");
+    }
+
+    audio.onAudioInterruption();
+    await flushMicrotasks();
+
+    expect(controller.session.state).toBe("suspended");
+    expect(controller.session.recentTurns[0]?.status).toBe("discarded");
+    expect(audio.setOutputAudible).toHaveBeenLastCalledWith(false);
+    expect(live.setInputMuted).toHaveBeenCalledWith(true);
+  });
+
+  it("successful lifecycle resume appends expected-speaker steering, returns to listening, and asks the same source to repeat", async () => {
+    const orientation = new FakeOrientation();
+    const visibility = new FakeVisibility();
+    const wakeLock = new FakeWakeLock();
+    const { controller, live, audio } = createController({
+      orientation,
+      visibility,
+      wakeLock,
+    });
+    await startSourceTurn(controller, live, audio);
+    const steeringAfterStart = live.appendInstructions.mock.calls.length;
+
+    visibility.hide();
+    await flushMicrotasks();
+    visibility.show();
+    await flushLifecycle();
+
+    expect(wakeLock.reacquire).toHaveBeenCalled();
+    expect(controller.session.state).toBe("listening");
+    expect(controller.session.expectedSpeaker).toBe("A");
+    expect(controller.recoveryPrompt).toBe("repeat");
+    expect(live.appendInstructions.mock.calls.length).toBe(steeringAfterStart + 1);
+    expect(live.appendInstructions).toHaveBeenLastCalledWith(
+      buildSteering({ expectedSource: "A", recipient: "B" }),
+      { kind: "later_steering", sessionState: "suspended" },
+    );
+    expect(audio.setOutputAudible).toHaveBeenLastCalledWith(true);
+    expect(live.setInputMuted).toHaveBeenLastCalledWith(false);
+  });
+
+  it("portrait restore after landscape resume asks the same source to repeat", async () => {
+    const orientation = new FakeOrientation();
+    const visibility = new FakeVisibility();
+    const { controller, live, audio } = createController({
+      orientation,
+      visibility,
+      wakeLock: new FakeWakeLock(),
+    });
+    await startSourceTurn(controller, live, audio);
+
+    orientation.emit("landscape");
+    await flushMicrotasks();
+    orientation.emit("portrait");
+    await flushLifecycle();
+
+    expect(controller.session.state).toBe("listening");
+    expect(controller.session.expectedSpeaker).toBe("A");
+    expect(controller.recoveryPrompt).toBe("repeat");
+    expect(live.appendInstructions).toHaveBeenLastCalledWith(
+      buildSteering({ expectedSource: "A", recipient: "B" }),
+      { kind: "later_steering", sessionState: "suspended" },
+    );
+  });
+
+  it("does not auto-resume MAX_SOURCE_MS suspension on visibility restore", async () => {
+    const visibility = new FakeVisibility();
+    const { controller, audio } = createController({
+      orientation: new FakeOrientation(),
+      visibility,
+      wakeLock: new FakeWakeLock(),
+    });
+    await enterListening(controller);
+    emitVoice(audio, true);
+    await vi.advanceTimersByTimeAsync(runtime.maxSourceMs);
+    await flushMicrotasks();
+    expect(controller.session.state).toBe("suspended");
+    expect(controller.recoveryPrompt).toBe("resume-repeat");
+
+    visibility.hide();
+    visibility.show();
+    await flushMicrotasks();
+
+    expect(controller.session.state).toBe("suspended");
+    expect(controller.recoveryPrompt).toBe("resume-repeat");
+  });
+
+  it("fails resume to error when the microphone track is not live", async () => {
+    const visibility = new FakeVisibility();
+    const audio = createFakeAudio();
+    const { controller, live } = createController({
+      audio,
+      orientation: new FakeOrientation(),
+      visibility,
+      wakeLock: new FakeWakeLock(),
+    });
+    await startSourceTurn(controller, live, audio);
+    visibility.hide();
+    await flushMicrotasks();
+    audio.captureTrack.readyState = "ended";
+
+    visibility.show();
+    await flushMicrotasks();
+
+    expect(controller.session.state).toBe("error");
+    expect(controller.ownerError).toMatch(/microphone/i);
+    expect(controller.session.expectedSpeaker).toBe("A");
+    expect(live.setInputMuted).not.toHaveBeenLastCalledWith(false);
+  });
+
+  it("fails resume to error when the peer connection is failed or closed", async () => {
+    const visibility = new FakeVisibility();
+    const { controller, live, audio } = createController({
+      orientation: new FakeOrientation(),
+      visibility,
+      wakeLock: new FakeWakeLock(),
+    });
+    await startSourceTurn(controller, live, audio);
+    visibility.hide();
+    await flushMicrotasks();
+    live.peerConnectionState = "failed";
+
+    visibility.show();
+    await flushMicrotasks();
+
+    expect(controller.session.state).toBe("error");
+    expect(controller.ownerError).toMatch(/peer/i);
+  });
+
+  it("fails resume to error when the data channel is not open", async () => {
+    const visibility = new FakeVisibility();
+    const { controller, live, audio } = createController({
+      orientation: new FakeOrientation(),
+      visibility,
+      wakeLock: new FakeWakeLock(),
+    });
+    await startSourceTurn(controller, live, audio);
+    visibility.hide();
+    await flushMicrotasks();
+    live.dataChannelReadyState = "connecting";
+
+    visibility.show();
+    await flushMicrotasks();
+
+    expect(controller.session.state).toBe("error");
+    expect(controller.ownerError).toMatch(/data channel/i);
+  });
+
+  it("fails resume to error when peer connection state cannot be read", async () => {
+    const visibility = new FakeVisibility();
+    const { controller, live, audio } = createController({
+      orientation: new FakeOrientation(),
+      visibility,
+      wakeLock: new FakeWakeLock(),
+    });
+    await startSourceTurn(controller, live, audio);
+    visibility.hide();
+    await flushMicrotasks();
+    live.peerConnectionState = null;
+
+    visibility.show();
+    await flushMicrotasks();
+
+    expect(controller.session.state).toBe("error");
+    expect(controller.ownerError).toMatch(/peer/i);
+  });
+
+  it("does not resume while orientation is still landscape", async () => {
+    const orientation = new FakeOrientation();
+    const visibility = new FakeVisibility();
+    const { controller, live, audio } = createController({
+      orientation,
+      visibility,
+      wakeLock: new FakeWakeLock(),
+    });
+    await startSourceTurn(controller, live, audio);
+    orientation.emit("landscape");
+    await flushMicrotasks();
+
+    visibility.hide();
+    visibility.show();
+    await flushMicrotasks();
+
+    expect(controller.session.state).toBe("suspended");
+    expect(controller.recoveryPrompt).toBeUndefined();
+  });
+
+  it("locks portrait and requests wake lock when interpreter mode starts", async () => {
+    const orientation = new FakeOrientation();
+    const wakeLock = new FakeWakeLock();
+    const visibility = new FakeVisibility();
+    const { controller } = createController({ orientation, visibility, wakeLock });
+
+    await enterListening(controller);
+
+    expect(orientation.lockPortrait).toHaveBeenCalledOnce();
+    expect(orientation.start).toHaveBeenCalledOnce();
+    expect(visibility.start).toHaveBeenCalledOnce();
+    expect(wakeLock.request).toHaveBeenCalledOnce();
   });
 });

@@ -68,6 +68,7 @@ function readMicrophoneSettings(track: MediaStreamTrack): MicrophoneSettingsDiag
 export class AudioController {
   onVoiceActivity: ((event: AudioActivityEvent) => void) | null = null;
   onPlaybackActivity: ((event: AudioActivityEvent) => void) | null = null;
+  onAudioInterruption: (() => void) | null = null;
 
   readonly audioElement: HTMLAudioElement;
 
@@ -170,6 +171,7 @@ export class AudioController {
     this.micSource = micSource;
     this.micAnalyser = micAnalyser;
     this.microphoneSettings = readMicrophoneSettings(track);
+    track.addEventListener("ended", this.handleCaptureEnded);
     console.info("Microphone track settings", this.microphoneSettings);
     this.syncSampler();
   }
@@ -178,6 +180,7 @@ export class AudioController {
     if (this.captureTrack === null || this.captureStream === null || this.micSource === null) {
       throw new Error("Microphone capture has not started");
     }
+    this.captureTrack.removeEventListener("ended", this.handleCaptureEnded);
     for (const track of this.captureStream.getTracks()) {
       track.stop();
     }
@@ -241,13 +244,28 @@ export class AudioController {
     if (this.audioContext !== null) {
       const context = this.audioContext;
       this.audioContext = null;
+      context.removeEventListener("statechange", this.handleContextStateChange);
       void context.close();
     }
   }
 
+  private readonly handleCaptureEnded = (): void => {
+    this.onAudioInterruption?.();
+  };
+
+  private readonly handleContextStateChange = (): void => {
+    if (this.audioContext === null) {
+      return;
+    }
+    if ((this.audioContext.state as string) === "interrupted") {
+      this.onAudioInterruption?.();
+    }
+  };
+
   private ensureAudioContext(): AudioContext {
     if (this.audioContext === null) {
       this.audioContext = this.createAudioContext();
+      this.audioContext.addEventListener("statechange", this.handleContextStateChange);
     }
     return this.audioContext;
   }

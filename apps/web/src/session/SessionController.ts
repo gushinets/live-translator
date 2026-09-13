@@ -22,6 +22,9 @@ import {
   buildSteering,
   buildUnfinishedTurnWarning,
 } from "../live/LivePrompts";
+import { OrientationController } from "../platform/OrientationController";
+import { VisibilityController } from "../platform/VisibilityController";
+import { WakeLockController } from "../platform/WakeLockController";
 import { sessionReducer, type SessionAction } from "./sessionReducer";
 import {
   createInitialSession,
@@ -29,6 +32,8 @@ import {
 } from "./SessionState";
 
 export type RecoveryPrompt = "repeat" | "resume-repeat";
+
+export type LifecycleSuspendReason = "orientation" | "visibility" | "audio";
 
 export interface SessionControllerDeps {
   createLive: () => LiveClient;
@@ -45,7 +50,11 @@ export interface SessionControllerDeps {
   > & {
     onVoiceActivity: AudioController["onVoiceActivity"];
     onPlaybackActivity: AudioController["onPlaybackActivity"];
+    onAudioInterruption: AudioController["onAudioInterruption"];
   };
+  orientation?: OrientationController;
+  visibility?: VisibilityController;
+  wakeLock?: WakeLockController;
 }
 
 /**
@@ -89,11 +98,29 @@ export class SessionController {
   private endWork: Promise<void> | null = null;
   private playbackIdleWaitResolve: (() => void) | null = null;
   private playbackIdleWaitTimer: number | null = null;
+  private platformStarted = false;
+  private lifecycleSuspendReason: LifecycleSuspendReason | undefined;
+  private discardedUnfinishedOnSuspend = false;
+  private readonly orientation: OrientationController;
+  private readonly visibility: VisibilityController;
+  private readonly wakeLock: WakeLockController;
   private readonly listeners = new Set<() => void>();
 
   constructor(private readonly deps: SessionControllerDeps) {
     this.currentSession = createSessionFromDeviceLocale();
     this.live = deps.createLive();
+    this.orientation = deps.orientation ?? new OrientationController();
+    this.visibility = deps.visibility ?? new VisibilityController();
+    this.wakeLock = deps.wakeLock ?? new WakeLockController();
+    this.orientation.onChange = (orientation) => {
+      void this.handleOrientationChange(orientation);
+    };
+    this.visibility.onHidden = () => {
+      void this.handleVisibilityHidden();
+    };
+    this.visibility.onVisible = () => {
+      void this.handleVisibilityVisible();
+    };
     this.bindLive();
     this.bindAudio();
   }
@@ -375,6 +402,7 @@ export class SessionController {
       this.capturingBootstrap = false;
       this.audio.setOutputAudible(true);
       this.dispatch({ type: "INTERPRETER_READY" });
+      await this.startPlatformLifecycle();
     } finally {
       if (this.sessionGeneration === generation) {
         this.interpreterInFlight = false;
@@ -555,6 +583,9 @@ export class SessionController {
     };
     this.audio.onPlaybackActivity = (event) => {
       void this.handlePlaybackActivity(event);
+    };
+    this.audio.onAudioInterruption = () => {
+      void this.handleAudioInterruption();
     };
   }
 
@@ -1216,6 +1247,193 @@ export class SessionController {
     throw error;
   }
 
+  private async startPlatformLifecycle(): Promise<void> {
+    if (this.platformStarted) {
+      return;
+    }
+    this.platformStarted = true;
+    this.orientation.start();
+    this.visibility.start();
+    await this.orientation.lockPortrait();
+    await this.wakeLock.request();
+  }
+
+  private stopPlatformLifecycle(): void {
+    this.orientation.stop();
+    this.visibility.stop();
+    void this.wakeLock.release();
+    this.platformStarted = false;
+    this.lifecycleSuspendReason = undefined;
+    this.discardedUnfinishedOnSuspend = false;
+  }
+
+  private conversationCanSuspend(): boolean {
+    const state = this.currentSession.state;
+    return state === "listening" || state === "outputting" || state === "correcting";
+  }
+
+  private async handleOrientationChange(orientation: "portrait" | "landscape"): Promise<void> {
+    if (orientation === "landscape") {
+      await this.suspendFromLifecycle("orientation");
+      return;
+    }
+    await this.resumeFromLifecycle();
+  }
+
+  private async handleVisibilityHidden(): Promise<void> {
+    await this.suspendFromLifecycle("visibility");
+  }
+
+  private async handleVisibilityVisible(): Promise<void> {
+    await this.wakeLock.reacquire();
+    await this.resumeFromLifecycle();
+  }
+
+  private async handleAudioInterruption(): Promise<void> {
+    await this.suspendFromLifecycle("audio");
+  }
+
+  private async suspendFromLifecycle(reason: LifecycleSuspendReason): Promise<void> {
+    if (!this.conversationCanSuspend()) {
+      return;
+    }
+    const active = this.currentSession.activeTurn;
+    this.discardedUnfinishedOnSuspend =
+      active !== undefined && active.turnCompletedAtMs === undefined && !active.corrected;
+    this.clearTurnEngineTimers();
+    this.turnClosing = false;
+    this.finishLeftoverOutputDrain();
+    this.audio.setOutputAudible(false);
+    await this.muteGateB();
+    this.dispatch({ type: "SUSPEND" });
+    this.lifecycleSuspendReason = reason;
+    this.recoveryPromptKind = undefined;
+    this.notify();
+  }
+
+  private async resumeFromLifecycle(): Promise<void> {
+    if (this.currentSession.state !== "suspended") {
+      return;
+    }
+    if (this.lifecycleSuspendReason === undefined) {
+      return;
+    }
+
+    try {
+      if (this.visibility.isHidden()) {
+        return;
+      }
+    } catch (error) {
+      this.failLifecycleResume(error);
+      return;
+    }
+
+    let orientation: "portrait" | "landscape";
+    try {
+      orientation = this.orientation.getOrientation();
+    } catch (error) {
+      this.failLifecycleResume(error);
+      return;
+    }
+    if (orientation === "landscape") {
+      return;
+    }
+
+    try {
+      this.assertResumeMedia();
+    } catch (error) {
+      this.failLifecycleResume(error);
+      return;
+    }
+
+    await this.wakeLock.reacquire();
+
+    const session = this.currentSession;
+    const expectedSource = session.expectedSpeaker;
+    const recipient = expectedSource === "A" ? "B" : "A";
+    const recipientProfile = recipient === "A" ? session.participantA : session.participantB;
+    const initialRecipientHint = recipientProfile.hasAcceptedConversationSpeech
+      ? undefined
+      : recipientProfile.initialLanguageHint;
+    const generation = this.sessionGeneration;
+    try {
+      await this.live.appendInstructions(
+        buildSteering({
+          expectedSource,
+          recipient,
+          initialRecipientHint,
+        }),
+        {
+          kind: "later_steering",
+          sessionState: session.state,
+        },
+      );
+    } catch (error) {
+      if (this.sessionGeneration !== generation) {
+        return;
+      }
+      console.error("Post-resume steering append failed", {
+        error,
+        state: this.currentSession.state,
+      });
+      this.failLifecycleResume(error);
+      throw error;
+    }
+    if (this.sessionGeneration !== generation) {
+      return;
+    }
+
+    this.audio.resetVoiceActivityBaseline();
+    this.audio.setOutputAudible(true);
+    await this.unmuteGateB();
+    this.dispatch({ type: "RESUME" });
+    this.recoveryPromptKind = this.discardedUnfinishedOnSuspend ? "repeat" : undefined;
+    this.lifecycleSuspendReason = undefined;
+    this.notify();
+  }
+
+  private assertResumeMedia(): void {
+    const stream = this.audio.getCaptureStream();
+    if (stream === null) {
+      throw new Error("Microphone capture stream is unavailable");
+    }
+    const track = stream.getAudioTracks()[0];
+    if (track === undefined) {
+      throw new Error("Microphone track is unavailable");
+    }
+    if (track.readyState !== "live") {
+      throw new Error(`Microphone track is not live (readyState "${track.readyState}")`);
+    }
+
+    const peerState = this.live.peerConnectionState;
+    if (peerState === null || peerState === undefined) {
+      throw new Error("RTCPeerConnection state is unavailable");
+    }
+    if (peerState === "failed" || peerState === "closed") {
+      throw new Error(`Peer connection state is "${peerState}"`);
+    }
+
+    const channelState = this.live.dataChannelReadyState;
+    if (channelState === null || channelState === undefined) {
+      throw new Error("Data channel state is unavailable");
+    }
+    if (channelState !== "open") {
+      throw new Error(`Data channel is not open (readyState "${channelState}")`);
+    }
+  }
+
+  private failLifecycleResume(error: unknown): void {
+    this.ownerErrorMessage = error instanceof Error ? error.message : String(error);
+    this.dispatch({
+      type: "SESSION_ERROR",
+      message: this.ownerErrorMessage,
+    });
+    console.error("Lifecycle resume failed", {
+      error,
+      state: this.currentSession.state,
+    });
+  }
+
   private resetToIdle(): void {
     this.audio.setOutputAudible(false);
     this.audio.audioElement.srcObject = null;
@@ -1244,6 +1462,7 @@ export class SessionController {
     this.endWork = null;
     this.finishPlaybackIdleWait();
     this.clearTurnEngineTimers();
+    this.stopPlatformLifecycle();
     this.sessionGeneration += 1;
     this.currentSession = createSessionFromDeviceLocale();
     this.live = this.deps.createLive();

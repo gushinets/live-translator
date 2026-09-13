@@ -6,6 +6,8 @@ class FakeAudioTrack {
   kind = "audio";
   enabled = true;
   readyState: MediaStreamTrackState = "live";
+  addEventListener = vi.fn();
+  removeEventListener = vi.fn();
   stop = vi.fn(() => {
     this.readyState = "ended";
   });
@@ -52,6 +54,8 @@ class FakeAudioContext {
   readonly analysers: FakeAnalyser[] = [];
   readonly sources: FakeAudioNode[] = [];
   readonly sourceStreams: MediaStream[] = [];
+  addEventListener = vi.fn();
+  removeEventListener = vi.fn();
   resume = vi.fn(async () => {
     this.state = "running";
   });

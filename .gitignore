@@ -5,3 +5,6 @@ dist/
 .env
 .env.local
 coverage/
+test-results/
+playwright-report/
+blob-report/
