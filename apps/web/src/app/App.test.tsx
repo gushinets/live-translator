@@ -38,7 +38,9 @@ describe("App", () => {
       screen.getByRole("button", { name: "Start translation" }),
     ).toBeInTheDocument();
     expect(
-      screen.getByText("Speech is sent to OpenAI for live translation."),
+      screen.getByText(
+        "Speech is sent to OpenAI for live translation. This app does not save conversation history. OpenAI API data-handling rules still apply.",
+      ),
     ).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Connect" })).not.toBeInTheDocument();
     expect(

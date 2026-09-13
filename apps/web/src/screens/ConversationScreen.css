@@ -31,6 +31,15 @@
   padding: 0.35rem 0.8rem;
 }
 
+.error-overlay {
+  flex: 1 1 100%;
+  margin: 0;
+  padding: 0.5rem 0.75rem;
+  text-align: center;
+  background: #5c1f14;
+  color: #f4ead5;
+}
+
 .participant-pane {
   flex: 1 1 0;
   display: flex;

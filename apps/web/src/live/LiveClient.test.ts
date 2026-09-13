@@ -276,7 +276,7 @@ describe("LiveClient.connect", () => {
 
     const connectPromise = client.connect(makeFakeStream());
     const assertion = expect(connectPromise).rejects.toThrow(
-      "Timed out while gathering ICE candidates",
+      "Unable to establish live connection",
     );
     await vi.advanceTimersByTimeAsync(10_000);
     await assertion;

@@ -17,6 +17,7 @@ class FakeOwnerController implements ContextScreenController {
   contextText = "";
   bootstrapText = "";
   ownerError: string | undefined;
+  hasEnteredInterpreter = false;
   isConnectInFlight = false;
   isInterpreterStarting = false;
   audioElement: HTMLAudioElement | undefined;
@@ -90,7 +91,9 @@ describe("ContextScreen", () => {
     expect(screen.getByText(/Tell me the context/i)).toBeInTheDocument();
     expect(screen.getByText(/optional/i)).toBeInTheDocument();
     expect(
-      screen.getByText("Speech is sent to OpenAI for live translation."),
+      screen.getByText(
+        "Speech is sent to OpenAI for live translation. This app does not save conversation history. OpenAI API data-handling rules still apply.",
+      ),
     ).toBeInTheDocument();
     expect(
       screen.getByRole("button", { name: "Start translation" }),
@@ -207,6 +210,33 @@ describe("ContextScreen", () => {
       "Microphone access is required for translation.",
     );
     expect(screen.getByRole("button", { name: "Cancel" })).toBeEnabled();
+  });
+
+  it("shows startup errors on the owner screen instead of conversation", () => {
+    const controller = new FakeOwnerController();
+    controller.session = { ...controller.session, state: "error" };
+    controller.ownerError = "Unable to start live translation.";
+
+    render(<ContextScreen controller={controller} />);
+
+    expect(screen.getByRole("button", { name: "Start translation" })).toBeInTheDocument();
+    expect(screen.getByRole("alert")).toHaveTextContent("Unable to start live translation.");
+    expect(screen.queryByRole("button", { name: "End conversation" })).not.toBeInTheDocument();
+  });
+
+  it("keeps in-conversation errors on ConversationScreen", () => {
+    const controller = new FakeOwnerController();
+    controller.session = { ...controller.session, state: "error" };
+    controller.hasEnteredInterpreter = true;
+    controller.ownerError = "Unable to continue the live connection.";
+
+    render(<ContextScreen controller={controller} />);
+
+    expect(screen.getByRole("button", { name: "End conversation" })).toBeInTheDocument();
+    expect(screen.getByRole("alert")).toHaveTextContent(
+      "Unable to continue the live connection.",
+    );
+    expect(screen.queryByRole("button", { name: "Start translation" })).not.toBeInTheDocument();
   });
 
   it("shows the conversation screen instead of the interpreter stub once listening", () => {

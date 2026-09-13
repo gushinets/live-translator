@@ -52,7 +52,7 @@ describe("waitForIceComplete", () => {
       10_000,
     );
     const assertion = expect(promise).rejects.toThrow(
-      "Timed out while gathering ICE candidates",
+      "Unable to establish live connection",
     );
     await vi.advanceTimersByTimeAsync(10_000);
     await assertion;

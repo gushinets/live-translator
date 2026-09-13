@@ -27,6 +27,9 @@ afterEach(() => {
 
 class FakeLive {
   onTranscriptDelta: ((event: TranscriptDeltaEvent) => void) | null = null;
+  onSessionStarted: ((event: { type: "session.started"; session: { id: string } }) => void) | null =
+    null;
+  onError: ((event: { type: "error"; error: { message: string } }) => void) | null = null;
   readonly callOrder: string[] = [];
   readonly connect = vi.fn(async () => {
     this.callOrder.push("connect");
@@ -541,7 +544,7 @@ describe("SessionController", () => {
   });
 
   it("sets ownerError on interpreter failure, stays on the owner screen, and does not resend thinking", async () => {
-    const { controller, live } = createController();
+    const { controller, live, audio } = createController();
     await controller.startContextCapture();
     controller.setContextText("We are ordering lunch.");
     await controller.startBootstrap();
@@ -550,17 +553,31 @@ describe("SessionController", () => {
     live.appendInstructions.mockRejectedValueOnce(new Error("ack timeout"));
 
     await expect(controller.beginInterpreter()).rejects.toThrow("ack timeout");
-    expect(controller.session.state).toBe("bootstrap");
-    expect(controller.ownerError).toBe("ack timeout");
+    expect(controller.session.state).toBe("error");
+    expect(controller.ownerError).toBe("Unable to start live translation.");
+    expect(controller.hasEnteredInterpreter).toBe(false);
+    expect(audio.setOutputAudible).not.toHaveBeenCalledWith(true);
     expect(live.appendThinking).toHaveBeenCalledOnce();
     expect(live.appendInstructions).toHaveBeenCalledOnce();
+  });
 
-    live.appendInstructions.mockResolvedValue({ eventId: "evt-retry" });
-    await controller.beginInterpreter();
+  it("maps first_steering double timeout to startup error without opening conversation gates", async () => {
+    const { controller, live, audio } = createController();
+    await controller.startBootstrap();
+    controller.skipBootstrap();
+    live.appendInstructions.mockImplementation(async (text: string, policy?: { kind: string }) => {
+      live.callOrder.push(`instructions:${text}`);
+      if (policy?.kind === "first_steering") {
+        throw new Error("ack timeout");
+      }
+      return { eventId: "evt-ok" };
+    });
 
-    expect(live.appendThinking).toHaveBeenCalledOnce();
-    expect(live.appendInstructions).toHaveBeenCalledTimes(3);
-    expect(controller.session.state).toBe("listening");
+    await expect(controller.beginInterpreter()).rejects.toThrow("ack timeout");
+    expect(controller.session.state).toBe("error");
+    expect(controller.ownerError).toBe("Unable to start live translation.");
+    expect(controller.hasEnteredInterpreter).toBe(false);
+    expect(audio.setOutputAudible).not.toHaveBeenCalledWith(true);
   });
 
   it("rejects an empty bootstrap language hint", async () => {
@@ -654,6 +671,20 @@ describe("SessionController", () => {
     expect(appendCalls).toBe(2);
     expect(controller.session.state).toBe("listening");
     expect(controller.isInterpreterStarting).toBe(false);
+  });
+
+  it("maps NotAllowedError to the microphone permission message", async () => {
+    const audio = createFakeAudio();
+    audio.startCapture.mockRejectedValueOnce(
+      Object.assign(new Error("Permission denied"), { name: "NotAllowedError" }),
+    );
+    const { controller } = createController({ audio });
+
+    await expect(controller.startContextCapture()).rejects.toThrow(
+      "Microphone access is required for translation.",
+    );
+    expect(controller.ownerError).toBe("Microphone access is required for translation.");
+    expect(controller.session.state).toBe("idle");
   });
 
   it("sets ownerError on microphone and connect failures", async () => {
@@ -1746,6 +1777,169 @@ describe("SessionController endConversation", () => {
     expect(controller.session.activeTurn).toBeUndefined();
     expect(controller.contextText).toBe("");
     expect(controller.session.contextText).toBe("");
+  });
+
+  it("shows Incomplete finalization before releasing resources", async () => {
+    const { controller, live, audio } = createController();
+    await enterListening(controller);
+    const order: string[] = [];
+    live.close.mockImplementation(async () => {
+      order.push("close");
+      return { finalized: false, reason: "Timed out waiting for session.closed" };
+    });
+    audio.stopCapture.mockImplementation(() => {
+      order.push("release");
+      audio.getCaptureStream.mockReturnValue(null);
+    });
+    controller.subscribe(() => {
+      if (controller.ownerError === "Incomplete finalization" && !order.includes("shown")) {
+        order.push("shown");
+      }
+    });
+
+    await controller.endConversation();
+
+    expect(order).toEqual(["close", "shown", "release"]);
+    expect(controller.ownerError).toBe("Incomplete finalization");
+    expect(controller.session.state).toBe("idle");
+  });
+});
+
+describe("SessionController max session duration", () => {
+  beforeEach(() => {
+    setDeviceLanguage("ru-RU");
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-01-01T00:00:00.000Z"));
+  });
+
+  it("starts the 15-minute cap at session.started and ends through the graceful close path", async () => {
+    const { controller, live, audio } = createController();
+    await enterListening(controller);
+    live.onSessionStarted?.({ type: "session.started", session: { id: "sess_1" } });
+
+    await vi.advanceTimersByTimeAsync(runtime.maxSessionMs - 1);
+    expect(live.close).not.toHaveBeenCalled();
+    expect(controller.session.state).toBe("listening");
+
+    await vi.advanceTimersByTimeAsync(1);
+    await flushMicrotasks();
+
+    expect(live.close).toHaveBeenCalledOnce();
+    expect(audio.stopCapture).toHaveBeenCalled();
+    expect(controller.session.state).toBe("idle");
+  });
+});
+
+describe("SessionController runtime connection errors", () => {
+  beforeEach(() => {
+    setDeviceLanguage("ru-RU");
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-01-01T00:00:00.000Z"));
+  });
+
+  it("maps data channel failure to connection error and leaves listening", async () => {
+    const { controller, live } = createController();
+    await enterListening(controller);
+
+    live.onError?.({
+      type: "error",
+      error: { message: "Live data channel closed unexpectedly" },
+    });
+
+    expect(controller.session.state).toBe("error");
+    expect(controller.ownerError).toBe("Unable to continue the live connection.");
+    expect(controller.hasEnteredInterpreter).toBe(true);
+  });
+
+  it("maps peer failure to connection error", async () => {
+    const { controller, live } = createController();
+    await enterListening(controller);
+
+    live.onError?.({
+      type: "error",
+      error: { message: 'Peer connection state changed to "failed"' },
+    });
+
+    expect(controller.session.state).toBe("error");
+    expect(controller.ownerError).toBe("Unable to continue the live connection.");
+  });
+});
+
+describe("SessionController conversation metrics", () => {
+  beforeEach(() => {
+    setDeviceLanguage("ru-RU");
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-01-01T00:00:00.000Z"));
+  });
+
+  it("records early-output T1 clamp and text-only completion on turn close", async () => {
+    const { controller, live, audio } = createController();
+    await enterListening(controller);
+    emitVoice(audio, true);
+    live.emit({ type: "session.input_transcript.delta", delta: "Hello" });
+    live.emit({ type: "session.output_transcript.delta", delta: "Hola" });
+    await vi.advanceTimersByTimeAsync(300);
+    emitVoice(audio, false);
+    await flushMicrotasks();
+    await vi.advanceTimersByTimeAsync(runtime.audioStartGraceMs);
+    await flushMicrotasks();
+
+    const snapshot = controller.metrics.snapshot();
+    expect(snapshot.earlyOutputCount).toBe(1);
+    expect(snapshot.textOnlyCompletionCount).toBe(1);
+    expect(snapshot.poorOutputRoute).toBe(true);
+    expect(snapshot.lastTurn?.t1Ms).toBe(0);
+    expect(snapshot.lastTurn?.earlyOutputLeadMs).toBe(300);
+    expect(snapshot.lastTurn?.t3Ms).toBeDefined();
+    expect(JSON.stringify(snapshot)).not.toMatch(/Hello|Hola/);
+  });
+
+  it("records no-output watchdog count", async () => {
+    const { controller, live, audio } = createController();
+    await enterListening(controller);
+    emitVoice(audio, true);
+    live.emit({ type: "session.input_transcript.delta", delta: "Hello" });
+    emitVoice(audio, false);
+    await flushMicrotasks();
+    await vi.advanceTimersByTimeAsync(runtime.noOutputTimeoutMs);
+    await flushMicrotasks();
+
+    expect(controller.metrics.snapshot().noOutputWatchdogCount).toBe(1);
+  });
+
+  it("records VAM false-active when source energy fires during playback", async () => {
+    const { controller, audio } = createController();
+    await enterListening(controller);
+    emitPlayback(audio, true);
+    emitVoice(audio, true);
+
+    expect(controller.metrics.snapshot().vamFalseActiveCount).toBe(1);
+  });
+
+  it("records wrong-side correction and success counts", async () => {
+    const { controller, live, audio } = createController();
+    await enterListening(controller);
+    emitVoice(audio, true);
+    live.emit({ type: "session.input_transcript.delta", delta: "Hello" });
+    live.emit({ type: "session.output_transcript.delta", delta: "Hola" });
+    emitPlayback(audio, true);
+    await flushMicrotasks();
+    emitVoice(audio, false);
+    await flushMicrotasks();
+    emitPlayback(audio, false);
+    await flushMicrotasks();
+
+    await controller.correctLastTurn("B");
+
+    const snapshot = controller.metrics.snapshot();
+    expect(snapshot.wrongSideCorrectionCount).toBe(1);
+    expect(snapshot.correctionSuccessCount).toBe(1);
+  });
+
+  it("records source-tail clipping reports from the test harness", () => {
+    const { controller } = createController();
+    controller.reportSourceTailClipping();
+    expect(controller.metrics.snapshot().sourceTailClippingReports).toBe(1);
   });
 });
 

@@ -1,4 +1,5 @@
 import { useEffect, useReducer, useRef, useState } from "react";
+import { ErrorOverlay } from "../components/ErrorOverlay";
 import { BootstrapPrompt } from "../components/BootstrapPrompt";
 import { PrivacyDisclosure } from "../components/PrivacyDisclosure";
 import { ContextTooLongError } from "../live/LiveEvents";
@@ -21,6 +22,7 @@ export interface ContextScreenController {
   readonly contextText: string;
   readonly bootstrapText: string;
   readonly ownerError?: string;
+  readonly hasEnteredInterpreter?: boolean;
   readonly isConnectInFlight?: boolean;
   readonly isInterpreterStarting?: boolean;
   readonly audioElement?: HTMLAudioElement;
@@ -130,7 +132,8 @@ export function ContextScreen({
     sessionState === "outputting" ||
     sessionState === "correcting" ||
     sessionState === "suspended" ||
-    sessionState === "ending";
+    sessionState === "ending" ||
+    (sessionState === "error" && controller.hasEnteredInterpreter === true);
   const isOwnerSetup = !isConversation;
   const isBusy =
     sessionState === "connecting" ||
@@ -145,7 +148,7 @@ export function ContextScreen({
       ) : (
         <>
       {controller.ownerError !== undefined ? (
-        <p role="alert">{controller.ownerError}</p>
+        <ErrorOverlay message={controller.ownerError} />
       ) : null}
       {isBootstrap ? (
         <BootstrapPrompt

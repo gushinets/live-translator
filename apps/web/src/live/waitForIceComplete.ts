@@ -6,7 +6,7 @@ export async function waitForIceComplete(
   await new Promise<void>((resolve, reject) => {
     const timer = window.setTimeout(() => {
       peer.removeEventListener("icegatheringstatechange", onChange);
-      reject(new Error("Timed out while gathering ICE candidates"));
+      reject(new Error("Unable to establish live connection"));
     }, timeoutMs);
     function onChange() {
       if (peer.iceGatheringState !== "complete") return;
