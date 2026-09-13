@@ -70,6 +70,12 @@ export class LiveClient {
   /** True only once a `session.started` message has actually been received. */
   private started = false;
   private closing = false;
+  /** Set once a final close result is known, so close() becomes idempotent. */
+  private closeResult: LiveCloseResult | null = null;
+  /** Dedupes concurrent close() calls onto a single in-flight operation. */
+  private closePromise: Promise<LiveCloseResult> | null = null;
+  /** Guards `teardownTransport()` against closing the channel/peer twice. */
+  private torndown = false;
 
   constructor(private readonly deps: LiveClientDeps) {}
 
@@ -141,27 +147,52 @@ export class LiveClient {
     this.channel.send(JSON.stringify(event));
   }
 
+  /**
+   * Idempotent: if the session already ended (a prior local close(), or a
+   * server-initiated `session.closed`), returns the already-known result
+   * instead of throwing or sending a redundant `session.close`. Concurrent
+   * calls share the same in-flight close operation.
+   */
   async close(): Promise<LiveCloseResult> {
-    if (this.channel === null || this.peer === null) {
+    const channel = this.channel;
+    const peer = this.peer;
+    if (channel === null || peer === null) {
       throw new Error("Cannot close a Live session that was never connected");
     }
-    if (this.closing) {
-      throw new Error("close() has already been called");
+    if (this.closeResult !== null) {
+      return this.closeResult;
     }
+    if (this.closePromise !== null) {
+      return this.closePromise;
+    }
+    this.closePromise = this.performLocalClose(channel);
+    return this.closePromise;
+  }
+
+  private async performLocalClose(
+    channel: RTCDataChannel,
+  ): Promise<LiveCloseResult> {
     this.closing = true;
 
     const sessionClosedPromise = this.getSessionClosedPromise();
-    this.channel.send(JSON.stringify({ type: "session.close" }));
+    channel.send(JSON.stringify({ type: "session.close" }));
 
     const result = await this.waitForSessionClosedOrTimeout(
       sessionClosedPromise,
       SESSION_CLOSE_TIMEOUT_MS,
     );
 
-    this.channel.close();
-    this.peer.close();
-
+    this.teardownTransport();
+    this.closeResult = result;
     return result;
+  }
+
+  /** Closes the data channel and peer at most once. */
+  private teardownTransport(): void {
+    if (this.torndown) return;
+    this.torndown = true;
+    this.channel?.close();
+    this.peer?.close();
   }
 
   private getSessionClosedPromise(): Promise<SessionClosedEvent> {
@@ -256,16 +287,27 @@ export class LiveClient {
       case "session.input_audio.unmuted":
         this.onMuteAcknowledged?.(serverEvent);
         return;
-      case "session.closed":
+      case "session.closed": {
         // A server-initiated session.closed enters the same non-error
-        // closing path as a local close(): it stops new sends and
-        // suppresses the close/connectionstatechange handlers below from
-        // reporting the resulting transport teardown as an error (§23).
+        // closing path as a local close(): it stops new sends, suppresses
+        // the close/connectionstatechange handlers below from reporting the
+        // resulting transport teardown as an error, proactively tears down
+        // the channel/peer instead of relying on the network layer to do
+        // so, and caches the final result so a later close() call is
+        // idempotent instead of throwing or re-sending session.close (§23).
         this.closing = true;
+        const result: LiveCloseResult = {
+          finalized: true,
+          reason: serverEvent.reason,
+          usageSeconds: serverEvent.usage?.seconds,
+        };
+        this.closeResult = result;
         this.sessionClosedDeferred?.resolve(serverEvent);
         this.onSessionClosed?.(serverEvent);
         if (serverEvent.usage !== undefined) this.onUsage?.(serverEvent.usage);
+        this.teardownTransport();
         return;
+      }
       case "error":
         this.onError?.(serverEvent);
         return;

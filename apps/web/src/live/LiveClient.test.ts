@@ -656,4 +656,63 @@ describe("LiveClient.close", () => {
     channel.emitMessage({ type: "session.closed" });
     await closePromise;
   });
+
+  it("tears down the data channel and peer as soon as the server ends the session, even if close() is never called", async () => {
+    const { peer, channel } = await connectedClient();
+
+    channel.emitMessage({
+      type: "session.closed",
+      reason: "server_ended",
+      usage: { seconds: 7 },
+    });
+
+    expect(channel.closeCalls).toBe(1);
+    expect(peer.closeCalls).toBe(1);
+  });
+
+  it("is idempotent after a server-initiated session.closed: close() resolves with the already-known result instead of throwing", async () => {
+    const { client, channel } = await connectedClient();
+
+    channel.emitMessage({
+      type: "session.closed",
+      reason: "server_ended",
+      usage: { seconds: 7 },
+    });
+
+    await expect(client.close()).resolves.toEqual({
+      finalized: true,
+      reason: "server_ended",
+      usageSeconds: 7,
+    });
+    // No second session.close command should have been sent — the session
+    // had already ended before close() was ever called.
+    expect(channel.sendCalls).not.toContain(
+      JSON.stringify({ type: "session.close" }),
+    );
+  });
+
+  it("is idempotent when close() is called twice in a row locally", async () => {
+    const { client, channel } = await connectedClient();
+
+    const firstClosePromise = client.close();
+    const secondClosePromise = client.close();
+    channel.emitMessage({
+      type: "session.closed",
+      reason: "user_requested",
+      usage: { seconds: 3 },
+    });
+
+    const expected = {
+      finalized: true,
+      reason: "user_requested",
+      usageSeconds: 3,
+    };
+    await expect(firstClosePromise).resolves.toEqual(expected);
+    await expect(secondClosePromise).resolves.toEqual(expected);
+    expect(
+      channel.sendCalls.filter(
+        (call) => call === JSON.stringify({ type: "session.close" }),
+      ),
+    ).toHaveLength(1);
+  });
 });
