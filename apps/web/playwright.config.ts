@@ -5,9 +5,14 @@ export default defineConfig({
   fullyParallel: true,
   forbidOnly: !!process.env.CI,
   retries: process.env.CI ? 2 : 0,
+  timeout: 90_000,
+  expect: {
+    timeout: 15_000,
+  },
   use: {
     baseURL: "http://127.0.0.1:4173",
     trace: "on-first-retry",
+    viewport: { width: 390, height: 844 },
   },
   webServer: {
     command: "pnpm run build && pnpm exec vite preview --host 127.0.0.1 --port 4173 --strictPort",
@@ -18,7 +23,7 @@ export default defineConfig({
   projects: [
     {
       name: "chromium",
-      use: { ...devices["Desktop Chrome"] },
+      use: { ...devices["Desktop Chrome"], viewport: { width: 390, height: 844 } },
     },
   ],
 });

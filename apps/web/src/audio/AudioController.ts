@@ -110,6 +110,34 @@ export class AudioController {
     this.playbackDetector.onActivity = (event) => {
       this.onPlaybackActivity?.(event);
     };
+    this.installE2eAudioHooks();
+  }
+
+  /**
+   * Playwright-only: when the e2e init script sets `__LIVE_TRANSLATOR_E2E`,
+   * expose direct VAM/playback edges so tests do not drive real RMS.
+   */
+  private installE2eAudioHooks(): void {
+    const e2eWindow = window as Window & {
+      __LIVE_TRANSLATOR_E2E?: boolean;
+      __liveTranslatorTestAudio?: {
+        emitVoiceActivity(active: boolean, atMs: number): void;
+        emitPlaybackActivity(active: boolean, atMs: number): void;
+        isOutputMuted(): boolean;
+      };
+    };
+    if (e2eWindow.__LIVE_TRANSLATOR_E2E !== true) {
+      return;
+    }
+    e2eWindow.__liveTranslatorTestAudio = {
+      emitVoiceActivity: (active, atMs) => {
+        this.onVoiceActivity?.({ active, atMs });
+      },
+      emitPlaybackActivity: (active, atMs) => {
+        this.onPlaybackActivity?.({ active, atMs });
+      },
+      isOutputMuted: () => this.audioElement.muted,
+    };
   }
 
   getMicrophoneSettings(): MicrophoneSettingsDiagnostics | null {
