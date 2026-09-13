@@ -474,6 +474,7 @@ export class SessionController {
     this.clearCaptionIdleTimer();
     this.audio.setOutputAudible(false);
     this.dispatch({ type: "CORRECTION_START" });
+    this.beginLeftoverOutputDrain();
     try {
       await this.live.appendInstructions(
         buildCorrectionInstruction({ actualSpeaker: side, previousSpeaker }),
@@ -727,7 +728,7 @@ export class SessionController {
   }
 
   private async considerTurnCompletion(nowMs: number): Promise<void> {
-    if (this.turnClosing) {
+    if (this.turnClosing || this.gateCHeldForCorrectionEpoch !== null) {
       return;
     }
     const turn = this.currentSession.activeTurn;
@@ -967,7 +968,7 @@ export class SessionController {
   }
 
   private releaseGateCAfterFreshCorrectionOutput(): void {
-    if (this.gateCHeldForCorrectionEpoch === null) {
+    if (this.leftoverOutputDraining || this.gateCHeldForCorrectionEpoch === null) {
       return;
     }
     if (this.gateCHeldForCorrectionEpoch !== this.correctionEpoch) {
@@ -979,7 +980,7 @@ export class SessionController {
   }
 
   private tryEstablishCorrectionEpochFromPlayback(atMs: number): boolean {
-    if (!this.playbackActive || this.gateCHeldForCorrectionEpoch === null) {
+    if (this.leftoverOutputDraining || !this.playbackActive || this.gateCHeldForCorrectionEpoch === null) {
       return false;
     }
     if (this.currentSession.state !== "outputting" || this.currentSession.activeTurn === undefined) {

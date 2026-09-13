@@ -1358,6 +1358,8 @@ describe("SessionController correction", () => {
     expect(controller.session.activeTurn?.translatedText).toBeUndefined();
     expect(audio.setOutputAudible).toHaveBeenLastCalledWith(false);
 
+    await vi.advanceTimersByTimeAsync(runtime.captionIdleMs);
+    await flushMicrotasks();
     live.emit({ type: "session.output_transcript.delta", delta: "Hello there" });
     expect(controller.session.activeTurn?.translatedText).toBe("Hello there");
     expect(audio.setOutputAudible).toHaveBeenLastCalledWith(true);
@@ -1371,6 +1373,8 @@ describe("SessionController correction", () => {
     await controller.correctLastTurn("B");
     expect(audio.setOutputAudible).toHaveBeenLastCalledWith(false);
 
+    await vi.advanceTimersByTimeAsync(runtime.captionIdleMs);
+    await flushMicrotasks();
     emitPlayback(audio, true);
     await flushMicrotasks();
     expect(controller.session.activeTurn?.audioOutputStarted).toBe(true);
@@ -1383,6 +1387,8 @@ describe("SessionController correction", () => {
     emitPlayback(audio, false);
     await flushMicrotasks();
     await controller.correctLastTurn("B");
+    await vi.advanceTimersByTimeAsync(runtime.captionIdleMs);
+    await flushMicrotasks();
     live.emit({ type: "session.output_transcript.delta", delta: "Hello there" });
     emitPlayback(audio, false);
     await flushMicrotasks();
@@ -1449,6 +1455,62 @@ describe("SessionController correction", () => {
     expect(audio.setOutputAudible).toHaveBeenLastCalledWith(false);
     expect(controller.session.activeTurn?.audioOutputStarted).toBe(false);
 
+    live.emit({ type: "session.output_transcript.delta", delta: "stale leftover" });
+    expect(controller.session.activeTurn?.translatedText).toBeUndefined();
+    expect(audio.setOutputAudible).toHaveBeenLastCalledWith(false);
+
+    emitPlayback(audio, false);
+    await flushMicrotasks();
+    await vi.advanceTimersByTimeAsync(runtime.captionIdleMs);
+    await flushMicrotasks();
+    live.emit({ type: "session.output_transcript.delta", delta: "Hello there" });
+    expect(controller.session.activeTurn?.translatedText).toBe("Hello there");
+    expect(audio.setOutputAudible).toHaveBeenLastCalledWith(true);
+  });
+
+  it("does not treat leftover captions after an outputting correction as the new epoch", async () => {
+    const { controller, live, audio } = createController();
+    await startAudibleTurnAssignedA(controller, live, audio);
+    const laterSteeringBefore = live.appendInstructions.mock.calls.filter(
+      (call) => call[1]?.kind === "later_steering",
+    ).length;
+    const idleDeadlineMs = runtime.playbackIdleMs + runtime.outputSettleGraceMs;
+
+    const pending = controller.correctLastTurn("B");
+    await vi.advanceTimersByTimeAsync(idleDeadlineMs);
+    await pending;
+
+    expect(controller.session.state).toBe("outputting");
+    expect(controller.session.activeTurn?.speaker).toBe("B");
+    expect(controller.session.activeTurn?.translatedText).toBeUndefined();
+    expect(audio.setOutputAudible).toHaveBeenLastCalledWith(false);
+
+    live.emit({ type: "session.output_transcript.delta", delta: "stale leftover" });
+    await flushMicrotasks();
+    await vi.advanceTimersByTimeAsync(runtime.audioStartGraceMs);
+    await flushMicrotasks();
+
+    expect(controller.session.activeTurn?.translatedText).toBeUndefined();
+    expect(controller.session.activeTurn?.status).toBe("outputting");
+    expect(controller.session.state).toBe("outputting");
+    expect(controller.session.recentTurns).toHaveLength(0);
+    expect(audio.setOutputAudible).toHaveBeenLastCalledWith(false);
+    expect(
+      live.appendInstructions.mock.calls.filter((call) => call[1]?.kind === "later_steering").length,
+    ).toBe(laterSteeringBefore);
+
+    emitPlayback(audio, false);
+    await flushMicrotasks();
+    await vi.advanceTimersByTimeAsync(runtime.noOutputTimeoutMs);
+    await flushMicrotasks();
+
+    expect(controller.session.state).toBe("outputting");
+    expect(controller.session.activeTurn?.status).toBe("outputting");
+    expect(controller.session.activeTurn?.translatedText).toBeUndefined();
+    expect(audio.setOutputAudible).toHaveBeenLastCalledWith(false);
+
+    await vi.advanceTimersByTimeAsync(runtime.captionIdleMs);
+    await flushMicrotasks();
     live.emit({ type: "session.output_transcript.delta", delta: "Hello there" });
     expect(controller.session.activeTurn?.translatedText).toBe("Hello there");
     expect(audio.setOutputAudible).toHaveBeenLastCalledWith(true);
