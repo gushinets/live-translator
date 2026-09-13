@@ -53,6 +53,8 @@ export class SessionController {
   private connectWork: Promise<void> | null = null;
   private interpreterInFlight = false;
   private interpreterWork: Promise<void> | null = null;
+  private cancelWork: Promise<void> | null = null;
+  private sessionGeneration = 0;
   private idleTimer: number | null = null;
   private readonly listeners = new Set<() => void>();
 
@@ -83,7 +85,7 @@ export class SessionController {
   }
 
   get isConnectInFlight(): boolean {
-    return this.connectInFlight;
+    return this.connectInFlight || this.cancelWork !== null;
   }
 
   get isInterpreterStarting(): boolean {
@@ -112,6 +114,9 @@ export class SessionController {
   }
 
   async startContextCapture(): Promise<void> {
+    if (this.cancelWork !== null) {
+      await this.cancelWork;
+    }
     if (this.connectWork !== null) {
       await this.connectWork;
       return;
@@ -132,6 +137,9 @@ export class SessionController {
   }
 
   async startBootstrap(): Promise<void> {
+    if (this.cancelWork !== null) {
+      await this.cancelWork;
+    }
     if (this.connectWork !== null) {
       await this.connectWork;
       return;
@@ -212,6 +220,8 @@ export class SessionController {
       throw new Error(`Cannot begin interpreter from "${this.currentSession.state}"`);
     }
 
+    const live = this.live;
+    const generation = this.sessionGeneration;
     this.interpreterInFlight = true;
     this.ownerErrorMessage = undefined;
     this.notify();
@@ -225,26 +235,38 @@ export class SessionController {
           throw new ContextTooLongError();
         }
         try {
-          await this.live.appendThinking(payload, { kind: "startup_interpreter" });
-          this.authoritativeContextSent = true;
+          await live.appendThinking(payload, { kind: "startup_interpreter" });
         } catch (error) {
+          if (this.sessionGeneration !== generation) {
+            return;
+          }
           this.failOwnerRequest("Authoritative context append failed", error);
         }
+        if (this.sessionGeneration !== generation) {
+          return;
+        }
+        this.authoritativeContextSent = true;
       }
 
       try {
-        await this.live.appendInstructions(buildInterpreterInstructions(), {
+        await live.appendInstructions(buildInterpreterInstructions(), {
           kind: "startup_interpreter",
         });
       } catch (error) {
+        if (this.sessionGeneration !== generation) {
+          return;
+        }
         this.failOwnerRequest("BEGIN_INTERPRETER_MODE append failed", error);
+      }
+      if (this.sessionGeneration !== generation) {
+        return;
       }
 
       const recipientHint = this.degradedBootstrap
         ? undefined
         : this.currentSession.participantB.initialLanguageHint;
       try {
-        await this.live.appendInstructions(
+        await live.appendInstructions(
           buildSteering({
             expectedSource: "A",
             recipient: "B",
@@ -256,7 +278,13 @@ export class SessionController {
           },
         );
       } catch (error) {
+        if (this.sessionGeneration !== generation) {
+          return;
+        }
         this.failOwnerRequest("First steering append failed", error);
+      }
+      if (this.sessionGeneration !== generation) {
+        return;
       }
 
       this.clearIdleTimer();
@@ -264,12 +292,33 @@ export class SessionController {
       this.audio.setOutputAudible(true);
       this.dispatch({ type: "INTERPRETER_READY" });
     } finally {
-      this.interpreterInFlight = false;
-      this.notify();
+      if (this.sessionGeneration === generation) {
+        this.interpreterInFlight = false;
+        this.notify();
+      }
     }
   }
 
   async cancel(): Promise<void> {
+    if (this.cancelWork !== null) {
+      await this.cancelWork;
+      return;
+    }
+    const work = this.runCancel();
+    this.cancelWork = work;
+    try {
+      await work;
+    } finally {
+      if (this.cancelWork === work) {
+        this.cancelWork = null;
+      }
+    }
+  }
+
+  private async runCancel(): Promise<void> {
+    const pendingConnect = this.connectWork;
+    const shouldWaitForMic =
+      pendingConnect !== null && !this.hasConnected && !this.liveConnectStarted;
     this.clearIdleTimer();
     this.capturingContext = false;
     this.capturingBootstrap = false;
@@ -288,6 +337,12 @@ export class SessionController {
       this.audio.stopCapture();
     }
     this.resetToIdle();
+    if (shouldWaitForMic) {
+      await pendingConnect;
+      if (this.audio.getCaptureStream() !== null) {
+        this.audio.stopCapture();
+      }
+    }
   }
 
   private get audio(): SessionControllerDeps["audio"] {
@@ -320,6 +375,7 @@ export class SessionController {
 
   private async ensureConnected(): Promise<void> {
     const live = this.live;
+    const generation = this.sessionGeneration;
     try {
       await this.audio.primeOutput();
     } catch (error) {
@@ -329,7 +385,7 @@ export class SessionController {
       });
       throw error;
     }
-    if (this.live !== live) {
+    if (this.sessionGeneration !== generation) {
       return;
     }
     this.audio.setOutputAudible(false);
@@ -337,13 +393,16 @@ export class SessionController {
       try {
         await this.audio.startCapture();
       } catch (error) {
-        if (this.live !== live) {
+        if (this.sessionGeneration !== generation) {
           return;
         }
         this.failOwnerRequest("Microphone capture failed", error);
       }
     }
-    if (this.live !== live) {
+    if (this.sessionGeneration !== generation) {
+      if (this.audio.getCaptureStream() !== null) {
+        this.audio.stopCapture();
+      }
       return;
     }
     const stream = this.audio.getCaptureStream();
@@ -361,7 +420,7 @@ export class SessionController {
     try {
       await live.connect(stream);
     } catch (error) {
-      if (this.live !== live) {
+      if (this.sessionGeneration !== generation) {
         return;
       }
       console.error("Live connect failed", {
@@ -375,7 +434,7 @@ export class SessionController {
       });
       throw error;
     }
-    if (this.live !== live) {
+    if (this.sessionGeneration !== generation) {
       return;
     }
     this.hasConnected = true;
@@ -399,12 +458,12 @@ export class SessionController {
   }
 
   private async runStartContextCapture(): Promise<void> {
-    const live = this.live;
+    const generation = this.sessionGeneration;
     this.connectInFlight = true;
     this.notify();
     try {
       await this.ensureConnected();
-      if (this.live !== live) {
+      if (this.sessionGeneration !== generation) {
         return;
       }
       if (this.currentSession.state === "idle") {
@@ -422,7 +481,7 @@ export class SessionController {
       this.capturingBootstrap = false;
       this.armIdleTimer("context");
     } finally {
-      if (this.live === live) {
+      if (this.sessionGeneration === generation) {
         this.connectInFlight = false;
         this.notify();
       }
@@ -430,12 +489,12 @@ export class SessionController {
   }
 
   private async runStartBootstrap(): Promise<void> {
-    const live = this.live;
+    const generation = this.sessionGeneration;
     this.connectInFlight = true;
     this.notify();
     try {
       await this.ensureConnected();
-      if (this.live !== live) {
+      if (this.sessionGeneration !== generation) {
         return;
       }
       if (this.currentSession.state === "idle") {
@@ -454,7 +513,7 @@ export class SessionController {
       }
       this.armIdleTimer("bootstrap");
     } finally {
-      if (this.live === live) {
+      if (this.sessionGeneration === generation) {
         this.connectInFlight = false;
         this.notify();
       }
@@ -475,6 +534,8 @@ export class SessionController {
   }
 
   private resetToIdle(): void {
+    this.audio.setOutputAudible(false);
+    this.audio.audioElement.srcObject = null;
     this.hasConnected = false;
     this.contextBuffer = "";
     this.bootstrapBuffer = "";
@@ -487,6 +548,7 @@ export class SessionController {
     this.connectWork = null;
     this.interpreterInFlight = false;
     this.interpreterWork = null;
+    this.sessionGeneration += 1;
     this.currentSession = createSessionFromDeviceLocale();
     this.live = this.deps.createLive();
     this.bindLive();

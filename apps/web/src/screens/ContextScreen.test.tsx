@@ -172,6 +172,17 @@ describe("ContextScreen", () => {
     expect(screen.getByRole("button", { name: "Cancel" })).toBeEnabled();
   });
 
+  it("shows Cancel while connect is in flight from idle", () => {
+    const controller = new FakeOwnerController();
+    controller.session = { state: "idle" };
+    controller.isConnectInFlight = true;
+
+    render(<ContextScreen controller={controller} />);
+
+    expect(screen.getByRole("button", { name: "Cancel" })).toBeEnabled();
+    expect(screen.getByRole("button", { name: "Start translation" })).toBeDisabled();
+  });
+
   it("shows ownerError after a connect failure and keeps Cancel enabled", () => {
     const controller = new FakeOwnerController();
     controller.session = { state: "idle" };

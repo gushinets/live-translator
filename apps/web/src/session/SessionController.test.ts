@@ -510,4 +510,109 @@ describe("SessionController", () => {
     );
     expect(connectController.ownerError).toBe("Unable to establish live connection");
   });
+
+  it("ignores a late interpreter append after cancel and stays idle", async () => {
+    const created: FakeLive[] = [];
+    const audio = createFakeAudio();
+    const controller = new SessionController({
+      createLive: () => {
+        const live = new FakeLive();
+        created.push(live);
+        return live as unknown as LiveClient;
+      },
+      audio: audio as unknown as AudioController,
+    });
+    const first = created[0];
+    if (first === undefined) {
+      throw new Error("LiveClient was not created");
+    }
+    await controller.startBootstrap();
+    controller.skipBootstrap();
+
+    let releaseFirstAppend: (() => void) | undefined;
+    first.appendInstructions.mockImplementation(
+      () =>
+        new Promise<{ eventId: string }>((resolve) => {
+          releaseFirstAppend = () => {
+            resolve({ eventId: "evt-late" });
+          };
+        }),
+    );
+
+    const starting = controller.beginInterpreter();
+    await vi.waitFor(() => {
+      expect(first.appendInstructions).toHaveBeenCalledOnce();
+      expect(controller.isInterpreterStarting).toBe(true);
+    });
+
+    await controller.cancel();
+
+    expect(first.close).toHaveBeenCalledOnce();
+    expect(controller.session.state).toBe("idle");
+    expect(controller.ownerError).toBeUndefined();
+    expect(created).toHaveLength(2);
+
+    if (releaseFirstAppend === undefined) {
+      throw new Error("first interpreter append was not started");
+    }
+    releaseFirstAppend();
+    await starting;
+
+    expect(controller.session.state).toBe("idle");
+    expect(controller.ownerError).toBeUndefined();
+    expect(controller.isInterpreterStarting).toBe(false);
+    expect(audio.setOutputAudible).toHaveBeenLastCalledWith(false);
+    expect(created[1]?.appendInstructions).not.toHaveBeenCalled();
+  });
+
+  it("cancels during microphone wait and stops a capture that lands after reset", async () => {
+    const audio = createFakeAudio();
+    let stream: MediaStream | null = null;
+    audio.getCaptureStream.mockImplementation(() => stream);
+    audio.stopCapture.mockImplementation(() => {
+      stream = null;
+    });
+    let finishCapture: (() => void) | undefined;
+    audio.startCapture.mockImplementationOnce(
+      () =>
+        new Promise<void>((resolve) => {
+          finishCapture = () => {
+            stream = audio.captureStream;
+            resolve();
+          };
+        }),
+    );
+    audio.startCapture.mockImplementation(async () => {
+      if (stream !== null) {
+        throw new Error("Microphone capture has already started");
+      }
+      stream = audio.captureStream;
+    });
+
+    const { controller } = createController({ audio });
+
+    const starting = controller.startContextCapture();
+    await vi.waitFor(() => {
+      expect(audio.startCapture).toHaveBeenCalledOnce();
+      expect(controller.isConnectInFlight).toBe(true);
+    });
+    expect(controller.session.state).toBe("idle");
+
+    const cancelling = controller.cancel();
+    if (finishCapture === undefined) {
+      throw new Error("startCapture was not started");
+    }
+    finishCapture();
+    await cancelling;
+    await starting;
+
+    expect(controller.session.state).toBe("idle");
+    expect(audio.stopCapture).toHaveBeenCalledOnce();
+    expect(audio.getCaptureStream()).toBeNull();
+    expect(controller.ownerError).toBeUndefined();
+
+    await controller.startContextCapture();
+    expect(audio.startCapture).toHaveBeenCalledTimes(2);
+    expect(controller.session.state).toBe("context");
+  });
 });

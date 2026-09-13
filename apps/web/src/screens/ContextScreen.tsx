@@ -200,7 +200,9 @@ export function ContextScreen({
         </button>
       )}
       <PrivacyDisclosure />
-      {controller.session.state === "idle" && controller.ownerError === undefined ? null : (
+      {controller.session.state === "idle" &&
+      controller.ownerError === undefined &&
+      controller.isConnectInFlight !== true ? null : (
         <button
           type="button"
           onClick={() => {
