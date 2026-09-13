@@ -371,6 +371,26 @@ describe("LiveClient.connect", () => {
     expect(peer.dataChannel?.closeCalls).toBe(1);
     expect(peer.closeCalls).toBe(1);
   });
+
+  it("rejects connect() (instead of hanging) if a server error event arrives before session.started, and tears down", async () => {
+    const { backend } = makeFakeBackend();
+    const client = makeClient(backend);
+    const connectPromise = client.connect(makeFakeStream());
+    await vi.waitFor(() => {
+      expect(peer.calls).toContain("setRemoteDescription");
+    });
+
+    peer.dataChannel?.emitMessage({
+      type: "error",
+      error: { message: "boom" },
+    });
+
+    await expect(connectPromise).rejects.toThrow(
+      "Live session reported an error before session.started: boom",
+    );
+    expect(peer.dataChannel?.closeCalls).toBe(1);
+    expect(peer.closeCalls).toBe(1);
+  });
 });
 
 describe("LiveClient event dispatch", () => {
@@ -599,6 +619,26 @@ describe("LiveClient transport failure handling", () => {
     peer.emitConnectionStateChange("closed");
 
     expect(onError).not.toHaveBeenCalled();
+  });
+
+  it("disables send() after an unexpected data channel close once the session has started", async () => {
+    const { client, channel } = await connectedClient();
+
+    channel.emitClose();
+
+    expect(() =>
+      client.send({ type: "session.input_audio.mute", event_id: "evt-1" }),
+    ).toThrow("Cannot send a Live event while the session is closing");
+  });
+
+  it("disables send() after an unexpected peer connection failure once the session has started", async () => {
+    const { client, peer } = await connectedClient();
+
+    peer.emitConnectionStateChange("failed");
+
+    expect(() =>
+      client.send({ type: "session.input_audio.mute", event_id: "evt-1" }),
+    ).toThrow("Cannot send a Live event while the session is closing");
   });
 });
 

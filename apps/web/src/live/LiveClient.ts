@@ -295,10 +295,14 @@ export class LiveClient {
    * `session.closed` set `closing` before the transport tears down, so
    * expected closure is never reported as an error. If this happens while
    * connect() is still waiting for session.started, that connect() is
-   * rejected instead of hanging forever.
+   * rejected instead of hanging forever. Once started, the session is no
+   * longer usable after this, so `closing` is set to disable further
+   * `send()` calls (reusing the same flag/error `send()` already uses for
+   * a graceful close in progress).
    */
   private handleChannelClose(): void {
     if (this.closing) return;
+    this.closing = true;
     this.onError?.({
       type: "error",
       error: { message: "Live data channel closed unexpectedly" },
@@ -316,12 +320,16 @@ export class LiveClient {
    * server-initiated `session.closed`) is suppressed by the `closing` guard
    * for the same reason as above. If a terminal state is reached while
    * connect() is still waiting for session.started, that connect() is
-   * rejected instead of hanging forever.
+   * rejected instead of hanging forever. Once started, the session is no
+   * longer usable after this, so `closing` is set to disable further
+   * `send()` calls (reusing the same flag/error `send()` already uses for
+   * a graceful close in progress).
    */
   private handleConnectionStateChange(): void {
     if (this.closing) return;
     const state = this.peer?.connectionState;
     if (state !== "failed" && state !== "closed") return;
+    this.closing = true;
     this.onError?.({
       type: "error",
       error: { message: `Peer connection state changed to "${state}"` },
@@ -391,6 +399,16 @@ export class LiveClient {
       }
       case "error":
         this.onError?.(serverEvent);
+        // A server-reported error before session.started means the
+        // session never actually started; reject the pending connect()
+        // instead of leaving it waiting for a session.started that will
+        // now never arrive (same class of hang as an early channel close,
+        // peer failure, or session.closed — see rejectPendingConnect()).
+        this.rejectPendingConnect(
+          new Error(
+            `Live session reported an error before session.started: ${serverEvent.error.message}`,
+          ),
+        );
         return;
     }
   }
