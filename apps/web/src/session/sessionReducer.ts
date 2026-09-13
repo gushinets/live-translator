@@ -184,7 +184,11 @@ function handleCorrectionStart(session: TranslationSession): TranslationSession 
   }
 
   if (session.activeTurn !== undefined) {
-    if (session.activeTurn.status === "failed" || session.activeTurn.status === "discarded") {
+    if (
+      session.activeTurn.status === "failed" ||
+      session.activeTurn.status === "discarded" ||
+      (session.state === "listening" && session.activeTurn.status === "streaming")
+    ) {
       throw new Error("Cannot start a correction: no correctable turn exists.");
     }
     return {

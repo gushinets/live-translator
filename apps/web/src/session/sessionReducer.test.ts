@@ -241,6 +241,13 @@ describe("sessionReducer: correction flow (§11.2)", () => {
     expect(() => sessionReducer(state, { type: "CORRECTION_START" })).toThrow(/no correctable turn/i);
   });
 
+  it("throws if CORRECTION_START arrives while listening to a streaming active turn", () => {
+    const state = listeningState({ expectedSpeaker: "A", sourceActive: true, speaker: "A" });
+    expect(state.state).toBe("listening");
+    expect(state.activeTurn?.status).toBe("streaming");
+    expect(() => sessionReducer(state, { type: "CORRECTION_START" })).toThrow();
+  });
+
   it("promotes a completed latest turn onto activeTurn as correcting", () => {
     const closed = sessionReducer(stateWithCompletedTurn("A"), { type: "TURN_CLOSED", speaker: "A" });
     expect(closed.activeTurn).toBeUndefined();
