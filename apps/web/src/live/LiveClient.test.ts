@@ -1,0 +1,480 @@
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import type { BackendClient } from "../api/BackendClient";
+import { LiveClient } from "./LiveClient";
+import type { SessionClosedEvent } from "./LiveEvents";
+
+class FakeDataChannel extends EventTarget {
+  readyState: RTCDataChannelState = "open";
+  readonly sendCalls: string[] = [];
+  closeCalls = 0;
+
+  constructor(readonly label: string) {
+    super();
+  }
+
+  send(data: string): void {
+    this.sendCalls.push(data);
+  }
+
+  close(): void {
+    this.closeCalls += 1;
+    this.readyState = "closed";
+  }
+
+  emitMessage(payload: unknown): void {
+    this.dispatchEvent(
+      new MessageEvent("message", { data: JSON.stringify(payload) }),
+    );
+  }
+}
+
+class FakePeerConnection extends EventTarget {
+  readonly calls: string[] = [];
+  iceGatheringState: RTCIceGatheringState = "new";
+  localDescription: RTCSessionDescriptionInit | null = null;
+  remoteDescription: RTCSessionDescriptionInit | null = null;
+  readonly addTrackCalls: unknown[] = [];
+  closeCalls = 0;
+  dataChannel: FakeDataChannel | null = null;
+
+  createDataChannel(label: string): RTCDataChannel {
+    this.calls.push("createDataChannel");
+    this.dataChannel = new FakeDataChannel(label);
+    return this.dataChannel as unknown as RTCDataChannel;
+  }
+
+  addTrack(track: MediaStreamTrack, stream: MediaStream): RTCRtpSender {
+    this.calls.push("addTrack");
+    this.addTrackCalls.push({ track, stream });
+    return {} as RTCRtpSender;
+  }
+
+  async createOffer(): Promise<RTCSessionDescriptionInit> {
+    this.calls.push("createOffer");
+    return { type: "offer", sdp: "v=0 fake-offer-sdp" };
+  }
+
+  async setLocalDescription(
+    description: RTCSessionDescriptionInit,
+  ): Promise<void> {
+    this.calls.push("setLocalDescription");
+    this.localDescription = description;
+    this.iceGatheringState = "complete";
+  }
+
+  async setRemoteDescription(
+    description: RTCSessionDescriptionInit,
+  ): Promise<void> {
+    this.calls.push("setRemoteDescription");
+    this.remoteDescription = description;
+  }
+
+  close(): void {
+    this.closeCalls += 1;
+  }
+
+  emitTrack(streams: MediaStream[]): void {
+    const event = new Event("track") as RTCTrackEvent;
+    Object.defineProperty(event, "streams", { value: streams });
+    this.dispatchEvent(event);
+  }
+}
+
+function makeFakeStream(trackCount = 1): MediaStream {
+  const tracks = Array.from({ length: trackCount }, (_, index) => ({
+    id: `track-${index}`,
+    kind: "audio",
+  })) as unknown as MediaStreamTrack[];
+  return { getTracks: () => tracks } as unknown as MediaStream;
+}
+
+function makeFakeBackend(
+  overrides: Partial<{
+    sessionId: string;
+    answerSdp: string;
+  }> = {},
+) {
+  const calls: string[] = [];
+  const backend: BackendClient = {
+    createLiveSession: async (sdp: string) => {
+      calls.push(sdp);
+      return {
+        session: { id: overrides.sessionId ?? "sess_123" },
+        transport: {
+          type: "webrtc" as const,
+          sdp: overrides.answerSdp ?? "v=0 fake-answer-sdp",
+        },
+      };
+    },
+  } as unknown as BackendClient;
+  return { backend, calls };
+}
+
+describe("LiveClient.connect", () => {
+  let peer: FakePeerConnection;
+  let onRemoteStream: ReturnType<typeof vi.fn>;
+
+  beforeEach(() => {
+    peer = new FakePeerConnection();
+    onRemoteStream = vi.fn();
+  });
+
+  function makeClient(backend: BackendClient) {
+    return new LiveClient({
+      backend,
+      peerFactory: () => peer as unknown as RTCPeerConnection,
+      onRemoteStream,
+    });
+  }
+
+  it("follows the official connect sequence and resolves only after session.started", async () => {
+    const { backend, calls: backendCalls } = makeFakeBackend();
+    const client = makeClient(backend);
+    const stream = makeFakeStream();
+
+    let resolved = false;
+    const connectPromise = client.connect(stream).then((result) => {
+      resolved = true;
+      return result;
+    });
+
+    await vi.waitFor(() => {
+      expect(peer.calls).toContain("setRemoteDescription");
+    });
+
+    expect(peer.calls).toEqual([
+      "createDataChannel",
+      "addTrack",
+      "createOffer",
+      "setLocalDescription",
+      "setRemoteDescription",
+    ]);
+    expect(backendCalls).toEqual(["v=0 fake-offer-sdp"]);
+    expect(peer.dataChannel?.label).toBe("oai-events");
+    expect(resolved).toBe(false);
+
+    peer.dataChannel?.emitMessage({
+      type: "session.started",
+      session: { id: "sess_123" },
+    });
+
+    await expect(connectPromise).resolves.toEqual({ sessionId: "sess_123" });
+  });
+
+  it("creates the data channel before adding tracks or creating the offer", async () => {
+    const { backend } = makeFakeBackend();
+    const client = makeClient(backend);
+    const connectPromise = client.connect(makeFakeStream());
+
+    await vi.waitFor(() => {
+      expect(peer.calls).toContain("setRemoteDescription");
+    });
+    const dataChannelIndex = peer.calls.indexOf("createDataChannel");
+    const addTrackIndex = peer.calls.indexOf("addTrack");
+    const createOfferIndex = peer.calls.indexOf("createOffer");
+    expect(dataChannelIndex).toBe(0);
+    expect(dataChannelIndex).toBeLessThan(addTrackIndex);
+    expect(addTrackIndex).toBeLessThan(createOfferIndex);
+
+    peer.dataChannel?.emitMessage({
+      type: "session.started",
+      session: { id: "sess_123" },
+    });
+    await connectPromise;
+  });
+
+  it("adds every microphone track from the provided stream", async () => {
+    const { backend } = makeFakeBackend();
+    const client = makeClient(backend);
+    const stream = makeFakeStream(2);
+    const connectPromise = client.connect(stream);
+
+    await vi.waitFor(() => {
+      expect(peer.addTrackCalls).toHaveLength(2);
+    });
+
+    peer.dataChannel?.emitMessage({
+      type: "session.started",
+      session: { id: "sess_123" },
+    });
+    await connectPromise;
+  });
+
+  it("never sends a session.start command on the data channel", async () => {
+    const { backend } = makeFakeBackend();
+    const client = makeClient(backend);
+    const connectPromise = client.connect(makeFakeStream());
+
+    await vi.waitFor(() => {
+      expect(peer.calls).toContain("setRemoteDescription");
+    });
+    expect(peer.dataChannel?.sendCalls).toEqual([]);
+
+    peer.dataChannel?.emitMessage({
+      type: "session.started",
+      session: { id: "sess_123" },
+    });
+    await connectPromise;
+    expect(peer.dataChannel?.sendCalls).toEqual([]);
+  });
+
+  it("forwards remote tracks to onRemoteStream", async () => {
+    const { backend } = makeFakeBackend();
+    const client = makeClient(backend);
+    const connectPromise = client.connect(makeFakeStream());
+
+    await vi.waitFor(() => {
+      expect(peer.calls).toContain("setRemoteDescription");
+    });
+    const remoteStream = makeFakeStream();
+    peer.emitTrack([remoteStream]);
+    expect(onRemoteStream).toHaveBeenCalledWith(remoteStream);
+
+    peer.dataChannel?.emitMessage({
+      type: "session.started",
+      session: { id: "sess_123" },
+    });
+    await connectPromise;
+  });
+
+  it("rejects when ICE gathering never completes within the timeout", async () => {
+    vi.useFakeTimers();
+    peer.setLocalDescription = async (
+      description: RTCSessionDescriptionInit,
+    ) => {
+      peer.calls.push("setLocalDescription");
+      peer.localDescription = description;
+      // ICE never completes.
+    };
+    const { backend } = makeFakeBackend();
+    const client = makeClient(backend);
+
+    const connectPromise = client.connect(makeFakeStream());
+    const assertion = expect(connectPromise).rejects.toThrow(
+      "Timed out while gathering ICE candidates",
+    );
+    await vi.advanceTimersByTimeAsync(10_000);
+    await assertion;
+    vi.useRealTimers();
+  });
+});
+
+describe("LiveClient event dispatch", () => {
+  async function connectedClient() {
+    const peer = new FakePeerConnection();
+    const onRemoteStream = vi.fn();
+    const { backend } = makeFakeBackend();
+    const client = new LiveClient({
+      backend,
+      peerFactory: () => peer as unknown as RTCPeerConnection,
+      onRemoteStream,
+    });
+    const connectPromise = client.connect(makeFakeStream());
+    await vi.waitFor(() => {
+      expect(peer.calls).toContain("setRemoteDescription");
+    });
+    peer.dataChannel?.emitMessage({
+      type: "session.started",
+      session: { id: "sess_123" },
+    });
+    await connectPromise;
+    if (peer.dataChannel === null) throw new Error("data channel missing");
+    return { client, peer, channel: peer.dataChannel };
+  }
+
+  it("invokes onTranscriptDelta for transcript delta events", async () => {
+    const { client, channel } = await connectedClient();
+    const onTranscriptDelta = vi.fn();
+    client.onTranscriptDelta = onTranscriptDelta;
+
+    channel.emitMessage({
+      type: "session.output_transcript.delta",
+      delta: "hola",
+    });
+
+    expect(onTranscriptDelta).toHaveBeenCalledWith({
+      type: "session.output_transcript.delta",
+      delta: "hola",
+    });
+  });
+
+  it("invokes onAppendAcknowledged for append acknowledgment events", async () => {
+    const { client, channel } = await connectedClient();
+    const onAppendAcknowledged = vi.fn();
+    client.onAppendAcknowledged = onAppendAcknowledged;
+
+    channel.emitMessage({
+      type: "session.instructions.appended",
+      client_event_id: "evt-1",
+    });
+
+    expect(onAppendAcknowledged).toHaveBeenCalledWith({
+      type: "session.instructions.appended",
+      client_event_id: "evt-1",
+    });
+  });
+
+  it("invokes onMuteAcknowledged for mute/unmute acknowledgment events", async () => {
+    const { client, channel } = await connectedClient();
+    const onMuteAcknowledged = vi.fn();
+    client.onMuteAcknowledged = onMuteAcknowledged;
+
+    channel.emitMessage({ type: "session.input_audio.muted" });
+
+    expect(onMuteAcknowledged).toHaveBeenCalledWith({
+      type: "session.input_audio.muted",
+    });
+  });
+
+  it("invokes onError for error events", async () => {
+    const { client, channel } = await connectedClient();
+    const onError = vi.fn();
+    client.onError = onError;
+
+    channel.emitMessage({ type: "error", error: { message: "boom" } });
+
+    expect(onError).toHaveBeenCalledWith({
+      type: "error",
+      error: { message: "boom" },
+    });
+  });
+
+  it("invokes onSessionClosed and onUsage when session.closed arrives", async () => {
+    const { client, channel } = await connectedClient();
+    const onSessionClosed = vi.fn();
+    const onUsage = vi.fn();
+    client.onSessionClosed = onSessionClosed;
+    client.onUsage = onUsage;
+
+    const closedEvent: SessionClosedEvent = {
+      type: "session.closed",
+      reason: "user_requested",
+      usage: { seconds: 42 },
+    };
+    channel.emitMessage(closedEvent);
+
+    expect(onSessionClosed).toHaveBeenCalledWith(closedEvent);
+    expect(onUsage).toHaveBeenCalledWith({ seconds: 42 });
+  });
+});
+
+describe("LiveClient.send", () => {
+  it("writes the event as JSON onto the data channel once connected", async () => {
+    const peer = new FakePeerConnection();
+    const { backend } = makeFakeBackend();
+    const client = new LiveClient({
+      backend,
+      peerFactory: () => peer as unknown as RTCPeerConnection,
+      onRemoteStream: vi.fn(),
+    });
+    const connectPromise = client.connect(makeFakeStream());
+    await vi.waitFor(() => {
+      expect(peer.calls).toContain("setRemoteDescription");
+    });
+    peer.dataChannel?.emitMessage({
+      type: "session.started",
+      session: { id: "sess_123" },
+    });
+    await connectPromise;
+
+    client.send({ type: "session.input_audio.mute", event_id: "evt-1" });
+
+    expect(peer.dataChannel?.sendCalls).toEqual([
+      JSON.stringify({ type: "session.input_audio.mute", event_id: "evt-1" }),
+    ]);
+  });
+
+  it("throws when called before connect() has resolved", () => {
+    const peer = new FakePeerConnection();
+    const { backend } = makeFakeBackend();
+    const client = new LiveClient({
+      backend,
+      peerFactory: () => peer as unknown as RTCPeerConnection,
+      onRemoteStream: vi.fn(),
+    });
+
+    expect(() =>
+      client.send({ type: "session.input_audio.mute", event_id: "evt-1" }),
+    ).toThrow();
+  });
+});
+
+describe("LiveClient.close", () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  async function connectedClient() {
+    const peer = new FakePeerConnection();
+    const { backend } = makeFakeBackend();
+    const client = new LiveClient({
+      backend,
+      peerFactory: () => peer as unknown as RTCPeerConnection,
+      onRemoteStream: vi.fn(),
+    });
+    const connectPromise = client.connect(makeFakeStream());
+    await vi.waitFor(() => {
+      expect(peer.calls).toContain("setRemoteDescription");
+    });
+    peer.dataChannel?.emitMessage({
+      type: "session.started",
+      session: { id: "sess_123" },
+    });
+    await connectPromise;
+    if (peer.dataChannel === null) throw new Error("data channel missing");
+    return { client, peer, channel: peer.dataChannel };
+  }
+
+  it("sends session.close, waits for session.closed, then tears down the transport", async () => {
+    const { client, peer, channel } = await connectedClient();
+
+    const closePromise = client.close();
+    await vi.waitFor(() => {
+      expect(channel.sendCalls).toContain(
+        JSON.stringify({ type: "session.close" }),
+      );
+    });
+    expect(channel.closeCalls).toBe(0);
+    expect(peer.closeCalls).toBe(0);
+
+    channel.emitMessage({
+      type: "session.closed",
+      reason: "user_requested",
+      usage: { seconds: 12 },
+    });
+
+    await expect(closePromise).resolves.toEqual({
+      finalized: true,
+      reason: "user_requested",
+      usageSeconds: 12,
+    });
+    expect(channel.closeCalls).toBe(1);
+    expect(peer.closeCalls).toBe(1);
+  });
+
+  it("finalizes as false after waiting 15 seconds without session.closed", async () => {
+    vi.useFakeTimers();
+    const { client, peer, channel } = await connectedClient();
+
+    const closePromise = client.close();
+    const assertion = expect(closePromise).resolves.toMatchObject({
+      finalized: false,
+    });
+    await vi.advanceTimersByTimeAsync(15_000);
+    await assertion;
+    expect(channel.closeCalls).toBe(1);
+    expect(peer.closeCalls).toBe(1);
+  });
+
+  it("stops accepting new commands once close() has been called", async () => {
+    const { client, channel } = await connectedClient();
+
+    const closePromise = client.close();
+    expect(() =>
+      client.send({ type: "session.input_audio.mute", event_id: "evt-1" }),
+    ).toThrow();
+
+    channel.emitMessage({ type: "session.closed" });
+    await closePromise;
+  });
+});
