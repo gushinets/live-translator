@@ -1,7 +1,7 @@
 {
   "name": "live-translator",
   "private": true,
-  "packageManager": "pnpm@10",
+  "packageManager": "pnpm@10.34.1",
   "scripts": {
     "dev": "pnpm --parallel --filter @live-translator/web --filter @live-translator/api dev",
     "build": "pnpm -r build",
