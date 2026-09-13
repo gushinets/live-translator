@@ -69,6 +69,7 @@ export class AudioController {
   onVoiceActivity: ((event: AudioActivityEvent) => void) | null = null;
   onPlaybackActivity: ((event: AudioActivityEvent) => void) | null = null;
   onAudioInterruption: (() => void) | null = null;
+  onAudioRestored: (() => void) | null = null;
 
   readonly audioElement: HTMLAudioElement;
 
@@ -249,6 +250,8 @@ export class AudioController {
     }
   }
 
+  private contextWasInterrupted = false;
+
   private readonly handleCaptureEnded = (): void => {
     this.onAudioInterruption?.();
   };
@@ -258,7 +261,13 @@ export class AudioController {
       return;
     }
     if ((this.audioContext.state as string) === "interrupted") {
+      this.contextWasInterrupted = true;
       this.onAudioInterruption?.();
+      return;
+    }
+    if (this.audioContext.state === "running" && this.contextWasInterrupted) {
+      this.contextWasInterrupted = false;
+      this.onAudioRestored?.();
     }
   };
 

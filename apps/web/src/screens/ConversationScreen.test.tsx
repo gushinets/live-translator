@@ -3,7 +3,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { MAX_RECENT_TURNS } from "../conversation/TurnBuffer";
 import type { Side, Turn } from "../conversation/Turn";
 import { currentMessageSizeClass } from "../components/ParticipantPane";
-import type { RecoveryPrompt } from "../session/SessionController";
+import type { LifecycleSuspendReason, RecoveryPrompt } from "../session/SessionController";
 import {
   createInitialSession,
   type TranslationSession,
@@ -40,6 +40,7 @@ class FakeConversationController implements ConversationScreenController {
   session: TranslationSession;
   recoveryPrompt: RecoveryPrompt | undefined;
   ownerError: string | undefined;
+  suspendReason: LifecycleSuspendReason | undefined;
   readonly correctLastTurn = vi.fn(async (_side: Side) => {});
   readonly endConversation = vi.fn(async () => {});
   readonly resumeFromSourceTimeout = vi.fn(async () => {});
@@ -238,5 +239,21 @@ describe("ConversationScreen actions", () => {
     controller.ownerError = "Live session closed unexpectedly.";
     render(<ConversationScreen controller={controller} />);
     expect(screen.getByRole("alert")).toHaveTextContent("Live session closed unexpectedly.");
+  });
+
+  it("shows a blocking portrait-oriented rotate overlay only for orientation suspend", () => {
+    const oriented = new FakeConversationController(session({ state: "suspended" }));
+    oriented.suspendReason = "orientation";
+    const { unmount } = render(<ConversationScreen controller={oriented} />);
+    const overlay = screen.getByTestId("rotate-overlay");
+    expect(overlay).toHaveTextContent(/rotate/i);
+    expect(overlay).toHaveStyle({ transform: "none" });
+    expect(screen.queryByTestId("rotate-overlay")).toBeInTheDocument();
+    unmount();
+
+    const hidden = new FakeConversationController(session({ state: "suspended" }));
+    hidden.suspendReason = "visibility";
+    render(<ConversationScreen controller={hidden} />);
+    expect(screen.queryByTestId("rotate-overlay")).not.toBeInTheDocument();
   });
 });

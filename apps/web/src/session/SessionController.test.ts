@@ -48,7 +48,7 @@ class FakeLive {
     this.callOrder.push(`commentary:${text}`);
     return { eventId: "evt-commentary" };
   });
-  readonly setInputMuted = vi.fn(async () => {
+  readonly setInputMuted = vi.fn(async (_muted: boolean) => {
     this.callOrder.push("setInputMuted");
   });
   peerConnectionState: RTCPeerConnectionState | null = "connected";
@@ -96,6 +96,7 @@ function createFakeAudio() {
     onVoiceActivity: null as ((event: { active: boolean; atMs: number }) => void) | null,
     onPlaybackActivity: null as ((event: { active: boolean; atMs: number }) => void) | null,
     onAudioInterruption: null as (() => void) | null,
+    onAudioRestored: null as (() => void) | null,
     resetVoiceActivityBaseline: vi.fn(),
   };
 }
@@ -793,14 +794,9 @@ async function flushMicrotasks(): Promise<void> {
 }
 
 async function flushLifecycle(): Promise<void> {
-  await Promise.resolve();
-  await Promise.resolve();
-  await Promise.resolve();
-  await Promise.resolve();
-  await Promise.resolve();
-  await Promise.resolve();
-  await Promise.resolve();
-  await Promise.resolve();
+  for (let attempt = 0; attempt < 24; attempt += 1) {
+    await Promise.resolve();
+  }
 }
 
 async function completeTextOnlyTurn(
@@ -1843,7 +1839,7 @@ describe("SessionController PWA lifecycle suspension (§11.3 / §19)", () => {
     audio.captureTrack.readyState = "ended";
 
     visibility.show();
-    await flushMicrotasks();
+    await flushLifecycle();
 
     expect(controller.session.state).toBe("error");
     expect(controller.ownerError).toMatch(/microphone/i);
@@ -1864,7 +1860,7 @@ describe("SessionController PWA lifecycle suspension (§11.3 / §19)", () => {
     live.peerConnectionState = "failed";
 
     visibility.show();
-    await flushMicrotasks();
+    await flushLifecycle();
 
     expect(controller.session.state).toBe("error");
     expect(controller.ownerError).toMatch(/peer/i);
@@ -1883,7 +1879,7 @@ describe("SessionController PWA lifecycle suspension (§11.3 / §19)", () => {
     live.dataChannelReadyState = "connecting";
 
     visibility.show();
-    await flushMicrotasks();
+    await flushLifecycle();
 
     expect(controller.session.state).toBe("error");
     expect(controller.ownerError).toMatch(/data channel/i);
@@ -1902,7 +1898,7 @@ describe("SessionController PWA lifecycle suspension (§11.3 / §19)", () => {
     live.peerConnectionState = null;
 
     visibility.show();
-    await flushMicrotasks();
+    await flushLifecycle();
 
     expect(controller.session.state).toBe("error");
     expect(controller.ownerError).toMatch(/peer/i);
@@ -1941,4 +1937,185 @@ describe("SessionController PWA lifecycle suspension (§11.3 / §19)", () => {
     expect(visibility.start).toHaveBeenCalledOnce();
     expect(wakeLock.request).toHaveBeenCalledOnce();
   });
+
+  it("samples orientation at start and suspends when already landscape", async () => {
+    const orientation = new FakeOrientation();
+    orientation.emit("landscape");
+    const { controller } = createController({
+      orientation,
+      visibility: new FakeVisibility(),
+      wakeLock: new FakeWakeLock(),
+    });
+
+    await enterListening(controller);
+
+    expect(controller.session.state).toBe("suspended");
+    expect(controller.suspendReason).toBe("orientation");
+    expect(controller.session.activeTurn).toBeUndefined();
+  });
+
+  it("resumes AudioContext on lifecycle resume", async () => {
+    const visibility = new FakeVisibility();
+    const { controller, live, audio } = createController({
+      orientation: new FakeOrientation(),
+      visibility,
+      wakeLock: new FakeWakeLock(),
+    });
+    await startSourceTurn(controller, live, audio);
+    const primeCount = audio.primeOutput.mock.calls.length;
+
+    visibility.hide();
+    await flushMicrotasks();
+    visibility.show();
+    await flushLifecycle();
+
+    expect(audio.primeOutput.mock.calls.length).toBeGreaterThan(primeCount);
+    expect(controller.session.state).toBe("listening");
+  });
+
+  it("resumes after AudioContext leaves interrupted when media is still live", async () => {
+    const { controller, live, audio } = createController({
+      orientation: new FakeOrientation(),
+      visibility: new FakeVisibility(),
+      wakeLock: new FakeWakeLock(),
+    });
+    await startSourceTurn(controller, live, audio);
+    if (audio.onAudioInterruption === null || audio.onAudioRestored === null) {
+      throw new Error("Audio interruption/restore handlers were not installed");
+    }
+    const primeCount = audio.primeOutput.mock.calls.length;
+
+    audio.onAudioInterruption();
+    await flushMicrotasks();
+    expect(controller.session.state).toBe("suspended");
+
+    audio.onAudioRestored();
+    await flushLifecycle();
+
+    expect(audio.primeOutput.mock.calls.length).toBeGreaterThan(primeCount);
+    expect(controller.session.state).toBe("listening");
+  });
+
+  it("keeps Gate C closed and does not steer until leftover playback and captions are idle", async () => {
+    const visibility = new FakeVisibility();
+    const { controller, live, audio } = createController({
+      orientation: new FakeOrientation(),
+      visibility,
+      wakeLock: new FakeWakeLock(),
+    });
+    await startSourceTurn(controller, live, audio);
+    emitPlayback(audio, true);
+    const steeringAfterStart = live.appendInstructions.mock.calls.length;
+
+    visibility.hide();
+    await flushMicrotasks();
+    visibility.show();
+    await flushLifecycle();
+
+    expect(controller.session.state).toBe("suspended");
+    expect(audio.setOutputAudible).toHaveBeenLastCalledWith(false);
+    expect(live.appendInstructions.mock.calls.length).toBe(steeringAfterStart);
+    expect(live.setInputMuted).not.toHaveBeenLastCalledWith(false);
+
+    emitPlayback(audio, false);
+    await flushMicrotasks();
+    await vi.advanceTimersByTimeAsync(runtime.captionIdleMs);
+    await flushLifecycle();
+
+    expect(controller.session.state).toBe("listening");
+    expect(live.appendInstructions.mock.calls.length).toBe(steeringAfterStart + 1);
+    expect(live.appendInstructions).toHaveBeenLastCalledWith(
+      buildSteering({ expectedSource: "A", recipient: "B" }),
+      { kind: "later_steering", sessionState: "suspended" },
+    );
+    expect(audio.setOutputAudible).toHaveBeenLastCalledWith(true);
+    expect(live.setInputMuted).toHaveBeenLastCalledWith(false);
+  });
+
+  it("does not open gates when hidden arrives before an in-flight resume commits", async () => {
+    const visibility = new FakeVisibility();
+    const live = new FakeLive();
+    let releaseSteer: (() => void) | undefined;
+    live.appendInstructions.mockImplementation(async (text: string, policy?: { kind: string }) => {
+      live.callOrder.push(`instructions:${text}`);
+      if (policy?.kind === "later_steering") {
+        await new Promise<void>((resolve) => {
+          releaseSteer = resolve;
+        });
+      }
+      return { eventId: "evt-later" };
+    });
+    const { controller, audio } = createController({
+      live,
+      orientation: new FakeOrientation(),
+      visibility,
+      wakeLock: new FakeWakeLock(),
+    });
+    await startSourceTurn(controller, live, audio);
+
+    visibility.hide();
+    await flushMicrotasks();
+    visibility.show();
+    await waitUntil(() => releaseSteer !== undefined);
+    visibility.hide();
+    const finishSteer = releaseSteer;
+    if (finishSteer === undefined) {
+      throw new Error("Resume steering did not start");
+    }
+    finishSteer();
+    await flushLifecycle();
+
+    expect(controller.session.state).toBe("suspended");
+    expect(controller.suspendReason).toBe("visibility");
+    expect(audio.setOutputAudible).toHaveBeenLastCalledWith(false);
+    expect(live.setInputMuted).not.toHaveBeenLastCalledWith(false);
+  });
+
+  it("finishes suspend before resume when visible arrives during Gate B mute", async () => {
+    const visibility = new FakeVisibility();
+    const live = new FakeLive();
+    let releaseMute: (() => void) | undefined;
+    live.setInputMuted.mockImplementation(async (muted: boolean) => {
+      live.callOrder.push(`setInputMuted:${muted}`);
+      if (muted) {
+        await new Promise<void>((resolve) => {
+          releaseMute = resolve;
+        });
+      }
+    });
+    const { controller, audio } = createController({
+      live,
+      orientation: new FakeOrientation(),
+      visibility,
+      wakeLock: new FakeWakeLock(),
+    });
+    await startSourceTurn(controller, live, audio);
+
+    visibility.hide();
+    await waitUntil(() => releaseMute !== undefined);
+    visibility.show();
+    expect(controller.recoveryPrompt).toBeUndefined();
+    expect(live.setInputMuted).not.toHaveBeenLastCalledWith(false);
+    const finishMute = releaseMute;
+    if (finishMute === undefined) {
+      throw new Error("Gate B mute did not start");
+    }
+    finishMute();
+    await flushLifecycle();
+
+    expect(controller.session.state).toBe("listening");
+    expect(controller.recoveryPrompt).toBe("repeat");
+    expect(audio.setOutputAudible).toHaveBeenLastCalledWith(true);
+    expect(live.setInputMuted).toHaveBeenLastCalledWith(false);
+  });
 });
+
+async function waitUntil(check: () => boolean): Promise<void> {
+  for (let attempt = 0; attempt < 20; attempt += 1) {
+    if (check()) {
+      return;
+    }
+    await Promise.resolve();
+  }
+  throw new Error("Timed out waiting for lifecycle condition");
+}

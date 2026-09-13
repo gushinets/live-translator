@@ -5,13 +5,14 @@ import { ParticipantPane } from "../components/ParticipantPane";
 import { deriveParticipantStatus } from "../components/ParticipantStatus";
 import { MAX_RECENT_TURNS } from "../conversation/TurnBuffer";
 import type { Side } from "../conversation/Turn";
-import type { RecoveryPrompt } from "../session/SessionController";
+import type { LifecycleSuspendReason, RecoveryPrompt } from "../session/SessionController";
 import type { TranslationSession } from "../session/SessionState";
 
 export interface ConversationScreenController {
   readonly session: TranslationSession;
   readonly recoveryPrompt?: RecoveryPrompt;
   readonly ownerError?: string;
+  readonly suspendReason?: LifecycleSuspendReason;
   subscribe(listener: () => void): () => void;
   correctLastTurn(side: Side): Promise<void>;
   endConversation(): Promise<void>;
@@ -56,6 +57,17 @@ export function ConversationScreen({
 
   return (
     <section className="conversation-screen">
+      {controller.suspendReason === "orientation" ? (
+        <div
+          className="rotate-overlay"
+          data-testid="rotate-overlay"
+          role="dialog"
+          aria-modal="true"
+          style={{ transform: "none" }}
+        >
+          <p>Rotate the phone vertically</p>
+        </div>
+      ) : null}
       <ParticipantPane
         side="B"
         rotated

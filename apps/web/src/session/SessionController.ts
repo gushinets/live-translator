@@ -51,6 +51,7 @@ export interface SessionControllerDeps {
     onVoiceActivity: AudioController["onVoiceActivity"];
     onPlaybackActivity: AudioController["onPlaybackActivity"];
     onAudioInterruption: AudioController["onAudioInterruption"];
+    onAudioRestored: AudioController["onAudioRestored"];
   };
   orientation?: OrientationController;
   visibility?: VisibilityController;
@@ -87,6 +88,9 @@ export class SessionController {
   private leftoverDrainTimer: number | null = null;
   private leftoverOutputDraining = false;
   private leftoverCaptionIdle = true;
+  private leftoverDrainWaiters: Array<() => void> = [];
+  private lifecycleEpoch = 0;
+  private lifecycleQueue: Promise<void> = Promise.resolve();
   private gateBMuted = false;
   private playbackActive = false;
   private turnClosing = false;
@@ -147,6 +151,13 @@ export class SessionController {
 
   get recoveryPrompt(): RecoveryPrompt | undefined {
     return this.recoveryPromptKind;
+  }
+
+  get suspendReason(): LifecycleSuspendReason | undefined {
+    if (this.currentSession.state !== "suspended") {
+      return undefined;
+    }
+    return this.lifecycleSuspendReason;
   }
 
   get steeringDegraded(): boolean {
@@ -587,6 +598,9 @@ export class SessionController {
     this.audio.onAudioInterruption = () => {
       void this.handleAudioInterruption();
     };
+    this.audio.onAudioRestored = () => {
+      void this.handleAudioRestored();
+    };
   }
 
   private handleTranscriptDelta(event: TranscriptDeltaEvent): void {
@@ -988,6 +1002,7 @@ export class SessionController {
     }
     this.leftoverOutputDraining = false;
     this.clearLeftoverDrainTimer();
+    this.resolveLeftoverDrainWaiters();
   }
 
   private clearLeftoverDrainTimer(): void {
@@ -1048,6 +1063,30 @@ export class SessionController {
     this.leftoverOutputDraining = false;
     this.leftoverCaptionIdle = true;
     this.clearLeftoverDrainTimer();
+    this.resolveLeftoverDrainWaiters();
+  }
+
+  private resolveLeftoverDrainWaiters(): void {
+    const waiters = this.leftoverDrainWaiters;
+    this.leftoverDrainWaiters = [];
+    for (const resolve of waiters) {
+      resolve();
+    }
+  }
+
+  private waitForLeftoverOutputIdle(): Promise<void> {
+    if (!this.leftoverOutputDraining && !this.playbackActive) {
+      return Promise.resolve();
+    }
+    if (!this.leftoverOutputDraining) {
+      this.beginLeftoverOutputDrain();
+    }
+    return new Promise((resolve) => {
+      this.leftoverDrainWaiters.push(resolve);
+      if (!this.leftoverOutputDraining && !this.playbackActive) {
+        this.resolveLeftoverDrainWaiters();
+      }
+    });
   }
 
   private clearTurnEngineTimers(): void {
@@ -1247,6 +1286,20 @@ export class SessionController {
     throw error;
   }
 
+  private enqueueLifecycle(work: () => Promise<void>): Promise<void> {
+    const run = this.lifecycleQueue.then(work, work);
+    this.lifecycleQueue = run.then(
+      () => undefined,
+      () => undefined,
+    );
+    return run;
+  }
+
+  private bumpLifecycleEpoch(): number {
+    this.lifecycleEpoch += 1;
+    return this.lifecycleEpoch;
+  }
+
   private async startPlatformLifecycle(): Promise<void> {
     if (this.platformStarted) {
       return;
@@ -1254,6 +1307,16 @@ export class SessionController {
     this.platformStarted = true;
     this.orientation.start();
     this.visibility.start();
+    try {
+      if (!this.orientation.isPortrait()) {
+        await this.suspendFromLifecycle("orientation");
+      }
+    } catch (error) {
+      console.error("Screen orientation sample failed", {
+        error,
+        state: this.currentSession.state,
+      });
+    }
     await this.orientation.lockPortrait();
     await this.wakeLock.request();
   }
@@ -1265,6 +1328,7 @@ export class SessionController {
     this.platformStarted = false;
     this.lifecycleSuspendReason = undefined;
     this.discardedUnfinishedOnSuspend = false;
+    this.bumpLifecycleEpoch();
   }
 
   private conversationCanSuspend(): boolean {
@@ -1274,41 +1338,80 @@ export class SessionController {
 
   private async handleOrientationChange(orientation: "portrait" | "landscape"): Promise<void> {
     if (orientation === "landscape") {
-      await this.suspendFromLifecycle("orientation");
+      this.bumpLifecycleEpoch();
+      await this.enqueueLifecycle(() => this.suspendFromLifecycle("orientation"));
       return;
     }
-    await this.resumeFromLifecycle();
+    await this.enqueueLifecycle(() => this.resumeFromLifecycle());
   }
 
   private async handleVisibilityHidden(): Promise<void> {
-    await this.suspendFromLifecycle("visibility");
+    this.bumpLifecycleEpoch();
+    await this.enqueueLifecycle(() => this.suspendFromLifecycle("visibility"));
   }
 
   private async handleVisibilityVisible(): Promise<void> {
-    await this.wakeLock.reacquire();
-    await this.resumeFromLifecycle();
+    await this.enqueueLifecycle(async () => {
+      await this.wakeLock.reacquire();
+      await this.resumeFromLifecycle();
+    });
   }
 
   private async handleAudioInterruption(): Promise<void> {
-    await this.suspendFromLifecycle("audio");
+    this.bumpLifecycleEpoch();
+    await this.enqueueLifecycle(() => this.suspendFromLifecycle("audio"));
+  }
+
+  private async handleAudioRestored(): Promise<void> {
+    await this.enqueueLifecycle(async () => {
+      await this.wakeLock.reacquire();
+      await this.resumeFromLifecycle();
+    });
+  }
+
+  private clearTurnEngineTimersKeepingLeftoverDrain(): void {
+    this.clearMaxSourceTimer();
+    this.clearCompletionTimer();
+    this.clearCaptionIdleTimer();
+    this.finishPlaybackIdleWait();
   }
 
   private async suspendFromLifecycle(reason: LifecycleSuspendReason): Promise<void> {
+    if (this.currentSession.state === "suspended") {
+      this.lifecycleSuspendReason = reason;
+      this.notify();
+      return;
+    }
     if (!this.conversationCanSuspend()) {
       return;
     }
     const active = this.currentSession.activeTurn;
     this.discardedUnfinishedOnSuspend =
       active !== undefined && active.turnCompletedAtMs === undefined && !active.corrected;
-    this.clearTurnEngineTimers();
+    this.clearTurnEngineTimersKeepingLeftoverDrain();
     this.turnClosing = false;
-    this.finishLeftoverOutputDrain();
+    if (this.playbackActive && !this.leftoverOutputDraining) {
+      this.beginLeftoverOutputDrain();
+    }
     this.audio.setOutputAudible(false);
     await this.muteGateB();
+    if (!this.conversationCanSuspend()) {
+      return;
+    }
     this.dispatch({ type: "SUSPEND" });
     this.lifecycleSuspendReason = reason;
     this.recoveryPromptKind = undefined;
     this.notify();
+  }
+
+  private resumePreconditionsMet(): boolean {
+    if (this.visibility.isHidden()) {
+      return false;
+    }
+    if (!this.orientation.isPortrait()) {
+      return false;
+    }
+    return true;
   }
 
   private async resumeFromLifecycle(): Promise<void> {
@@ -1318,24 +1421,14 @@ export class SessionController {
     if (this.lifecycleSuspendReason === undefined) {
       return;
     }
+    const epoch = this.lifecycleEpoch;
 
     try {
-      if (this.visibility.isHidden()) {
+      if (!this.resumePreconditionsMet()) {
         return;
       }
     } catch (error) {
       this.failLifecycleResume(error);
-      return;
-    }
-
-    let orientation: "portrait" | "landscape";
-    try {
-      orientation = this.orientation.getOrientation();
-    } catch (error) {
-      this.failLifecycleResume(error);
-      return;
-    }
-    if (orientation === "landscape") {
       return;
     }
 
@@ -1347,6 +1440,37 @@ export class SessionController {
     }
 
     await this.wakeLock.reacquire();
+    if (this.lifecycleEpoch !== epoch) {
+      return;
+    }
+
+    try {
+      await this.audio.primeOutput();
+    } catch (error) {
+      console.error("Audio output restore failed", {
+        error,
+        state: this.currentSession.state,
+      });
+      this.failLifecycleResume(error);
+      return;
+    }
+    if (this.lifecycleEpoch !== epoch) {
+      return;
+    }
+
+    await this.waitForLeftoverOutputIdle();
+    if (this.lifecycleEpoch !== epoch || this.currentSession.state !== "suspended") {
+      return;
+    }
+
+    try {
+      if (!this.resumePreconditionsMet()) {
+        return;
+      }
+    } catch (error) {
+      this.failLifecycleResume(error);
+      return;
+    }
 
     const session = this.currentSession;
     const expectedSource = session.expectedSpeaker;
@@ -1379,13 +1503,27 @@ export class SessionController {
       this.failLifecycleResume(error);
       throw error;
     }
-    if (this.sessionGeneration !== generation) {
+    if (this.sessionGeneration !== generation || this.lifecycleEpoch !== epoch) {
+      return;
+    }
+
+    try {
+      if (!this.resumePreconditionsMet()) {
+        return;
+      }
+    } catch (error) {
+      this.failLifecycleResume(error);
       return;
     }
 
     this.audio.resetVoiceActivityBaseline();
     this.audio.setOutputAudible(true);
     await this.unmuteGateB();
+    if (this.lifecycleEpoch !== epoch) {
+      this.audio.setOutputAudible(false);
+      await this.muteGateB();
+      return;
+    }
     this.dispatch({ type: "RESUME" });
     this.recoveryPromptKind = this.discardedUnfinishedOnSuspend ? "repeat" : undefined;
     this.lifecycleSuspendReason = undefined;
@@ -1454,6 +1592,7 @@ export class SessionController {
     this.turnClosing = false;
     this.leftoverOutputDraining = false;
     this.leftoverCaptionIdle = true;
+    this.resolveLeftoverDrainWaiters();
     this.recoveryPromptKind = undefined;
     this.steeringDegradedFlag = false;
     this.correctionEpoch = 0;

@@ -1,4 +1,5 @@
 .conversation-screen {
+  position: relative;
   display: flex;
   flex-direction: column;
   min-height: 100dvh;
@@ -114,4 +115,27 @@
   padding: 0.4rem 0.6rem;
   background: #7a2e1f;
   color: #f4ead5;
+}
+
+.rotate-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 20;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  margin: 0;
+  background: #14110e;
+  color: #f4ead5;
+  transform: none;
+  writing-mode: horizontal-tb;
+  text-align: center;
+}
+
+.rotate-overlay p {
+  margin: 0;
+  padding: 1rem;
+  font-family: Bahnschrift, "DIN Alternate", "Segoe UI", sans-serif;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
 }

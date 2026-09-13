@@ -314,6 +314,8 @@ test.describe("PWA suspension", () => {
       window.__setOrientation?.("landscape-primary");
     });
     await expect(page.getByTestId("participant-status-A")).toHaveText("PAUSED");
+    await expect(page.getByTestId("rotate-overlay")).toBeVisible();
+    await expect(page.getByTestId("rotate-overlay")).toHaveText(/rotate/i);
 
     await page.evaluate(() => {
       window.__setOrientation?.("portrait-primary");

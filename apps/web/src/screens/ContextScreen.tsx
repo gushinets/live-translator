@@ -4,6 +4,7 @@ import { PrivacyDisclosure } from "../components/PrivacyDisclosure";
 import { ContextTooLongError } from "../live/LiveEvents";
 import {
   createDefaultSessionController,
+  type LifecycleSuspendReason,
   type RecoveryPrompt,
   type SessionController,
 } from "../session/SessionController";
@@ -24,6 +25,7 @@ export interface ContextScreenController {
   readonly isInterpreterStarting?: boolean;
   readonly audioElement?: HTMLAudioElement;
   readonly recoveryPrompt?: RecoveryPrompt;
+  readonly suspendReason?: LifecycleSuspendReason;
   subscribe(listener: () => void): () => void;
   startContextCapture(): Promise<void>;
   finishContextCapture(): void;
