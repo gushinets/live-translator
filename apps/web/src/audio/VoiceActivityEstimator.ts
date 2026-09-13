@@ -12,6 +12,8 @@ export const VAM_QUIET_NOISE_MULTIPLIER = 1.6;
 export const VAM_ENTER_CONSECUTIVE_FRAMES = 2;
 export const VAM_EXIT_QUIET_MS = 450;
 export const VAM_PLAYBACK_THRESHOLD_MULTIPLIER = 1.35;
+/** Analyser warmup / all-zero frames must not seed the noise floor. */
+export const VAM_WARMUP_RMS_MAX = 0.0001;
 
 export class VoiceActivityEstimator {
   private isActive = false;
@@ -28,8 +30,10 @@ export class VoiceActivityEstimator {
       throw new Error(`RMS must be a finite non-negative number, received ${String(rms)}`);
     }
 
+    const isRepresentative = rms > VAM_WARMUP_RMS_MAX;
+
     if (this.noiseFloor === null) {
-      if (playbackActive) {
+      if (playbackActive || !isRepresentative) {
         return;
       }
       this.noiseFloor = rms;
@@ -61,7 +65,7 @@ export class VoiceActivityEstimator {
       } else {
         this.quietStartedAtMs = null;
       }
-    } else if (rms >= enterThreshold) {
+    } else if (isRepresentative && rms >= enterThreshold) {
       this.consecutiveEnterFrames += 1;
       if (this.consecutiveEnterFrames >= VAM_ENTER_CONSECUTIVE_FRAMES) {
         this.isActive = true;
@@ -71,7 +75,7 @@ export class VoiceActivityEstimator {
       this.consecutiveEnterFrames = 0;
     }
 
-    if (!this.isActive && !playbackActive) {
+    if (!this.isActive && !playbackActive && isRepresentative) {
       this.noiseFloor =
         (1 - VAM_NOISE_FLOOR_EMA_ALPHA) * this.noiseFloor +
         VAM_NOISE_FLOOR_EMA_ALPHA * rms;

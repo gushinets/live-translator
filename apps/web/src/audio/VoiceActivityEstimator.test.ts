@@ -18,6 +18,20 @@ describe("VoiceActivityEstimator", () => {
     expect(estimator.active).toBe(false);
   });
 
+  it("does not latch active after a zero warmup frame then steady ambient", () => {
+    const estimator = new VoiceActivityEstimator();
+    estimator.pushRms(0, false, 0);
+    for (let i = 1; i <= 200; i++) estimator.pushRms(0.02, false, i * 50);
+    expect(estimator.active).toBe(false);
+  });
+
+  it("does not latch active after a near-zero warmup frame then steady ambient", () => {
+    const estimator = new VoiceActivityEstimator();
+    estimator.pushRms(0.0001, false, 0);
+    for (let i = 1; i <= 200; i++) estimator.pushRms(0.02, false, i * 50);
+    expect(estimator.active).toBe(false);
+  });
+
   it("raises speech state above adaptive floor", () => {
     const estimator = new VoiceActivityEstimator();
     for (let i = 0; i < 100; i++) estimator.pushRms(0.01, false, i * 50);

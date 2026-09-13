@@ -33,6 +33,22 @@ function rmsFromAnalyser(analyser: AnalyserNode): number {
   return Math.sqrt(sumSquares / samples.length);
 }
 
+function cloneStream(stream: MediaStream): MediaStream {
+  if (typeof stream.clone !== "function") {
+    throw new Error("MediaStream.clone is required for analyser isolation");
+  }
+  return stream.clone();
+}
+
+function stopTracks(stream: MediaStream | null): void {
+  if (stream === null) {
+    return;
+  }
+  for (const track of stream.getTracks()) {
+    track.stop();
+  }
+}
+
 function readMicrophoneSettings(track: MediaStreamTrack): MicrophoneSettingsDiagnostics {
   const settings = track.getSettings();
   return {
@@ -69,8 +85,10 @@ export class AudioController {
   private microphoneSettings: MicrophoneSettingsDiagnostics | null = null;
   private micSource: MediaStreamAudioSourceNode | null = null;
   private micAnalyser: AnalyserNode | null = null;
+  private micAnalysisStream: MediaStream | null = null;
   private remoteSource: MediaStreamAudioSourceNode | null = null;
   private remoteAnalyser: AnalyserNode | null = null;
+  private remoteAnalysisStream: MediaStream | null = null;
   private sampleTimer: number | null = null;
 
   constructor(options: AudioControllerOptions = {}) {
@@ -108,6 +126,9 @@ export class AudioController {
       throw new Error("Microphone capture has already started");
     }
 
+    const context = this.ensureAudioContext();
+    const resumeStarted = context.resume();
+
     let stream: MediaStream;
     try {
       stream = await this.getUserMedia({
@@ -124,6 +145,8 @@ export class AudioController {
       throw error;
     }
 
+    await resumeStarted;
+
     const track = stream.getAudioTracks()[0];
     if (track === undefined) {
       for (const existing of stream.getTracks()) {
@@ -132,13 +155,14 @@ export class AudioController {
       throw new Error("Microphone stream has no audio track");
     }
 
-    const context = this.ensureAudioContext();
-    const micSource = context.createMediaStreamSource(stream);
+    const analysisStream = cloneStream(stream);
+    const micSource = context.createMediaStreamSource(analysisStream);
     const micAnalyser = context.createAnalyser();
     micSource.connect(micAnalyser);
 
     this.captureStream = stream;
     this.captureTrack = track;
+    this.micAnalysisStream = analysisStream;
     this.micSource = micSource;
     this.micAnalyser = micAnalyser;
     this.microphoneSettings = readMicrophoneSettings(track);
@@ -154,18 +178,23 @@ export class AudioController {
       track.stop();
     }
     this.micSource.disconnect();
+    stopTracks(this.micAnalysisStream);
     this.micSource = null;
     this.micAnalyser = null;
+    this.micAnalysisStream = null;
     this.captureTrack = null;
     this.captureStream = null;
     this.syncSampler();
   }
 
   setCaptureEnabled(enabled: boolean): void {
-    if (this.captureTrack === null) {
+    if (this.captureTrack === null || this.micAnalysisStream === null) {
       throw new Error("Microphone capture has not started");
     }
     this.captureTrack.enabled = enabled;
+    for (const track of this.micAnalysisStream.getAudioTracks()) {
+      track.enabled = enabled;
+    }
   }
 
   /** Gate C: mute local GPT playback. Never uses Live input mute. */
@@ -176,8 +205,11 @@ export class AudioController {
   attachRemoteStream(stream: MediaStream): void {
     this.audioElement.srcObject = stream;
     this.remoteSource?.disconnect();
+    stopTracks(this.remoteAnalysisStream);
     const context = this.ensureAudioContext();
-    this.remoteSource = context.createMediaStreamSource(stream);
+    const analysisStream = cloneStream(stream);
+    this.remoteAnalysisStream = analysisStream;
+    this.remoteSource = context.createMediaStreamSource(analysisStream);
     this.remoteAnalyser = context.createAnalyser();
     this.remoteSource.connect(this.remoteAnalyser);
     this.syncSampler();
@@ -196,8 +228,10 @@ export class AudioController {
       this.stopCapture();
     }
     this.remoteSource?.disconnect();
+    stopTracks(this.remoteAnalysisStream);
     this.remoteSource = null;
     this.remoteAnalyser = null;
+    this.remoteAnalysisStream = null;
     this.audioElement.srcObject = null;
     this.stopSampler();
     if (this.audioContext !== null) {

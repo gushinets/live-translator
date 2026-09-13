@@ -51,6 +51,7 @@ class FakeAudioContext {
   readonly destination = { id: "destination" };
   readonly analysers: FakeAnalyser[] = [];
   readonly sources: FakeAudioNode[] = [];
+  readonly sourceStreams: MediaStream[] = [];
   resume = vi.fn(async () => {
     this.state = "running";
   });
@@ -64,9 +65,10 @@ class FakeAudioContext {
     return analyser;
   }
 
-  createMediaStreamSource(): FakeAudioNode {
+  createMediaStreamSource(stream: MediaStream): FakeAudioNode {
     const source = new FakeAudioNode();
     this.sources.push(source);
+    this.sourceStreams.push(stream);
     return source;
   }
 }
@@ -75,6 +77,7 @@ function fakeStream(track: FakeAudioTrack): MediaStream {
   return {
     getAudioTracks: () => [track],
     getTracks: () => [track],
+    clone: vi.fn(() => fakeStream(new FakeAudioTrack())),
   } as unknown as MediaStream;
 }
 
@@ -189,14 +192,57 @@ describe("AudioController", () => {
     expect(audioElement.autoplay).toBe(true);
   });
 
+  it("resumes AudioContext before getUserMedia resolves", async () => {
+    let resolveGum: ((stream: MediaStream) => void) | undefined;
+    getUserMedia.mockImplementation(
+      () =>
+        new Promise<MediaStream>((resolve) => {
+          resolveGum = resolve;
+        }),
+    );
+
+    const pending = controller.startCapture();
+    expect(audioContext.resume).toHaveBeenCalled();
+    expect(resolveGum).toBeDefined();
+
+    resolveGum?.(fakeStream(track));
+    await pending;
+  });
+
   it("resumes the analyser AudioContext from a user-gesture prime", async () => {
     await controller.startCapture();
     controller.attachRemoteStream(fakeStream(new FakeAudioTrack()));
 
     await controller.primeOutput();
 
-    expect(audioContext.resume).toHaveBeenCalledOnce();
+    expect(audioContext.resume).toHaveBeenCalled();
     expect(audioElement.play).toHaveBeenCalledOnce();
+  });
+
+  it("clones the capture stream for analysis so Live can consume the original", async () => {
+    const original = fakeStream(track);
+    const cloned = fakeStream(new FakeAudioTrack());
+    vi.mocked(original.clone).mockReturnValue(cloned);
+    getUserMedia.mockResolvedValue(original);
+
+    await controller.startCapture();
+
+    expect(controller.getCaptureStream()).toBe(original);
+    expect(original.clone).toHaveBeenCalledOnce();
+    expect(audioContext.sourceStreams[0]).toBe(cloned);
+  });
+
+  it("clones the remote stream for analysis and keeps the original on the audio element", async () => {
+    await controller.startCapture();
+    const original = fakeStream(new FakeAudioTrack());
+    const cloned = fakeStream(new FakeAudioTrack());
+    vi.mocked(original.clone).mockReturnValue(cloned);
+
+    controller.attachRemoteStream(original);
+
+    expect(audioElement.srcObject).toBe(original);
+    expect(original.clone).toHaveBeenCalledOnce();
+    expect(audioContext.sourceStreams[1]).toBe(cloned);
   });
 
   it("connects analysers only to their sources, never to destination", async () => {
