@@ -233,9 +233,10 @@ describe("ContextScreen", () => {
     render(<ContextScreen controller={controller} />);
 
     expect(screen.getByRole("button", { name: "End conversation" })).toBeInTheDocument();
-    expect(screen.getByRole("alert")).toHaveTextContent(
-      "Unable to continue the live connection.",
-    );
+    const alerts = screen.getAllByRole("alert");
+    expect(alerts).toHaveLength(2);
+    expect(alerts[0]).toHaveTextContent("Unable to continue the live connection.");
+    expect(alerts[1]).toHaveTextContent("Unable to continue the live connection.");
     expect(screen.queryByRole("button", { name: "Start translation" })).not.toBeInTheDocument();
   });
 

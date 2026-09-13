@@ -99,6 +99,58 @@ describe("ConversationScreen orientation and status", () => {
     expect(screen.getByTestId("participant-status-B")).toHaveTextContent("WAITING");
   });
 
+  it("does not show LISTENING or YOUR TURN after connection-loss error", () => {
+    const controller = new FakeConversationController(
+      session({
+        state: "error",
+        expectedSpeaker: "A",
+        activeTurn: turn({
+          id: "t-lost",
+          speaker: "A",
+          originalText: "Hello",
+          status: "streaming",
+        }),
+      }),
+    );
+    controller.ownerError = "Unable to continue the live connection.";
+
+    render(<ConversationScreen controller={controller} />);
+
+    expect(screen.getByTestId("participant-status-A")).not.toHaveTextContent("LISTENING");
+    expect(screen.getByTestId("participant-status-B")).not.toHaveTextContent("LISTENING");
+    expect(screen.getByTestId("participant-status-A")).not.toHaveTextContent("YOUR TURN");
+    expect(screen.getByTestId("participant-status-B")).not.toHaveTextContent("YOUR TURN");
+    expect(screen.getByTestId("participant-pane-A")).toHaveTextContent(
+      "Unable to continue the live connection.",
+    );
+    expect(screen.getByTestId("participant-pane-B")).toHaveTextContent(
+      "Unable to continue the live connection.",
+    );
+    expect(screen.getByTestId("participant-pane-B")).toHaveStyle({
+      transform: "rotate(180deg)",
+    });
+  });
+
+  it("does not show LISTENING or YOUR TURN while ending", () => {
+    const controller = new FakeConversationController(
+      session({
+        state: "ending",
+        expectedSpeaker: "A",
+        activeTurn: turn({
+          id: "t-end",
+          speaker: "A",
+          originalText: "Hello",
+          status: "streaming",
+        }),
+      }),
+    );
+    render(<ConversationScreen controller={controller} />);
+    expect(screen.getByTestId("participant-status-A")).not.toHaveTextContent("LISTENING");
+    expect(screen.getByTestId("participant-status-B")).not.toHaveTextContent("LISTENING");
+    expect(screen.getByTestId("participant-status-A")).not.toHaveTextContent("YOUR TURN");
+    expect(screen.getByTestId("participant-status-B")).not.toHaveTextContent("YOUR TURN");
+  });
+
   it("shows CORRECTING on both panes while correcting and PAUSED on both while suspended", () => {
     const correcting = new FakeConversationController(
       session({

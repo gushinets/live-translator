@@ -36,6 +36,10 @@ export function ConversationScreen({
   const hasOutputText = (active?.translatedText ?? "").length > 0;
   const audioOutputStarted = active?.audioOutputStarted === true;
   const recentTurns = session.recentTurns.slice(-MAX_RECENT_TURNS);
+  const terminalAlert =
+    session.state === "error" || session.state === "ending"
+      ? controller.ownerError
+      : undefined;
   const statusA = deriveParticipantStatus({
     sessionState: session.state,
     expectedSpeaker: session.expectedSpeaker,
@@ -76,6 +80,7 @@ export function ConversationScreen({
         originalText={originalText}
         translatedText={translatedText}
         recentTurns={recentTurns}
+        alertText={terminalAlert}
         onTap={() => {
           void controller.correctLastTurn("B").catch((error: unknown) => {
             console.error("Correction failed", {
@@ -116,7 +121,7 @@ export function ConversationScreen({
           </button>
         ) : null}
         {controller.recoveryPrompt === "repeat" ? <p>Repeat</p> : null}
-        {controller.ownerError !== undefined ? (
+        {terminalAlert === undefined && controller.ownerError !== undefined ? (
           <ErrorOverlay message={controller.ownerError} />
         ) : null}
       </div>
@@ -128,6 +133,7 @@ export function ConversationScreen({
         originalText={originalText}
         translatedText={translatedText}
         recentTurns={recentTurns}
+        alertText={terminalAlert}
         onTap={() => {
           void controller.correctLastTurn("A").catch((error: unknown) => {
             console.error("Correction failed", {

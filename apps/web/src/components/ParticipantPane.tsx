@@ -26,6 +26,7 @@ export function ParticipantPane({
   translatedText,
   recentTurns,
   onTap,
+  alertText,
 }: {
   side: Side;
   rotated: boolean;
@@ -35,6 +36,7 @@ export function ParticipantPane({
   translatedText: string;
   recentTurns: readonly Turn[];
   onTap: () => void;
+  alertText?: string;
 }) {
   const primaryText = isSourceSide ? originalText : translatedText;
   const secondaryText = isSourceSide ? translatedText : originalText;
@@ -52,6 +54,11 @@ export function ParticipantPane({
       onClick={onTap}
     >
       <ParticipantStatus side={side} label={status} />
+      {alertText !== undefined ? (
+        <p className="participant-alert" role="alert" data-testid={`participant-alert-${side}`}>
+          {alertText}
+        </p>
+      ) : null}
       <ol className="participant-recent">
         {recentTurns.map((entry) => {
           const texts = paneTextsForTurn(entry, side);

@@ -13,7 +13,8 @@ export type ParticipantStatusLabel =
   | "TRANSLATING"
   | "SPEAKING"
   | "CORRECTING"
-  | "PAUSED";
+  | "PAUSED"
+  | "ERROR";
 
 export function deriveParticipantStatus(input: {
   sessionState: SessionState;
@@ -29,6 +30,12 @@ export function deriveParticipantStatus(input: {
   }
   if (input.sessionState === "suspended") {
     return "PAUSED";
+  }
+  if (input.sessionState === "error") {
+    return "ERROR";
+  }
+  if (input.sessionState === "ending") {
+    return "WAITING";
   }
 
   const outputActive = input.hasOutputText || input.audioOutputStarted;
