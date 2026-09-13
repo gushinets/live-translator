@@ -464,18 +464,28 @@ export class LiveClient {
       }
       case "error":
         // A server-reported error before session.started means the
-        // session never actually started; reject the pending connect()
-        // instead of leaving it waiting for a session.started that will
-        // now never arrive (same class of hang as an early channel close,
-        // peer failure, or session.closed — see rejectPendingConnect()).
-        // This rejection completes BEFORE the onError callback below, for
-        // the same not-dependent-on-a-well-behaved-callback reason as
-        // above.
-        this.rejectPendingConnect(
-          new Error(
-            `Live session reported an error before session.started: ${serverEvent.error.message}`,
-          ),
-        );
+        // session never actually started. Only in that pre-start case —
+        // guarded by `!this.started`, so a normal post-start error report
+        // is untouched and does not end the session — this enters the
+        // same non-error-callback-dependent cleanup path as an unexpected
+        // pre-start channel close or peer failure: set closing, reject
+        // the pending connect() instead of leaving it waiting for a
+        // session.started that will now never arrive (same class of hang
+        // as an early channel close, peer failure, or session.closed —
+        // see rejectPendingConnect()), and tear down the transport.
+        // All of that completes synchronously BEFORE the onError callback
+        // below, for the same not-dependent-on-a-well-behaved-callback
+        // reason as handleChannelClose()/handleConnectionStateChange()/the
+        // session.closed case above.
+        if (!this.started) {
+          this.closing = true;
+          this.rejectPendingConnect(
+            new Error(
+              `Live session reported an error before session.started: ${serverEvent.error.message}`,
+            ),
+          );
+          this.teardownTransport();
+        }
         this.onError?.(serverEvent);
         return;
     }

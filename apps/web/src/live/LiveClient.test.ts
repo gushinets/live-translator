@@ -414,6 +414,34 @@ describe("LiveClient.connect", () => {
     expect(peer.closeCalls).toBe(1);
   });
 
+  it("tears down the transport before invoking onError for a pre-start server error", async () => {
+    const { backend } = makeFakeBackend();
+    const client = makeClient(backend);
+    const connectPromise = client.connect(makeFakeStream());
+    await vi.waitFor(() => {
+      expect(peer.calls).toContain("setRemoteDescription");
+    });
+
+    let peerCloseCallsInOnError = -1;
+    let channelCloseCallsInOnError = -1;
+    client.onError = () => {
+      peerCloseCallsInOnError = peer.closeCalls;
+      channelCloseCallsInOnError = peer.dataChannel?.closeCalls ?? -1;
+    };
+
+    peer.dataChannel?.emitMessage({
+      type: "error",
+      error: { message: "boom" },
+    });
+
+    expect(peerCloseCallsInOnError).toBe(1);
+    expect(channelCloseCallsInOnError).toBe(1);
+
+    await expect(connectPromise).rejects.toThrow(
+      "Live session reported an error before session.started: boom",
+    );
+  });
+
   it("aborts signaling and never POSTs the SDP if the data channel closes during ICE gathering", async () => {
     vi.useFakeTimers();
     peer.setLocalDescription = async (
