@@ -46,6 +46,22 @@ function createDeferred<T>(): Deferred<T> {
 }
 
 /**
+ * Races `operation` against `abortSignal` (a promise that only ever
+ * rejects, never resolves — see its construction in `connect()`). If the
+ * transport fails/closes before `operation` settles, this rejects
+ * immediately with the abort's error instead of waiting for `operation` to
+ * finish, so a still-in-flight signaling step (ICE gathering, the backend
+ * POST, `setRemoteDescription`) is abandoned rather than acted upon after
+ * the fact.
+ */
+function raceAgainstAbort<T>(
+  operation: Promise<T>,
+  abortSignal: Promise<never>,
+): Promise<T> {
+  return Promise.race([operation, abortSignal]);
+}
+
+/**
  * Browser-side WebRTC transport for a GPT-Live session, implementing the
  * official connect sequence (binding spec 1.2.1 §14.3) and graceful shutdown
  * (§23). Peer connection and backend dependencies are injected for testing;
@@ -82,6 +98,13 @@ export class LiveClient {
   private closePromise: Promise<LiveCloseResult> | null = null;
   /** Guards `teardownTransport()` against closing the channel/peer twice. */
   private torndown = false;
+  /**
+   * Set at the very start of `connect()`, before `peerFactory()` is even
+   * invoked, so a second `connect()` call is always rejected as
+   * "already called" — even if the first attempt's `peerFactory()` itself
+   * threw and `this.peer`/`this.channel` were therefore never assigned.
+   */
+  private connectCalled = false;
 
   constructor(private readonly deps: LiveClientDeps) {}
 
@@ -92,12 +115,19 @@ export class LiveClient {
    * `setRemoteDescription` throwing — the peer and data channel created for
    * this attempt are torn down before the error is re-raised, so a failed
    * connect() never leaves a lingering peer connection with microphone
-   * tracks still attached.
+   * tracks still attached. Every signaling step after `sessionStartedPromise`
+   * is created (`createOffer`, `setLocalDescription`, `waitForIceComplete`,
+   * the backend POST, `setRemoteDescription`) is raced against that
+   * promise's rejection, so a channel close, peer failure, or early
+   * server event arriving mid-signaling aborts immediately instead of
+   * letting a still-in-flight step (e.g. POSTing the SDP) run to
+   * completion and only being noticed afterward.
    */
   async connect(stream: MediaStream): Promise<{ sessionId: string }> {
-    if (this.peer !== null || this.channel !== null) {
+    if (this.connectCalled) {
       throw new Error("connect() has already been called on this LiveClient");
     }
+    this.connectCalled = true;
 
     try {
       const peer = this.deps.peerFactory();
@@ -130,24 +160,40 @@ export class LiveClient {
           this.pendingConnectReject = reject;
         },
       );
+      // Never resolves (a resolved session.started is handled by the
+      // direct `await sessionStartedPromise` below instead); rejects the
+      // instant `rejectPendingConnect()` fires, so every signaling step
+      // still in flight below is raced against it and abandoned rather
+      // than acted upon after the transport has already failed.
+      const abortIfFailed: Promise<never> = sessionStartedPromise.then(
+        () => new Promise<never>(() => {}),
+      );
 
       for (const track of stream.getTracks()) {
         peer.addTrack(track, stream);
       }
 
-      const offer = await peer.createOffer();
-      await peer.setLocalDescription(offer);
+      const offer = await raceAgainstAbort(peer.createOffer(), abortIfFailed);
+      await raceAgainstAbort(peer.setLocalDescription(offer), abortIfFailed);
 
-      await waitForIceComplete(peer, ICE_GATHER_TIMEOUT_MS);
+      await raceAgainstAbort(
+        waitForIceComplete(peer, ICE_GATHER_TIMEOUT_MS),
+        abortIfFailed,
+      );
 
       const localSdp = peer.localDescription?.sdp;
       if (localSdp === undefined) {
         throw new Error("Missing local SDP after ICE gathering completed");
       }
 
-      const { transport } =
-        await this.deps.backend.createLiveSession(localSdp);
-      await peer.setRemoteDescription({ type: "answer", sdp: transport.sdp });
+      const { transport } = await raceAgainstAbort(
+        this.deps.backend.createLiveSession(localSdp),
+        abortIfFailed,
+      );
+      await raceAgainstAbort(
+        peer.setRemoteDescription({ type: "answer", sdp: transport.sdp }),
+        abortIfFailed,
+      );
 
       const startedEvent = await sessionStartedPromise;
       return { sessionId: startedEvent.session.id };
@@ -298,7 +344,11 @@ export class LiveClient {
    * rejected instead of hanging forever. Once started, the session is no
    * longer usable after this, so `closing` is set to disable further
    * `send()` calls (reusing the same flag/error `send()` already uses for
-   * a graceful close in progress).
+   * a graceful close in progress). The transport is also proactively torn
+   * down (`teardownTransport()`'s `torndown` guard makes this safe to call
+   * even if a close()/session.closed teardown is already in flight), so a
+   * data channel closing unexpectedly doesn't leave the peer connection —
+   * and the microphone tracks attached to it — alive indefinitely.
    */
   private handleChannelClose(): void {
     if (this.closing) return;
@@ -310,6 +360,7 @@ export class LiveClient {
     this.rejectPendingConnect(
       new Error("Data channel closed before session.started"),
     );
+    this.teardownTransport();
   }
 
   /**
@@ -323,7 +374,8 @@ export class LiveClient {
    * rejected instead of hanging forever. Once started, the session is no
    * longer usable after this, so `closing` is set to disable further
    * `send()` calls (reusing the same flag/error `send()` already uses for
-   * a graceful close in progress).
+   * a graceful close in progress). The transport is also proactively torn
+   * down for the same reason as `handleChannelClose()` above.
    */
   private handleConnectionStateChange(): void {
     if (this.closing) return;
@@ -339,6 +391,7 @@ export class LiveClient {
         `Peer connection state changed to "${state}" before session.started`,
       ),
     );
+    this.teardownTransport();
   }
 
   private handleChannelMessage(event: MessageEvent<string>): void {

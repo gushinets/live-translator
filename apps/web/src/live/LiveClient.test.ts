@@ -318,6 +318,28 @@ describe("LiveClient.connect", () => {
     await firstConnectPromise;
   });
 
+  it("throws when connect() is called a second time even though peerFactory() threw on the first attempt", async () => {
+    const { backend } = makeFakeBackend();
+    const throwingClient = new LiveClient({
+      backend,
+      peerFactory: () => {
+        throw new Error("WebRTC is not supported in this browser");
+      },
+      onRemoteStream: vi.fn(),
+    });
+
+    await expect(throwingClient.connect(makeFakeStream())).rejects.toThrow(
+      "WebRTC is not supported in this browser",
+    );
+    // A dedicated connectCalled flag (set before peerFactory() is even
+    // invoked) means a second attempt is rejected as "already called"
+    // rather than re-invoking peerFactory() and throwing the same error
+    // again.
+    await expect(throwingClient.connect(makeFakeStream())).rejects.toThrow(
+      "connect() has already been called on this LiveClient",
+    );
+  });
+
   it("rejects connect() (instead of hanging) if the data channel closes before session.started arrives, and tears down", async () => {
     const { backend } = makeFakeBackend();
     const client = makeClient(backend);
@@ -388,6 +410,38 @@ describe("LiveClient.connect", () => {
     await expect(connectPromise).rejects.toThrow(
       "Live session reported an error before session.started: boom",
     );
+    expect(peer.dataChannel?.closeCalls).toBe(1);
+    expect(peer.closeCalls).toBe(1);
+  });
+
+  it("aborts signaling and never POSTs the SDP if the data channel closes during ICE gathering", async () => {
+    vi.useFakeTimers();
+    peer.setLocalDescription = async (
+      description: RTCSessionDescriptionInit,
+    ) => {
+      peer.calls.push("setLocalDescription");
+      peer.localDescription = description;
+      // ICE never completes, mirroring the ICE-timeout test's fake peer.
+    };
+    const { backend, calls: backendCalls } = makeFakeBackend();
+    const client = makeClient(backend);
+
+    const connectPromise = client.connect(makeFakeStream());
+    // Flush the createOffer()/setLocalDescription() microtasks so
+    // connect() is now inside waitForIceComplete(), without advancing all
+    // the way to its 10s timeout.
+    await vi.advanceTimersByTimeAsync(0);
+
+    peer.dataChannel?.emitClose();
+
+    await expect(connectPromise).rejects.toThrow(
+      "Data channel closed before session.started",
+    );
+    vi.useRealTimers();
+
+    // The channel closing during ICE gathering must abort connect()
+    // immediately, before it ever reaches the backend POST.
+    expect(backendCalls).toEqual([]);
     expect(peer.dataChannel?.closeCalls).toBe(1);
     expect(peer.closeCalls).toBe(1);
   });
@@ -629,6 +683,15 @@ describe("LiveClient transport failure handling", () => {
     expect(() =>
       client.send({ type: "session.input_audio.mute", event_id: "evt-1" }),
     ).toThrow("Cannot send a Live event while the session is closing");
+  });
+
+  it("tears down the peer connection after an unexpected data channel close once the session has started", async () => {
+    const { peer, channel } = await connectedClient();
+
+    channel.emitClose();
+
+    expect(peer.closeCalls).toBe(1);
+    expect(channel.closeCalls).toBe(1);
   });
 
   it("disables send() after an unexpected peer connection failure once the session has started", async () => {
