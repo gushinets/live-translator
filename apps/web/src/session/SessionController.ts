@@ -436,6 +436,9 @@ export class SessionController {
   }
 
   private handleConversationInputDelta(event: TranscriptDeltaEvent): void {
+    if (this.turnClosing) {
+      return;
+    }
     if (this.currentSession.state !== "listening" && this.currentSession.state !== "outputting") {
       return;
     }
@@ -468,13 +471,13 @@ export class SessionController {
   }
 
   private handleConversationOutputDelta(event: TranscriptDeltaEvent): void {
+    if (event.delta.length === 0) {
+      return;
+    }
     if (this.currentSession.state !== "listening" && this.currentSession.state !== "outputting") {
       return;
     }
     if (this.currentSession.activeTurn === undefined) {
-      throw new Error("Cannot append output transcript without an active turn");
-    }
-    if (event.delta.length === 0) {
       return;
     }
     this.dispatch({
@@ -487,6 +490,9 @@ export class SessionController {
   }
 
   private async handleVoiceActivity(event: AudioActivityEvent): Promise<void> {
+    if (this.turnClosing) {
+      return;
+    }
     if (this.currentSession.state !== "listening" && this.currentSession.state !== "outputting") {
       return;
     }
@@ -541,9 +547,6 @@ export class SessionController {
     }
     this.playbackActive = event.active;
     if (this.currentSession.activeTurn === undefined) {
-      if (event.active) {
-        throw new Error("Cannot start playback without an active turn");
-      }
       return;
     }
     if (event.active) {
@@ -670,6 +673,8 @@ export class SessionController {
       }
       this.audio.setOutputAudible(false);
       this.dispatch({ type: "TURN_FAILED" });
+      this.recoveryPromptKind = "resume-repeat";
+      this.notify();
       try {
         await this.live.appendInstructions(buildUnfinishedTurnWarning(), {
           kind: "later_steering",
@@ -683,13 +688,11 @@ export class SessionController {
           error,
           state: this.currentSession.state,
         });
-        throw error;
       }
       if (this.sessionGeneration !== generation) {
         return;
       }
       this.dispatch({ type: "SUSPEND" });
-      this.recoveryPromptKind = "resume-repeat";
       this.notify();
     } finally {
       if (this.sessionGeneration === generation) {

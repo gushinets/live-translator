@@ -949,4 +949,156 @@ describe("SessionController turn engine", () => {
     expect(controller.session.expectedSpeaker).toBe("B");
     expect(controller.steeringDegraded).toBe(true);
   });
+
+  it("ignores residual output transcript after the active turn is cleared", async () => {
+    const { controller, live, audio } = createController();
+    await enterListening(controller);
+    await completeTextOnlyTurn(controller, live, audio);
+
+    expect(() => {
+      live.emit({ type: "session.output_transcript.delta", delta: "late caption" });
+    }).not.toThrow();
+    expect(controller.session.activeTurn).toBeUndefined();
+    expect(controller.session.recentTurns).toHaveLength(1);
+    expect(controller.session.recentTurns[0]?.translatedText).toBe("Hola");
+  });
+
+  it("ignores residual playback-start after the active turn is cleared", async () => {
+    const { controller, live, audio } = createController();
+    await enterListening(controller);
+    await completeTextOnlyTurn(controller, live, audio);
+
+    emitPlayback(audio, true);
+    await flushMicrotasks();
+    expect(controller.session.activeTurn).toBeUndefined();
+    expect(controller.session.state).toBe("listening");
+  });
+
+  it("ignores an empty output delta when there is no active turn", async () => {
+    const { controller, live } = createController();
+    await enterListening(controller);
+
+    expect(() => {
+      live.emit({ type: "session.output_transcript.delta", delta: "" });
+    }).not.toThrow();
+    expect(controller.session.activeTurn).toBeUndefined();
+  });
+
+  it("does not start a new source turn during an in-flight MAX_SOURCE_MS warning append", async () => {
+    const { controller, live, audio } = createController();
+    let releaseWarning: (() => void) | undefined;
+    live.appendInstructions.mockImplementation(async (text: string, policy?: { kind: string }) => {
+      live.callOrder.push(`instructions:${text}`);
+      if (policy?.kind === "later_steering" && text === buildUnfinishedTurnWarning()) {
+        await new Promise<void>((resolve) => {
+          releaseWarning = resolve;
+        });
+      }
+      return { eventId: "evt-warn" };
+    });
+    await enterListening(controller);
+    emitVoice(audio, true);
+    live.emit({ type: "session.input_transcript.delta", delta: "Hello" });
+
+    await vi.advanceTimersByTimeAsync(runtime.maxSourceMs);
+    await flushMicrotasks();
+    await vi.waitFor(() => {
+      if (releaseWarning === undefined) {
+        throw new Error("MAX_SOURCE_MS warning append was not started");
+      }
+    });
+    const finishWarning = releaseWarning;
+    if (finishWarning === undefined) {
+      throw new Error("MAX_SOURCE_MS warning append was not started");
+    }
+
+    emitVoice(audio, true);
+    live.emit({ type: "session.input_transcript.delta", delta: " still talking" });
+    expect(controller.session.activeTurn).toBeUndefined();
+    expect(controller.session.expectedSpeaker).toBe("A");
+
+    finishWarning();
+    await flushMicrotasks();
+
+    expect(controller.session.state).toBe("suspended");
+    expect(controller.recoveryPrompt).toBe("resume-repeat");
+    expect(controller.session.expectedSpeaker).toBe("A");
+    expect(controller.session.recentTurns[0]?.status).toBe("failed");
+    expect(controller.session.activeTurn).toBeUndefined();
+  });
+
+  it("still suspends with resume-repeat when the unfinished-turn warning append rejects", async () => {
+    const { controller, live, audio } = createController();
+    live.appendInstructions.mockImplementation(async (text: string, policy?: { kind: string }) => {
+      live.callOrder.push(`instructions:${text}`);
+      if (policy?.kind === "later_steering" && text === buildUnfinishedTurnWarning()) {
+        throw new Error("warning ack timeout");
+      }
+      return { eventId: "evt-ok" };
+    });
+    await enterListening(controller);
+    emitVoice(audio, true);
+
+    await vi.advanceTimersByTimeAsync(runtime.maxSourceMs);
+    await flushMicrotasks();
+
+    expect(controller.session.state).toBe("suspended");
+    expect(controller.recoveryPrompt).toBe("resume-repeat");
+    expect(controller.session.expectedSpeaker).toBe("A");
+    expect(controller.session.recentTurns[0]?.status).toBe("failed");
+    await controller.resumeFromSourceTimeout();
+    expect(controller.session.state).toBe("listening");
+  });
+
+  it("does not accept the next source turn until later steering and unmute have settled", async () => {
+    const { controller, live, audio } = createController();
+    let releaseSteering: (() => void) | undefined;
+    live.appendInstructions.mockImplementation(async (text: string, policy?: { kind: string }) => {
+      live.callOrder.push(`instructions:${text}`);
+      if (policy?.kind === "later_steering") {
+        await new Promise<void>((resolve) => {
+          releaseSteering = resolve;
+        });
+      }
+      return { eventId: "evt-steer" };
+    });
+    await enterListening(controller);
+    emitVoice(audio, true);
+    live.emit({ type: "session.input_transcript.delta", delta: "Hello" });
+    live.emit({ type: "session.output_transcript.delta", delta: "Hola" });
+    emitVoice(audio, false);
+    await flushMicrotasks();
+    await vi.advanceTimersByTimeAsync(runtime.audioStartGraceMs);
+    await flushMicrotasks();
+    await vi.waitFor(() => {
+      if (releaseSteering === undefined) {
+        throw new Error("later steering append was not started");
+      }
+    });
+    const finishSteering = releaseSteering;
+    if (finishSteering === undefined) {
+      throw new Error("later steering append was not started");
+    }
+
+    expect(controller.session.state).toBe("listening");
+    expect(controller.session.activeTurn).toBeUndefined();
+    emitVoice(audio, true);
+    live.emit({ type: "session.input_transcript.delta", delta: "Next" });
+    expect(controller.session.activeTurn).toBeUndefined();
+    expect(live.setInputMuted).not.toHaveBeenCalledWith(false);
+
+    finishSteering();
+    await flushMicrotasks();
+    const unmuteResult = live.setInputMuted.mock.results.at(-1)?.value;
+    if (unmuteResult instanceof Promise) {
+      await unmuteResult;
+    }
+    await flushMicrotasks();
+
+    expect(live.setInputMuted).toHaveBeenLastCalledWith(false);
+    emitVoice(audio, true);
+    live.emit({ type: "session.input_transcript.delta", delta: "Next" });
+    expect(controller.session.activeTurn?.originalText).toBe("Next");
+    expect(controller.session.expectedSpeaker).toBe("B");
+  });
 });
