@@ -495,10 +495,6 @@ export class SessionController {
       this.dispatch({ type: "CORRECTION_APPLIED", speaker: side });
       this.correctionEpoch += 1;
       this.gateCHeldForCorrectionEpoch = this.correctionEpoch;
-      if (this.playbackActive && this.currentSession.activeTurn !== undefined) {
-        this.dispatch({ type: "AUDIO_STARTED", nowMs: Date.now() });
-        this.releaseGateCAfterFreshCorrectionOutput();
-      }
     } catch (error) {
       if (this.sessionGeneration !== generation) {
         return;
@@ -694,12 +690,14 @@ export class SessionController {
   }
 
   private async handlePlaybackActivity(event: AudioActivityEvent): Promise<void> {
+    const wasActive = this.playbackActive;
     this.playbackActive = event.active;
     if (!event.active) {
       this.finishPlaybackIdleWait();
     }
+    const isPlaybackOnset = event.active && !wasActive;
     if (this.leftoverOutputDraining) {
-      if (this.tryEstablishCorrectionEpochFromPlayback(event.atMs)) {
+      if (isPlaybackOnset && this.tryEstablishCorrectionEpochFromPlayback(event.atMs)) {
         return;
       }
       if (!event.active) {
@@ -717,6 +715,9 @@ export class SessionController {
       return;
     }
     if (event.active) {
+      if (this.gateCHeldForCorrectionEpoch !== null && !isPlaybackOnset) {
+        return;
+      }
       this.dispatch({ type: "AUDIO_STARTED", nowMs: event.atMs });
       this.releaseGateCAfterFreshCorrectionOutput();
       return;
@@ -997,7 +998,7 @@ export class SessionController {
       this.playbackIdleWaitResolve = resolve;
       this.playbackIdleWaitTimer = window.setTimeout(() => {
         this.finishPlaybackIdleWait();
-      }, runtime.outputSettleGraceMs);
+      }, runtime.playbackIdleMs + runtime.outputSettleGraceMs);
     });
   }
 

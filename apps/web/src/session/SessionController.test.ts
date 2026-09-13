@@ -1420,15 +1420,21 @@ describe("SessionController correction", () => {
     expect(audio.setOutputAudible.mock.calls.length).toBe(audibleCalls);
   });
 
-  it("sends commentary after the settle timeout if playback stays active", async () => {
+  it("sends commentary after the composed idle deadline and keeps Gate C closed until a fresh signal", async () => {
     const { controller, live, audio } = createController();
     await startAudibleTurnAssignedA(controller, live, audio);
+    const idleDeadlineMs = runtime.playbackIdleMs + runtime.outputSettleGraceMs;
 
     const pending = controller.correctLastTurn("B");
     await flushMicrotasks();
     expect(live.appendCommentary).not.toHaveBeenCalled();
 
-    await vi.advanceTimersByTimeAsync(runtime.outputSettleGraceMs - 1);
+    await vi.advanceTimersByTimeAsync(runtime.outputSettleGraceMs);
+    await flushMicrotasks();
+    expect(live.appendCommentary).not.toHaveBeenCalled();
+    expect(audio.setOutputAudible).toHaveBeenLastCalledWith(false);
+
+    await vi.advanceTimersByTimeAsync(idleDeadlineMs - runtime.outputSettleGraceMs - 1);
     await flushMicrotasks();
     expect(live.appendCommentary).not.toHaveBeenCalled();
 
@@ -1440,8 +1446,12 @@ describe("SessionController correction", () => {
     });
     expect(controller.session.state).toBe("outputting");
     expect(controller.session.activeTurn?.speaker).toBe("B");
+    expect(audio.setOutputAudible).toHaveBeenLastCalledWith(false);
+    expect(controller.session.activeTurn?.audioOutputStarted).toBe(false);
+
+    live.emit({ type: "session.output_transcript.delta", delta: "Hello there" });
+    expect(controller.session.activeTurn?.translatedText).toBe("Hello there");
     expect(audio.setOutputAudible).toHaveBeenLastCalledWith(true);
-    expect(controller.session.activeTurn?.audioOutputStarted).toBe(true);
   });
 
   it("does not treat leftover captions as the new correction epoch", async () => {
