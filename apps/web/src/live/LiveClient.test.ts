@@ -19,6 +19,8 @@ class FakeDataChannel extends EventTarget {
   close(): void {
     this.closeCalls += 1;
     this.readyState = "closed";
+    // Real RTCDataChannel implementations fire "close" when torn down.
+    this.dispatchEvent(new Event("close"));
   }
 
   emitMessage(payload: unknown): void {
@@ -26,11 +28,18 @@ class FakeDataChannel extends EventTarget {
       new MessageEvent("message", { data: JSON.stringify(payload) }),
     );
   }
+
+  /** Simulates the remote side (or the network) closing the channel. */
+  emitClose(): void {
+    this.readyState = "closed";
+    this.dispatchEvent(new Event("close"));
+  }
 }
 
 class FakePeerConnection extends EventTarget {
   readonly calls: string[] = [];
   iceGatheringState: RTCIceGatheringState = "new";
+  connectionState: RTCPeerConnectionState = "new";
   localDescription: RTCSessionDescriptionInit | null = null;
   remoteDescription: RTCSessionDescriptionInit | null = null;
   readonly addTrackCalls: unknown[] = [];
@@ -71,12 +80,22 @@ class FakePeerConnection extends EventTarget {
 
   close(): void {
     this.closeCalls += 1;
+    this.connectionState = "closed";
+    // Real RTCPeerConnection implementations fire "connectionstatechange"
+    // when the connection transitions to "closed".
+    this.dispatchEvent(new Event("connectionstatechange"));
   }
 
   emitTrack(streams: MediaStream[]): void {
     const event = new Event("track") as RTCTrackEvent;
     Object.defineProperty(event, "streams", { value: streams });
     this.dispatchEvent(event);
+  }
+
+  /** Simulates an out-of-band connection-state transition (e.g. failure). */
+  emitConnectionStateChange(state: RTCPeerConnectionState): void {
+    this.connectionState = state;
+    this.dispatchEvent(new Event("connectionstatechange"));
   }
 }
 
@@ -355,6 +374,121 @@ describe("LiveClient event dispatch", () => {
 
     expect(onSessionClosed).toHaveBeenCalledWith(closedEvent);
     expect(onUsage).toHaveBeenCalledWith({ seconds: 42 });
+  });
+});
+
+describe("LiveClient transport failure handling", () => {
+  async function connectedClient() {
+    const peer = new FakePeerConnection();
+    const onRemoteStream = vi.fn();
+    const { backend } = makeFakeBackend();
+    const client = new LiveClient({
+      backend,
+      peerFactory: () => peer as unknown as RTCPeerConnection,
+      onRemoteStream,
+    });
+    const connectPromise = client.connect(makeFakeStream());
+    await vi.waitFor(() => {
+      expect(peer.calls).toContain("setRemoteDescription");
+    });
+    peer.dataChannel?.emitMessage({
+      type: "session.started",
+      session: { id: "sess_123" },
+    });
+    await connectPromise;
+    if (peer.dataChannel === null) throw new Error("data channel missing");
+    return { client, peer, channel: peer.dataChannel };
+  }
+
+  it("registers the close and connectionstatechange handlers during connect(), before session.started arrives", async () => {
+    const peer = new FakePeerConnection();
+    const { backend } = makeFakeBackend();
+    const client = new LiveClient({
+      backend,
+      peerFactory: () => peer as unknown as RTCPeerConnection,
+      onRemoteStream: vi.fn(),
+    });
+    const onError = vi.fn();
+    client.onError = onError;
+
+    const connectPromise = client.connect(makeFakeStream());
+    await vi.waitFor(() => {
+      expect(peer.calls).toContain("setRemoteDescription");
+    });
+
+    peer.emitConnectionStateChange("failed");
+    expect(onError).toHaveBeenCalledWith({
+      type: "error",
+      error: { message: 'Peer connection state changed to "failed"' },
+    });
+
+    peer.dataChannel?.emitMessage({
+      type: "session.started",
+      session: { id: "sess_123" },
+    });
+    await connectPromise;
+  });
+
+  it("invokes onError when the data channel closes unexpectedly", async () => {
+    const { client, channel } = await connectedClient();
+    const onError = vi.fn();
+    client.onError = onError;
+
+    channel.emitClose();
+
+    expect(onError).toHaveBeenCalledWith({
+      type: "error",
+      error: { message: "Live data channel closed unexpectedly" },
+    });
+  });
+
+  it("invokes onError when the peer connection enters the failed state", async () => {
+    const { client, peer } = await connectedClient();
+    const onError = vi.fn();
+    client.onError = onError;
+
+    peer.emitConnectionStateChange("failed");
+
+    expect(onError).toHaveBeenCalledWith({
+      type: "error",
+      error: { message: 'Peer connection state changed to "failed"' },
+    });
+  });
+
+  it("invokes onError when the peer connection closes unexpectedly (without a graceful close())", async () => {
+    const { client, peer } = await connectedClient();
+    const onError = vi.fn();
+    client.onError = onError;
+
+    peer.emitConnectionStateChange("closed");
+
+    expect(onError).toHaveBeenCalledWith({
+      type: "error",
+      error: { message: 'Peer connection state changed to "closed"' },
+    });
+  });
+
+  it("ignores benign connection-state transitions", async () => {
+    const { client, peer } = await connectedClient();
+    const onError = vi.fn();
+    client.onError = onError;
+
+    peer.emitConnectionStateChange("connected");
+    peer.emitConnectionStateChange("disconnected");
+
+    expect(onError).not.toHaveBeenCalled();
+  });
+
+  it("does not invoke onError when the transport closes gracefully via close()", async () => {
+    const { client, channel } = await connectedClient();
+    const onError = vi.fn();
+    client.onError = onError;
+
+    const closePromise = client.close();
+    channel.emitMessage({ type: "session.closed" });
+    await closePromise;
+
+    expect(onError).not.toHaveBeenCalled();
   });
 });
 

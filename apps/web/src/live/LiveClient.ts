@@ -83,11 +83,17 @@ export class LiveClient {
     channel.addEventListener("message", (event) => {
       this.handleChannelMessage(event as MessageEvent<string>);
     });
+    channel.addEventListener("close", () => {
+      this.handleChannelClose();
+    });
 
     peer.addEventListener("track", (event) => {
       const trackEvent = event as RTCTrackEvent;
       const [remoteStream] = trackEvent.streams;
       if (remoteStream !== undefined) this.deps.onRemoteStream(remoteStream);
+    });
+    peer.addEventListener("connectionstatechange", () => {
+      this.handleConnectionStateChange();
     });
 
     const sessionStartedPromise = new Promise<SessionStartedEvent>(
@@ -176,6 +182,38 @@ export class LiveClient {
           usageSeconds: event.usage?.seconds,
         });
       });
+    });
+  }
+
+  /**
+   * Fires when the data channel closes without going through our own
+   * graceful `close()` (e.g. the remote side or the network dropped it).
+   * Reported via the existing `onError` callback rather than a new
+   * product-level event; `close()` sets `closing` before it tears down the
+   * channel itself, so that expected closure is not reported as an error.
+   */
+  private handleChannelClose(): void {
+    if (this.closing) return;
+    this.onError?.({
+      type: "error",
+      error: { message: "Live data channel closed unexpectedly" },
+    });
+  }
+
+  /**
+   * Fires on every `RTCPeerConnection` state transition. Only the terminal
+   * failure states are surfaced (via `onError`); transient states such as
+   * "connecting"/"connected"/"disconnected" are not reported, and a
+   * transition to "closed" caused by our own graceful `close()` is
+   * suppressed by the `closing` guard for the same reason as above.
+   */
+  private handleConnectionStateChange(): void {
+    if (this.closing) return;
+    const state = this.peer?.connectionState;
+    if (state !== "failed" && state !== "closed") return;
+    this.onError?.({
+      type: "error",
+      error: { message: `Peer connection state changed to "${state}"` },
     });
   }
 
