@@ -1,4 +1,5 @@
 import { lazy, Suspense } from "react";
+import { ContextScreen } from "../screens/ContextScreen";
 import type { DevSpikeSession } from "./DevSpikeScreen";
 
 const DevSpikeScreen = import.meta.env.DEV
@@ -26,7 +27,9 @@ export function App({
         <Suspense fallback={<p>Loading DEV transport spike…</p>}>
           <DevSpikeScreen createSession={createSpikeSession} />
         </Suspense>
-      ) : null}
+      ) : (
+        <ContextScreen />
+      )}
     </main>
   );
 }

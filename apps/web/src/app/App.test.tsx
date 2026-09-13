@@ -28,16 +28,23 @@ describe("App", () => {
     expect(screen.getByText("Transcript/caption deltas: none")).toBeInTheDocument();
   });
 
-  it("keeps the production app limited to the title", () => {
+  it("shows the context screen in production and keeps the DEV spike hidden", () => {
     render(<App isDevelopment={false} />);
 
     expect(
       screen.getByRole("heading", { name: "Live Translator" }),
     ).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "Start translation" }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText("Speech is sent to OpenAI for live translation."),
+    ).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Connect" })).not.toBeInTheDocument();
     expect(
       screen.queryByLabelText("Live transport device spike"),
     ).not.toBeInTheDocument();
+    expect(screen.queryByRole("combobox")).not.toBeInTheDocument();
   });
 
   it("connects, reports diagnostics, renders remote audio, and closes gracefully", async () => {
