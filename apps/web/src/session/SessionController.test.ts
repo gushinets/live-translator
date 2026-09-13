@@ -1219,4 +1219,49 @@ describe("SessionController turn engine", () => {
     await flushMicrotasks();
     expect(controller.session.state).toBe("listening");
   });
+
+  it("keeps leftover drain across MAX_SOURCE_MS resume while playback stays active", async () => {
+    const { controller, live, audio } = createController();
+    await enterListening(controller);
+    emitVoice(audio, true);
+    live.emit({ type: "session.input_transcript.delta", delta: "Hello" });
+    emitPlayback(audio, true);
+    await flushMicrotasks();
+
+    await vi.advanceTimersByTimeAsync(runtime.maxSourceMs);
+    await flushMicrotasks();
+
+    expect(controller.session.state).toBe("suspended");
+    expect(controller.recoveryPrompt).toBe("resume-repeat");
+    expect(audio.setOutputAudible).toHaveBeenLastCalledWith(false);
+    expect(controller.session.expectedSpeaker).toBe("A");
+
+    await vi.advanceTimersByTimeAsync(runtime.captionIdleMs);
+    await flushMicrotasks();
+
+    await controller.resumeFromSourceTimeout();
+    expect(controller.session.state).toBe("listening");
+    expect(audio.setOutputAudible).toHaveBeenLastCalledWith(true);
+
+    emitVoice(audio, true);
+    live.emit({ type: "session.input_transcript.delta", delta: "Next" });
+    live.emit({ type: "session.output_transcript.delta", delta: "stale leftover" });
+    emitPlayback(audio, true);
+    await flushMicrotasks();
+
+    expect(controller.session.activeTurn?.originalText).toBe("Next");
+    expect(controller.session.activeTurn?.translatedText).toBeUndefined();
+    expect(controller.session.activeTurn?.audioOutputStarted).toBe(false);
+    expect(controller.session.activeTurn?.status).toBe("streaming");
+    expect(controller.session.expectedSpeaker).toBe("A");
+
+    emitPlayback(audio, false);
+    await flushMicrotasks();
+    await vi.advanceTimersByTimeAsync(runtime.captionIdleMs);
+    await flushMicrotasks();
+    live.emit({ type: "session.output_transcript.delta", delta: "Siguiente" });
+
+    expect(controller.session.activeTurn?.translatedText).toBe("Siguiente");
+    expect(controller.session.expectedSpeaker).toBe("A");
+  });
 });

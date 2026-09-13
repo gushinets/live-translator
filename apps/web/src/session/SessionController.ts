@@ -203,8 +203,6 @@ export class SessionController {
     this.audio.resetVoiceActivityBaseline();
     this.audio.setOutputAudible(true);
     this.recoveryPromptKind = undefined;
-    this.playbackActive = false;
-    this.maybeFinishLeftoverOutputDrain();
     await this.unmuteGateB();
     this.dispatch({ type: "RESUME" });
   }
@@ -689,7 +687,6 @@ export class SessionController {
         return;
       }
       this.audio.setOutputAudible(false);
-      this.playbackActive = false;
       this.dispatch({ type: "TURN_FAILED" });
       this.beginLeftoverOutputDrain();
       this.dispatch({ type: "SUSPEND" });
