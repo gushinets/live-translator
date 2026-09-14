@@ -9,11 +9,10 @@ import {
 import { createTranscriptFragment } from "../conversation/TurnBuffer";
 import type { Side, Turn } from "../conversation/Turn";
 import { AckTimeoutError } from "../live/AckRegistry";
-import { LiveClient } from "../live/LiveClient";
+import { LiveClient, type LiveClientErrorEvent } from "../live/LiveClient";
 import {
   APPEND_CHAR_BUDGET,
   ContextTooLongError,
-  type LiveErrorEvent,
   type TranscriptDeltaEvent,
 } from "../live/LiveEvents";
 import {
@@ -1390,8 +1389,11 @@ export class SessionController {
     throw error;
   }
 
-  private handleLiveTransportError(event: LiveErrorEvent): void {
+  private handleLiveTransportError(event: LiveClientErrorEvent): void {
     if (!this.enteredInterpreter) {
+      return;
+    }
+    if (!("transportFailure" in event)) {
       return;
     }
     if (

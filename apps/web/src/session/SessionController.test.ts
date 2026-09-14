@@ -21,6 +21,12 @@ import type { VisibilityController } from "../platform/VisibilityController";
 import type { WakeLockController } from "../platform/WakeLockController";
 import { SessionController } from "./SessionController";
 
+type FakeLiveErrorEvent = {
+  type: "error";
+  error: { message: string; code?: string; client_event_id?: string };
+  transportFailure?: true;
+};
+
 afterEach(() => {
   vi.useRealTimers();
   vi.restoreAllMocks();
@@ -30,7 +36,7 @@ class FakeLive {
   onTranscriptDelta: ((event: TranscriptDeltaEvent) => void) | null = null;
   onSessionStarted: ((event: { type: "session.started"; session: { id: string } }) => void) | null =
     null;
-  onError: ((event: { type: "error"; error: { message: string } }) => void) | null = null;
+  onError: ((event: FakeLiveErrorEvent) => void) | null = null;
   readonly callOrder: string[] = [];
   readonly connect = vi.fn(async () => {
     this.callOrder.push("connect");
@@ -1882,6 +1888,7 @@ describe("SessionController runtime connection errors", () => {
     live.onError?.({
       type: "error",
       error: { message: "Live data channel closed unexpectedly" },
+      transportFailure: true,
     });
 
     expect(controller.session.state).toBe("error");
@@ -1896,10 +1903,26 @@ describe("SessionController runtime connection errors", () => {
     live.onError?.({
       type: "error",
       error: { message: 'Peer connection state changed to "failed"' },
+      transportFailure: true,
     });
 
     expect(controller.session.state).toBe("error");
     expect(controller.ownerError).toBe("Unable to continue the live connection.");
+  });
+
+  it("keeps listening after a recoverable post-start server error", async () => {
+    const { controller, live, audio } = createController();
+    await enterListening(controller);
+    audio.setOutputAudible.mockClear();
+
+    live.onError?.({
+      type: "error",
+      error: { message: "model interrupted this turn", code: "moderation" },
+    });
+
+    expect(controller.session.state).toBe("listening");
+    expect(controller.ownerError).toBeUndefined();
+    expect(audio.setOutputAudible).not.toHaveBeenCalledWith(false);
   });
 });
 

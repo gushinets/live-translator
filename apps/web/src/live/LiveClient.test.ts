@@ -135,6 +135,12 @@ function makeFakeBackend(
   return { backend, calls };
 }
 
+async function flushMicrotasks(): Promise<void> {
+  await Promise.resolve();
+  await Promise.resolve();
+  await Promise.resolve();
+}
+
 describe("LiveClient.connect", () => {
   let peer: FakePeerConnection;
   let onRemoteStream: ReturnType<typeof vi.fn>;
@@ -660,6 +666,7 @@ describe("LiveClient transport failure handling", () => {
     expect(onError).toHaveBeenCalledWith({
       type: "error",
       error: { message: 'Peer connection state changed to "failed"' },
+      transportFailure: true,
     });
 
     // A terminal connection-state failure before session.started also
@@ -681,6 +688,7 @@ describe("LiveClient transport failure handling", () => {
     expect(onError).toHaveBeenCalledWith({
       type: "error",
       error: { message: "Live data channel closed unexpectedly" },
+      transportFailure: true,
     });
   });
 
@@ -694,6 +702,7 @@ describe("LiveClient transport failure handling", () => {
     expect(onError).toHaveBeenCalledWith({
       type: "error",
       error: { message: 'Peer connection state changed to "failed"' },
+      transportFailure: true,
     });
   });
 
@@ -707,6 +716,7 @@ describe("LiveClient transport failure handling", () => {
     expect(onError).toHaveBeenCalledWith({
       type: "error",
       error: { message: 'Peer connection state changed to "closed"' },
+      transportFailure: true,
     });
   });
 
@@ -1322,17 +1332,61 @@ describe("LiveClient trusted control commands", () => {
     await expect(appendPending).resolves.toEqual({ eventId: "evt-1" });
   });
 
-  it("fails the matching waiter when a correlated error arrives", async () => {
+  it("fails an instructions append immediately when a nested correlated error arrives", async () => {
     const { client, channel } = await connectedClient();
     const pending = client.appendInstructions("BEGIN_INTERPRETER_MODE.", {
       kind: "startup_interpreter",
     });
+    const observed = pending.then(
+      () => "resolved",
+      (error: unknown) => (error instanceof Error ? error.message : String(error)),
+    );
+
     channel.emitMessage({
       type: "error",
-      client_event_id: "evt-1",
-      error: { message: "append rejected" },
+      error: { message: "append rejected", client_event_id: "evt-1" },
     });
-    await expect(pending).rejects.toThrow("append rejected");
+    await flushMicrotasks();
+
+    await expect(Promise.race([observed, Promise.resolve("pending")])).resolves.toBe(
+      "append rejected",
+    );
+    expect(channel.sendCalls).toHaveLength(1);
+  });
+
+  it("fails mute and unmute immediately when nested correlated errors arrive", async () => {
+    const { client, channel } = await connectedClient();
+
+    const muted = client.setInputMuted(true);
+    const mutedObserved = muted.then(
+      () => "resolved",
+      (error: unknown) => (error instanceof Error ? error.message : String(error)),
+    );
+    channel.emitMessage({
+      type: "error",
+      error: { message: "mute rejected", client_event_id: "evt-1" },
+    });
+    await flushMicrotasks();
+
+    await expect(Promise.race([mutedObserved, Promise.resolve("pending")])).resolves.toBe(
+      "mute rejected",
+    );
+
+    const unmuted = client.setInputMuted(false);
+    const unmutedObserved = unmuted.then(
+      () => "resolved",
+      (error: unknown) => (error instanceof Error ? error.message : String(error)),
+    );
+    channel.emitMessage({
+      type: "error",
+      error: { message: "unmute rejected", client_event_id: "evt-2" },
+    });
+    await flushMicrotasks();
+
+    await expect(Promise.race([unmutedObserved, Promise.resolve("pending")])).resolves.toBe(
+      "unmute rejected",
+    );
+    expect(channel.sendCalls).toHaveLength(2);
   });
 
   it("does not leak an ack waiter if send() throws", async () => {

@@ -54,6 +54,14 @@ export interface AckResult {
   degraded?: boolean;
 }
 
+export type LiveClientErrorEvent =
+  | LiveErrorEvent
+  | {
+      type: "error";
+      error: { message: string };
+      transportFailure: true;
+    };
+
 interface Deferred<T> {
   promise: Promise<T>;
   resolve: (value: T) => void;
@@ -97,7 +105,7 @@ export class LiveClient {
     | null = null;
   onMuteAcknowledged: ((event: MuteAcknowledgedEvent) => void) | null = null;
   onUsage: ((usage: SessionUsage) => void) | null = null;
-  onError: ((event: LiveErrorEvent) => void) | null = null;
+  onError: ((event: LiveClientErrorEvent) => void) | null = null;
   onSessionClosed: ((event: SessionClosedEvent) => void) | null = null;
 
   private peer: RTCPeerConnection | null = null;
@@ -178,11 +186,21 @@ export class LiveClient {
    */
   async setInputMuted(muted: boolean): Promise<void> {
     const eventId = crypto.randomUUID();
-    this.send({
+    const command: LiveClientEvent = {
       type: muted ? "session.input_audio.mute" : "session.input_audio.unmute",
       event_id: eventId,
-    });
-    await this.ackRegistry.waitFor(eventId, runtime.steeringAckTimeoutMs);
+    };
+    const wait = this.ackRegistry.waitFor(
+      eventId,
+      runtime.steeringAckTimeoutMs,
+    );
+    try {
+      this.send(command);
+    } catch (error) {
+      this.failAckAfterSendError(eventId, wait, error);
+      throw error;
+    }
+    await wait;
   }
 
   /**
@@ -445,6 +463,7 @@ export class LiveClient {
     this.onError?.({
       type: "error",
       error: { message: "Live data channel closed unexpectedly" },
+      transportFailure: true,
     });
   }
 
@@ -478,6 +497,7 @@ export class LiveClient {
     this.onError?.({
       type: "error",
       error: { message: `Peer connection state changed to "${state}"` },
+      transportFailure: true,
     });
   }
 
@@ -571,10 +591,10 @@ export class LiveClient {
           this.teardownTransport();
         }
         this.ackRegistry.fail({
-          client_event_id: serverEvent.client_event_id,
+          client_event_id: serverEvent.error.client_event_id,
           message: serverEvent.error.message,
         });
-        this.onError?.(serverEvent);
+        this.onError?.({ type: "error", error: serverEvent.error });
         return;
     }
   }
@@ -614,11 +634,16 @@ export class LiveClient {
   > {
     const eventId = crypto.randomUUID();
     const command = build(eventId);
-    this.send(command);
     const wait = this.ackRegistry.waitFor(
       eventId,
       runtime.steeringAckTimeoutMs,
     );
+    try {
+      this.send(command);
+    } catch (error) {
+      this.failAckAfterSendError(eventId, wait, error);
+      throw error;
+    }
     try {
       await wait;
       return { ok: true, eventId };
@@ -628,5 +653,17 @@ export class LiveClient {
       }
       throw error;
     }
+  }
+
+  private failAckAfterSendError(
+    eventId: string,
+    wait: Promise<{ client_event_id: string }>,
+    error: unknown,
+  ): void {
+    wait.catch(() => undefined);
+    this.ackRegistry.fail({
+      client_event_id: eventId,
+      message: error instanceof Error ? error.message : String(error),
+    });
   }
 }

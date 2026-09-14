@@ -73,8 +73,7 @@ export interface SessionClosedEvent {
 
 export interface LiveErrorEvent {
   type: "error";
-  error: { message: string; code?: string };
-  client_event_id?: string;
+  error: { message: string; code?: string; client_event_id?: string };
 }
 
 export type LiveServerEvent =
