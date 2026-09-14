@@ -1697,6 +1697,38 @@ describe("SessionController turn engine", () => {
     });
   });
 
+  it("MAX_SOURCE_MS forces Gate A off when capture disable throws", async () => {
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      const audio = createFakeAudio();
+      audio.setCaptureEnabled = vi.fn((enabled: boolean) => {
+        if (!enabled) {
+          throw new Error("capture disable failed");
+        }
+        audio.captureTrack.enabled = enabled;
+      });
+      const { controller, live } = createController({ audio });
+      await enterListening(controller);
+      emitVoice(audio, true);
+      live.emit({ type: "session.input_transcript.delta", delta: "Hello" });
+
+      const unhandled = await collectUnhandledRejectionsDuringFakeTimers(async () => {
+        await vi.advanceTimersByTimeAsync(runtime.maxSourceMs);
+        await flushMicrotasks();
+      });
+
+      expect(unhandled).toEqual([]);
+      expect(audio.captureTrack.enabled).toBe(false);
+      expect(controller.session.state).toBe("suspended");
+      expect(controller.inputReady).toBe(false);
+      expect(controller.recoveryPrompt).toBe("resume-repeat");
+      expect(audio.setOutputAudible).toHaveBeenLastCalledWith(false);
+      expect(errorSpy).toHaveBeenCalled();
+    } finally {
+      errorSpy.mockRestore();
+    }
+  });
+
   it("suspends with resume-repeat when MAX_SOURCE_MS Gate B mute rejects", async () => {
     const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
     const { controller, live, audio } = createController();
@@ -1933,6 +1965,37 @@ describe("SessionController turn engine", () => {
     expect(gateAOnOrder).toBeLessThan(gateCOnOrder);
   });
 
+  it("manual MAX_SOURCE resume is single-flight while Gate B unmute is pending", async () => {
+    const { controller, live, audio } = createController();
+    const releaseUnmutes: Array<() => void> = [];
+    live.setInputMuted.mockImplementation(async (muted: boolean) => {
+      if (!muted) {
+        await new Promise<void>((resolve) => {
+          releaseUnmutes.push(resolve);
+        });
+      }
+    });
+    await enterListening(controller);
+    emitVoice(audio, true);
+    await vi.advanceTimersByTimeAsync(runtime.maxSourceMs);
+    await flushMicrotasks();
+
+    const firstResume = controller.resumeFromSourceTimeout();
+    await waitUntil(() => releaseUnmutes.length === 1);
+    const secondResume = controller.resumeFromSourceTimeout();
+    await flushMicrotasks();
+    const unmuteCalls = live.setInputMuted.mock.calls.filter((call) => call[0] === false).length;
+    for (const release of releaseUnmutes) {
+      release();
+    }
+    await Promise.all([firstResume, secondResume]);
+
+    expect(unmuteCalls).toBe(1);
+    expect(controller.session.state).toBe("listening");
+    expect(controller.inputReady).toBe(true);
+    expect(audio.setOutputAudible).toHaveBeenLastCalledWith(true);
+  });
+
   it("manual MAX_SOURCE resume ignores new speech/transcript until Gate C reopens", async () => {
     const { controller, live, audio } = createController();
     await enterListening(controller);
@@ -2041,6 +2104,7 @@ describe("SessionController turn engine", () => {
     expect(audio.setCaptureEnabled).toHaveBeenCalledWith(false);
     expect(audio.setCaptureEnabled).toHaveBeenCalledWith(true);
     expect(audio.setOutputAudible).toHaveBeenLastCalledWith(false);
+    expect(captureTrack.enabled).toBe(false);
     expect(live.setInputMuted).toHaveBeenLastCalledWith(true);
   });
 
@@ -2540,6 +2604,36 @@ describe("SessionController turn engine", () => {
 
     expect(controller.session.activeTurn?.translatedText).toBe("Siguiente");
     expect(controller.session.expectedSpeaker).toBe("A");
+  });
+
+  it("preserves MAX_SOURCE resume-repeat suspension across lifecycle hide/show drain", async () => {
+    const visibility = new FakeVisibility();
+    const { controller, live, audio } = createController({
+      orientation: new FakeOrientation(),
+      visibility,
+      wakeLock: new FakeWakeLock(),
+    });
+    await enterListening(controller);
+    emitVoice(audio, true);
+    live.emit({ type: "session.input_transcript.delta", delta: "Hello" });
+    await vi.advanceTimersByTimeAsync(runtime.maxSourceMs);
+    await flushMicrotasks();
+
+    expect(controller.session.state).toBe("suspended");
+    expect(controller.recoveryPrompt).toBe("resume-repeat");
+
+    visibility.hide();
+    await flushLifecycle();
+    visibility.show();
+    await flushLifecycle();
+    await vi.advanceTimersByTimeAsync(runtime.captionIdleMs);
+    await flushLifecycle();
+
+    expect(controller.session.state).toBe("suspended");
+    expect(controller.recoveryPrompt).toBe("resume-repeat");
+    expect(controller.inputReady).toBe(false);
+    expect(audio.setOutputAudible).toHaveBeenLastCalledWith(false);
+    expect(live.setInputMuted.mock.calls.some((call) => call[0] === false)).toBe(false);
   });
 });
 

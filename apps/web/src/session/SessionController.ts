@@ -109,6 +109,7 @@ export class SessionController {
   private lifecycleQueue: Promise<void> = Promise.resolve();
   private gateBMuted = false;
   private maxSourceMuteInFlight: { generation: number; promise: Promise<void> } | null = null;
+  private sourceTimeoutResumeWork: Promise<void> | null = null;
   private playbackActive = false;
   private remotePlaybackGeneration = 0;
   private remotePlaybackState: RemotePlaybackState = "ready";
@@ -339,6 +340,22 @@ export class SessionController {
   }
 
   async resumeFromSourceTimeout(): Promise<void> {
+    if (this.sourceTimeoutResumeWork !== null) {
+      await this.sourceTimeoutResumeWork;
+      return;
+    }
+    const work = this.runResumeFromSourceTimeout();
+    this.sourceTimeoutResumeWork = work;
+    try {
+      await work;
+    } finally {
+      if (this.sourceTimeoutResumeWork === work) {
+        this.sourceTimeoutResumeWork = null;
+      }
+    }
+  }
+
+  private async runResumeFromSourceTimeout(): Promise<void> {
     if (this.currentSession.state !== "suspended") {
       throw new Error(`Cannot resume from "${this.currentSession.state}"`);
     }
@@ -405,6 +422,7 @@ export class SessionController {
         return;
       }
       this.audio.setOutputAudible(false);
+      this.closeGateAForSafety("Gate A close failed after Gate A restore failure");
       await ensureMuted();
       if (this.sessionGeneration !== generation || this.currentSession.state !== "suspended") {
         return;
@@ -1248,13 +1266,14 @@ export class SessionController {
       if (this.sessionGeneration !== generation) {
         return;
       }
-      try {
-        this.audio.setCaptureEnabled(false);
-      } catch (error) {
-        console.error("Gate A close failed during source timeout", {
-          error,
-          state: this.currentSession.state,
+      if (!this.closeGateAForSafety("Gate A close failed during source timeout")) {
+        this.audio.setOutputAudible(false);
+        this.ownerErrorMessage = "Microphone capture could not be disabled";
+        this.dispatch({
+          type: "SESSION_ERROR",
+          message: this.ownerErrorMessage,
         });
+        return;
       }
       this.audio.setOutputAudible(false);
       this.dispatch({ type: "TURN_FAILED" });
@@ -1323,6 +1342,34 @@ export class SessionController {
     }
     this.gateBMuted = false;
     return true;
+  }
+
+  private closeGateAForSafety(logMessage: string): boolean {
+    try {
+      this.audio.setCaptureEnabled(false);
+      return true;
+    } catch (error) {
+      console.error(logMessage, { error, state: this.currentSession.state });
+    }
+    return this.forceCaptureTracksDisabled();
+  }
+
+  private forceCaptureTracksDisabled(): boolean {
+    try {
+      const stream = this.audio.getCaptureStream();
+      if (stream === null) {
+        return false;
+      }
+      let disabledAny = false;
+      for (const track of stream.getAudioTracks()) {
+        track.enabled = false;
+        disabledAny = true;
+      }
+      return disabledAny;
+    } catch (error) {
+      console.error("Gate A force-off failed", { error, state: this.currentSession.state });
+      return false;
+    }
   }
 
   private armMaxSourceTimer(): void {
@@ -1948,7 +1995,9 @@ export class SessionController {
 
   private async suspendFromLifecycle(reason: LifecycleSuspendReason): Promise<void> {
     if (this.currentSession.state === "suspended") {
-      this.lifecycleSuspendReason = reason;
+      if (this.recoveryPromptKind !== "resume-repeat") {
+        this.lifecycleSuspendReason = reason;
+      }
       this.notify();
       return;
     }
@@ -2211,6 +2260,7 @@ export class SessionController {
     this.interpreterWork = null;
     this.gateBMuted = false;
     this.maxSourceMuteInFlight = null;
+    this.sourceTimeoutResumeWork = null;
     this.playbackActive = false;
     this.resetRemotePlaybackTracking();
     this.turnClosing = false;
