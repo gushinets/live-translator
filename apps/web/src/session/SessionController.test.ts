@@ -851,6 +851,84 @@ describe("SessionController", () => {
     expect(audio.stopCapture).toHaveBeenCalledOnce();
   });
 
+  it("closes the in-flight LiveClient when the microphone track ends during connect", async () => {
+    const audio = createFakeAudio();
+    const live = new FakeLive();
+    let rejectConnect: ((error: Error) => void) | undefined;
+    live.connect.mockImplementation(
+      () =>
+        new Promise<{ sessionId: string }>((_resolve, reject) => {
+          rejectConnect = reject;
+        }),
+    );
+    live.close.mockImplementation(async () => {
+      rejectConnect?.(new Error("Live session close started before session.started"));
+      return { finalized: false };
+    });
+    const { controller } = createController({ audio, live });
+
+    const starting = controller.startContextCapture();
+    await vi.waitFor(() => {
+      expect(live.connect).toHaveBeenCalledOnce();
+    });
+
+    try {
+      const unhandled = await collectUnhandledRejectionsDuring(async () => {
+        audio.endCaptureTrack();
+      });
+
+      expect(unhandled).toEqual([]);
+      expect(live.close).toHaveBeenCalledOnce();
+      expect(controller.session.state).toBe("error");
+      expect(controller.ownerError).toMatch(/microphone/i);
+    } finally {
+      rejectConnect?.(new Error("test cleanup"));
+      await starting.catch(() => {});
+    }
+  });
+
+  it("closes a connected LiveClient when the microphone track ends before retrying", async () => {
+    const created: FakeLive[] = [];
+    const audio = createFakeAudio();
+    const controller = new SessionController({
+      createLive: () => {
+        const live = new FakeLive();
+        created.push(live);
+        return live as unknown as LiveClient;
+      },
+      audio: audio as unknown as AudioController,
+    });
+    const first = created[0];
+    if (first === undefined) {
+      throw new Error("LiveClient was not created");
+    }
+
+    await controller.startContextCapture();
+    const unhandled = await collectUnhandledRejectionsDuring(async () => {
+      audio.endCaptureTrack();
+    });
+
+    expect(unhandled).toEqual([]);
+    expect(first.close).toHaveBeenCalledOnce();
+    expect(controller.session.state).toBe("error");
+    expect(controller.ownerError).toMatch(/microphone/i);
+
+    await controller.cancel();
+    expect(controller.session.state).toBe("idle");
+    expect(created).toHaveLength(2);
+    expect(created[1]?.close).not.toHaveBeenCalled();
+
+    const retryTrack = audio.captureStream.getAudioTracks()[0] as MediaStreamTrack;
+    Object.defineProperty(retryTrack, "readyState", {
+      configurable: true,
+      value: "live",
+    });
+    await controller.startContextCapture();
+    expect(created[1]?.connect).toHaveBeenCalledOnce();
+    expect(first.connect).toHaveBeenCalledOnce();
+    expect(controller.session.state).toBe("context");
+  });
+
   it("sets ownerError on microphone and connect failures", async () => {
     const audio = createFakeAudio();
     audio.startCapture.mockRejectedValueOnce(new Error("Microphone access is required for translation."));
@@ -2370,6 +2448,34 @@ describe("SessionController max session duration", () => {
 
     expect(live.close).toHaveBeenCalledOnce();
     expect(audio.stopCapture).toHaveBeenCalled();
+    expect(controller.session.state).toBe("idle");
+  });
+
+  it("ignores stale session.started callbacks after reset swaps the Live client", async () => {
+    const audio = createFakeAudio();
+    const firstLive = new FakeLive();
+    const replacementLive = new FakeLive();
+    const createLive = vi
+      .fn<() => LiveClient>()
+      .mockReturnValueOnce(firstLive as unknown as LiveClient)
+      .mockReturnValue(replacementLive as unknown as LiveClient);
+    const controller = new SessionController({
+      createLive,
+      audio: audio as unknown as AudioController,
+    });
+    const staleSessionStarted = firstLive.onSessionStarted;
+    expect(staleSessionStarted).toBeTypeOf("function");
+
+    await enterListening(controller);
+    await controller.cancel();
+    expect(controller.session.state).toBe("idle");
+    expect(vi.getTimerCount()).toBe(0);
+
+    staleSessionStarted?.({ type: "session.started", session: { id: "late" } });
+
+    expect(vi.getTimerCount()).toBe(0);
+    await vi.advanceTimersByTimeAsync(runtime.maxSessionMs);
+    expect(replacementLive.close).not.toHaveBeenCalled();
     expect(controller.session.state).toBe("idle");
   });
 });

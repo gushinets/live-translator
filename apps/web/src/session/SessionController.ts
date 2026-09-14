@@ -694,9 +694,15 @@ export class SessionController {
     const live = this.live;
     const generation = this.sessionGeneration;
     this.live.onTranscriptDelta = (event) => {
+      if (this.live !== live || this.sessionGeneration !== generation) {
+        return;
+      }
       this.handleTranscriptDelta(event);
     };
     this.live.onSessionStarted = () => {
+      if (this.live !== live || this.sessionGeneration !== generation) {
+        return;
+      }
       this.armMaxSessionTimer();
     };
     this.live.onSessionClosed = (event) => {
@@ -706,6 +712,9 @@ export class SessionController {
       this.handleLiveSessionClosed(event);
     };
     this.live.onError = (event) => {
+      if (this.live !== live || this.sessionGeneration !== generation) {
+        return;
+      }
       this.handleLiveTransportError(event);
     };
   }
@@ -1752,6 +1761,8 @@ export class SessionController {
     if (state === "idle" || state === "ending" || state === "ended" || state === "error") {
       return;
     }
+    const live = this.live;
+    const shouldCloseLive = this.hasConnected || this.liveConnectStarted;
 
     this.sessionGeneration += 1;
     this.clearIdleTimer();
@@ -1780,6 +1791,14 @@ export class SessionController {
       type: "SESSION_ERROR",
       message: MICROPHONE_CAPTURE_ENDED_MESSAGE,
     });
+    if (shouldCloseLive) {
+      void live.close().catch((error: unknown) => {
+        console.error("Live session close failed after microphone capture ended", {
+          error,
+          state,
+        });
+      });
+    }
     console.error("Microphone capture ended", { state });
   }
 
