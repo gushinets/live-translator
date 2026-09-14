@@ -474,6 +474,45 @@ describe("LiveClient.connect", () => {
     await closePromise;
   });
 
+  it("rejects connect() if close() is called while backend session creation is pending", async () => {
+    let finishBackend: (() => void) | undefined;
+    const backend: BackendClient = {
+      createLiveSession: async () => {
+        await new Promise<void>((resolve) => {
+          finishBackend = resolve;
+        });
+        return {
+          session: { id: "sess_123" },
+          transport: { type: "webrtc", sdp: "v=0 fake-answer-sdp" },
+        };
+      },
+    } as unknown as BackendClient;
+    const client = makeClient(backend);
+    const connectPromise = client.connect(makeFakeStream());
+    await vi.waitFor(() => {
+      if (finishBackend === undefined) {
+        throw new Error("backend session creation did not start");
+      }
+    });
+
+    const closePromise = client.close();
+    await expect(connectPromise).rejects.toThrow(
+      "Live session close started before session.started",
+    );
+    finishBackend?.();
+    await flushMicrotasks();
+    expect(peer.calls).not.toContain("setRemoteDescription");
+
+    peer.dataChannel?.emitMessage({
+      type: "session.closed",
+      reason: "client_requested",
+    });
+    await expect(closePromise).resolves.toEqual({
+      finalized: true,
+      reason: "client_requested",
+    });
+  });
+
   it("aborts signaling and never POSTs the SDP if the data channel closes during ICE gathering", async () => {
     vi.useFakeTimers();
     peer.setLocalDescription = async (
@@ -1071,6 +1110,63 @@ describe("LiveClient.close", () => {
     if (peer.dataChannel === null) throw new Error("data channel missing");
     return { client, peer, channel: peer.dataChannel };
   }
+
+  it("is idempotent after peer creation fails before any transport exists", async () => {
+    const { backend } = makeFakeBackend();
+    const client = new LiveClient({
+      backend,
+      peerFactory: () => {
+        throw new Error("WebRTC is unavailable");
+      },
+      onRemoteStream: vi.fn(),
+    });
+
+    await expect(client.connect(makeFakeStream())).rejects.toThrow(
+      "WebRTC is unavailable",
+    );
+
+    const expected = {
+      finalized: false,
+      reason: "Live session is no longer connected",
+    };
+    await expect(client.close()).resolves.toEqual(expected);
+    await expect(client.close()).resolves.toEqual(expected);
+  });
+
+  it("is idempotent after backend session creation fails and tears down transport", async () => {
+    const peer = new FakePeerConnection();
+    const backend: BackendClient = {
+      createLiveSession: async () => {
+        throw new Error("Live session creation failed");
+      },
+    } as unknown as BackendClient;
+    const client = new LiveClient({
+      backend,
+      peerFactory: () => peer as unknown as RTCPeerConnection,
+      onRemoteStream: vi.fn(),
+    });
+
+    await expect(client.connect(makeFakeStream())).rejects.toThrow(
+      "Live session creation failed",
+    );
+    const channel = peer.dataChannel;
+    if (channel === null) {
+      throw new Error("data channel missing");
+    }
+    channel.send = () => {
+      throw new Error("channel is closed");
+    };
+
+    const expected = {
+      finalized: false,
+      reason: "Live session is no longer connected",
+    };
+    await expect(client.close()).resolves.toEqual(expected);
+    await expect(client.close()).resolves.toEqual(expected);
+    expect(channel.sendCalls).not.toContain(
+      JSON.stringify({ type: "session.close" }),
+    );
+  });
 
   it("sends session.close, waits for session.closed, then tears down the transport", async () => {
     const { client, peer, channel } = await connectedClient();

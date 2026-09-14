@@ -25,6 +25,7 @@ const ICE_GATHER_TIMEOUT_MS = 10_000;
 const SESSION_CLOSE_TIMEOUT_MS = 15_000;
 /** Binding spec 1.2.1 §14.2 data-channel label. */
 const DATA_CHANNEL_LABEL = "oai-events";
+const DISCONNECTED_CLOSE_REASON = "Live session is no longer connected";
 
 export interface LiveClientDeps {
   backend: BackendClient;
@@ -325,16 +326,21 @@ export class LiveClient {
    * calls share the same in-flight close operation.
    */
   async close(): Promise<LiveCloseResult> {
-    const channel = this.channel;
-    const peer = this.peer;
-    if (channel === null || peer === null) {
-      throw new Error("Cannot close a Live session that was never connected");
-    }
     if (this.closeResult !== null) {
       return this.closeResult;
     }
     if (this.closePromise !== null) {
       return this.closePromise;
+    }
+    const channel = this.channel;
+    const peer = this.peer;
+    if (channel === null || peer === null || this.torndown) {
+      const result: LiveCloseResult = {
+        finalized: false,
+        reason: DISCONNECTED_CLOSE_REASON,
+      };
+      this.closeResult = result;
+      return result;
     }
     this.closePromise = this.performLocalClose(channel);
     return this.closePromise;

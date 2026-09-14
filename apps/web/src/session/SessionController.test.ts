@@ -1,8 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import type { BackendClient } from "../api/BackendClient";
 import { AudioController } from "../audio/AudioController";
 import { runtime } from "../config/runtime";
 import { AckTimeoutError } from "../live/AckRegistry";
-import type { LiveClient } from "../live/LiveClient";
+import { LiveClient } from "../live/LiveClient";
 import {
   APPEND_CHAR_BUDGET,
   ContextTooLongError,
@@ -782,6 +783,42 @@ describe("SessionController", () => {
     expect(created[1]?.connect).toHaveBeenCalledOnce();
     expect(first.connect).toHaveBeenCalledOnce();
     expect(controller.session.state).toBe("context");
+  });
+
+  it("cancels cleanly after LiveClient connect fails before transport exists", async () => {
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      const audio = createFakeAudio();
+      const createLive = () =>
+        new LiveClient({
+          backend: { createLiveSession: vi.fn() } as unknown as BackendClient,
+          peerFactory: () => {
+            throw new Error("WebRTC is unavailable");
+          },
+          onRemoteStream: vi.fn(),
+        });
+      const controller = new SessionController({
+        createLive,
+        audio: audio as unknown as AudioController,
+      });
+
+      await expect(controller.startContextCapture()).rejects.toThrow(
+        "WebRTC is unavailable",
+      );
+      expect(controller.session.state).toBe("error");
+      expect(controller.ownerError).toBe("WebRTC is unavailable");
+
+      const unhandled = await collectUnhandledRejectionsDuring(() => {
+        void controller.cancel();
+      });
+
+      expect(unhandled).toEqual([]);
+      expect(controller.session.state).toBe("idle");
+      expect(controller.ownerError).toBeUndefined();
+      expect(audio.getCaptureStream()).toBeNull();
+    } finally {
+      errorSpy.mockRestore();
+    }
   });
 
   it("serializes beginInterpreter and ignores a second activation while one is in flight", async () => {
