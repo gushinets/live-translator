@@ -1225,6 +1225,49 @@ async function collectUnhandledRejectionsDuringFakeTimers(
   return unhandled;
 }
 
+async function startGateARestoreFailureRemuteRace(): Promise<{
+  controller: SessionController;
+  releaseRemute: () => void;
+  resuming: Promise<void>;
+  setCaptureEnabled: ReturnType<typeof vi.fn>;
+}> {
+  const audio = createFakeAudio();
+  const setCaptureEnabled = vi.fn((enabled: boolean) => {
+    audio.captureTrack.enabled = enabled;
+    if (enabled) {
+      throw new Error("capture enable failed");
+    }
+  });
+  audio.setCaptureEnabled = setCaptureEnabled;
+  const live = new FakeLive();
+  let releaseRemute: (() => void) | undefined;
+  let muteAttempts = 0;
+  live.setInputMuted.mockImplementation(async (muted: boolean) => {
+    if (!muted) {
+      return;
+    }
+    muteAttempts += 1;
+    if (muteAttempts === 1) {
+      return;
+    }
+    await new Promise<void>((resolve) => {
+      releaseRemute = resolve;
+    });
+  });
+  const { controller } = createController({ audio, live });
+  await enterListening(controller);
+  emitVoice(audio, true);
+  await vi.advanceTimersByTimeAsync(runtime.maxSourceMs);
+  await flushMicrotasks();
+
+  const resuming = controller.resumeFromSourceTimeout();
+  await waitUntil(() => muteAttempts >= 2 && releaseRemute !== undefined);
+  if (releaseRemute === undefined) {
+    throw new Error("Gate B remute did not start");
+  }
+  return { controller, releaseRemute, resuming, setCaptureEnabled };
+}
+
 async function flushLifecycle(): Promise<void> {
   for (let attempt = 0; attempt < 24; attempt += 1) {
     await Promise.resolve();
@@ -1822,6 +1865,74 @@ describe("SessionController turn engine", () => {
     expect(gateAOnOrder).toBeLessThan(gateCOnOrder);
   });
 
+  it("manual MAX_SOURCE resume waits for pending Gate B mute before reopening gates", async () => {
+    const { controller, live, audio } = createController();
+    let releaseMute: (() => void) | undefined;
+    let releaseUnmute: (() => void) | undefined;
+    let muteAttempts = 0;
+    live.setInputMuted.mockImplementation(async (muted: boolean) => {
+      if (muted) {
+        muteAttempts += 1;
+        if (muteAttempts === 1) {
+          await new Promise<void>((resolve) => {
+            releaseMute = resolve;
+          });
+        }
+        return;
+      }
+      await new Promise<void>((resolve) => {
+        releaseUnmute = resolve;
+      });
+    });
+    await enterListening(controller);
+    emitVoice(audio, true);
+    live.emit({ type: "session.input_transcript.delta", delta: "Hello" });
+
+    await vi.advanceTimersByTimeAsync(runtime.maxSourceMs);
+    await waitUntil(() => releaseMute !== undefined);
+
+    const resuming = controller.resumeFromSourceTimeout();
+    await flushMicrotasks();
+
+    expect(controller.session.state).toBe("suspended");
+    expect(controller.inputReady).toBe(false);
+    expect(audio.setOutputAudible).toHaveBeenLastCalledWith(false);
+    expect(audio.setCaptureEnabled).toHaveBeenLastCalledWith(false);
+    expect(audio.captureTrack.enabled).toBe(false);
+    expect(live.setInputMuted.mock.calls.some((call) => call[0] === false)).toBe(false);
+    expect(audio.setCaptureEnabled).not.toHaveBeenCalledWith(true);
+
+    releaseMute?.();
+    await waitUntil(() => releaseUnmute !== undefined);
+    releaseUnmute?.();
+    await resuming;
+
+    expect(audio.setCaptureEnabled).toHaveBeenCalledWith(true);
+    expect(audio.setOutputAudible).toHaveBeenLastCalledWith(true);
+    expect(controller.session.state).toBe("listening");
+    expect(controller.inputReady).toBe(true);
+    let gateBUnmuteOrder: number | undefined;
+    for (let i = live.setInputMuted.mock.calls.length - 1; i >= 0; i -= 1) {
+      if (live.setInputMuted.mock.calls[i]?.[0] === false) {
+        gateBUnmuteOrder = live.setInputMuted.mock.invocationCallOrder[i];
+        break;
+      }
+    }
+    let gateAOnOrder: number | undefined;
+    for (let i = audio.setCaptureEnabled.mock.calls.length - 1; i >= 0; i -= 1) {
+      if (audio.setCaptureEnabled.mock.calls[i]?.[0] === true) {
+        gateAOnOrder = audio.setCaptureEnabled.mock.invocationCallOrder[i];
+        break;
+      }
+    }
+    const gateCOnOrder = audio.setOutputAudible.mock.invocationCallOrder.at(-1);
+    if (gateBUnmuteOrder === undefined || gateAOnOrder === undefined || gateCOnOrder === undefined) {
+      throw new Error("Gate resume order was not captured");
+    }
+    expect(gateBUnmuteOrder).toBeLessThan(gateAOnOrder);
+    expect(gateAOnOrder).toBeLessThan(gateCOnOrder);
+  });
+
   it("manual MAX_SOURCE resume ignores new speech/transcript until Gate C reopens", async () => {
     const { controller, live, audio } = createController();
     await enterListening(controller);
@@ -1931,6 +2042,38 @@ describe("SessionController turn engine", () => {
     expect(audio.setCaptureEnabled).toHaveBeenCalledWith(true);
     expect(audio.setOutputAudible).toHaveBeenLastCalledWith(false);
     expect(live.setInputMuted).toHaveBeenLastCalledWith(true);
+  });
+
+  it("manual MAX_SOURCE resume ignores Gate A restore failure remute after cancel", async () => {
+    const { controller, releaseRemute, resuming, setCaptureEnabled } =
+      await startGateARestoreFailureRemuteRace();
+    const unhandled = await collectUnhandledRejectionsDuringFakeTimers(async () => {
+      await controller.cancel();
+      releaseRemute();
+      await resuming;
+    });
+
+    expect(unhandled).toEqual([]);
+    expect(controller.session.state).toBe("idle");
+    expect(controller.ownerError).toBeUndefined();
+    expect(setCaptureEnabled).toHaveBeenCalledWith(true);
+    expect(setCaptureEnabled).toHaveBeenCalledWith(false);
+  });
+
+  it("manual MAX_SOURCE resume ignores Gate A restore failure when remute resolves before cancel", async () => {
+    const { controller, releaseRemute, resuming, setCaptureEnabled } =
+      await startGateARestoreFailureRemuteRace();
+    const unhandled = await collectUnhandledRejectionsDuringFakeTimers(async () => {
+      releaseRemute();
+      await controller.cancel();
+      await resuming;
+    });
+
+    expect(unhandled).toEqual([]);
+    expect(controller.session.state).toBe("idle");
+    expect(controller.ownerError).toBeUndefined();
+    expect(setCaptureEnabled).toHaveBeenCalledWith(true);
+    expect(setCaptureEnabled).toHaveBeenCalledWith(false);
   });
 
   it("ignores a pending manual MAX_SOURCE resume unmute after cancel", async () => {

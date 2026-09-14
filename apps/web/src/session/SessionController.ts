@@ -108,6 +108,7 @@ export class SessionController {
   private lifecycleEpoch = 0;
   private lifecycleQueue: Promise<void> = Promise.resolve();
   private gateBMuted = false;
+  private maxSourceMuteInFlight: { generation: number; promise: Promise<void> } | null = null;
   private playbackActive = false;
   private remotePlaybackGeneration = 0;
   private remotePlaybackState: RemotePlaybackState = "ready";
@@ -370,6 +371,15 @@ export class SessionController {
       this.audio.setOutputAudible(false);
       return;
     }
+    const pendingMaxSourceMute = this.maxSourceMuteInFlight;
+    if (pendingMaxSourceMute !== null && pendingMaxSourceMute.generation === generation) {
+      await pendingMaxSourceMute.promise;
+      if (this.sessionGeneration !== generation || this.currentSession.state !== "suspended") {
+        this.audio.setOutputAudible(false);
+        await ensureMuted();
+        return;
+      }
+    }
     try {
       if (!(await this.unmuteGateB(generation))) {
         this.audio.setOutputAudible(false);
@@ -391,11 +401,14 @@ export class SessionController {
     try {
       this.audio.setCaptureEnabled(true);
     } catch (error) {
-      if (this.sessionGeneration !== generation) {
+      if (this.sessionGeneration !== generation || this.currentSession.state !== "suspended") {
         return;
       }
       this.audio.setOutputAudible(false);
       await ensureMuted();
+      if (this.sessionGeneration !== generation || this.currentSession.state !== "suspended") {
+        return;
+      }
       this.failLifecycleResume(error);
       throw error;
     }
@@ -1203,23 +1216,35 @@ export class SessionController {
     const generation = this.sessionGeneration;
     this.speechInputReady = false;
     this.turnClosing = true;
-    try {
-      void this.muteGateB(generation).catch((error) => {
-        if (this.sessionGeneration !== generation) {
-          return;
-        }
-        if (error instanceof AckTimeoutError) {
-          console.error("Gate B mute ack timed out; continuing source timeout", {
+    const maxSourceMuteInFlight = {
+      generation,
+      promise: this.muteGateB(generation).then(
+        () => undefined,
+        (error) => {
+          if (this.sessionGeneration !== generation) {
+            return;
+          }
+          if (error instanceof AckTimeoutError) {
+            console.error("Gate B mute ack timed out; continuing source timeout", {
+              error,
+              state: this.currentSession.state,
+            });
+            return;
+          }
+          console.error("Gate B mute failed during source timeout", {
             error,
             state: this.currentSession.state,
           });
-          return;
-        }
-        console.error("Gate B mute failed during source timeout", {
-          error,
-          state: this.currentSession.state,
-        });
-      });
+        },
+      ),
+    };
+    this.maxSourceMuteInFlight = maxSourceMuteInFlight;
+    maxSourceMuteInFlight.promise.finally(() => {
+      if (this.maxSourceMuteInFlight === maxSourceMuteInFlight) {
+        this.maxSourceMuteInFlight = null;
+      }
+    });
+    try {
       if (this.sessionGeneration !== generation) {
         return;
       }
@@ -2185,6 +2210,7 @@ export class SessionController {
     this.interpreterInFlight = false;
     this.interpreterWork = null;
     this.gateBMuted = false;
+    this.maxSourceMuteInFlight = null;
     this.playbackActive = false;
     this.resetRemotePlaybackTracking();
     this.turnClosing = false;
