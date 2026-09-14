@@ -271,10 +271,13 @@ export class SessionController {
     if (this.currentSession.state !== "suspended") {
       throw new Error(`Cannot resume from "${this.currentSession.state}"`);
     }
+    const generation = this.sessionGeneration;
     this.audio.resetVoiceActivityBaseline();
     this.audio.setOutputAudible(true);
     this.recoveryPromptKind = undefined;
-    await this.unmuteGateB();
+    if (!(await this.unmuteGateB(generation))) {
+      return;
+    }
     this.dispatch({ type: "RESUME" });
   }
 
@@ -767,7 +770,9 @@ export class SessionController {
       if (wasIdle) {
         this.armMaxSourceTimer();
         if (this.gateBMuted) {
-          await this.unmuteGateB();
+          if (!(await this.unmuteGateB(generation))) {
+            return;
+          }
         }
       }
       if (this.sessionGeneration !== generation) {
@@ -1030,33 +1035,47 @@ export class SessionController {
     }
   }
 
-  private async muteGateB(): Promise<void> {
+  private async muteGateB(generation = this.sessionGeneration): Promise<boolean> {
     if (this.gateBMuted) {
-      return;
+      return this.sessionGeneration === generation;
     }
     try {
       await this.live.setInputMuted(true);
     } catch (error) {
+      if (this.sessionGeneration !== generation) {
+        return false;
+      }
       console.error("Gate B mute failed", { error, state: this.currentSession.state });
       if (error instanceof AckTimeoutError) {
         this.gateBMuted = true;
       }
       throw error;
     }
+    if (this.sessionGeneration !== generation) {
+      return false;
+    }
     this.gateBMuted = true;
+    return true;
   }
 
-  private async unmuteGateB(): Promise<void> {
+  private async unmuteGateB(generation = this.sessionGeneration): Promise<boolean> {
     if (!this.gateBMuted) {
-      return;
+      return this.sessionGeneration === generation;
     }
     try {
       await this.live.setInputMuted(false);
     } catch (error) {
+      if (this.sessionGeneration !== generation) {
+        return false;
+      }
       console.error("Gate B unmute failed", { error, state: this.currentSession.state });
       throw error;
     }
+    if (this.sessionGeneration !== generation) {
+      return false;
+    }
     this.gateBMuted = false;
+    return true;
   }
 
   private armMaxSourceTimer(): void {
@@ -1732,10 +1751,16 @@ export class SessionController {
 
     this.audio.resetVoiceActivityBaseline();
     this.audio.setOutputAudible(true);
-    await this.unmuteGateB();
-    if (this.lifecycleEpoch !== epoch) {
+    if (!(await this.unmuteGateB(generation))) {
       this.audio.setOutputAudible(false);
-      await this.muteGateB();
+      return;
+    }
+    if (this.sessionGeneration !== generation || this.lifecycleEpoch !== epoch) {
+      this.audio.setOutputAudible(false);
+      if (this.sessionGeneration !== generation) {
+        return;
+      }
+      await this.muteGateB(generation);
       return;
     }
     this.dispatch({ type: "RESUME" });

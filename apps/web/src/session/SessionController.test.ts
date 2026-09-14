@@ -1980,6 +1980,41 @@ describe("SessionController endConversation", () => {
     expect(controller.session.state).toBe("idle");
     expect(controller.ownerError).toBeUndefined();
   });
+
+  it("handles a pending source-resume unmute rejection after local end starts", async () => {
+    const { controller, live, audio } = createController();
+    let rejectUnmute: ((error: Error) => void) | undefined;
+    live.setInputMuted.mockImplementation(async (muted: boolean) => {
+      live.callOrder.push(`setInputMuted:${muted}`);
+      if (!muted) {
+        await new Promise<void>((_resolve, reject) => {
+          rejectUnmute = reject;
+        });
+      }
+    });
+    await enterListening(controller);
+    emitVoice(audio, true);
+    live.emit({ type: "session.input_transcript.delta", delta: "Hello" });
+    emitVoice(audio, false);
+    await flushMicrotasks();
+    expect(controller.session.activeTurn?.sourceIdleAtMs).toBeDefined();
+    expect(live.setInputMuted).toHaveBeenCalledWith(true);
+
+    emitVoice(audio, true);
+    await vi.waitFor(() => {
+      if (rejectUnmute === undefined) {
+        throw new Error("source-resume unmute was not started");
+      }
+    });
+
+    const ending = controller.endConversation();
+    rejectUnmute?.(new Error("Live client is closing"));
+    await ending;
+    await flushMicrotasks();
+
+    expect(controller.session.state).toBe("idle");
+    expect(controller.ownerError).toBeUndefined();
+  });
 });
 
 describe("SessionController max session duration", () => {
