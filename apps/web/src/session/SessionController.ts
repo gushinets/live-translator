@@ -1989,7 +1989,7 @@ export class SessionController {
         state: this.currentSession.state,
       });
       this.failLifecycleResume(error);
-      throw error;
+      return;
     }
     if (this.sessionGeneration !== generation || this.lifecycleEpoch !== epoch) {
       return;

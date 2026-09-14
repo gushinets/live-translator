@@ -2953,6 +2953,29 @@ describe("SessionController PWA lifecycle suspension (§11.3 / §19)", () => {
     expect(controller.session.expectedSpeaker).toBe("A");
   }
 
+  function rejectPostResumeSteering(live: FakeLive): void {
+    live.appendInstructions.mockImplementation(async (text: string, policy?: { kind: string }) => {
+      live.callOrder.push(`instructions:${text}`);
+      if (policy?.kind === "later_steering") {
+        throw new Error("resume steering rejected");
+      }
+      return { eventId: "evt-instructions" };
+    });
+  }
+
+  function expectFailedLifecycleResume(
+    controller: SessionController,
+    live: FakeLive,
+    audio: ReturnType<typeof createFakeAudio> | AudioController,
+  ): void {
+    expect(controller.session.state).toBe("error");
+    expect(controller.ownerError).toBe("resume steering rejected");
+    expect(controller.inputReady).toBe(false);
+    expect(audio.setCaptureEnabled).toHaveBeenLastCalledWith(false);
+    expect(audio.setOutputAudible).toHaveBeenLastCalledWith(false);
+    expect(live.setInputMuted).not.toHaveBeenLastCalledWith(false);
+  }
+
   it("landscape while a source turn is active discards, closes Gate C, mutes Gate B, and suspends", async () => {
     const orientation = new FakeOrientation();
     const visibility = new FakeVisibility();
@@ -3229,6 +3252,32 @@ describe("SessionController PWA lifecycle suspension (§11.3 / §19)", () => {
     expect(unmuteOrder).toBeLessThan(gateAOrder);
   });
 
+  it("handles rejected visibility resume steering without leaking an unhandled rejection", async () => {
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      const visibility = new FakeVisibility();
+      const { controller, live, audio } = createController({
+        orientation: new FakeOrientation(),
+        visibility,
+        wakeLock: new FakeWakeLock(),
+      });
+      rejectPostResumeSteering(live);
+      await startSourceTurn(controller, live, audio);
+      visibility.hide();
+      await flushLifecycle();
+
+      const unhandled = await collectUnhandledRejectionsDuringFakeTimers(async () => {
+        visibility.show();
+        await flushLifecycle();
+      });
+
+      expect(unhandled).toEqual([]);
+      expectFailedLifecycleResume(controller, live, audio);
+    } finally {
+      errorSpy.mockRestore();
+    }
+  });
+
   it("portrait restore after landscape resume asks the same source to repeat", async () => {
     const orientation = new FakeOrientation();
     const visibility = new FakeVisibility();
@@ -3251,6 +3300,32 @@ describe("SessionController PWA lifecycle suspension (§11.3 / §19)", () => {
       buildSteering({ expectedSource: "A", recipient: "B" }),
       { kind: "later_steering", sessionState: "suspended" },
     );
+  });
+
+  it("handles rejected orientation resume steering without leaking an unhandled rejection", async () => {
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      const orientation = new FakeOrientation();
+      const { controller, live, audio } = createController({
+        orientation,
+        visibility: new FakeVisibility(),
+        wakeLock: new FakeWakeLock(),
+      });
+      rejectPostResumeSteering(live);
+      await startSourceTurn(controller, live, audio);
+      orientation.emit("landscape");
+      await flushLifecycle();
+
+      const unhandled = await collectUnhandledRejectionsDuringFakeTimers(async () => {
+        orientation.emit("portrait");
+        await flushLifecycle();
+      });
+
+      expect(unhandled).toEqual([]);
+      expectFailedLifecycleResume(controller, live, audio);
+    } finally {
+      errorSpy.mockRestore();
+    }
   });
 
   it("does not auto-resume MAX_SOURCE_MS suspension on visibility restore", async () => {
@@ -3517,6 +3592,35 @@ describe("SessionController PWA lifecycle suspension (§11.3 / §19)", () => {
 
     expect(audio.primeOutput.mock.calls.length).toBeGreaterThan(primeCount);
     expect(controller.session.state).toBe("listening");
+  });
+
+  it("handles rejected audio-restored resume steering without leaking an unhandled rejection", async () => {
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      const { controller, live, audio } = createController({
+        orientation: new FakeOrientation(),
+        visibility: new FakeVisibility(),
+        wakeLock: new FakeWakeLock(),
+      });
+      rejectPostResumeSteering(live);
+      await startSourceTurn(controller, live, audio);
+      if (audio.onAudioInterruption === null || audio.onAudioRestored === null) {
+        throw new Error("Audio interruption/restore handlers were not installed");
+      }
+
+      audio.onAudioInterruption();
+      await flushLifecycle();
+
+      const unhandled = await collectUnhandledRejectionsDuringFakeTimers(async () => {
+        audio.onAudioRestored?.();
+        await flushLifecycle();
+      });
+
+      expect(unhandled).toEqual([]);
+      expectFailedLifecycleResume(controller, live, audio);
+    } finally {
+      errorSpy.mockRestore();
+    }
   });
 
   it("keeps Gate C closed and does not steer until leftover playback and captions are idle", async () => {
