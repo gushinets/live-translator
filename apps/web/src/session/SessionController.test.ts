@@ -1924,6 +1924,49 @@ describe("SessionController turn engine", () => {
     expect(controller.session.expectedSpeaker).toBe("B");
   });
 
+  it("fails closed when later steering append explicitly rejects", async () => {
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      const { controller, live, audio } = createController();
+      live.appendInstructions.mockImplementation(async (text: string, policy?: { kind: string }) => {
+        live.callOrder.push(`instructions:${text}`);
+        if (policy?.kind === "later_steering") {
+          throw new Error("instructions rejected");
+        }
+        return { eventId: "evt-ok" };
+      });
+      await enterListening(controller);
+      emitVoice(audio, true);
+      live.emit({ type: "session.input_transcript.delta", delta: "Hello" });
+      live.emit({ type: "session.output_transcript.delta", delta: "Hola" });
+      const turnCloseCallStart = live.callOrder.length;
+
+      const unhandled = await collectUnhandledRejectionsDuringFakeTimers(async () => {
+        emitVoice(audio, false);
+        await flushMicrotasks();
+        await vi.advanceTimersByTimeAsync(runtime.audioStartGraceMs);
+        await flushMicrotasks();
+      });
+
+      expect(unhandled).toEqual([]);
+      expect(controller.session.state).toBe("error");
+      expect(controller.ownerError).toBe("instructions rejected");
+      expect(controller.inputReady).toBe(false);
+      expect(audio.setOutputAudible).toHaveBeenLastCalledWith(false);
+      expect(live.callOrder.slice(turnCloseCallStart)).not.toContain("setInputMuted:false");
+      expect(controller.session.activeTurn).toBeUndefined();
+      const recentTurnCount = controller.session.recentTurns.length;
+
+      emitVoice(audio, true);
+      live.emit({ type: "session.input_transcript.delta", delta: "Next" });
+
+      expect(controller.session.activeTurn).toBeUndefined();
+      expect(controller.session.recentTurns).toHaveLength(recentTurnCount);
+    } finally {
+      errorSpy.mockRestore();
+    }
+  });
+
   it("does not mark input ready while Gate B unmute is still pending after steering", async () => {
     const { controller, live, audio } = createController();
     let releaseUnmute: (() => void) | undefined;

@@ -1016,7 +1016,6 @@ export class SessionController {
       ? undefined
       : recipientProfile.initialLanguageHint;
     const generation = this.sessionGeneration;
-    let appendError: unknown;
     try {
       const result = await this.live.appendInstructions(
         buildSteering({
@@ -1043,7 +1042,14 @@ export class SessionController {
         error,
         state: this.currentSession.state,
       });
-      appendError = error;
+      this.audio.setOutputAudible(false);
+      this.speechInputReady = false;
+      this.ownerErrorMessage = error instanceof Error ? error.message : String(error);
+      this.dispatch({
+        type: "SESSION_ERROR",
+        message: this.ownerErrorMessage,
+      });
+      return;
     }
     if (this.sessionGeneration !== generation) {
       return;
@@ -1081,13 +1087,8 @@ export class SessionController {
         audioOutputStarted,
       });
     }
-    if (appendError === undefined) {
-      this.speechInputReady = true;
-    }
+    this.speechInputReady = true;
     this.notify();
-    if (appendError !== undefined) {
-      throw appendError;
-    }
   }
 
   private async failTurnNoOutput(): Promise<void> {
