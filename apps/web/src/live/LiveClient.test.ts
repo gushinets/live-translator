@@ -30,8 +30,12 @@ class FakeDataChannel extends EventTarget {
   }
 
   emitMessage(payload: unknown): void {
+    this.emitRawMessage(JSON.stringify(payload));
+  }
+
+  emitRawMessage(data: string): void {
     this.dispatchEvent(
-      new MessageEvent("message", { data: JSON.stringify(payload) }),
+      new MessageEvent("message", { data }),
     );
   }
 
@@ -580,6 +584,107 @@ describe("LiveClient event dispatch", () => {
     expect(onError).toHaveBeenCalledWith({
       type: "error",
       error: { message: "boom" },
+    });
+  });
+
+  it("invokes onUsage for session.usage.updated events", async () => {
+    const { client, channel } = await connectedClient();
+    const onUsage = vi.fn();
+    client.onUsage = onUsage;
+
+    channel.emitMessage({
+      type: "session.usage.updated",
+      usage: {
+        seconds: 5,
+        context_window: { usage_ratio: 0.25 },
+      },
+    });
+
+    expect(onUsage).toHaveBeenCalledExactlyOnceWith({
+      seconds: 5,
+      context_window: { usage_ratio: 0.25 },
+    });
+  });
+
+  it("delivers cumulative usage snapshots without adding them", async () => {
+    const { client, channel } = await connectedClient();
+    const onUsage = vi.fn();
+    client.onUsage = onUsage;
+
+    channel.emitMessage({ type: "session.usage.updated", usage: { seconds: 5 } });
+    channel.emitMessage({ type: "session.usage.updated", usage: { seconds: 8 } });
+
+    expect(onUsage).toHaveBeenNthCalledWith(1, { seconds: 5 });
+    expect(onUsage).toHaveBeenNthCalledWith(2, { seconds: 8 });
+  });
+
+  it("ignores unknown type-bearing events and still dispatches known events", async () => {
+    const { client, channel } = await connectedClient();
+    const onError = vi.fn();
+    const onTranscriptDelta = vi.fn();
+    client.onError = onError;
+    client.onTranscriptDelta = onTranscriptDelta;
+
+    expect(() =>
+      channel.emitMessage({
+        type: "session.future.event",
+        payload: { ok: true },
+      }),
+    ).not.toThrow();
+    channel.emitMessage({
+      type: "session.output_transcript.delta",
+      delta: "still alive",
+    });
+
+    expect(onError).not.toHaveBeenCalled();
+    expect(onTranscriptDelta).toHaveBeenCalledExactlyOnceWith({
+      type: "session.output_transcript.delta",
+      delta: "still alive",
+    });
+  });
+
+  it("reports malformed JSON as a controlled transport error", async () => {
+    const { client, channel } = await connectedClient();
+    const onError = vi.fn();
+    client.onError = onError;
+
+    expect(() => channel.emitRawMessage("{")).not.toThrow();
+
+    expect(onError).toHaveBeenCalledExactlyOnceWith({
+      type: "error",
+      error: { message: "Received malformed Live event JSON" },
+      transportFailure: true,
+    });
+    expect(channel.closeCalls).toBe(1);
+  });
+
+  it("reports invalid envelopes as controlled transport errors", async () => {
+    const { client, channel } = await connectedClient();
+    const onError = vi.fn();
+    client.onError = onError;
+
+    expect(() => channel.emitMessage({})).not.toThrow();
+
+    expect(onError).toHaveBeenCalledExactlyOnceWith({
+      type: "error",
+      error: { message: "Received a Live event without a valid type" },
+      transportFailure: true,
+    });
+  });
+
+  it("reports malformed known events as controlled transport errors", async () => {
+    const { client, channel } = await connectedClient();
+    const onError = vi.fn();
+    client.onError = onError;
+
+    expect(() =>
+      channel.emitMessage({ type: "session.output_transcript.delta" }),
+    ).not.toThrow();
+
+    expect(onError).toHaveBeenCalledExactlyOnceWith({
+      type: "error",
+      error: { message: "Received malformed session.output_transcript.delta event" },
+      transportFailure: true,
     });
   });
 

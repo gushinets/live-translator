@@ -6,7 +6,7 @@ import {
   buildCommentaryAppendCommand,
   buildInstructionsAppendCommand,
   buildThinkingAppendCommand,
-  isLiveServerEvent,
+  parseLiveServerEvent,
   type AppendAcknowledgedEvent,
   type LiveClientEvent,
   type LiveErrorEvent,
@@ -502,11 +502,22 @@ export class LiveClient {
   }
 
   private handleChannelMessage(event: MessageEvent<string>): void {
-    const parsed: unknown = JSON.parse(event.data);
-    if (!isLiveServerEvent(parsed)) {
-      throw new Error("Received a Live event without a recognizable type");
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(event.data);
+    } catch {
+      this.handleMalformedServerEvent("Received malformed Live event JSON");
+      return;
     }
-    this.dispatchServerEvent(parsed);
+    const serverEvent = parseLiveServerEvent(parsed);
+    if (serverEvent.kind === "unknown") {
+      return;
+    }
+    if (serverEvent.kind === "invalid") {
+      this.handleMalformedServerEvent(serverEvent.message);
+      return;
+    }
+    this.dispatchServerEvent(serverEvent.event);
   }
 
   private dispatchServerEvent(serverEvent: LiveServerEvent): void {
@@ -533,6 +544,9 @@ export class LiveClient {
         // Gate B only. Mute/unmute acks never complete local output (Gate C).
         this.ackRegistry.accept(serverEvent);
         this.onMuteAcknowledged?.(serverEvent);
+        return;
+      case "session.usage.updated":
+        this.onUsage?.(serverEvent.usage);
         return;
       case "session.closed": {
         // A server-initiated session.closed enters the same non-error
@@ -597,6 +611,21 @@ export class LiveClient {
         this.onError?.({ type: "error", error: serverEvent.error });
         return;
     }
+  }
+
+  private handleMalformedServerEvent(message: string): void {
+    const error = new Error(message);
+    if (!this.closing) {
+      this.closing = true;
+      this.rejectPendingConnect(error);
+      this.ackRegistry.rejectAll(error);
+      this.teardownTransport();
+    }
+    this.onError?.({
+      type: "error",
+      error: { message },
+      transportFailure: true,
+    });
   }
 
   private assertSteeringAllowed(policy: AppendPolicy): void {

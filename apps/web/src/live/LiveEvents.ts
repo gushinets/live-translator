@@ -61,8 +61,18 @@ export interface MuteAcknowledgedEvent {
   client_event_id?: string;
 }
 
+export interface SessionUsageContextWindow {
+  usage_ratio?: number;
+}
+
 export interface SessionUsage {
   seconds?: number;
+  context_window?: SessionUsageContextWindow;
+}
+
+export interface SessionUsageUpdatedEvent {
+  type: "session.usage.updated";
+  usage: SessionUsage;
 }
 
 export interface SessionClosedEvent {
@@ -81,6 +91,7 @@ export type LiveServerEvent =
   | TranscriptDeltaEvent
   | AppendAcknowledgedEvent
   | MuteAcknowledgedEvent
+  | SessionUsageUpdatedEvent
   | SessionClosedEvent
   | LiveErrorEvent;
 
@@ -93,23 +104,114 @@ const KNOWN_SERVER_EVENT_TYPES: ReadonlySet<LiveServerEvent["type"]> = new Set([
   "session.commentary.appended",
   "session.input_audio.muted",
   "session.input_audio.unmuted",
+  "session.usage.updated",
   "session.closed",
   "error",
 ]);
+
+type LiveServerEventParseResult =
+  | { kind: "known"; event: LiveServerEvent }
+  | { kind: "unknown" }
+  | { kind: "invalid"; message: string };
 
 /**
  * Narrows an arbitrary parsed JSON payload to a known `LiveServerEvent`.
  * Payloads with an unrecognized `type` are not narrowed.
  */
 export function isLiveServerEvent(value: unknown): value is LiveServerEvent {
-  if (typeof value !== "object" || value === null || !("type" in value)) {
-    return false;
+  return parseLiveServerEvent(value).kind === "known";
+}
+
+export function parseLiveServerEvent(
+  value: unknown,
+): LiveServerEventParseResult {
+  if (!isRecord(value) || typeof value.type !== "string") {
+    return {
+      kind: "invalid",
+      message: "Received a Live event without a valid type",
+    };
   }
-  const { type } = value as { type: unknown };
+  const type = value.type as LiveServerEvent["type"];
+  if (!KNOWN_SERVER_EVENT_TYPES.has(type)) {
+    return { kind: "unknown" };
+  }
+  if (!hasValidPayload(value, type)) {
+    return {
+      kind: "invalid",
+      message: `Received malformed ${type} event`,
+    };
+  }
+  return { kind: "known", event: value as unknown as LiveServerEvent };
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null;
+}
+
+function hasOptionalString(
+  value: Record<string, unknown>,
+  key: string,
+): boolean {
+  return !(key in value) || typeof value[key] === "string";
+}
+
+function hasOptionalNumber(
+  value: Record<string, unknown>,
+  key: string,
+): boolean {
+  return !(key in value) || typeof value[key] === "number";
+}
+
+function hasValidUsage(value: unknown): value is SessionUsage {
+  if (!isRecord(value)) return false;
+  if (!hasOptionalNumber(value, "seconds")) return false;
+  if (!("context_window" in value)) return true;
+  const contextWindow = value.context_window;
   return (
-    typeof type === "string" &&
-    KNOWN_SERVER_EVENT_TYPES.has(type as LiveServerEvent["type"])
+    isRecord(contextWindow) &&
+    hasOptionalNumber(contextWindow, "usage_ratio")
   );
+}
+
+function hasValidPayload(
+  value: Record<string, unknown>,
+  type: LiveServerEvent["type"],
+): boolean {
+  switch (type) {
+    case "session.started": {
+      const session = value.session;
+      return isRecord(session) && typeof session.id === "string";
+    }
+    case "session.input_transcript.delta":
+    case "session.output_transcript.delta":
+      return (
+        typeof value.delta === "string" &&
+        hasOptionalNumber(value, "start_ms") &&
+        hasOptionalNumber(value, "end_ms")
+      );
+    case "session.instructions.appended":
+    case "session.thinking.appended":
+    case "session.commentary.appended":
+    case "session.input_audio.muted":
+    case "session.input_audio.unmuted":
+      return hasOptionalString(value, "client_event_id");
+    case "session.usage.updated":
+      return hasValidUsage(value.usage);
+    case "session.closed":
+      return (
+        hasOptionalString(value, "reason") &&
+        (!("usage" in value) || hasValidUsage(value.usage))
+      );
+    case "error": {
+      const error = value.error;
+      return (
+        isRecord(error) &&
+        typeof error.message === "string" &&
+        hasOptionalString(error, "code") &&
+        hasOptionalString(error, "client_event_id")
+      );
+    }
+  }
 }
 
 /** Client -> server command sent to end the Live session gracefully. */
