@@ -8,7 +8,7 @@
 
 **Tech Stack:** Node.js 24 LTS, pnpm workspaces, TypeScript strict mode, React, Vite, Vitest, React Testing Library, Playwright, Express, OpenAI TypeScript SDK, Zod, `vite-plugin-pwa`, Docker/Caddy for internal deployment.
 
-**Spec:** `docs/superpowers/specs/2026-09-13-live-translator-mvp-design.md` (Revision 1.2.1)
+**Spec:** `docs/superpowers/specs/2026-09-13-live-translator-mvp-design.md` (Revision 1.2.2)
 
 ## Global Constraints
 
@@ -342,6 +342,7 @@ git commit -m "chore: scaffold live translator workspace"
 **Interfaces:**
 - Consumes: `OPENAI_API_KEY`, `WEB_ORIGIN`.
 - Produces: `POST /api/live/session` with body `{ sdp: string }`.
+- Produces: `DELETE /api/live/session/:sessionId` for explicit active-session lease release.
 - Produces response shape `{ session: { id: string }, transport: { type: "webrtc", sdp: string } }` unchanged from the OpenAI SDK.
 - Uses `OpenAI().live.create({ session, transport })` per current GPT-Live SDK.
 
@@ -367,7 +368,6 @@ it("uses silent pre-interpreter configuration", async () => {
     session: expect.objectContaining({
       model: "gpt-live-1",
       instructions: expect.stringContaining("Until the trusted application sends BEGIN_INTERPRETER_MODE"),
-      delegation: null,
       store: false,
       audio: { output: { voice: "marin" } }
     }),
@@ -434,7 +434,7 @@ export class SessionLeaseRegistry {
 }
 ```
 
-Test that the sixth lease is rejected, leases expire after 15 minutes, and a failed OpenAI session-creation attempt calls the acquired lease's `release()` so failed bootstrap requests do not consume capacity.
+Revision 1.2.2 lease behavior: failed OpenAI creation releases immediately; successful creation binds the returned `session.id` and keeps the active-session lease until `DELETE /api/live/session/:sessionId` or the 15-minute TTL fallback.
 
 - [ ] **Step 4: Implement OpenAI session creation**
 
@@ -449,7 +449,6 @@ export function makeLiveSessionCreator(client = new OpenAI({ maxRetries: 0 })) {
       session: {
         model: "gpt-live-1",
         instructions: SILENT_PRE_INTERPRETER_PROMPT,
-        delegation: null,
         store: false,
         audio: { output: { voice: "marin" } },
       },
@@ -461,7 +460,7 @@ export function makeLiveSessionCreator(client = new OpenAI({ maxRetries: 0 })) {
 
 - [ ] **Step 5: Implement the route with bounded JSON size and origin check**
 
-Use `express.json({ limit: "64kb" })`, validate `sdp` as non-empty string with Zod, reject unexpected `Origin`, reject when lease registry is full, release the lease if OpenAI session creation fails, map OpenAI API errors to status/`{ error: "Live session creation failed" }`, and never log SDP or conversation content.
+Use `express.json({ limit: "64kb" })`, validate `sdp` as non-empty string with Zod, reject unexpected `Origin`, reject when the active-session lease registry is full, release failed creations immediately, bind successful sessions until explicit DELETE release or TTL expiry, map OpenAI API errors to status/`{ error: "Live session creation failed" }`, and never log SDP or conversation content.
 
 - [ ] **Step 6: Run API tests**
 
@@ -1354,7 +1353,7 @@ Store only the hash in deployment environment. Do not add plaintext credentials 
 
 - [ ] **Step 2: Add API request rate limiting**
 
-Use `express-rate-limit` on `/api/live/session`, e.g. 20 creation attempts / 10 minutes / IP for internal prototype. Keep the separate max-5 lease cap.
+Use `express-rate-limit` on `/api/live/session`, e.g. 20 creation attempts / 10 minutes / IP for internal prototype. Keep the separate max-5 active-session lease cap.
 
 - [ ] **Step 3: Containerize web and API on Node 24 LTS**
 
@@ -1366,6 +1365,7 @@ Web Docker build runs `pnpm build` and copies `apps/web/dist` into Caddy static 
 OPENAI_API_KEY=
 WEB_ORIGIN=https://translator.example.com
 APP_HOST=translator.example.com
+VITE_ADDITIONAL_ALLOWED_HOST=
 BASIC_AUTH_USER=
 BASIC_AUTH_HASH=
 ```
@@ -1576,4 +1576,3 @@ Before calling the MVP implementation complete, verify every item below with fre
 5. **Tasks 11–13** harden PWA lifecycle, privacy/security, and deployment.
 6. **Task 14** gives deterministic regression coverage for the complicated runtime.
 7. **Task 15** decides whether the prototype is actually usable; after this point, runtime changes must be driven by device evidence rather than speculative design.
-

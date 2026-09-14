@@ -60,6 +60,7 @@ export function createLiveSessionRouter(
         createLiveSession = makeLiveSessionCreator();
       }
       const session = await createLiveSession(parsedRequest.data.sdp);
+      dependencies.leaseRegistry.bindSession(lease.leaseId, session.session.id);
       response.status(201).json(session);
     } catch (error) {
       lease.release();
@@ -67,6 +68,9 @@ export function createLiveSessionRouter(
         const status = error.status ?? 502;
         logger.error("OpenAI Live session creation failed", {
           status,
+          code: error.code,
+          type: error.type,
+          requestId: error.requestID,
         });
         response
           .status(status)
@@ -78,6 +82,16 @@ export function createLiveSessionRouter(
       });
       throw error;
     }
+  });
+
+  router.delete("/:sessionId", (request, response) => {
+    if (request.get("Origin") !== dependencies.webOrigin) {
+      response.status(403).json({ error: "Unexpected request origin" });
+      return;
+    }
+
+    dependencies.leaseRegistry.releaseSession(request.params.sessionId);
+    response.status(204).send();
   });
 
   return router;

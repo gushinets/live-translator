@@ -85,9 +85,16 @@ describe("POST /api/live/session", () => {
     });
   });
 
-  it("returns the OpenAI session result unchanged with status 201", async () => {
+  it("binds the successful OpenAI session to its creation lease", async () => {
     const createLiveSession = vi.fn().mockResolvedValue(sessionResult);
-    const response = await request(createApp({ createLiveSession }))
+    const release = vi.fn();
+    const bindSession = vi.fn();
+    const leaseRegistry = {
+      acquire: vi.fn().mockReturnValue({ leaseId: "lease-1", release }),
+      bindSession,
+      releaseSession: vi.fn(),
+    };
+    const response = await request(createApp({ createLiveSession, leaseRegistry }))
       .post("/api/live/session")
       .set("Origin", "http://localhost:5173")
       .send({ sdp: "v=0\r\n..." });
@@ -95,10 +102,59 @@ describe("POST /api/live/session", () => {
     expect(response.status).toBe(201);
     expect(response.body).toEqual(sessionResult);
     expect(createLiveSession).toHaveBeenCalledWith("v=0\r\n...");
+    expect(bindSession).toHaveBeenCalledWith("lease-1", "session-1");
+    expect(release).not.toHaveBeenCalled();
   });
 
-  it("rejects the sixth concurrent session", async () => {
-    const createLiveSession = vi.fn().mockResolvedValue(sessionResult);
+  it("releases a known, unknown, and duplicate session id with 204", async () => {
+    const releaseSession = vi
+      .fn()
+      .mockReturnValueOnce(true)
+      .mockReturnValueOnce(false);
+    const leaseRegistry = {
+      acquire: vi.fn(),
+      bindSession: vi.fn(),
+      releaseSession,
+    };
+    const app = createApp({ leaseRegistry });
+
+    const first = await request(app)
+      .delete("/api/live/session/session-1")
+      .set("Origin", "http://localhost:5173");
+    const second = await request(app)
+      .delete("/api/live/session/session-1")
+      .set("Origin", "http://localhost:5173");
+
+    expect(first.status).toBe(204);
+    expect(second.status).toBe(204);
+    expect(releaseSession).toHaveBeenNthCalledWith(1, "session-1");
+    expect(releaseSession).toHaveBeenNthCalledWith(2, "session-1");
+  });
+
+  it("rejects a session release from an unexpected origin", async () => {
+    const releaseSession = vi.fn();
+    const app = createApp({
+      leaseRegistry: {
+        acquire: vi.fn(),
+        bindSession: vi.fn(),
+        releaseSession,
+      },
+    });
+
+    const response = await request(app)
+      .delete("/api/live/session/session-1")
+      .set("Origin", "https://unexpected.example");
+
+    expect(response.status).toBe(403);
+    expect(releaseSession).not.toHaveBeenCalled();
+  });
+
+  it("rejects the sixth active session after five successful creations", async () => {
+    let sessionNumber = 0;
+    const createLiveSession = vi.fn().mockImplementation(async () => ({
+      ...sessionResult,
+      session: { id: `session-${++sessionNumber}` },
+    }));
     const app = createApp({ createLiveSession });
 
     for (let requestNumber = 0; requestNumber < 5; requestNumber += 1) {
@@ -119,6 +175,72 @@ describe("POST /api/live/session", () => {
     expect(createLiveSession).toHaveBeenCalledTimes(5);
   });
 
+  it("allows a new session after releasing one active session", async () => {
+    let sessionNumber = 0;
+    const createLiveSession = vi.fn().mockImplementation(async () => ({
+      ...sessionResult,
+      session: { id: `session-${++sessionNumber}` },
+    }));
+    const app = createApp({ createLiveSession });
+
+    for (let requestNumber = 0; requestNumber < 5; requestNumber += 1) {
+      const response = await request(app)
+        .post("/api/live/session")
+        .set("Origin", "http://localhost:5173")
+        .send({ sdp: `offer-${requestNumber}` });
+      expect(response.status).toBe(201);
+    }
+
+    const releaseResponse = await request(app)
+      .delete("/api/live/session/session-2")
+      .set("Origin", "http://localhost:5173");
+    const nextResponse = await request(app)
+      .post("/api/live/session")
+      .set("Origin", "http://localhost:5173")
+      .send({ sdp: "sixth-offer" });
+
+    expect(releaseResponse.status).toBe(204);
+    expect(nextResponse.status).toBe(201);
+  });
+
+  it("rejects the sixth concurrent session creation request", async () => {
+    const pendingSessions: Array<(result: typeof sessionResult) => void> = [];
+    let sessionNumber = 0;
+    const createLiveSession = vi.fn(
+      () =>
+        new Promise<typeof sessionResult>((resolve) => {
+          const id = `session-${++sessionNumber}`;
+          pendingSessions.push((result) =>
+            resolve({ ...result, session: { id } }),
+          );
+        }),
+    );
+    const app = createApp({ createLiveSession });
+
+    const pendingRequests = Array.from({ length: 5 }, (_, requestNumber) =>
+      Promise.resolve(
+        request(app)
+          .post("/api/live/session")
+          .set("Origin", "http://localhost:5173")
+          .send({ sdp: `offer-${requestNumber}` })
+          .expect(201),
+      ),
+    );
+    await vi.waitFor(() => expect(createLiveSession).toHaveBeenCalledTimes(5));
+
+    const response = await request(app)
+      .post("/api/live/session")
+      .set("Origin", "http://localhost:5173")
+      .send({ sdp: "sixth-offer" });
+
+    expect(response.status).toBe(429);
+    expect(response.body).toEqual({ error: "Concurrent session limit reached" });
+    expect(createLiveSession).toHaveBeenCalledTimes(5);
+
+    for (const resolve of pendingSessions) resolve(sessionResult);
+    await Promise.all(pendingRequests);
+  });
+
   it("rate-limits the 21st session creation attempt from the same IP", async () => {
     const createLiveSession = vi.fn().mockResolvedValue(sessionResult);
     const leaseRegistry = {
@@ -126,6 +248,8 @@ describe("POST /api/live/session", () => {
         leaseId: "unlimited-lease",
         release: vi.fn(),
       }),
+      bindSession: vi.fn(),
+      releaseSession: vi.fn(),
     };
     const app = createApp({ createLiveSession, leaseRegistry });
 
@@ -153,6 +277,8 @@ describe("POST /api/live/session", () => {
     const release = vi.fn();
     const leaseRegistry = {
       acquire: vi.fn().mockReturnValue({ leaseId: "lease-1", release }),
+      bindSession: vi.fn(),
+      releaseSession: vi.fn(),
     };
     const createLiveSession = vi.fn().mockRejectedValue(new Error("failure"));
     const logger = { error: vi.fn() };
@@ -170,7 +296,7 @@ describe("POST /api/live/session", () => {
     );
   });
 
-  it("maps OpenAI API errors and logs only their status", async () => {
+  it("maps OpenAI API errors and logs safe upstream diagnostics", async () => {
     const apiError = new OpenAI.APIError(
       429,
       { message: "sensitive upstream message" },
@@ -188,7 +314,12 @@ describe("POST /api/live/session", () => {
     expect(response.body).toEqual({ error: "Live session creation failed" });
     expect(logger.error).toHaveBeenCalledWith(
       "OpenAI Live session creation failed",
-      { status: 429 },
+      {
+        status: 429,
+        code: undefined,
+        type: undefined,
+        requestId: null,
+      },
     );
   });
 
@@ -196,6 +327,8 @@ describe("POST /api/live/session", () => {
     const release = vi.fn();
     const leaseRegistry = {
       acquire: vi.fn().mockReturnValue({ leaseId: "lease-1", release }),
+      bindSession: vi.fn(),
+      releaseSession: vi.fn(),
     };
     const connectionError = new OpenAI.APIConnectionError({
       message: "sensitive connection failure",
@@ -214,7 +347,12 @@ describe("POST /api/live/session", () => {
     expect(release).toHaveBeenCalledOnce();
     expect(logger.error).toHaveBeenCalledWith(
       "OpenAI Live session creation failed",
-      { status: 502 },
+      {
+        status: 502,
+        code: undefined,
+        type: undefined,
+        requestId: undefined,
+      },
     );
   });
 });

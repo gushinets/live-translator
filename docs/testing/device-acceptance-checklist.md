@@ -2,7 +2,7 @@
 
 **Date:** 2026-09-14  
 **HEAD at dispatch:** `5674a69` `test: cover translator runtime with deterministic e2e flows`  
-**Binding spec:** `docs/superpowers/specs/2026-09-13-live-translator-mvp-design.md` Revision 1.2.1 §25 / §27
+**Binding spec:** `docs/superpowers/specs/2026-09-13-live-translator-mvp-design.md` Revision 1.2.2 §25 / §27
 
 ## Gate status
 
@@ -13,6 +13,18 @@ This agent environment has **no iPhone or Android hardware** and **no `OPENAI_AP
 Every device/scenario cell below is **NOT RUN**. Cells are **not** PASS, FAIL, or measured results. Do **not** claim MVP acceptance from this document.
 
 Replace `NOT RUN` only with observations from a human session on real hardware with a live OpenAI key. Do not invent measurements.
+
+## Local device access
+
+For a phone connected to the same tailnet, prefer Tailscale Serve:
+
+```text
+tailscale serve http://127.0.0.1:4173
+```
+
+Open the HTTPS URL shown by `tailscale serve status` on the phone. Serve keeps the prototype private to the tailnet. The phone must be logged into the same tailnet, and the local API must still have the server-side `OPENAI_API_KEY`.
+
+Tailscale Funnel is public internet exposure, not authentication. Do not expose the raw Vite preview/API proxy through Funnel. Use Funnel only behind a separately configured protected reverse proxy/access gate (for example, server-side Basic Auth or an identity-aware proxy); credentials must stay outside the browser bundle. `Origin` validation is a CSRF/browser signal, not a user access control.
 
 Audio constants in `apps/web/src/config/runtime.ts` and `apps/web/src/audio/VoiceActivityEstimator.ts` were **not** changed. There is no device evidence to justify tuning.
 
@@ -151,7 +163,7 @@ Do not claim MVP acceptance until both iPhone and Android complete the conversat
 
 ## Audio constant tuning (Task 15 Step 4)
 
-**None.** Allowed knobs (VAM multipliers, quiet hold, `PLAYBACK_IDLE_MS`, `CAPTION_IDLE_MS`, `AUDIO_START_GRACE_MS`, `POST_SOURCE_OUTPUT_GRACE_MS`, `OUTPUT_SETTLE_GRACE_MS`, `NO_OUTPUT_TIMEOUT_MS`) stay at spec 1.2.1 / current source defaults. Tuning without recorded device failures is out of scope for this run.
+**None.** Allowed knobs (VAM multipliers, quiet hold, `PLAYBACK_IDLE_MS`, `CAPTION_IDLE_MS`, `AUDIO_START_GRACE_MS`, `POST_SOURCE_OUTPUT_GRACE_MS`, `OUTPUT_SETTLE_GRACE_MS`, `NO_OUTPUT_TIMEOUT_MS`) stay at spec 1.2.2 / current source defaults. Tuning without recorded device failures is out of scope for this run.
 
 ## Automated suite (this environment, not device acceptance)
 

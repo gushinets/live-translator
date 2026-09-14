@@ -18,4 +18,12 @@ export class BackendClient {
     if (!response.ok) throw new Error(await response.text());
     return response.json() as Promise<CreateLiveSessionResponse>;
   }
+
+  async releaseLiveSession(sessionId: string): Promise<void> {
+    const response = await fetch(
+      `/api/live/session/${encodeURIComponent(sessionId)}`,
+      { method: "DELETE" },
+    );
+    if (!response.ok) throw new Error(await response.text());
+  }
 }
