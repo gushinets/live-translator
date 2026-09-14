@@ -272,10 +272,13 @@ export class SessionController {
   }
 
   handleRemoteStream(stream: MediaStream): void {
+    const generation = this.sessionGeneration;
     this.audio.attachRemoteStream(stream);
     void this.audio.audioElement.play().catch((error: unknown) => {
+      if (this.sessionGeneration !== generation) {
+        return;
+      }
       console.error("Remote audio play failed", { error });
-      throw error;
     });
   }
 
