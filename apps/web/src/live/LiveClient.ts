@@ -6,7 +6,7 @@ import {
   buildCommentaryAppendCommand,
   buildInstructionsAppendCommand,
   buildThinkingAppendCommand,
-  isLiveServerEvent,
+  parseLiveServerEvent,
   type AppendAcknowledgedEvent,
   type LiveClientEvent,
   type LiveErrorEvent,
@@ -14,7 +14,7 @@ import {
   type MuteAcknowledgedEvent,
   type SessionClosedEvent,
   type SessionStartedEvent,
-  type SessionUsage,
+  type SessionUsageSnapshot,
   type TranscriptDeltaEvent,
 } from "./LiveEvents";
 import { waitForIceComplete } from "./waitForIceComplete";
@@ -25,6 +25,7 @@ const ICE_GATHER_TIMEOUT_MS = 10_000;
 const SESSION_CLOSE_TIMEOUT_MS = 15_000;
 /** Binding spec 1.2.1 §14.2 data-channel label. */
 const DATA_CHANNEL_LABEL = "oai-events";
+const DISCONNECTED_CLOSE_REASON = "Live session is no longer connected";
 
 export interface LiveClientDeps {
   backend: BackendClient;
@@ -53,6 +54,14 @@ export interface AckResult {
   eventId: string;
   degraded?: boolean;
 }
+
+export type LiveClientErrorEvent =
+  | LiveErrorEvent
+  | {
+      type: "error";
+      error: { message: string };
+      transportFailure: true;
+    };
 
 interface Deferred<T> {
   promise: Promise<T>;
@@ -96,8 +105,8 @@ export class LiveClient {
     | ((event: AppendAcknowledgedEvent) => void)
     | null = null;
   onMuteAcknowledged: ((event: MuteAcknowledgedEvent) => void) | null = null;
-  onUsage: ((usage: SessionUsage) => void) | null = null;
-  onError: ((event: LiveErrorEvent) => void) | null = null;
+  onUsage: ((usage: SessionUsageSnapshot) => void) | null = null;
+  onError: ((event: LiveClientErrorEvent) => void) | null = null;
   onSessionClosed: ((event: SessionClosedEvent) => void) | null = null;
 
   private peer: RTCPeerConnection | null = null;
@@ -178,11 +187,21 @@ export class LiveClient {
    */
   async setInputMuted(muted: boolean): Promise<void> {
     const eventId = crypto.randomUUID();
-    this.send({
+    const command: LiveClientEvent = {
       type: muted ? "session.input_audio.mute" : "session.input_audio.unmute",
       event_id: eventId,
-    });
-    await this.ackRegistry.waitFor(eventId, runtime.steeringAckTimeoutMs);
+    };
+    const wait = this.ackRegistry.waitFor(
+      eventId,
+      runtime.steeringAckTimeoutMs,
+    );
+    try {
+      this.send(command);
+    } catch (error) {
+      this.failAckAfterSendError(eventId, wait, error);
+      throw error;
+    }
+    await wait;
   }
 
   /**
@@ -307,16 +326,21 @@ export class LiveClient {
    * calls share the same in-flight close operation.
    */
   async close(): Promise<LiveCloseResult> {
-    const channel = this.channel;
-    const peer = this.peer;
-    if (channel === null || peer === null) {
-      throw new Error("Cannot close a Live session that was never connected");
-    }
     if (this.closeResult !== null) {
       return this.closeResult;
     }
     if (this.closePromise !== null) {
       return this.closePromise;
+    }
+    const channel = this.channel;
+    const peer = this.peer;
+    if (channel === null || peer === null || this.torndown) {
+      const result: LiveCloseResult = {
+        finalized: false,
+        reason: DISCONNECTED_CLOSE_REASON,
+      };
+      this.closeResult = result;
+      return result;
     }
     this.closePromise = this.performLocalClose(channel);
     return this.closePromise;
@@ -445,6 +469,7 @@ export class LiveClient {
     this.onError?.({
       type: "error",
       error: { message: "Live data channel closed unexpectedly" },
+      transportFailure: true,
     });
   }
 
@@ -478,15 +503,27 @@ export class LiveClient {
     this.onError?.({
       type: "error",
       error: { message: `Peer connection state changed to "${state}"` },
+      transportFailure: true,
     });
   }
 
   private handleChannelMessage(event: MessageEvent<string>): void {
-    const parsed: unknown = JSON.parse(event.data);
-    if (!isLiveServerEvent(parsed)) {
-      throw new Error("Received a Live event without a recognizable type");
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(event.data);
+    } catch {
+      this.handleMalformedServerEvent("Received malformed Live event JSON");
+      return;
     }
-    this.dispatchServerEvent(parsed);
+    const serverEvent = parseLiveServerEvent(parsed);
+    if (serverEvent.kind === "unknown") {
+      return;
+    }
+    if (serverEvent.kind === "invalid") {
+      this.handleMalformedServerEvent(serverEvent.message);
+      return;
+    }
+    this.dispatchServerEvent(serverEvent.event);
   }
 
   private dispatchServerEvent(serverEvent: LiveServerEvent): void {
@@ -513,6 +550,16 @@ export class LiveClient {
         // Gate B only. Mute/unmute acks never complete local output (Gate C).
         this.ackRegistry.accept(serverEvent);
         this.onMuteAcknowledged?.(serverEvent);
+        return;
+      case "session.usage.updated":
+        this.onUsage?.(
+          serverEvent.context_window === undefined
+            ? serverEvent.usage
+            : {
+                ...serverEvent.usage,
+                context_window: serverEvent.context_window,
+              },
+        );
         return;
       case "session.closed": {
         // A server-initiated session.closed enters the same non-error
@@ -571,12 +618,27 @@ export class LiveClient {
           this.teardownTransport();
         }
         this.ackRegistry.fail({
-          client_event_id: serverEvent.client_event_id,
+          client_event_id: serverEvent.error.client_event_id,
           message: serverEvent.error.message,
         });
-        this.onError?.(serverEvent);
+        this.onError?.({ type: "error", error: serverEvent.error });
         return;
     }
+  }
+
+  private handleMalformedServerEvent(message: string): void {
+    const error = new Error(message);
+    if (!this.closing) {
+      this.closing = true;
+      this.rejectPendingConnect(error);
+      this.ackRegistry.rejectAll(error);
+      this.teardownTransport();
+    }
+    this.onError?.({
+      type: "error",
+      error: { message },
+      transportFailure: true,
+    });
   }
 
   private assertSteeringAllowed(policy: AppendPolicy): void {
@@ -614,11 +676,16 @@ export class LiveClient {
   > {
     const eventId = crypto.randomUUID();
     const command = build(eventId);
-    this.send(command);
     const wait = this.ackRegistry.waitFor(
       eventId,
       runtime.steeringAckTimeoutMs,
     );
+    try {
+      this.send(command);
+    } catch (error) {
+      this.failAckAfterSendError(eventId, wait, error);
+      throw error;
+    }
     try {
       await wait;
       return { ok: true, eventId };
@@ -628,5 +695,17 @@ export class LiveClient {
       }
       throw error;
     }
+  }
+
+  private failAckAfterSendError(
+    eventId: string,
+    wait: Promise<{ client_event_id: string }>,
+    error: unknown,
+  ): void {
+    wait.catch(() => undefined);
+    this.ackRegistry.fail({
+      client_event_id: eventId,
+      message: error instanceof Error ? error.message : String(error),
+    });
   }
 }

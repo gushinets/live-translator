@@ -108,8 +108,7 @@ export class MockLiveHarness {
   async error(clientEventId: string, message: string): Promise<void> {
     await this.emitLiveEvent({
       type: "error",
-      client_event_id: clientEventId,
-      error: { message },
+      error: { message, client_event_id: clientEventId },
     });
   }
 

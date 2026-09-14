@@ -19,6 +19,7 @@ import { ConversationScreen } from "./ConversationScreen";
  */
 export interface ContextScreenController {
   readonly session: TranslationSession;
+  readonly inputReady: boolean;
   readonly contextText: string;
   readonly bootstrapText: string;
   readonly ownerError?: string;
@@ -155,7 +156,6 @@ export function ContextScreen({
         <BootstrapPrompt
           transcript={controller.bootstrapText}
           actionsDisabled={controller.isInterpreterStarting === true}
-          onMicrophone={() => undefined}
           onSkip={() => {
             void handleSkip();
           }}

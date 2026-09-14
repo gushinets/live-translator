@@ -41,6 +41,15 @@ describe("append payload builders", () => {
     );
   });
 
+  it("does not treat the character budget as a token guarantee for multilingual text", () => {
+    const multilingual = "語".repeat(501);
+
+    expect(multilingual.length).toBeLessThan(APPEND_CHAR_BUDGET);
+    expect(() =>
+      buildInstructionsAppendCommand("evt-multilingual", multilingual),
+    ).toThrow(ContextTooLongError);
+  });
+
   it("throws a user-facing shorten-context error instead of truncating oversized text", () => {
     const oversized = "a".repeat(APPEND_CHAR_BUDGET + 1);
     expect(() => buildInstructionsAppendCommand("evt-big", oversized)).toThrow(

@@ -1,4 +1,4 @@
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createInitialSession, type TranslationSession } from "../session/SessionState";
 import { ContextScreen, type ContextScreenController } from "./ContextScreen";
@@ -14,6 +14,7 @@ function idleSession(): TranslationSession {
 
 class FakeOwnerController implements ContextScreenController {
   session: TranslationSession = idleSession();
+  inputReady = true;
   contextText = "";
   bootstrapText = "";
   ownerError: string | undefined;
@@ -128,8 +129,12 @@ describe("ContextScreen", () => {
     expect(
       await screen.findByText("What language does the other person most likely speak?"),
     ).toBeInTheDocument();
+    expect(
+      screen.getByText("Listening automatically. Ask them to say the language."),
+    ).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Skip" })).toBeInTheDocument();
-    expect(screen.getByText("Say the language")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "microphone" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Say the language" })).not.toBeInTheDocument();
     expect(screen.queryByRole("combobox")).not.toBeInTheDocument();
     expect(screen.queryByRole("listbox")).not.toBeInTheDocument();
     expect(document.querySelector("select")).toBeNull();
@@ -155,11 +160,14 @@ describe("ContextScreen", () => {
     await screen.findByRole("button", { name: "Skip" });
 
     expect(screen.queryByRole("button", { name: "Accept" })).not.toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: "microphone" }));
     expect(controller.acceptBootstrap).not.toHaveBeenCalled();
     expect(controller.beginInterpreter).not.toHaveBeenCalled();
 
-    controller.setBootstrapText("Spanish");
+    act(() => {
+      controller.setBootstrapText("Spanish");
+    });
+    expect(screen.getByText("Recognized language hint")).toBeInTheDocument();
+    expect(screen.getByText("Spanish")).toBeInTheDocument();
     fireEvent.click(await screen.findByRole("button", { name: "Accept" }));
 
     expect(controller.acceptBootstrap).toHaveBeenCalledExactlyOnceWith("Spanish");

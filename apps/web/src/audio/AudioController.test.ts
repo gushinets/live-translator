@@ -6,8 +6,17 @@ class FakeAudioTrack {
   kind = "audio";
   enabled = true;
   readyState: MediaStreamTrackState = "live";
-  addEventListener = vi.fn();
-  removeEventListener = vi.fn();
+  private readonly endedListeners = new Set<() => void>();
+  addEventListener = vi.fn((type: string, listener: EventListenerOrEventListenerObject) => {
+    if (type === "ended" && typeof listener === "function") {
+      this.endedListeners.add(listener as () => void);
+    }
+  });
+  removeEventListener = vi.fn((type: string, listener: EventListenerOrEventListenerObject) => {
+    if (type === "ended" && typeof listener === "function") {
+      this.endedListeners.delete(listener as () => void);
+    }
+  });
   stop = vi.fn(() => {
     this.readyState = "ended";
   });
@@ -20,6 +29,13 @@ class FakeAudioTrack {
       sampleRate: 48_000,
     }),
   );
+
+  end(): void {
+    this.readyState = "ended";
+    for (const listener of this.endedListeners) {
+      listener();
+    }
+  }
 }
 
 class FakeAudioNode {
@@ -213,6 +229,16 @@ describe("AudioController", () => {
     await pending;
   });
 
+  it("rejects and releases capture when getUserMedia returns an already-ended track", async () => {
+    track.readyState = "ended";
+
+    await expect(controller.startCapture()).rejects.toThrow(/microphone/i);
+
+    expect(controller.getCaptureStream()).toBeNull();
+    expect(track.removeEventListener).toHaveBeenCalled();
+    expect(track.stop).toHaveBeenCalledOnce();
+  });
+
   it("treats leaving interrupted for suspended as restore", async () => {
     const onAudioInterruption = vi.fn();
     const onAudioRestored = vi.fn();
@@ -234,6 +260,34 @@ describe("AudioController", () => {
     audioContext.state = "suspended";
     listener();
     expect(onAudioRestored).toHaveBeenCalledOnce();
+  });
+
+  it("reports a capture-ended failure without faking AudioContext restoration", async () => {
+    const onAudioInterruption = vi.fn();
+    const onAudioRestored = vi.fn();
+    const onCaptureEnded = vi.fn();
+    controller.onAudioInterruption = onAudioInterruption;
+    controller.onAudioRestored = onAudioRestored;
+    controller.onCaptureEnded = onCaptureEnded;
+    await controller.startCapture();
+
+    track.end();
+
+    expect(onCaptureEnded).toHaveBeenCalledOnce();
+    expect(onAudioInterruption).not.toHaveBeenCalled();
+    expect(onAudioRestored).not.toHaveBeenCalled();
+  });
+
+  it("does not report capture-ended after stopCapture removed the track listener", async () => {
+    const onCaptureEnded = vi.fn();
+    controller.onCaptureEnded = onCaptureEnded;
+    await controller.startCapture();
+    const stoppedTrack = track;
+
+    controller.stopCapture();
+    stoppedTrack.end();
+
+    expect(onCaptureEnded).not.toHaveBeenCalled();
   });
 
   it("resumes the analyser AudioContext from a user-gesture prime", async () => {

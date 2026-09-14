@@ -1,11 +1,13 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import type { BackendClient } from "../api/BackendClient";
 import { AudioController } from "../audio/AudioController";
 import { runtime } from "../config/runtime";
 import { AckTimeoutError } from "../live/AckRegistry";
-import type { LiveClient } from "../live/LiveClient";
+import { LiveClient } from "../live/LiveClient";
 import {
   APPEND_CHAR_BUDGET,
   ContextTooLongError,
+  type SessionClosedEvent,
   type TranscriptDeltaEvent,
 } from "../live/LiveEvents";
 import {
@@ -20,6 +22,13 @@ import type { OrientationController } from "../platform/OrientationController";
 import type { VisibilityController } from "../platform/VisibilityController";
 import type { WakeLockController } from "../platform/WakeLockController";
 import { SessionController } from "./SessionController";
+import { STARTUP_ERROR_MESSAGE } from "./userFacingErrors";
+
+type FakeLiveErrorEvent = {
+  type: "error";
+  error: { message: string; code?: string; client_event_id?: string };
+  transportFailure?: true;
+};
 
 afterEach(() => {
   vi.useRealTimers();
@@ -30,7 +39,8 @@ class FakeLive {
   onTranscriptDelta: ((event: TranscriptDeltaEvent) => void) | null = null;
   onSessionStarted: ((event: { type: "session.started"; session: { id: string } }) => void) | null =
     null;
-  onError: ((event: { type: "error"; error: { message: string } }) => void) | null = null;
+  onSessionClosed: ((event: SessionClosedEvent) => void) | null = null;
+  onError: ((event: FakeLiveErrorEvent) => void) | null = null;
   readonly callOrder: string[] = [];
   readonly connect = vi.fn(async () => {
     this.callOrder.push("connect");
@@ -68,6 +78,13 @@ class FakeLive {
     }
     this.onTranscriptDelta(event);
   }
+
+  emitSessionClosed(reason = "server_closed"): void {
+    if (this.onSessionClosed === null) {
+      throw new Error("Session closed handler was not installed");
+    }
+    this.onSessionClosed({ type: "session.closed", reason });
+  }
 }
 
 function createFakeAudio() {
@@ -85,13 +102,23 @@ function createFakeAudio() {
     getTracks: () => [captureTrack],
   } as unknown as MediaStream;
   let stream: MediaStream | null = null;
-  return {
+  const audio = {
     captureStream,
     captureTrack,
     primeOutput: vi.fn(async () => {}),
     setOutputAudible: vi.fn(),
+    setCaptureEnabled: vi.fn((enabled: boolean) => {
+      captureTrack.enabled = enabled;
+    }),
     startCapture: vi.fn(async () => {
       stream = captureStream;
+    }),
+    setCaptureStream: vi.fn((nextStream: MediaStream | null) => {
+      stream = nextStream;
+    }),
+    endCaptureTrack: vi.fn(() => {
+      captureTrack.readyState = "ended";
+      audio.onCaptureEnded?.();
     }),
     stopCapture: vi.fn(() => {
       stream = null;
@@ -105,8 +132,10 @@ function createFakeAudio() {
     onPlaybackActivity: null as ((event: { active: boolean; atMs: number }) => void) | null,
     onAudioInterruption: null as (() => void) | null,
     onAudioRestored: null as (() => void) | null,
+    onCaptureEnded: null as (() => void) | null,
     resetVoiceActivityBaseline: vi.fn(),
   };
+  return audio;
 }
 
 class FakeOrientation {
@@ -419,6 +448,7 @@ describe("SessionController", () => {
     ]);
     expect(audio.setOutputAudible).toHaveBeenLastCalledWith(true);
     expect(controller.session.state).toBe("listening");
+    expect(controller.inputReady).toBe(true);
     expect(live.setInputMuted).not.toHaveBeenCalled();
   });
 
@@ -451,6 +481,74 @@ describe("SessionController", () => {
     expect(controller.ownerError).toBe(
       "This text is too long to send. Please shorten the context and try again.",
     );
+  });
+
+  it("shows the shorten-context prompt when the server rejects context append size", async () => {
+    const { controller, live } = createController();
+    await controller.startBootstrap();
+    controller.skipBootstrap();
+    controller.setContextText("We are ordering lunch.");
+    live.appendThinking.mockRejectedValueOnce(
+      new Error("append content exceeds maximum token limit"),
+    );
+
+    await expect(controller.beginInterpreter()).rejects.toBeInstanceOf(
+      ContextTooLongError,
+    );
+    expect(controller.ownerError).toBe(new ContextTooLongError().message);
+    expect(controller.session.state).toBe("bootstrap");
+    expect(live.appendInstructions).not.toHaveBeenCalled();
+  });
+
+  it("keeps unrelated context append rate-limit errors on the generic startup path", async () => {
+    const { controller, live } = createController();
+    await controller.startBootstrap();
+    controller.skipBootstrap();
+    controller.setContextText("We are ordering lunch.");
+    live.appendThinking.mockRejectedValueOnce(
+      new Error("content moderation request rate limit exceeded"),
+    );
+
+    await expect(controller.beginInterpreter()).rejects.toThrow(
+      "content moderation request rate limit exceeded",
+    );
+    expect(controller.ownerError).toBe(STARTUP_ERROR_MESSAGE);
+    expect(controller.session.state).toBe("error");
+    expect(live.appendInstructions).not.toHaveBeenCalled();
+  });
+
+  it("keeps unrelated interpreter instruction rate-limit errors on the generic startup path", async () => {
+    const { controller, live } = createController();
+    await controller.startBootstrap();
+    controller.skipBootstrap();
+    live.appendInstructions.mockRejectedValueOnce(
+      new Error("instructions rate limit exceeded"),
+    );
+
+    await expect(controller.beginInterpreter()).rejects.toThrow(
+      "instructions rate limit exceeded",
+    );
+    expect(controller.ownerError).toBe(STARTUP_ERROR_MESSAGE);
+    expect(controller.session.state).toBe("error");
+    expect(controller.hasEnteredInterpreter).toBe(false);
+  });
+
+  it("keeps unrelated first-steering quota errors on the generic startup path", async () => {
+    const { controller, live } = createController();
+    await controller.startBootstrap();
+    controller.skipBootstrap();
+    live.appendInstructions.mockImplementation(async (text: string, policy?: { kind: string }) => {
+      live.callOrder.push(`instructions:${text}`);
+      if (policy?.kind === "first_steering") {
+        throw new Error("payload quota exceeded");
+      }
+      return { eventId: "evt-ok" };
+    });
+
+    await expect(controller.beginInterpreter()).rejects.toThrow("payload quota exceeded");
+    expect(controller.ownerError).toBe(STARTUP_ERROR_MESSAGE);
+    expect(controller.session.state).toBe("error");
+    expect(controller.hasEnteredInterpreter).toBe(false);
   });
 
   it("closes an abandoned context session after 120s", async () => {
@@ -548,6 +646,50 @@ describe("SessionController", () => {
     expect(audio.audioElement.play).toHaveBeenCalledOnce();
   });
 
+  it("logs a remote audio play failure without leaking an unhandled rejection", async () => {
+    const { controller, audio } = createController();
+    const remoteStream = { id: "remote" } as MediaStream;
+    const playError = new Error("autoplay blocked");
+    audio.audioElement.play = vi.fn(async () => {
+      throw playError;
+    });
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
+
+    const unhandled = await collectUnhandledRejectionsDuring(async () => {
+      controller.handleRemoteStream(remoteStream);
+    });
+
+    expect(unhandled).toEqual([]);
+    expect(consoleError).toHaveBeenCalledExactlyOnceWith("Remote audio play failed", {
+      error: playError,
+    });
+  });
+
+  it("ignores stale remote audio play failure after reset", async () => {
+    const { controller, audio } = createController();
+    const remoteStream = { id: "remote" } as MediaStream;
+    const playError = new Error("late autoplay block");
+    let rejectPlay: ((error: Error) => void) | undefined;
+    audio.audioElement.play = vi.fn(
+      () =>
+        new Promise<void>((_resolve, reject) => {
+          rejectPlay = reject;
+        }),
+    );
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
+
+    const unhandled = await collectUnhandledRejectionsDuring(async () => {
+      controller.handleRemoteStream(remoteStream);
+      await controller.startContextCapture();
+      await controller.cancel();
+      rejectPlay?.(playError);
+    });
+
+    expect(unhandled).toEqual([]);
+    expect(consoleError).not.toHaveBeenCalled();
+    expect(controller.session.state).toBe("idle");
+  });
+
   it("sets ownerError on interpreter failure, stays on the owner screen, and does not resend thinking", async () => {
     const { controller, live, audio } = createController();
     await controller.startContextCapture();
@@ -643,6 +785,42 @@ describe("SessionController", () => {
     expect(controller.session.state).toBe("context");
   });
 
+  it("cancels cleanly after LiveClient connect fails before transport exists", async () => {
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      const audio = createFakeAudio();
+      const createLive = () =>
+        new LiveClient({
+          backend: { createLiveSession: vi.fn() } as unknown as BackendClient,
+          peerFactory: () => {
+            throw new Error("WebRTC is unavailable");
+          },
+          onRemoteStream: vi.fn(),
+        });
+      const controller = new SessionController({
+        createLive,
+        audio: audio as unknown as AudioController,
+      });
+
+      await expect(controller.startContextCapture()).rejects.toThrow(
+        "WebRTC is unavailable",
+      );
+      expect(controller.session.state).toBe("error");
+      expect(controller.ownerError).toBe("WebRTC is unavailable");
+
+      const unhandled = await collectUnhandledRejectionsDuring(() => {
+        void controller.cancel();
+      });
+
+      expect(unhandled).toEqual([]);
+      expect(controller.session.state).toBe("idle");
+      expect(controller.ownerError).toBeUndefined();
+      expect(audio.getCaptureStream()).toBeNull();
+    } finally {
+      errorSpy.mockRestore();
+    }
+  });
+
   it("serializes beginInterpreter and ignores a second activation while one is in flight", async () => {
     const { controller, live } = createController();
     await controller.startBootstrap();
@@ -690,6 +868,102 @@ describe("SessionController", () => {
     );
     expect(controller.ownerError).toBe("Microphone access is required for translation.");
     expect(controller.session.state).toBe("idle");
+  });
+
+  it("does not connect or enter setup when the microphone track ends during startup capture", async () => {
+    const audio = createFakeAudio();
+    const live = new FakeLive();
+    audio.startCapture.mockImplementationOnce(async () => {
+      audio.setCaptureStream(audio.captureStream);
+      audio.endCaptureTrack();
+    });
+    const { controller } = createController({ audio, live });
+
+    await expect(controller.startBootstrap()).rejects.toThrow(/microphone/i);
+
+    expect(controller.ownerError).toMatch(/microphone/i);
+    expect(controller.session.state).toBe("idle");
+    expect(controller.hasEnteredInterpreter).toBe(false);
+    expect(live.connect).not.toHaveBeenCalled();
+    expect(audio.stopCapture).toHaveBeenCalledOnce();
+  });
+
+  it("closes the in-flight LiveClient when the microphone track ends during connect", async () => {
+    const audio = createFakeAudio();
+    const live = new FakeLive();
+    let rejectConnect: ((error: Error) => void) | undefined;
+    live.connect.mockImplementation(
+      () =>
+        new Promise<{ sessionId: string }>((_resolve, reject) => {
+          rejectConnect = reject;
+        }),
+    );
+    live.close.mockImplementation(async () => {
+      rejectConnect?.(new Error("Live session close started before session.started"));
+      return { finalized: false };
+    });
+    const { controller } = createController({ audio, live });
+
+    const starting = controller.startContextCapture();
+    await vi.waitFor(() => {
+      expect(live.connect).toHaveBeenCalledOnce();
+    });
+
+    try {
+      const unhandled = await collectUnhandledRejectionsDuring(async () => {
+        audio.endCaptureTrack();
+      });
+
+      expect(unhandled).toEqual([]);
+      expect(live.close).toHaveBeenCalledOnce();
+      expect(controller.session.state).toBe("error");
+      expect(controller.ownerError).toMatch(/microphone/i);
+    } finally {
+      rejectConnect?.(new Error("test cleanup"));
+      await starting.catch(() => {});
+    }
+  });
+
+  it("closes a connected LiveClient when the microphone track ends before retrying", async () => {
+    const created: FakeLive[] = [];
+    const audio = createFakeAudio();
+    const controller = new SessionController({
+      createLive: () => {
+        const live = new FakeLive();
+        created.push(live);
+        return live as unknown as LiveClient;
+      },
+      audio: audio as unknown as AudioController,
+    });
+    const first = created[0];
+    if (first === undefined) {
+      throw new Error("LiveClient was not created");
+    }
+
+    await controller.startContextCapture();
+    const unhandled = await collectUnhandledRejectionsDuring(async () => {
+      audio.endCaptureTrack();
+    });
+
+    expect(unhandled).toEqual([]);
+    expect(first.close).toHaveBeenCalledOnce();
+    expect(controller.session.state).toBe("error");
+    expect(controller.ownerError).toMatch(/microphone/i);
+
+    await controller.cancel();
+    expect(controller.session.state).toBe("idle");
+    expect(created).toHaveLength(2);
+    expect(created[1]?.close).not.toHaveBeenCalled();
+
+    const retryTrack = audio.captureStream.getAudioTracks()[0] as MediaStreamTrack;
+    Object.defineProperty(retryTrack, "readyState", {
+      configurable: true,
+      value: "live",
+    });
+    await controller.startContextCapture();
+    expect(created[1]?.connect).toHaveBeenCalledOnce();
+    expect(first.connect).toHaveBeenCalledOnce();
+    expect(controller.session.state).toBe("context");
   });
 
   it("sets ownerError on microphone and connect failures", async () => {
@@ -912,6 +1186,89 @@ async function flushMicrotasks(): Promise<void> {
   await Promise.resolve();
 }
 
+async function collectUnhandledRejectionsDuring(
+  action: () => Promise<void> | void,
+): Promise<unknown[]> {
+  const unhandled: unknown[] = [];
+  const onUnhandled = (reason: unknown) => {
+    unhandled.push(reason);
+  };
+  process.on("unhandledRejection", onUnhandled);
+  try {
+    await action();
+    await flushMicrotasks();
+    await new Promise<void>((resolve) => {
+      setTimeout(resolve, 0);
+    });
+  } finally {
+    process.off("unhandledRejection", onUnhandled);
+  }
+  return unhandled;
+}
+
+async function collectUnhandledRejectionsDuringFakeTimers(
+  action: () => Promise<void> | void,
+): Promise<unknown[]> {
+  const unhandled: unknown[] = [];
+  const onUnhandled = (reason: unknown) => {
+    unhandled.push(reason);
+  };
+  process.on("unhandledRejection", onUnhandled);
+  try {
+    await action();
+    await flushMicrotasks();
+    await vi.advanceTimersByTimeAsync(0);
+    await flushMicrotasks();
+  } finally {
+    process.off("unhandledRejection", onUnhandled);
+  }
+  return unhandled;
+}
+
+async function startGateARestoreFailureRemuteRace(): Promise<{
+  controller: SessionController;
+  live: FakeLive;
+  releaseRemute: () => void;
+  resuming: Promise<void>;
+  setCaptureEnabled: ReturnType<typeof vi.fn>;
+}> {
+  const audio = createFakeAudio();
+  const setCaptureEnabled = vi.fn((enabled: boolean) => {
+    audio.captureTrack.enabled = enabled;
+    if (enabled) {
+      throw new Error("capture enable failed");
+    }
+  });
+  audio.setCaptureEnabled = setCaptureEnabled;
+  const live = new FakeLive();
+  let releaseRemute: (() => void) | undefined;
+  let muteAttempts = 0;
+  live.setInputMuted.mockImplementation(async (muted: boolean) => {
+    if (!muted) {
+      return;
+    }
+    muteAttempts += 1;
+    if (muteAttempts === 1) {
+      return;
+    }
+    await new Promise<void>((resolve) => {
+      releaseRemute = resolve;
+    });
+  });
+  const { controller } = createController({ audio, live });
+  await enterListening(controller);
+  emitVoice(audio, true);
+  await vi.advanceTimersByTimeAsync(runtime.maxSourceMs);
+  await flushMicrotasks();
+
+  const resuming = controller.resumeFromSourceTimeout();
+  await waitUntil(() => muteAttempts >= 2 && releaseRemute !== undefined);
+  if (releaseRemute === undefined) {
+    throw new Error("Gate B remute did not start");
+  }
+  return { controller, live, releaseRemute, resuming, setCaptureEnabled };
+}
+
 async function flushLifecycle(): Promise<void> {
   for (let attempt = 0; attempt < 24; attempt += 1) {
     await Promise.resolve();
@@ -938,6 +1295,45 @@ async function completeTextOnlyTurn(
   if (controller.session.state !== "listening") {
     throw new Error(`Expected listening after text-only close, got "${controller.session.state}"`);
   }
+}
+
+async function completeTextOnlyTurnUntilLaterSteeringStarts(
+  controller: SessionController,
+  live: FakeLive,
+  audio: ReturnType<typeof createFakeAudio>,
+): Promise<void> {
+  emitVoice(audio, true);
+  live.emit({
+    type: "session.input_transcript.delta",
+    delta: "Hello",
+    start_ms: 10,
+    end_ms: 40,
+  });
+  live.emit({ type: "session.output_transcript.delta", delta: "Hola" });
+  emitVoice(audio, false);
+  await flushMicrotasks();
+  await vi.advanceTimersByTimeAsync(runtime.audioStartGraceMs);
+  await flushMicrotasks();
+  if (controller.session.state !== "listening") {
+    throw new Error(`Expected listening during text-only close, got "${controller.session.state}"`);
+  }
+}
+
+async function enterOutputtingTurn(
+  controller: SessionController,
+  live: FakeLive,
+  audio: ReturnType<typeof createFakeAudio>,
+): Promise<void> {
+  await enterListening(controller);
+  emitVoice(audio, true);
+  live.emit({ type: "session.input_transcript.delta", delta: "Hello" });
+  live.emit({ type: "session.output_transcript.delta", delta: "Hola" });
+  emitPlayback(audio, true);
+  await flushMicrotasks();
+  emitVoice(audio, false);
+  await flushMicrotasks();
+  expect(controller.session.state).toBe("outputting");
+  expect(controller.session.activeTurn?.speaker).toBe("A");
 }
 
 describe("SessionController turn engine", () => {
@@ -979,6 +1375,88 @@ describe("SessionController turn engine", () => {
     expect(controller.session.activeTurn?.translatedText).toBe("Hola");
     expect(controller.session.activeTurn?.firstOutputTextAtMs).toBe(Date.now());
     expect(live.setInputMuted).not.toHaveBeenCalled();
+  });
+
+  it("keeps translated text usable when remote audio playback cannot start", async () => {
+    const { controller, live, audio } = createController();
+    const playError = new Error("autoplay blocked");
+    let rejectPlay: ((error: Error) => void) | undefined;
+    audio.audioElement.play = vi.fn(
+      () =>
+        new Promise<void>((_resolve, reject) => {
+          rejectPlay = reject;
+        }),
+    );
+    vi.spyOn(console, "error").mockImplementation(() => {});
+
+    await enterListening(controller);
+    controller.handleRemoteStream({ id: "remote" } as MediaStream);
+    await flushMicrotasks();
+
+    emitVoice(audio, true);
+    live.emit({
+      type: "session.input_transcript.delta",
+      delta: "Hello",
+      start_ms: 10,
+      end_ms: 40,
+    });
+    live.emit({ type: "session.output_transcript.delta", delta: "Hola" });
+
+    expect(controller.session.state).toBe("outputting");
+    expect(controller.session.activeTurn?.translatedText).toBe("Hola");
+
+    emitPlayback(audio, true);
+    await flushMicrotasks();
+
+    expect(controller.session.activeTurn?.audioOutputStarted).toBe(false);
+
+    emitVoice(audio, false);
+    rejectPlay?.(playError);
+    await flushMicrotasks();
+    await vi.advanceTimersByTimeAsync(runtime.audioStartGraceMs);
+    await flushMicrotasks();
+
+    expect(controller.session.state).toBe("listening");
+    expect(controller.session.recentTurns[0]?.translatedText).toBe("Hola");
+    expect(controller.session.recentTurns[0]?.audioOutputStarted).toBe(false);
+    expect(controller.session.recentTurns[0]?.firstAudibleOutputAtMs).toBeUndefined();
+    expect(controller.session.expectedSpeaker).toBe("B");
+    expect(controller.inputReady).toBe(true);
+    expect(controller.metrics.snapshot().textOnlyCompletionCount).toBe(1);
+    expect(controller.metrics.snapshot().lastTurn?.t2Ms).toBeUndefined();
+
+    emitVoice(audio, true);
+    live.emit({ type: "session.input_transcript.delta", delta: "Next" });
+
+    expect(controller.session.activeTurn?.originalText).toBe("Next");
+    expect(controller.session.expectedSpeaker).toBe("B");
+  });
+
+  it("tracks buffered remote playback activity once media playback succeeds", async () => {
+    const { controller, live, audio } = createController();
+    let resolvePlay: (() => void) | undefined;
+    audio.audioElement.play = vi.fn(
+      () =>
+        new Promise<void>((resolve) => {
+          resolvePlay = resolve;
+        }),
+    );
+
+    await enterListening(controller);
+    controller.handleRemoteStream({ id: "remote" } as MediaStream);
+    emitVoice(audio, true);
+    live.emit({ type: "session.input_transcript.delta", delta: "Hello" });
+    live.emit({ type: "session.output_transcript.delta", delta: "Hola" });
+
+    emitPlayback(audio, true);
+    await flushMicrotasks();
+    expect(controller.session.activeTurn?.audioOutputStarted).toBe(false);
+
+    resolvePlay?.();
+    await flushMicrotasks();
+
+    expect(controller.session.activeTurn?.audioOutputStarted).toBe(true);
+    expect(controller.session.activeTurn?.firstAudibleOutputAtMs).toBeDefined();
   });
 
   it("does not mute Gate B merely because audible output started", async () => {
@@ -1129,6 +1607,73 @@ describe("SessionController turn engine", () => {
     expect(errorSpy).toHaveBeenCalled();
   });
 
+  it("continues text-only completion when source-idle Gate B mute rejects", async () => {
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    const { controller, live, audio } = createController();
+    live.setInputMuted.mockImplementation(async (muted: boolean) => {
+      if (muted) {
+        throw new Error("network failed");
+      }
+    });
+    await enterListening(controller);
+    emitVoice(audio, true);
+    live.emit({ type: "session.input_transcript.delta", delta: "Hello" });
+    live.emit({ type: "session.output_transcript.delta", delta: "Hola" });
+
+    const unhandled = await collectUnhandledRejectionsDuringFakeTimers(async () => {
+      emitVoice(audio, false);
+      await flushMicrotasks();
+      await vi.advanceTimersByTimeAsync(runtime.audioStartGraceMs);
+      await flushMicrotasks();
+    });
+
+    expect(unhandled).toEqual([]);
+    expect(controller.session.state).toBe("listening");
+    expect(controller.session.recentTurns[0]?.status).toBe("completed");
+    expect(controller.session.expectedSpeaker).toBe("B");
+    expect(controller.inputReady).toBe(true);
+    expect(live.setInputMuted).toHaveBeenCalledWith(true);
+    expect(live.setInputMuted).toHaveBeenLastCalledWith(false);
+    expect(errorSpy).toHaveBeenCalled();
+  });
+
+  it("fails closed when source reactivation Gate B unmute rejects", async () => {
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    const { controller, live, audio } = createController();
+    live.setInputMuted.mockImplementation(async (muted: boolean) => {
+      if (!muted) {
+        throw new Error("reactivation unmute failed");
+      }
+    });
+    await enterListening(controller);
+    audio.setOutputAudible.mockClear();
+    emitVoice(audio, true);
+    live.emit({ type: "session.input_transcript.delta", delta: "Hello" });
+    emitVoice(audio, false);
+    await flushMicrotasks();
+
+    expect(controller.session.activeTurn?.sourceIdleAtMs).toBeDefined();
+    expect(live.setInputMuted).toHaveBeenCalledWith(true);
+
+    const unhandled = await collectUnhandledRejectionsDuringFakeTimers(async () => {
+      emitVoice(audio, true);
+      await flushMicrotasks();
+    });
+
+    expect(unhandled).toEqual([]);
+    expect(controller.session.state).toBe("error");
+    expect(controller.session.activeTurn).toBeUndefined();
+    expect(controller.session.recentTurns[0]?.status).toBe("failed");
+    expect(controller.inputReady).toBe(false);
+    expect(controller.ownerError).toBe("reactivation unmute failed");
+    expect(audio.setCaptureEnabled).toHaveBeenLastCalledWith(false);
+    expect(audio.setOutputAudible).toHaveBeenLastCalledWith(false);
+    expect(live.setInputMuted).toHaveBeenLastCalledWith(false);
+    live.emit({ type: "session.input_transcript.delta", delta: "ignored" });
+    expect(controller.session.activeTurn).toBeUndefined();
+    expect(errorSpy).toHaveBeenCalled();
+  });
+
   it("MAX_SOURCE_MS mutes, closes output, fails, warns, and suspends with Resume/Repeat", async () => {
     const { controller, live, audio } = createController();
     await enterListening(controller);
@@ -1139,6 +1684,74 @@ describe("SessionController turn engine", () => {
     await flushMicrotasks();
 
     expect(live.setInputMuted).toHaveBeenCalledWith(true);
+    expect(audio.setCaptureEnabled).toHaveBeenLastCalledWith(false);
+    expect(audio.captureTrack.enabled).toBe(false);
+    expect(audio.setOutputAudible).toHaveBeenLastCalledWith(false);
+    expect(controller.inputReady).toBe(false);
+    expect(controller.session.state).toBe("suspended");
+    expect(controller.session.recentTurns[0]?.status).toBe("failed");
+    expect(controller.session.expectedSpeaker).toBe("A");
+    expect(controller.recoveryPrompt).toBe("resume-repeat");
+    expect(live.appendInstructions).toHaveBeenCalledWith(buildUnfinishedTurnWarning(), {
+      kind: "later_steering",
+      sessionState: "suspended",
+    });
+  });
+
+  it("MAX_SOURCE_MS forces Gate A off when capture disable throws", async () => {
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      const audio = createFakeAudio();
+      audio.setCaptureEnabled = vi.fn((enabled: boolean) => {
+        if (!enabled) {
+          throw new Error("capture disable failed");
+        }
+        audio.captureTrack.enabled = enabled;
+      });
+      const { controller, live } = createController({ audio });
+      await enterListening(controller);
+      emitVoice(audio, true);
+      live.emit({ type: "session.input_transcript.delta", delta: "Hello" });
+
+      const unhandled = await collectUnhandledRejectionsDuringFakeTimers(async () => {
+        await vi.advanceTimersByTimeAsync(runtime.maxSourceMs);
+        await flushMicrotasks();
+      });
+
+      expect(unhandled).toEqual([]);
+      expect(audio.captureTrack.enabled).toBe(false);
+      expect(controller.session.state).toBe("suspended");
+      expect(controller.inputReady).toBe(false);
+      expect(controller.recoveryPrompt).toBe("resume-repeat");
+      expect(audio.setOutputAudible).toHaveBeenLastCalledWith(false);
+      expect(errorSpy).toHaveBeenCalled();
+    } finally {
+      errorSpy.mockRestore();
+    }
+  });
+
+  it("suspends with resume-repeat when MAX_SOURCE_MS Gate B mute rejects", async () => {
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    const { controller, live, audio } = createController();
+    live.setInputMuted.mockImplementation(async (muted: boolean) => {
+      if (muted) {
+        throw new Error("network failed");
+      }
+    });
+    await enterListening(controller);
+    emitVoice(audio, true);
+    live.emit({ type: "session.input_transcript.delta", delta: "Hello" });
+
+    const unhandled = await collectUnhandledRejectionsDuringFakeTimers(async () => {
+      await vi.advanceTimersByTimeAsync(runtime.maxSourceMs);
+      await flushMicrotasks();
+    });
+
+    expect(unhandled).toEqual([]);
+    expect(audio.setCaptureEnabled).toHaveBeenLastCalledWith(false);
+    expect(audio.captureTrack.enabled).toBe(false);
+    expect(controller.inputReady).toBe(false);
+    expect(live.setInputMuted).toHaveBeenCalledWith(true);
     expect(audio.setOutputAudible).toHaveBeenLastCalledWith(false);
     expect(controller.session.state).toBe("suspended");
     expect(controller.session.recentTurns[0]?.status).toBe("failed");
@@ -1148,6 +1761,67 @@ describe("SessionController turn engine", () => {
       kind: "later_steering",
       sessionState: "suspended",
     });
+    expect(errorSpy).toHaveBeenCalled();
+  });
+
+  it("suspends on MAX_SOURCE while Gate B mute remains pending", async () => {
+    const { controller, live, audio } = createController();
+    let releaseMute: (() => void) | undefined;
+    live.setInputMuted.mockImplementation(async (muted: boolean) => {
+      if (muted) {
+        await new Promise<void>((resolve) => {
+          releaseMute = resolve;
+        });
+      }
+    });
+    await enterListening(controller);
+    emitVoice(audio, true);
+    live.emit({ type: "session.input_transcript.delta", delta: "Hello" });
+
+    await vi.advanceTimersByTimeAsync(runtime.maxSourceMs);
+    await waitUntil(() => releaseMute !== undefined);
+
+    expect(controller.session.state).toBe("suspended");
+    expect(audio.setCaptureEnabled).toHaveBeenLastCalledWith(false);
+    expect(audio.captureTrack.enabled).toBe(false);
+    expect(audio.setOutputAudible).toHaveBeenLastCalledWith(false);
+    expect(controller.inputReady).toBe(false);
+
+    releaseMute?.();
+    await flushMicrotasks();
+  });
+
+  it("suspends on MAX_SOURCE when Gate B mute times out", async () => {
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    const { controller, live, audio } = createController();
+    live.setInputMuted.mockImplementation(async (muted: boolean) => {
+      if (muted) {
+        throw new AckTimeoutError("evt-timeout");
+      }
+    });
+    await enterListening(controller);
+    emitVoice(audio, true);
+    live.emit({ type: "session.input_transcript.delta", delta: "Hello" });
+
+    const unhandled = await collectUnhandledRejectionsDuringFakeTimers(async () => {
+      await vi.advanceTimersByTimeAsync(runtime.maxSourceMs);
+      await flushMicrotasks();
+    });
+
+    expect(unhandled).toEqual([]);
+    expect(audio.setCaptureEnabled).toHaveBeenLastCalledWith(false);
+    expect(audio.captureTrack.enabled).toBe(false);
+    expect(audio.setOutputAudible).toHaveBeenLastCalledWith(false);
+    expect(controller.inputReady).toBe(false);
+    expect(controller.session.state).toBe("suspended");
+    expect(controller.session.recentTurns[0]?.status).toBe("failed");
+    expect(controller.session.expectedSpeaker).toBe("A");
+    expect(controller.recoveryPrompt).toBe("resume-repeat");
+    expect(live.appendInstructions).toHaveBeenCalledWith(buildUnfinishedTurnWarning(), {
+      kind: "later_steering",
+      sessionState: "suspended",
+    });
+    expect(errorSpy).toHaveBeenCalled();
   });
 
   it("resume after MAX_SOURCE_MS re-baselines VAM, unmutes, and returns to listening", async () => {
@@ -1161,10 +1835,538 @@ describe("SessionController turn engine", () => {
 
     expect(audio.resetVoiceActivityBaseline).toHaveBeenCalledOnce();
     expect(live.setInputMuted).toHaveBeenLastCalledWith(false);
+    expect(audio.setCaptureEnabled).toHaveBeenLastCalledWith(true);
+    expect(audio.captureTrack.enabled).toBe(true);
     expect(audio.setOutputAudible).toHaveBeenLastCalledWith(true);
     expect(controller.session.state).toBe("listening");
     expect(controller.session.expectedSpeaker).toBe("A");
+    expect(controller.inputReady).toBe(true);
     expect(controller.recoveryPrompt).toBeUndefined();
+  });
+
+  it("manual MAX_SOURCE resume waits for Gate B unmute before reopening output", async () => {
+    const { controller, live, audio } = createController();
+    let releaseUnmute: (() => void) | undefined;
+    live.setInputMuted.mockImplementation(async (muted: boolean) => {
+      if (!muted) {
+        await new Promise<void>((resolve) => {
+          releaseUnmute = resolve;
+        });
+      }
+    });
+    await enterListening(controller);
+    emitVoice(audio, true);
+    await vi.advanceTimersByTimeAsync(runtime.maxSourceMs);
+    await flushMicrotasks();
+
+    const resuming = controller.resumeFromSourceTimeout();
+    await waitUntil(() => releaseUnmute !== undefined);
+
+    expect(live.setInputMuted).toHaveBeenLastCalledWith(false);
+    expect(controller.session.state).toBe("suspended");
+    expect(controller.inputReady).toBe(false);
+    expect(audio.setOutputAudible).toHaveBeenLastCalledWith(false);
+    expect(audio.setCaptureEnabled).toHaveBeenLastCalledWith(false);
+    expect(audio.captureTrack.enabled).toBe(false);
+
+    releaseUnmute?.();
+    await resuming;
+
+    expect(audio.resetVoiceActivityBaseline).toHaveBeenCalledOnce();
+    expect(controller.session.state).toBe("listening");
+    expect(controller.inputReady).toBe(true);
+    expect(audio.setOutputAudible).toHaveBeenLastCalledWith(true);
+    let gateBUnmuteOrder: number | undefined;
+    for (let i = live.setInputMuted.mock.calls.length - 1; i >= 0; i--) {
+      if (live.setInputMuted.mock.calls[i]?.[0] === false) {
+        gateBUnmuteOrder = live.setInputMuted.mock.invocationCallOrder[i];
+        break;
+      }
+    }
+    let gateAOnOrder: number | undefined;
+    for (let i = audio.setCaptureEnabled.mock.calls.length - 1; i >= 0; i--) {
+      if (audio.setCaptureEnabled.mock.calls[i]?.[0] === true) {
+        gateAOnOrder = audio.setCaptureEnabled.mock.invocationCallOrder[i];
+        break;
+      }
+    }
+    const gateCOnOrder = audio.setOutputAudible.mock.invocationCallOrder.at(-1);
+    if (gateBUnmuteOrder === undefined || gateAOnOrder === undefined || gateCOnOrder === undefined) {
+      throw new Error("Gate B unmute or Gate C reopen was not recorded");
+    }
+    expect(gateBUnmuteOrder).toBeLessThan(gateAOnOrder);
+    expect(gateAOnOrder).toBeLessThan(gateCOnOrder);
+  });
+
+  it("manual MAX_SOURCE resume waits for pending Gate B mute before reopening gates", async () => {
+    const { controller, live, audio } = createController();
+    let releaseMute: (() => void) | undefined;
+    let releaseUnmute: (() => void) | undefined;
+    let muteAttempts = 0;
+    live.setInputMuted.mockImplementation(async (muted: boolean) => {
+      if (muted) {
+        muteAttempts += 1;
+        if (muteAttempts === 1) {
+          await new Promise<void>((resolve) => {
+            releaseMute = resolve;
+          });
+        }
+        return;
+      }
+      await new Promise<void>((resolve) => {
+        releaseUnmute = resolve;
+      });
+    });
+    await enterListening(controller);
+    emitVoice(audio, true);
+    live.emit({ type: "session.input_transcript.delta", delta: "Hello" });
+
+    await vi.advanceTimersByTimeAsync(runtime.maxSourceMs);
+    await waitUntil(() => releaseMute !== undefined);
+
+    const resuming = controller.resumeFromSourceTimeout();
+    await flushMicrotasks();
+
+    expect(controller.session.state).toBe("suspended");
+    expect(controller.inputReady).toBe(false);
+    expect(audio.setOutputAudible).toHaveBeenLastCalledWith(false);
+    expect(audio.setCaptureEnabled).toHaveBeenLastCalledWith(false);
+    expect(audio.captureTrack.enabled).toBe(false);
+    expect(live.setInputMuted.mock.calls.some((call) => call[0] === false)).toBe(false);
+    expect(audio.setCaptureEnabled).not.toHaveBeenCalledWith(true);
+
+    releaseMute?.();
+    await waitUntil(() => releaseUnmute !== undefined);
+    releaseUnmute?.();
+    await resuming;
+
+    expect(audio.setCaptureEnabled).toHaveBeenCalledWith(true);
+    expect(audio.setOutputAudible).toHaveBeenLastCalledWith(true);
+    expect(controller.session.state).toBe("listening");
+    expect(controller.inputReady).toBe(true);
+    let gateBUnmuteOrder: number | undefined;
+    for (let i = live.setInputMuted.mock.calls.length - 1; i >= 0; i -= 1) {
+      if (live.setInputMuted.mock.calls[i]?.[0] === false) {
+        gateBUnmuteOrder = live.setInputMuted.mock.invocationCallOrder[i];
+        break;
+      }
+    }
+    let gateAOnOrder: number | undefined;
+    for (let i = audio.setCaptureEnabled.mock.calls.length - 1; i >= 0; i -= 1) {
+      if (audio.setCaptureEnabled.mock.calls[i]?.[0] === true) {
+        gateAOnOrder = audio.setCaptureEnabled.mock.invocationCallOrder[i];
+        break;
+      }
+    }
+    const gateCOnOrder = audio.setOutputAudible.mock.invocationCallOrder.at(-1);
+    if (gateBUnmuteOrder === undefined || gateAOnOrder === undefined || gateCOnOrder === undefined) {
+      throw new Error("Gate resume order was not captured");
+    }
+    expect(gateBUnmuteOrder).toBeLessThan(gateAOnOrder);
+    expect(gateAOnOrder).toBeLessThan(gateCOnOrder);
+  });
+
+  it.each([
+    ["rejects", () => new Error("mute failed")],
+    ["times out", () => new AckTimeoutError("evt-timeout")],
+  ])(
+    "manual MAX_SOURCE resume waits for pending Gate B mute that %s before reopening gates",
+    async (_label, createMuteError) => {
+      const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+      try {
+        const { controller, live, audio } = createController();
+        let rejectMute: ((reason: unknown) => void) | undefined;
+        let releaseUnmute: (() => void) | undefined;
+        live.setInputMuted.mockImplementation(async (muted: boolean) => {
+          if (muted) {
+            await new Promise<void>((_resolve, reject) => {
+              rejectMute = reject;
+            });
+            return;
+          }
+          await new Promise<void>((resolve) => {
+            releaseUnmute = resolve;
+          });
+        });
+        await enterListening(controller);
+        emitVoice(audio, true);
+        live.emit({ type: "session.input_transcript.delta", delta: "Hello" });
+
+        const unhandled = await collectUnhandledRejectionsDuringFakeTimers(async () => {
+          await vi.advanceTimersByTimeAsync(runtime.maxSourceMs);
+          await waitUntil(() => rejectMute !== undefined);
+
+          const resuming = controller.resumeFromSourceTimeout();
+          await flushMicrotasks();
+
+          expect(live.setInputMuted.mock.calls.some((call) => call[0] === false)).toBe(false);
+          rejectMute?.(createMuteError());
+          await waitUntil(() => releaseUnmute !== undefined);
+          expect(audio.setCaptureEnabled).not.toHaveBeenCalledWith(true);
+          expect(audio.setOutputAudible).toHaveBeenLastCalledWith(false);
+
+          releaseUnmute?.();
+          await resuming;
+        });
+
+        expect(unhandled).toEqual([]);
+        expect(audio.setCaptureEnabled).toHaveBeenCalledWith(true);
+        expect(audio.setOutputAudible).toHaveBeenLastCalledWith(true);
+        expect(controller.session.state).toBe("listening");
+        expect(controller.inputReady).toBe(true);
+
+        let gateBUnmuteOrder: number | undefined;
+        for (let i = live.setInputMuted.mock.calls.length - 1; i >= 0; i -= 1) {
+          if (live.setInputMuted.mock.calls[i]?.[0] === false) {
+            gateBUnmuteOrder = live.setInputMuted.mock.invocationCallOrder[i];
+            break;
+          }
+        }
+        let gateAOnOrder: number | undefined;
+        for (let i = audio.setCaptureEnabled.mock.calls.length - 1; i >= 0; i -= 1) {
+          if (audio.setCaptureEnabled.mock.calls[i]?.[0] === true) {
+            gateAOnOrder = audio.setCaptureEnabled.mock.invocationCallOrder[i];
+            break;
+          }
+        }
+        const gateCOnOrder = audio.setOutputAudible.mock.invocationCallOrder.at(-1);
+        if (
+          gateBUnmuteOrder === undefined ||
+          gateAOnOrder === undefined ||
+          gateCOnOrder === undefined
+        ) {
+          throw new Error("Gate B unmute or gate reopen was not recorded");
+        }
+        expect(gateBUnmuteOrder).toBeLessThan(gateAOnOrder);
+        expect(gateAOnOrder).toBeLessThan(gateCOnOrder);
+      } finally {
+        errorSpy.mockRestore();
+      }
+    },
+  );
+
+  it("manual MAX_SOURCE resume is single-flight while Gate B unmute is pending", async () => {
+    const { controller, live, audio } = createController();
+    const releaseUnmutes: Array<() => void> = [];
+    live.setInputMuted.mockImplementation(async (muted: boolean) => {
+      if (!muted) {
+        await new Promise<void>((resolve) => {
+          releaseUnmutes.push(resolve);
+        });
+      }
+    });
+    await enterListening(controller);
+    emitVoice(audio, true);
+    await vi.advanceTimersByTimeAsync(runtime.maxSourceMs);
+    await flushMicrotasks();
+
+    const firstResume = controller.resumeFromSourceTimeout();
+    await waitUntil(() => releaseUnmutes.length === 1);
+    const secondResume = controller.resumeFromSourceTimeout();
+    await flushMicrotasks();
+    const unmuteCalls = live.setInputMuted.mock.calls.filter((call) => call[0] === false).length;
+    for (const release of releaseUnmutes) {
+      release();
+    }
+    await Promise.all([firstResume, secondResume]);
+
+    expect(unmuteCalls).toBe(1);
+    expect(controller.session.state).toBe("listening");
+    expect(controller.inputReady).toBe(true);
+    expect(audio.setOutputAudible).toHaveBeenLastCalledWith(true);
+  });
+
+  it.each([
+    ["visibility hides", (controls: { visibility: FakeVisibility }) => controls.visibility.hide()],
+    [
+      "orientation turns landscape",
+      (controls: { orientation: FakeOrientation }) => controls.orientation.emit("landscape"),
+    ],
+  ])(
+    "manual MAX_SOURCE resume remains suspended when %s while Gate B unmute is pending",
+    async (_label, triggerUnsafeLifecycle) => {
+      const orientation = new FakeOrientation();
+      const visibility = new FakeVisibility();
+      const { controller, live, audio } = createController({
+        orientation,
+        visibility,
+        wakeLock: new FakeWakeLock(),
+      });
+      let releaseUnmute: (() => void) | undefined;
+      live.setInputMuted.mockImplementation(async (muted: boolean) => {
+        if (!muted) {
+          await new Promise<void>((resolve) => {
+            releaseUnmute = resolve;
+          });
+        }
+      });
+      await enterListening(controller);
+      emitVoice(audio, true);
+      live.emit({ type: "session.input_transcript.delta", delta: "Hello" });
+      await vi.advanceTimersByTimeAsync(runtime.maxSourceMs);
+      await flushMicrotasks();
+
+      const resuming = controller.resumeFromSourceTimeout();
+      await waitUntil(() => releaseUnmute !== undefined);
+      triggerUnsafeLifecycle({ orientation, visibility });
+      await flushLifecycle();
+
+      releaseUnmute?.();
+      await resuming;
+
+      expect(controller.session.state).toBe("suspended");
+      expect(controller.recoveryPrompt).toBe("resume-repeat");
+      expect(controller.inputReady).toBe(false);
+      expect(audio.setCaptureEnabled).not.toHaveBeenCalledWith(true);
+      expect(audio.captureTrack.enabled).toBe(false);
+      expect(audio.setOutputAudible).toHaveBeenLastCalledWith(false);
+      expect(live.setInputMuted).toHaveBeenLastCalledWith(true);
+    },
+  );
+
+  it("manual MAX_SOURCE resume ignores new speech/transcript until Gate C reopens", async () => {
+    const { controller, live, audio } = createController();
+    await enterListening(controller);
+    emitVoice(audio, true);
+    await vi.advanceTimersByTimeAsync(runtime.maxSourceMs);
+    await flushMicrotasks();
+    emitVoice(audio, true);
+    live.emit({ type: "session.input_transcript.delta", delta: "ignored" });
+    live.emit({ type: "session.output_transcript.delta", delta: "ignored output" });
+
+    expect(controller.session.state).toBe("suspended");
+    expect(controller.session.activeTurn).toBeUndefined();
+    expect(controller.session.recentTurns[0]?.status).toBe("failed");
+    expect(controller.session.recentTurns).toHaveLength(1);
+    await controller.resumeFromSourceTimeout();
+    expect(controller.session.state).toBe("listening");
+  });
+
+  it("manual MAX_SOURCE resume rejects a dead microphone track without opening gates", async () => {
+    const { controller, live, audio } = createController();
+    await enterListening(controller);
+    emitVoice(audio, true);
+    await vi.advanceTimersByTimeAsync(runtime.maxSourceMs);
+    await flushMicrotasks();
+    audio.captureTrack.readyState = "ended";
+
+    await expect(controller.resumeFromSourceTimeout()).rejects.toThrow(
+      'Microphone track is not live (readyState "ended")',
+    );
+
+    expect(controller.session.state).toBe("error");
+    expect(controller.ownerError).toBe('Microphone track is not live (readyState "ended")');
+    expect(controller.inputReady).toBe(false);
+    expect(audio.setOutputAudible).toHaveBeenLastCalledWith(false);
+    expect(live.setInputMuted).not.toHaveBeenLastCalledWith(false);
+  });
+
+  it("manual MAX_SOURCE resume rejects a closed transport without opening gates", async () => {
+    const { controller, live, audio } = createController();
+    await enterListening(controller);
+    emitVoice(audio, true);
+    await vi.advanceTimersByTimeAsync(runtime.maxSourceMs);
+    await flushMicrotasks();
+    live.peerConnectionState = "closed";
+
+    await expect(controller.resumeFromSourceTimeout()).rejects.toThrow(
+      'Peer connection state is "closed"',
+    );
+
+    expect(controller.session.state).toBe("error");
+    expect(controller.ownerError).toBe('Peer connection state is "closed"');
+    expect(controller.inputReady).toBe(false);
+    expect(audio.setOutputAudible).toHaveBeenLastCalledWith(false);
+    expect(live.setInputMuted).not.toHaveBeenLastCalledWith(false);
+  });
+
+  it("manual MAX_SOURCE resume fails safely when Gate B unmute rejects", async () => {
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    const { controller, live, audio } = createController();
+    live.setInputMuted.mockImplementation(async (muted: boolean) => {
+      if (!muted) {
+        throw new Error("unmute failed");
+      }
+    });
+    await enterListening(controller);
+    emitVoice(audio, true);
+    await vi.advanceTimersByTimeAsync(runtime.maxSourceMs);
+    await flushMicrotasks();
+
+    const unhandled = await collectUnhandledRejectionsDuringFakeTimers(async () => {
+      await expect(controller.resumeFromSourceTimeout()).rejects.toThrow("unmute failed");
+    });
+
+    expect(unhandled).toEqual([]);
+    expect(errorSpy).toHaveBeenCalled();
+    expect(live.setInputMuted).toHaveBeenLastCalledWith(false);
+    expect(controller.session.state).toBe("error");
+    expect(controller.ownerError).toBe("unmute failed");
+    expect(controller.inputReady).toBe(false);
+    expect(audio.setOutputAudible).toHaveBeenLastCalledWith(false);
+    expect(audio.setCaptureEnabled).toHaveBeenLastCalledWith(false);
+    errorSpy.mockRestore();
+  });
+
+  it("manual MAX_SOURCE resume fails safely when Gate A cannot reopen and remutes Gate B", async () => {
+    const audio = createFakeAudio();
+    const captureTrack = audio.captureTrack;
+    const customSetCaptureEnabled = vi.fn((enabled: boolean) => {
+      captureTrack.enabled = enabled;
+      if (enabled) {
+        throw new Error("capture enable failed");
+      }
+    });
+    audio.setCaptureEnabled = customSetCaptureEnabled;
+    const { controller, live } = createController({ audio });
+    await enterListening(controller);
+    emitVoice(audio, true);
+    await vi.advanceTimersByTimeAsync(runtime.maxSourceMs);
+    await flushMicrotasks();
+
+    await expect(controller.resumeFromSourceTimeout()).rejects.toThrow("capture enable failed");
+
+    expect(controller.session.state).toBe("error");
+    expect(controller.ownerError).toBe("capture enable failed");
+    expect(controller.inputReady).toBe(false);
+    expect(audio.setCaptureEnabled).toHaveBeenCalledWith(false);
+    expect(audio.setCaptureEnabled).toHaveBeenCalledWith(true);
+    expect(audio.setOutputAudible).toHaveBeenLastCalledWith(false);
+    expect(captureTrack.enabled).toBe(false);
+    expect(live.setInputMuted).toHaveBeenLastCalledWith(true);
+  });
+
+  it("manual MAX_SOURCE resume ignores Gate A restore failure remute after cancel", async () => {
+    const { controller, releaseRemute, resuming, setCaptureEnabled } =
+      await startGateARestoreFailureRemuteRace();
+    const unhandled = await collectUnhandledRejectionsDuringFakeTimers(async () => {
+      await controller.cancel();
+      releaseRemute();
+      await resuming;
+    });
+
+    expect(unhandled).toEqual([]);
+    expect(controller.session.state).toBe("idle");
+    expect(controller.ownerError).toBeUndefined();
+    expect(setCaptureEnabled).toHaveBeenCalledWith(true);
+    expect(setCaptureEnabled).toHaveBeenCalledWith(false);
+  });
+
+  it("manual MAX_SOURCE resume ignores Gate A restore failure when remute resolves before cancel", async () => {
+    const { controller, releaseRemute, resuming, setCaptureEnabled } =
+      await startGateARestoreFailureRemuteRace();
+    const unhandled = await collectUnhandledRejectionsDuringFakeTimers(async () => {
+      releaseRemute();
+      await controller.cancel();
+      await resuming;
+    });
+
+    expect(unhandled).toEqual([]);
+    expect(controller.session.state).toBe("idle");
+    expect(controller.ownerError).toBeUndefined();
+    expect(setCaptureEnabled).toHaveBeenCalledWith(true);
+    expect(setCaptureEnabled).toHaveBeenCalledWith(false);
+  });
+
+  it("ignores a pending manual MAX_SOURCE resume unmute after cancel", async () => {
+    const { controller, live, audio } = createController();
+    let releaseUnmute: (() => void) | undefined;
+    live.setInputMuted.mockImplementation(async (muted: boolean) => {
+      if (!muted) {
+        await new Promise<void>((resolve) => {
+          releaseUnmute = resolve;
+        });
+      }
+    });
+    await enterListening(controller);
+    emitVoice(audio, true);
+    await vi.advanceTimersByTimeAsync(runtime.maxSourceMs);
+    await flushMicrotasks();
+
+    const resuming = controller.resumeFromSourceTimeout();
+    await waitUntil(() => releaseUnmute !== undefined);
+    await controller.cancel();
+    releaseUnmute?.();
+    await resuming;
+
+    expect(controller.session.state).toBe("idle");
+    expect(controller.inputReady).toBe(false);
+    expect(audio.setOutputAudible).toHaveBeenLastCalledWith(false);
+  });
+
+  it("cancel invalidates pending manual MAX_SOURCE resume before close settles", async () => {
+    const live = new FakeLive();
+    let releaseUnmute: (() => void) | undefined;
+    let releaseClose: (() => void) | undefined;
+    live.setInputMuted.mockImplementation(async (muted: boolean) => {
+      if (!muted) {
+        await new Promise<void>((resolve) => {
+          releaseUnmute = resolve;
+        });
+      }
+    });
+    live.close.mockImplementation(async () => {
+      await new Promise<void>((resolve) => {
+        releaseClose = resolve;
+      });
+      return { finalized: true };
+    });
+    const { controller, audio } = createController({ live });
+    await enterListening(controller);
+    emitVoice(audio, true);
+    await vi.advanceTimersByTimeAsync(runtime.maxSourceMs);
+    await flushMicrotasks();
+
+    const resuming = controller.resumeFromSourceTimeout();
+    await waitUntil(() => releaseUnmute !== undefined);
+    const cancelling = controller.cancel();
+    await waitUntil(() => releaseClose !== undefined);
+    try {
+      releaseUnmute?.();
+      await resuming;
+
+      expect(controller.session.state).toBe("suspended");
+      expect(controller.inputReady).toBe(false);
+      expect(audio.setCaptureEnabled).toHaveBeenLastCalledWith(false);
+      expect(audio.captureTrack.enabled).toBe(false);
+      expect(audio.setOutputAudible).toHaveBeenLastCalledWith(false);
+    } finally {
+      releaseClose?.();
+      await cancelling;
+    }
+
+    expect(controller.session.state).toBe("idle");
+    expect(controller.inputReady).toBe(false);
+  });
+
+  it("cancel ignores pending Gate A restore failure remute before close settles", async () => {
+    const { controller, live, releaseRemute, resuming, setCaptureEnabled } =
+      await startGateARestoreFailureRemuteRace();
+    let releaseClose: (() => void) | undefined;
+    live.close.mockImplementation(async () => {
+      await new Promise<void>((resolve) => {
+        releaseClose = resolve;
+      });
+      return { finalized: true };
+    });
+
+    const cancelling = controller.cancel();
+    await waitUntil(() => releaseClose !== undefined);
+    try {
+      releaseRemute();
+      await expect(resuming).resolves.toBeUndefined();
+
+      expect(controller.session.state).toBe("suspended");
+      expect(controller.ownerError).toBeUndefined();
+      expect(setCaptureEnabled).toHaveBeenCalledWith(true);
+      expect(setCaptureEnabled).toHaveBeenCalledWith(false);
+    } finally {
+      releaseClose?.();
+      await cancelling;
+    }
+
+    expect(controller.session.state).toBe("idle");
+    expect(controller.ownerError).toBeUndefined();
   });
 
   it("later-turn double timeout records degraded steering and continues listening", async () => {
@@ -1184,6 +2386,7 @@ describe("SessionController turn engine", () => {
     expect(controller.session.state).toBe("listening");
     expect(controller.session.expectedSpeaker).toBe("B");
     expect(controller.steeringDegraded).toBe(true);
+    expect(controller.inputReady).toBe(true);
   });
 
   it("ignores residual output transcript after the active turn is cleared", async () => {
@@ -1318,6 +2521,8 @@ describe("SessionController turn engine", () => {
 
     expect(controller.session.state).toBe("listening");
     expect(controller.session.activeTurn).toBeUndefined();
+    expect(controller.session.expectedSpeaker).toBe("B");
+    expect(controller.inputReady).toBe(false);
     emitVoice(audio, true);
     live.emit({ type: "session.input_transcript.delta", delta: "Next" });
     expect(controller.session.activeTurn).toBeUndefined();
@@ -1332,10 +2537,113 @@ describe("SessionController turn engine", () => {
     await flushMicrotasks();
 
     expect(live.setInputMuted).toHaveBeenLastCalledWith(false);
+    expect(controller.inputReady).toBe(true);
     emitVoice(audio, true);
     live.emit({ type: "session.input_transcript.delta", delta: "Next" });
     expect(controller.session.activeTurn?.originalText).toBe("Next");
     expect(controller.session.expectedSpeaker).toBe("B");
+  });
+
+  it("fails closed when later steering append explicitly rejects", async () => {
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      const { controller, live, audio } = createController();
+      live.appendInstructions.mockImplementation(async (text: string, policy?: { kind: string }) => {
+        live.callOrder.push(`instructions:${text}`);
+        if (policy?.kind === "later_steering") {
+          throw new Error("instructions rejected");
+        }
+        return { eventId: "evt-ok" };
+      });
+      await enterListening(controller);
+      emitVoice(audio, true);
+      live.emit({ type: "session.input_transcript.delta", delta: "Hello" });
+      live.emit({ type: "session.output_transcript.delta", delta: "Hola" });
+      const turnCloseCallStart = live.callOrder.length;
+
+      const unhandled = await collectUnhandledRejectionsDuringFakeTimers(async () => {
+        emitVoice(audio, false);
+        await flushMicrotasks();
+        await vi.advanceTimersByTimeAsync(runtime.audioStartGraceMs);
+        await flushMicrotasks();
+      });
+
+      expect(unhandled).toEqual([]);
+      expect(controller.session.state).toBe("error");
+      expect(controller.ownerError).toBe("instructions rejected");
+      expect(controller.inputReady).toBe(false);
+      expect(audio.setOutputAudible).toHaveBeenLastCalledWith(false);
+      expect(live.callOrder.slice(turnCloseCallStart)).not.toContain("setInputMuted:false");
+      expect(controller.session.activeTurn).toBeUndefined();
+      const recentTurnCount = controller.session.recentTurns.length;
+
+      emitVoice(audio, true);
+      live.emit({ type: "session.input_transcript.delta", delta: "Next" });
+
+      expect(controller.session.activeTurn).toBeUndefined();
+      expect(controller.session.recentTurns).toHaveLength(recentTurnCount);
+    } finally {
+      errorSpy.mockRestore();
+    }
+  });
+
+  it("does not mark input ready while Gate B unmute is still pending after steering", async () => {
+    const { controller, live, audio } = createController();
+    let releaseUnmute: (() => void) | undefined;
+    live.setInputMuted.mockImplementation(async (muted: boolean) => {
+      live.callOrder.push(`setInputMuted:${muted}`);
+      if (!muted) {
+        await new Promise<void>((resolve) => {
+          releaseUnmute = resolve;
+        });
+      }
+    });
+    await enterListening(controller);
+    await completeTextOnlyTurnUntilLaterSteeringStarts(controller, live, audio);
+    await vi.waitFor(() => {
+      if (releaseUnmute === undefined) {
+        throw new Error("Gate B unmute did not start");
+      }
+    });
+
+    expect(controller.session.state).toBe("listening");
+    expect(controller.session.expectedSpeaker).toBe("B");
+    expect(controller.inputReady).toBe(false);
+
+    releaseUnmute?.();
+    await flushMicrotasks();
+
+    expect(controller.inputReady).toBe(true);
+  });
+
+  it("stays not ready and errors when Gate B unmute fails after turn completion", async () => {
+    const { controller, live, audio } = createController();
+    let rejectUnmute: ((error: Error) => void) | undefined;
+    live.setInputMuted.mockImplementation(async (muted: boolean) => {
+      live.callOrder.push(`setInputMuted:${muted}`);
+      if (!muted) {
+        await new Promise<void>((_resolve, reject) => {
+          rejectUnmute = reject;
+        });
+      }
+    });
+    await enterListening(controller);
+    await completeTextOnlyTurnUntilLaterSteeringStarts(controller, live, audio);
+    await vi.waitFor(() => {
+      if (rejectUnmute === undefined) {
+        throw new Error("Gate B unmute did not start");
+      }
+    });
+
+    expect(controller.session.state).toBe("listening");
+    expect(controller.inputReady).toBe(false);
+
+    rejectUnmute?.(new Error("unmute failed"));
+    await flushMicrotasks();
+
+    expect(controller.session.state).toBe("error");
+    expect(controller.ownerError).toBe("unmute failed");
+    expect(controller.inputReady).toBe(false);
   });
 
   it("does not attach residual output to the next source turn before leftover drain", async () => {
@@ -1499,6 +2807,36 @@ describe("SessionController turn engine", () => {
 
     expect(controller.session.activeTurn?.translatedText).toBe("Siguiente");
     expect(controller.session.expectedSpeaker).toBe("A");
+  });
+
+  it("preserves MAX_SOURCE resume-repeat suspension across lifecycle hide/show drain", async () => {
+    const visibility = new FakeVisibility();
+    const { controller, live, audio } = createController({
+      orientation: new FakeOrientation(),
+      visibility,
+      wakeLock: new FakeWakeLock(),
+    });
+    await enterListening(controller);
+    emitVoice(audio, true);
+    live.emit({ type: "session.input_transcript.delta", delta: "Hello" });
+    await vi.advanceTimersByTimeAsync(runtime.maxSourceMs);
+    await flushMicrotasks();
+
+    expect(controller.session.state).toBe("suspended");
+    expect(controller.recoveryPrompt).toBe("resume-repeat");
+
+    visibility.hide();
+    await flushLifecycle();
+    visibility.show();
+    await flushLifecycle();
+    await vi.advanceTimersByTimeAsync(runtime.captionIdleMs);
+    await flushLifecycle();
+
+    expect(controller.session.state).toBe("suspended");
+    expect(controller.recoveryPrompt).toBe("resume-repeat");
+    expect(controller.inputReady).toBe(false);
+    expect(audio.setOutputAudible).toHaveBeenLastCalledWith(false);
+    expect(live.setInputMuted.mock.calls.some((call) => call[0] === false)).toBe(false);
   });
 });
 
@@ -1841,6 +3179,148 @@ describe("SessionController endConversation", () => {
     expect(controller.ownerError).toBe("Incomplete finalization");
     expect(controller.session.state).toBe("idle");
   });
+
+  it("ignores session.closed while a local graceful end is already in progress", async () => {
+    const { controller, live } = createController();
+    await enterListening(controller);
+    let releaseClose: (() => void) | undefined;
+    live.close.mockImplementation(async () => {
+      live.callOrder.push("close");
+      await new Promise<void>((resolve) => {
+        releaseClose = resolve;
+      });
+      return { finalized: true };
+    });
+
+    const ending = controller.endConversation();
+    await flushMicrotasks();
+    expect(controller.session.state).toBe("ending");
+
+    live.emitSessionClosed("client_requested");
+
+    expect(controller.session.state).toBe("ending");
+    expect(controller.ownerError).toBeUndefined();
+    if (releaseClose === undefined) {
+      throw new Error("Live close was not started");
+    }
+    releaseClose();
+    await ending;
+
+    expect(controller.session.state).toBe("idle");
+    expect(controller.ownerError).toBeUndefined();
+  });
+
+  it("does not unmute after close rejects a pending later steering ack", async () => {
+    const { controller, live, audio } = createController();
+    let rejectSteering: ((error: Error) => void) | undefined;
+    live.appendInstructions.mockImplementation(async (text: string, policy?: { kind: string }) => {
+      live.callOrder.push(`instructions:${text}`);
+      if (policy?.kind === "later_steering") {
+        await new Promise<void>((_resolve, reject) => {
+          rejectSteering = reject;
+        });
+      }
+      return { eventId: "evt-steer" };
+    });
+    live.setInputMuted.mockImplementation(async (muted: boolean) => {
+      live.callOrder.push(`setInputMuted:${muted}`);
+    });
+    live.close.mockImplementation(async () => {
+      live.callOrder.push("close");
+      rejectSteering?.(new Error("Live client is closing"));
+      return { finalized: true };
+    });
+    await enterListening(controller);
+    emitVoice(audio, true);
+    live.emit({ type: "session.input_transcript.delta", delta: "Hello" });
+    live.emit({ type: "session.output_transcript.delta", delta: "Hola" });
+    emitVoice(audio, false);
+    await flushMicrotasks();
+    await vi.advanceTimersByTimeAsync(runtime.audioStartGraceMs);
+    await flushMicrotasks();
+    await vi.waitFor(() => {
+      if (rejectSteering === undefined) {
+        throw new Error("later steering append was not started");
+      }
+    });
+
+    await controller.endConversation();
+    await flushMicrotasks();
+
+    const closeIndex = live.callOrder.indexOf("close");
+    expect(closeIndex).toBeGreaterThanOrEqual(0);
+    expect(live.callOrder.slice(closeIndex + 1)).not.toContain("setInputMuted:false");
+    expect(controller.session.state).toBe("idle");
+  });
+
+  it("handles a pending unmute rejection after local end starts", async () => {
+    const { controller, live, audio } = createController();
+    let rejectUnmute: ((error: Error) => void) | undefined;
+    live.setInputMuted.mockImplementation(async (muted: boolean) => {
+      live.callOrder.push(`setInputMuted:${muted}`);
+      if (!muted) {
+        await new Promise<void>((_resolve, reject) => {
+          rejectUnmute = reject;
+        });
+      }
+    });
+    await enterListening(controller);
+    emitVoice(audio, true);
+    live.emit({ type: "session.input_transcript.delta", delta: "Hello" });
+    live.emit({ type: "session.output_transcript.delta", delta: "Hola" });
+    emitVoice(audio, false);
+    await flushMicrotasks();
+    await vi.advanceTimersByTimeAsync(runtime.audioStartGraceMs);
+    await flushMicrotasks();
+    await vi.waitFor(() => {
+      if (rejectUnmute === undefined) {
+        throw new Error("unmute was not started");
+      }
+    });
+
+    const ending = controller.endConversation();
+    rejectUnmute?.(new Error("Live client is closing"));
+    await ending;
+    await flushMicrotasks();
+
+    expect(controller.session.state).toBe("idle");
+    expect(controller.ownerError).toBeUndefined();
+  });
+
+  it("handles a pending source-resume unmute rejection after local end starts", async () => {
+    const { controller, live, audio } = createController();
+    let rejectUnmute: ((error: Error) => void) | undefined;
+    live.setInputMuted.mockImplementation(async (muted: boolean) => {
+      live.callOrder.push(`setInputMuted:${muted}`);
+      if (!muted) {
+        await new Promise<void>((_resolve, reject) => {
+          rejectUnmute = reject;
+        });
+      }
+    });
+    await enterListening(controller);
+    emitVoice(audio, true);
+    live.emit({ type: "session.input_transcript.delta", delta: "Hello" });
+    emitVoice(audio, false);
+    await flushMicrotasks();
+    expect(controller.session.activeTurn?.sourceIdleAtMs).toBeDefined();
+    expect(live.setInputMuted).toHaveBeenCalledWith(true);
+
+    emitVoice(audio, true);
+    await vi.waitFor(() => {
+      if (rejectUnmute === undefined) {
+        throw new Error("source-resume unmute was not started");
+      }
+    });
+
+    const ending = controller.endConversation();
+    rejectUnmute?.(new Error("Live client is closing"));
+    await ending;
+    await flushMicrotasks();
+
+    expect(controller.session.state).toBe("idle");
+    expect(controller.ownerError).toBeUndefined();
+  });
 });
 
 describe("SessionController max session duration", () => {
@@ -1866,6 +3346,34 @@ describe("SessionController max session duration", () => {
     expect(audio.stopCapture).toHaveBeenCalled();
     expect(controller.session.state).toBe("idle");
   });
+
+  it("ignores stale session.started callbacks after reset swaps the Live client", async () => {
+    const audio = createFakeAudio();
+    const firstLive = new FakeLive();
+    const replacementLive = new FakeLive();
+    const createLive = vi
+      .fn<() => LiveClient>()
+      .mockReturnValueOnce(firstLive as unknown as LiveClient)
+      .mockReturnValue(replacementLive as unknown as LiveClient);
+    const controller = new SessionController({
+      createLive,
+      audio: audio as unknown as AudioController,
+    });
+    const staleSessionStarted = firstLive.onSessionStarted;
+    expect(staleSessionStarted).toBeTypeOf("function");
+
+    await enterListening(controller);
+    await controller.cancel();
+    expect(controller.session.state).toBe("idle");
+    expect(vi.getTimerCount()).toBe(0);
+
+    staleSessionStarted?.({ type: "session.started", session: { id: "late" } });
+
+    expect(vi.getTimerCount()).toBe(0);
+    await vi.advanceTimersByTimeAsync(runtime.maxSessionMs);
+    expect(replacementLive.close).not.toHaveBeenCalled();
+    expect(controller.session.state).toBe("idle");
+  });
 });
 
 describe("SessionController runtime connection errors", () => {
@@ -1882,6 +3390,7 @@ describe("SessionController runtime connection errors", () => {
     live.onError?.({
       type: "error",
       error: { message: "Live data channel closed unexpectedly" },
+      transportFailure: true,
     });
 
     expect(controller.session.state).toBe("error");
@@ -1896,10 +3405,104 @@ describe("SessionController runtime connection errors", () => {
     live.onError?.({
       type: "error",
       error: { message: 'Peer connection state changed to "failed"' },
+      transportFailure: true,
     });
 
     expect(controller.session.state).toBe("error");
     expect(controller.ownerError).toBe("Unable to continue the live connection.");
+  });
+
+  it("maps remote session.closed while listening to a terminal connection error", async () => {
+    const { controller, live, audio, orientation, wakeLock } = createController();
+    await enterListening(controller);
+    audio.setOutputAudible.mockClear();
+    audio.stopCapture.mockClear();
+
+    live.emitSessionClosed("server_shutdown");
+
+    expect(controller.session.state).toBe("error");
+    expect(controller.ownerError).toBe("Unable to continue the live connection.");
+    expect(audio.setOutputAudible).toHaveBeenLastCalledWith(false);
+    expect(audio.stopCapture).toHaveBeenCalledOnce();
+    expect(audio.getCaptureStream()).toBeNull();
+    expect(orientation.stop).toHaveBeenCalled();
+    expect(wakeLock.release).toHaveBeenCalled();
+
+    live.emit({ type: "session.input_transcript.delta", delta: "ignored" });
+    expect(controller.session.activeTurn).toBeUndefined();
+  });
+
+  it("maps remote session.closed while outputting to a terminal connection error", async () => {
+    const { controller, live, audio } = createController();
+    await enterOutputtingTurn(controller, live, audio);
+    audio.setOutputAudible.mockClear();
+    audio.stopCapture.mockClear();
+
+    live.emitSessionClosed("server_shutdown");
+    await vi.advanceTimersByTimeAsync(runtime.captionIdleMs + runtime.noOutputTimeoutMs);
+    await flushMicrotasks();
+
+    expect(controller.session.state).toBe("error");
+    expect(controller.ownerError).toBe("Unable to continue the live connection.");
+    expect(audio.setOutputAudible).toHaveBeenLastCalledWith(false);
+    expect(audio.stopCapture).toHaveBeenCalledOnce();
+  });
+
+  it("maps remote session.closed during startup to a startup error", async () => {
+    const { controller, live, audio } = createController();
+    await controller.startBootstrap();
+    expect(controller.session.state).toBe("bootstrap");
+    audio.setOutputAudible.mockClear();
+    audio.stopCapture.mockClear();
+
+    live.emitSessionClosed("server_shutdown");
+
+    expect(controller.session.state).toBe("error");
+    expect(controller.ownerError).toBe("Unable to start live translation.");
+    expect(audio.setOutputAudible).toHaveBeenLastCalledWith(false);
+    expect(audio.stopCapture).toHaveBeenCalledOnce();
+    await expect(controller.beginInterpreter()).rejects.toThrow(
+      'Cannot begin interpreter from "error"',
+    );
+  });
+
+  it("ignores stale session.closed callbacks after reset swaps the Live client", async () => {
+    const audio = createFakeAudio();
+    const firstLive = new FakeLive();
+    const replacementLive = new FakeLive();
+    const createLive = vi
+      .fn<() => LiveClient>()
+      .mockReturnValueOnce(firstLive as unknown as LiveClient)
+      .mockReturnValue(replacementLive as unknown as LiveClient);
+    const controller = new SessionController({
+      createLive,
+      audio: audio as unknown as AudioController,
+    });
+    await enterListening(controller);
+    const staleSessionClosed = firstLive.onSessionClosed;
+    expect(staleSessionClosed).toBeTypeOf("function");
+
+    await controller.cancel();
+    expect(controller.session.state).toBe("idle");
+    staleSessionClosed?.({ type: "session.closed", reason: "late_server_close" });
+
+    expect(controller.session.state).toBe("idle");
+    expect(controller.ownerError).toBeUndefined();
+  });
+
+  it("keeps listening after a recoverable post-start server error", async () => {
+    const { controller, live, audio } = createController();
+    await enterListening(controller);
+    audio.setOutputAudible.mockClear();
+
+    live.onError?.({
+      type: "error",
+      error: { message: "model interrupted this turn", code: "moderation" },
+    });
+
+    expect(controller.session.state).toBe("listening");
+    expect(controller.ownerError).toBeUndefined();
+    expect(audio.setOutputAudible).not.toHaveBeenCalledWith(false);
   });
 });
 
@@ -2000,6 +3603,29 @@ describe("SessionController PWA lifecycle suspension (§11.3 / §19)", () => {
     expect(controller.session.expectedSpeaker).toBe("A");
   }
 
+  function rejectPostResumeSteering(live: FakeLive): void {
+    live.appendInstructions.mockImplementation(async (text: string, policy?: { kind: string }) => {
+      live.callOrder.push(`instructions:${text}`);
+      if (policy?.kind === "later_steering") {
+        throw new Error("resume steering rejected");
+      }
+      return { eventId: "evt-instructions" };
+    });
+  }
+
+  function expectFailedLifecycleResume(
+    controller: SessionController,
+    live: FakeLive,
+    audio: ReturnType<typeof createFakeAudio> | AudioController,
+  ): void {
+    expect(controller.session.state).toBe("error");
+    expect(controller.ownerError).toBe("resume steering rejected");
+    expect(controller.inputReady).toBe(false);
+    expect(audio.setCaptureEnabled).toHaveBeenLastCalledWith(false);
+    expect(audio.setOutputAudible).toHaveBeenLastCalledWith(false);
+    expect(live.setInputMuted).not.toHaveBeenLastCalledWith(false);
+  }
+
   it("landscape while a source turn is active discards, closes Gate C, mutes Gate B, and suspends", async () => {
     const orientation = new FakeOrientation();
     const visibility = new FakeVisibility();
@@ -2018,6 +3644,8 @@ describe("SessionController PWA lifecycle suspension (§11.3 / §19)", () => {
     expect(controller.session.activeTurn).toBeUndefined();
     expect(controller.session.recentTurns[0]?.status).toBe("discarded");
     expect(controller.session.expectedSpeaker).toBe("A");
+    expect(audio.setCaptureEnabled).toHaveBeenLastCalledWith(false);
+    expect(audio.captureTrack.enabled).toBe(false);
     expect(audio.setOutputAudible).toHaveBeenLastCalledWith(false);
     expect(live.setInputMuted).toHaveBeenCalledWith(true);
     expect(controller.recoveryPrompt).toBeUndefined();
@@ -2038,9 +3666,16 @@ describe("SessionController PWA lifecycle suspension (§11.3 / §19)", () => {
 
     expect(controller.session.state).toBe("suspended");
     expect(controller.session.recentTurns[0]?.status).toBe("discarded");
+    expect(audio.setCaptureEnabled).toHaveBeenLastCalledWith(false);
+    expect(audio.captureTrack.enabled).toBe(false);
     expect(audio.setOutputAudible).toHaveBeenLastCalledWith(false);
     expect(live.setInputMuted).toHaveBeenCalledWith(true);
     expect(controller.session.expectedSpeaker).toBe("A");
+
+    emitVoice(audio, true);
+    live.emit({ type: "session.input_transcript.delta", delta: "ignored" });
+    expect(controller.session.state).toBe("suspended");
+    expect(controller.session.activeTurn).toBeUndefined();
   });
 
   it("audio interruption while a source turn is active suspends and discards the unfinished turn", async () => {
@@ -2059,8 +3694,174 @@ describe("SessionController PWA lifecycle suspension (§11.3 / §19)", () => {
 
     expect(controller.session.state).toBe("suspended");
     expect(controller.session.recentTurns[0]?.status).toBe("discarded");
+    expect(audio.setCaptureEnabled).toHaveBeenLastCalledWith(false);
+    expect(audio.captureTrack.enabled).toBe(false);
     expect(audio.setOutputAudible).toHaveBeenLastCalledWith(false);
     expect(live.setInputMuted).toHaveBeenCalledWith(true);
+  });
+
+  it("enters suspended immediately while Gate B mute is still pending", async () => {
+    const visibility = new FakeVisibility();
+    const live = new FakeLive();
+    let releaseMute: (() => void) | undefined;
+    live.setInputMuted.mockImplementation(async (muted: boolean) => {
+      live.callOrder.push(`setInputMuted:${muted}`);
+      if (muted) {
+        await new Promise<void>((resolve) => {
+          releaseMute = resolve;
+        });
+      }
+    });
+    const { controller, audio } = createController({
+      live,
+      orientation: new FakeOrientation(),
+      visibility,
+      wakeLock: new FakeWakeLock(),
+    });
+    await startSourceTurn(controller, live, audio);
+
+    visibility.hide();
+    await waitUntil(() => releaseMute !== undefined);
+
+    expect(controller.session.state).toBe("suspended");
+    expect(audio.setCaptureEnabled).toHaveBeenLastCalledWith(false);
+    expect(audio.captureTrack.enabled).toBe(false);
+    expect(audio.setOutputAudible).toHaveBeenLastCalledWith(false);
+
+    releaseMute?.();
+    await flushLifecycle();
+  });
+
+  it("stays suspended when Gate B mute times out during suspend", async () => {
+    const visibility = new FakeVisibility();
+    const live = new FakeLive();
+    live.setInputMuted.mockImplementation(async (muted: boolean) => {
+      live.callOrder.push(`setInputMuted:${muted}`);
+      if (muted) {
+        throw new AckTimeoutError("evt-mute");
+      }
+    });
+    const { controller, audio } = createController({
+      live,
+      orientation: new FakeOrientation(),
+      visibility,
+      wakeLock: new FakeWakeLock(),
+    });
+    await startSourceTurn(controller, live, audio);
+
+    visibility.hide();
+    await flushLifecycle();
+
+    expect(controller.session.state).toBe("suspended");
+    expect(audio.setCaptureEnabled).toHaveBeenLastCalledWith(false);
+    expect(audio.captureTrack.enabled).toBe(false);
+    expect(audio.setOutputAudible).toHaveBeenLastCalledWith(false);
+    expect(live.setInputMuted).not.toHaveBeenLastCalledWith(false);
+  });
+
+  it("stays suspended when Gate B mute rejects during suspend", async () => {
+    const visibility = new FakeVisibility();
+    const live = new FakeLive();
+    live.setInputMuted.mockImplementation(async (muted: boolean) => {
+      live.callOrder.push(`setInputMuted:${muted}`);
+      if (muted) {
+        throw new Error("network failed");
+      }
+    });
+    const { controller, audio } = createController({
+      live,
+      orientation: new FakeOrientation(),
+      visibility,
+      wakeLock: new FakeWakeLock(),
+    });
+    await startSourceTurn(controller, live, audio);
+
+    visibility.hide();
+    await flushLifecycle();
+
+    expect(controller.session.state).toBe("suspended");
+    expect(audio.setCaptureEnabled).toHaveBeenLastCalledWith(false);
+    expect(audio.captureTrack.enabled).toBe(false);
+    expect(audio.setOutputAudible).toHaveBeenLastCalledWith(false);
+    expect(live.setInputMuted).not.toHaveBeenLastCalledWith(false);
+  });
+
+  it("waits for Gate B unmute before resuming after an uncertain suspend mute failure", async () => {
+    const visibility = new FakeVisibility();
+    const live = new FakeLive();
+    let releaseUnmute: (() => void) | undefined;
+    live.setInputMuted.mockImplementation(async (muted: boolean) => {
+      live.callOrder.push(`setInputMuted:${muted}`);
+      if (muted) {
+        throw new Error("network failed");
+      }
+      await new Promise<void>((resolve) => {
+        releaseUnmute = resolve;
+      });
+    });
+    const { controller, audio } = createController({
+      live,
+      orientation: new FakeOrientation(),
+      visibility,
+      wakeLock: new FakeWakeLock(),
+    });
+    await startSourceTurn(controller, live, audio);
+
+    visibility.hide();
+    await flushLifecycle();
+    visibility.show();
+    await waitUntil(() => releaseUnmute !== undefined);
+
+    expect(live.setInputMuted).toHaveBeenLastCalledWith(false);
+    expect(controller.session.state).toBe("suspended");
+    expect(controller.inputReady).toBe(false);
+    expect(audio.setCaptureEnabled).toHaveBeenLastCalledWith(false);
+    expect(audio.captureTrack.enabled).toBe(false);
+    expect(audio.setOutputAudible).toHaveBeenLastCalledWith(false);
+
+    releaseUnmute?.();
+    await flushLifecycle();
+
+    expect(controller.session.state).toBe("listening");
+    expect(controller.inputReady).toBe(true);
+    expect(audio.setCaptureEnabled).toHaveBeenLastCalledWith(true);
+    expect(audio.captureTrack.enabled).toBe(true);
+    expect(audio.setOutputAudible).toHaveBeenLastCalledWith(true);
+  });
+
+  it("fails resume without restoring capture when Gate B unmute rejects after an uncertain mute", async () => {
+    const visibility = new FakeVisibility();
+    const live = new FakeLive();
+    live.setInputMuted.mockImplementation(async (muted: boolean) => {
+      live.callOrder.push(`setInputMuted:${muted}`);
+      if (muted) {
+        throw new Error("network failed");
+      }
+      throw new Error("unmute failed");
+    });
+    const { controller, audio } = createController({
+      live,
+      orientation: new FakeOrientation(),
+      visibility,
+      wakeLock: new FakeWakeLock(),
+    });
+    await startSourceTurn(controller, live, audio);
+
+    visibility.hide();
+    await flushLifecycle();
+    const unhandled = await collectUnhandledRejectionsDuringFakeTimers(async () => {
+      visibility.show();
+      await flushLifecycle();
+    });
+
+    expect(unhandled).toEqual([]);
+    expect(live.setInputMuted).toHaveBeenLastCalledWith(false);
+    expect(controller.session.state).toBe("error");
+    expect(controller.ownerError).toBe("unmute failed");
+    expect(controller.inputReady).toBe(false);
+    expect(audio.setCaptureEnabled).toHaveBeenLastCalledWith(false);
+    expect(audio.captureTrack.enabled).toBe(false);
+    expect(audio.setOutputAudible).toHaveBeenLastCalledWith(false);
   });
 
   it("successful lifecycle resume appends expected-speaker steering, returns to listening, and asks the same source to repeat", async () => {
@@ -2089,8 +3890,42 @@ describe("SessionController PWA lifecycle suspension (§11.3 / §19)", () => {
       buildSteering({ expectedSource: "A", recipient: "B" }),
       { kind: "later_steering", sessionState: "suspended" },
     );
+    expect(audio.setCaptureEnabled).toHaveBeenLastCalledWith(true);
+    expect(audio.captureTrack.enabled).toBe(true);
     expect(audio.setOutputAudible).toHaveBeenLastCalledWith(true);
     expect(live.setInputMuted).toHaveBeenLastCalledWith(false);
+    const unmuteOrder = live.setInputMuted.mock.invocationCallOrder.at(-1);
+    const gateAOrder = audio.setCaptureEnabled.mock.invocationCallOrder.at(-1);
+    if (unmuteOrder === undefined || gateAOrder === undefined) {
+      throw new Error("Gate B or Gate A restore was not recorded");
+    }
+    expect(unmuteOrder).toBeLessThan(gateAOrder);
+  });
+
+  it("handles rejected visibility resume steering without leaking an unhandled rejection", async () => {
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      const visibility = new FakeVisibility();
+      const { controller, live, audio } = createController({
+        orientation: new FakeOrientation(),
+        visibility,
+        wakeLock: new FakeWakeLock(),
+      });
+      rejectPostResumeSteering(live);
+      await startSourceTurn(controller, live, audio);
+      visibility.hide();
+      await flushLifecycle();
+
+      const unhandled = await collectUnhandledRejectionsDuringFakeTimers(async () => {
+        visibility.show();
+        await flushLifecycle();
+      });
+
+      expect(unhandled).toEqual([]);
+      expectFailedLifecycleResume(controller, live, audio);
+    } finally {
+      errorSpy.mockRestore();
+    }
   });
 
   it("portrait restore after landscape resume asks the same source to repeat", async () => {
@@ -2115,6 +3950,32 @@ describe("SessionController PWA lifecycle suspension (§11.3 / §19)", () => {
       buildSteering({ expectedSource: "A", recipient: "B" }),
       { kind: "later_steering", sessionState: "suspended" },
     );
+  });
+
+  it("handles rejected orientation resume steering without leaking an unhandled rejection", async () => {
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      const orientation = new FakeOrientation();
+      const { controller, live, audio } = createController({
+        orientation,
+        visibility: new FakeVisibility(),
+        wakeLock: new FakeWakeLock(),
+      });
+      rejectPostResumeSteering(live);
+      await startSourceTurn(controller, live, audio);
+      orientation.emit("landscape");
+      await flushLifecycle();
+
+      const unhandled = await collectUnhandledRejectionsDuringFakeTimers(async () => {
+        orientation.emit("portrait");
+        await flushLifecycle();
+      });
+
+      expect(unhandled).toEqual([]);
+      expectFailedLifecycleResume(controller, live, audio);
+    } finally {
+      errorSpy.mockRestore();
+    }
   });
 
   it("does not auto-resume MAX_SOURCE_MS suspension on visibility restore", async () => {
@@ -2326,6 +4187,38 @@ describe("SessionController PWA lifecycle suspension (§11.3 / §19)", () => {
 
     expect(controller.session.state).toBe("error");
     expect(controller.ownerError).toMatch(/microphone/i);
+    expect(controller.inputReady).toBe(false);
+    expect(audio.getCaptureStream()).toBeNull();
+    expect(live.setInputMuted).not.toHaveBeenCalledWith(true);
+    const originalText = controller.session.activeTurn?.originalText;
+    live.emit({ type: "session.input_transcript.delta", delta: "ignored" });
+    expect(controller.session.activeTurn?.originalText).toBe(originalText);
+  });
+
+  it("keeps a suspended session terminal when the mic track ends before restore", async () => {
+    const visibility = new FakeVisibility();
+    const { audio, track } = createDispatchableAudio();
+    const { controller, live } = createController({
+      audio,
+      orientation: new FakeOrientation(),
+      visibility,
+      wakeLock: new FakeWakeLock(),
+    });
+    await startSourceTurn(controller, live, audio);
+    visibility.hide();
+    await flushMicrotasks();
+    expect(controller.session.state).toBe("suspended");
+
+    track.end();
+    await flushLifecycle();
+    visibility.show();
+    await flushLifecycle();
+
+    expect(controller.session.state).toBe("error");
+    expect(controller.ownerError).toMatch(/microphone/i);
+    expect(controller.inputReady).toBe(false);
+    expect(audio.getCaptureStream()).toBeNull();
+    expect(live.setInputMuted).not.toHaveBeenLastCalledWith(false);
   });
 
   it("resumes after AudioContext leaves interrupted when media is still live", async () => {
@@ -2349,6 +4242,35 @@ describe("SessionController PWA lifecycle suspension (§11.3 / §19)", () => {
 
     expect(audio.primeOutput.mock.calls.length).toBeGreaterThan(primeCount);
     expect(controller.session.state).toBe("listening");
+  });
+
+  it("handles rejected audio-restored resume steering without leaking an unhandled rejection", async () => {
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      const { controller, live, audio } = createController({
+        orientation: new FakeOrientation(),
+        visibility: new FakeVisibility(),
+        wakeLock: new FakeWakeLock(),
+      });
+      rejectPostResumeSteering(live);
+      await startSourceTurn(controller, live, audio);
+      if (audio.onAudioInterruption === null || audio.onAudioRestored === null) {
+        throw new Error("Audio interruption/restore handlers were not installed");
+      }
+
+      audio.onAudioInterruption();
+      await flushLifecycle();
+
+      const unhandled = await collectUnhandledRejectionsDuringFakeTimers(async () => {
+        audio.onAudioRestored?.();
+        await flushLifecycle();
+      });
+
+      expect(unhandled).toEqual([]);
+      expectFailedLifecycleResume(controller, live, audio);
+    } finally {
+      errorSpy.mockRestore();
+    }
   });
 
   it("keeps Gate C closed and does not steer until leftover playback and captions are idle", async () => {
@@ -2451,6 +4373,10 @@ describe("SessionController PWA lifecycle suspension (§11.3 / §19)", () => {
     visibility.show();
     expect(controller.recoveryPrompt).toBeUndefined();
     expect(live.setInputMuted).not.toHaveBeenLastCalledWith(false);
+    expect(controller.session.state).toBe("suspended");
+    expect(audio.setCaptureEnabled).toHaveBeenLastCalledWith(false);
+    expect(audio.captureTrack.enabled).toBe(false);
+
     const finishMute = releaseMute;
     if (finishMute === undefined) {
       throw new Error("Gate B mute did not start");
@@ -2460,6 +4386,8 @@ describe("SessionController PWA lifecycle suspension (§11.3 / §19)", () => {
 
     expect(controller.session.state).toBe("listening");
     expect(controller.recoveryPrompt).toBe("repeat");
+    expect(audio.setCaptureEnabled).toHaveBeenLastCalledWith(true);
+    expect(audio.captureTrack.enabled).toBe(true);
     expect(audio.setOutputAudible).toHaveBeenLastCalledWith(true);
     expect(live.setInputMuted).toHaveBeenLastCalledWith(false);
   });

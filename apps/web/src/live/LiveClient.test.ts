@@ -30,8 +30,12 @@ class FakeDataChannel extends EventTarget {
   }
 
   emitMessage(payload: unknown): void {
+    this.emitRawMessage(JSON.stringify(payload));
+  }
+
+  emitRawMessage(data: string): void {
     this.dispatchEvent(
-      new MessageEvent("message", { data: JSON.stringify(payload) }),
+      new MessageEvent("message", { data }),
     );
   }
 
@@ -133,6 +137,12 @@ function makeFakeBackend(
     },
   } as unknown as BackendClient;
   return { backend, calls };
+}
+
+async function flushMicrotasks(): Promise<void> {
+  await Promise.resolve();
+  await Promise.resolve();
+  await Promise.resolve();
 }
 
 describe("LiveClient.connect", () => {
@@ -464,6 +474,45 @@ describe("LiveClient.connect", () => {
     await closePromise;
   });
 
+  it("rejects connect() if close() is called while backend session creation is pending", async () => {
+    let finishBackend: (() => void) | undefined;
+    const backend: BackendClient = {
+      createLiveSession: async () => {
+        await new Promise<void>((resolve) => {
+          finishBackend = resolve;
+        });
+        return {
+          session: { id: "sess_123" },
+          transport: { type: "webrtc", sdp: "v=0 fake-answer-sdp" },
+        };
+      },
+    } as unknown as BackendClient;
+    const client = makeClient(backend);
+    const connectPromise = client.connect(makeFakeStream());
+    await vi.waitFor(() => {
+      if (finishBackend === undefined) {
+        throw new Error("backend session creation did not start");
+      }
+    });
+
+    const closePromise = client.close();
+    await expect(connectPromise).rejects.toThrow(
+      "Live session close started before session.started",
+    );
+    finishBackend?.();
+    await flushMicrotasks();
+    expect(peer.calls).not.toContain("setRemoteDescription");
+
+    peer.dataChannel?.emitMessage({
+      type: "session.closed",
+      reason: "client_requested",
+    });
+    await expect(closePromise).resolves.toEqual({
+      finalized: true,
+      reason: "client_requested",
+    });
+  });
+
   it("aborts signaling and never POSTs the SDP if the data channel closes during ICE gathering", async () => {
     vi.useFakeTimers();
     peer.setLocalDescription = async (
@@ -577,6 +626,123 @@ describe("LiveClient event dispatch", () => {
     });
   });
 
+  it("treats a post-start server error with null code as recoverable", async () => {
+    const { client, peer, channel } = await connectedClient();
+    const onError = vi.fn();
+    client.onError = onError;
+
+    channel.emitMessage({
+      type: "error",
+      error: { message: "model interrupted", code: null },
+    });
+
+    expect(onError).toHaveBeenCalledExactlyOnceWith({
+      type: "error",
+      error: { message: "model interrupted", code: null },
+    });
+    expect(channel.closeCalls).toBe(0);
+    expect(peer.closeCalls).toBe(0);
+  });
+
+  it("invokes onUsage for session.usage.updated events", async () => {
+    const { client, channel } = await connectedClient();
+    const onUsage = vi.fn();
+    client.onUsage = onUsage;
+
+    channel.emitMessage({
+      type: "session.usage.updated",
+      usage: { seconds: 5 },
+      context_window: { usage_ratio: 0.25 },
+    });
+
+    expect(onUsage).toHaveBeenCalledExactlyOnceWith({
+      seconds: 5,
+      context_window: { usage_ratio: 0.25 },
+    });
+  });
+
+  it("delivers cumulative usage snapshots without adding them", async () => {
+    const { client, channel } = await connectedClient();
+    const onUsage = vi.fn();
+    client.onUsage = onUsage;
+
+    channel.emitMessage({ type: "session.usage.updated", usage: { seconds: 5 } });
+    channel.emitMessage({ type: "session.usage.updated", usage: { seconds: 8 } });
+
+    expect(onUsage).toHaveBeenNthCalledWith(1, { seconds: 5 });
+    expect(onUsage).toHaveBeenNthCalledWith(2, { seconds: 8 });
+  });
+
+  it("ignores unknown type-bearing events and still dispatches known events", async () => {
+    const { client, channel } = await connectedClient();
+    const onError = vi.fn();
+    const onTranscriptDelta = vi.fn();
+    client.onError = onError;
+    client.onTranscriptDelta = onTranscriptDelta;
+
+    expect(() =>
+      channel.emitMessage({
+        type: "session.future.event",
+        payload: { ok: true },
+      }),
+    ).not.toThrow();
+    channel.emitMessage({
+      type: "session.output_transcript.delta",
+      delta: "still alive",
+    });
+
+    expect(onError).not.toHaveBeenCalled();
+    expect(onTranscriptDelta).toHaveBeenCalledExactlyOnceWith({
+      type: "session.output_transcript.delta",
+      delta: "still alive",
+    });
+  });
+
+  it("reports malformed JSON as a controlled transport error", async () => {
+    const { client, channel } = await connectedClient();
+    const onError = vi.fn();
+    client.onError = onError;
+
+    expect(() => channel.emitRawMessage("{")).not.toThrow();
+
+    expect(onError).toHaveBeenCalledExactlyOnceWith({
+      type: "error",
+      error: { message: "Received malformed Live event JSON" },
+      transportFailure: true,
+    });
+    expect(channel.closeCalls).toBe(1);
+  });
+
+  it("reports invalid envelopes as controlled transport errors", async () => {
+    const { client, channel } = await connectedClient();
+    const onError = vi.fn();
+    client.onError = onError;
+
+    expect(() => channel.emitMessage({})).not.toThrow();
+
+    expect(onError).toHaveBeenCalledExactlyOnceWith({
+      type: "error",
+      error: { message: "Received a Live event without a valid type" },
+      transportFailure: true,
+    });
+  });
+
+  it("reports malformed known events as controlled transport errors", async () => {
+    const { client, channel } = await connectedClient();
+    const onError = vi.fn();
+    client.onError = onError;
+
+    expect(() =>
+      channel.emitMessage({ type: "session.output_transcript.delta" }),
+    ).not.toThrow();
+
+    expect(onError).toHaveBeenCalledExactlyOnceWith({
+      type: "error",
+      error: { message: "Received malformed session.output_transcript.delta event" },
+      transportFailure: true,
+    });
+  });
+
   it("invokes onSessionClosed and onUsage when session.closed arrives", async () => {
     const { client, channel } = await connectedClient();
     const onSessionClosed = vi.fn();
@@ -660,6 +826,7 @@ describe("LiveClient transport failure handling", () => {
     expect(onError).toHaveBeenCalledWith({
       type: "error",
       error: { message: 'Peer connection state changed to "failed"' },
+      transportFailure: true,
     });
 
     // A terminal connection-state failure before session.started also
@@ -681,6 +848,7 @@ describe("LiveClient transport failure handling", () => {
     expect(onError).toHaveBeenCalledWith({
       type: "error",
       error: { message: "Live data channel closed unexpectedly" },
+      transportFailure: true,
     });
   });
 
@@ -694,6 +862,7 @@ describe("LiveClient transport failure handling", () => {
     expect(onError).toHaveBeenCalledWith({
       type: "error",
       error: { message: 'Peer connection state changed to "failed"' },
+      transportFailure: true,
     });
   });
 
@@ -707,6 +876,7 @@ describe("LiveClient transport failure handling", () => {
     expect(onError).toHaveBeenCalledWith({
       type: "error",
       error: { message: 'Peer connection state changed to "closed"' },
+      transportFailure: true,
     });
   });
 
@@ -940,6 +1110,63 @@ describe("LiveClient.close", () => {
     if (peer.dataChannel === null) throw new Error("data channel missing");
     return { client, peer, channel: peer.dataChannel };
   }
+
+  it("is idempotent after peer creation fails before any transport exists", async () => {
+    const { backend } = makeFakeBackend();
+    const client = new LiveClient({
+      backend,
+      peerFactory: () => {
+        throw new Error("WebRTC is unavailable");
+      },
+      onRemoteStream: vi.fn(),
+    });
+
+    await expect(client.connect(makeFakeStream())).rejects.toThrow(
+      "WebRTC is unavailable",
+    );
+
+    const expected = {
+      finalized: false,
+      reason: "Live session is no longer connected",
+    };
+    await expect(client.close()).resolves.toEqual(expected);
+    await expect(client.close()).resolves.toEqual(expected);
+  });
+
+  it("is idempotent after backend session creation fails and tears down transport", async () => {
+    const peer = new FakePeerConnection();
+    const backend: BackendClient = {
+      createLiveSession: async () => {
+        throw new Error("Live session creation failed");
+      },
+    } as unknown as BackendClient;
+    const client = new LiveClient({
+      backend,
+      peerFactory: () => peer as unknown as RTCPeerConnection,
+      onRemoteStream: vi.fn(),
+    });
+
+    await expect(client.connect(makeFakeStream())).rejects.toThrow(
+      "Live session creation failed",
+    );
+    const channel = peer.dataChannel;
+    if (channel === null) {
+      throw new Error("data channel missing");
+    }
+    channel.send = () => {
+      throw new Error("channel is closed");
+    };
+
+    const expected = {
+      finalized: false,
+      reason: "Live session is no longer connected",
+    };
+    await expect(client.close()).resolves.toEqual(expected);
+    await expect(client.close()).resolves.toEqual(expected);
+    expect(channel.sendCalls).not.toContain(
+      JSON.stringify({ type: "session.close" }),
+    );
+  });
 
   it("sends session.close, waits for session.closed, then tears down the transport", async () => {
     const { client, peer, channel } = await connectedClient();
@@ -1322,17 +1549,107 @@ describe("LiveClient trusted control commands", () => {
     await expect(appendPending).resolves.toEqual({ eventId: "evt-1" });
   });
 
-  it("fails the matching waiter when a correlated error arrives", async () => {
+  it("fails an instructions append immediately when a nested correlated error arrives", async () => {
     const { client, channel } = await connectedClient();
     const pending = client.appendInstructions("BEGIN_INTERPRETER_MODE.", {
       kind: "startup_interpreter",
     });
+    const observed = pending.then(
+      () => "resolved",
+      (error: unknown) => (error instanceof Error ? error.message : String(error)),
+    );
+
     channel.emitMessage({
       type: "error",
-      client_event_id: "evt-1",
-      error: { message: "append rejected" },
+      error: { message: "append rejected", client_event_id: "evt-1" },
     });
-    await expect(pending).rejects.toThrow("append rejected");
+    await flushMicrotasks();
+
+    await expect(Promise.race([observed, Promise.resolve("pending")])).resolves.toBe(
+      "append rejected",
+    );
+    expect(channel.sendCalls).toHaveLength(1);
+  });
+
+  it("fails an append immediately when a correlated server size rejection arrives", async () => {
+    const { client, channel } = await connectedClient();
+    vi.useFakeTimers();
+    const pending = client.appendThinking("Authoritative conversation context: hello.", {
+      kind: "startup_interpreter",
+    });
+
+    channel.emitMessage({
+      type: "error",
+      error: {
+        message: "append content exceeds maximum token limit",
+        client_event_id: "evt-1",
+      },
+    });
+    await flushMicrotasks();
+
+    await expect(pending).rejects.toThrow("append content exceeds maximum token limit");
+    expect(channel.sendCalls).toHaveLength(1);
+  });
+
+  it("fails a command immediately when a nested correlated error has null code", async () => {
+    const { client, channel } = await connectedClient();
+    const pending = client.appendInstructions("BEGIN_INTERPRETER_MODE.", {
+      kind: "startup_interpreter",
+    });
+    const observed = pending.then(
+      () => "resolved",
+      (error: unknown) => (error instanceof Error ? error.message : String(error)),
+    );
+
+    channel.emitMessage({
+      type: "error",
+      error: {
+        message: "append rejected",
+        code: null,
+        client_event_id: "evt-1",
+      },
+    });
+    await flushMicrotasks();
+
+    await expect(Promise.race([observed, Promise.resolve("pending")])).resolves.toBe(
+      "append rejected",
+    );
+    expect(channel.closeCalls).toBe(0);
+  });
+
+  it("fails mute and unmute immediately when nested correlated errors arrive", async () => {
+    const { client, channel } = await connectedClient();
+
+    const muted = client.setInputMuted(true);
+    const mutedObserved = muted.then(
+      () => "resolved",
+      (error: unknown) => (error instanceof Error ? error.message : String(error)),
+    );
+    channel.emitMessage({
+      type: "error",
+      error: { message: "mute rejected", client_event_id: "evt-1" },
+    });
+    await flushMicrotasks();
+
+    await expect(Promise.race([mutedObserved, Promise.resolve("pending")])).resolves.toBe(
+      "mute rejected",
+    );
+
+    const unmuted = client.setInputMuted(false);
+    const unmutedObserved = unmuted.then(
+      () => "resolved",
+      (error: unknown) => (error instanceof Error ? error.message : String(error)),
+    );
+    channel.emitMessage({
+      type: "error",
+      error: { message: "unmute rejected", client_event_id: "evt-2" },
+    });
+    await flushMicrotasks();
+
+    await expect(Promise.race([unmutedObserved, Promise.resolve("pending")])).resolves.toBe(
+      "unmute rejected",
+    );
+    expect(channel.sendCalls).toHaveLength(2);
   });
 
   it("does not leak an ack waiter if send() throws", async () => {
