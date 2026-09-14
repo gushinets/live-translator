@@ -28,7 +28,7 @@ describe("SessionLeaseRegistry", () => {
     expect(registry.acquire(0)).not.toBeNull();
   });
 
-  it("expires leases after fifteen minutes", () => {
+  it("T2: starts an unbound lease TTL at acquisition time", () => {
     const registry = new SessionLeaseRegistry(1, 15 * 60 * 1000);
 
     expect(registry.acquire(0)).not.toBeNull();
@@ -37,13 +37,26 @@ describe("SessionLeaseRegistry", () => {
     expect(registry.activeLeases).toBe(1);
   });
 
+  it("T1: starts a bound session TTL at bind time", () => {
+    const ttlMs = 15 * 60 * 1000;
+    const registry = new SessionLeaseRegistry(1, ttlMs);
+    const lease = registry.acquire(0);
+
+    expect(lease).not.toBeNull();
+    if (lease === null) return;
+    registry.bindSession(lease.leaseId, "session-1", 2 * 60 * 1000);
+
+    expect(registry.acquire(17 * 60 * 1000 - 1)).toBeNull();
+    expect(registry.acquire(17 * 60 * 1000)).not.toBeNull();
+  });
+
   it("expires bound sessions after fifteen minutes", () => {
     const registry = new SessionLeaseRegistry(1, 15 * 60 * 1000);
     const lease = registry.acquire(0);
 
     expect(lease).not.toBeNull();
     if (lease === null) return;
-    registry.bindSession(lease.leaseId, "session-1");
+    registry.bindSession(lease.leaseId, "session-1", 0);
 
     expect(registry.acquire(15 * 60 * 1000 - 1)).toBeNull();
     expect(registry.acquire(15 * 60 * 1000)).not.toBeNull();
@@ -67,7 +80,7 @@ describe("SessionLeaseRegistry", () => {
     expect(lease).not.toBeNull();
     if (lease === null) return;
 
-    registry.bindSession(lease.leaseId, "session-1");
+    registry.bindSession(lease.leaseId, "session-1", 0);
     expect(registry.releaseSession("session-1", 0)).toBe(true);
     expect(registry.releaseSession("session-1", 0)).toBe(false);
     expect(registry.activeLeases).toBe(0);

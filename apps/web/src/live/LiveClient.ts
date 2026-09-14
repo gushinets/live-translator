@@ -1,4 +1,7 @@
-import type { BackendClient } from "../api/BackendClient";
+import type {
+  BackendClient,
+  CreateLiveSessionResponse,
+} from "../api/BackendClient";
 import { runtime } from "../config/runtime";
 import type { SessionState } from "../session/SessionState";
 import { AckRegistry, AckTimeoutError } from "./AckRegistry";
@@ -227,6 +230,7 @@ export class LiveClient {
     }
     this.connectCalled = true;
 
+    let createPromise: Promise<CreateLiveSessionResponse> | null = null;
     try {
       const peer = this.deps.peerFactory();
       this.peer = peer;
@@ -284,10 +288,8 @@ export class LiveClient {
         throw new Error("Missing local SDP after ICE gathering completed");
       }
 
-      const session = await raceAgainstAbort(
-        this.deps.backend.createLiveSession(localSdp),
-        abortIfFailed,
-      );
+      createPromise = this.deps.backend.createLiveSession(localSdp);
+      const session = await raceAgainstAbort(createPromise, abortIfFailed);
       this.sessionId = session.session.id;
       await raceAgainstAbort(
         peer.setRemoteDescription({
@@ -300,6 +302,9 @@ export class LiveClient {
       const startedEvent = await sessionStartedPromise;
       return { sessionId: startedEvent.session.id };
     } catch (error) {
+      if (createPromise !== null && this.sessionId === null) {
+        this.watchAbandonedSessionCreation(createPromise);
+      }
       // Suppress the close/connectionstatechange handlers below while
       // tearing down after a failed connect, for the same reason a local
       // close() or a remote session.closed suppress them (§23).
@@ -415,6 +420,20 @@ export class LiveClient {
     void this.deps.backend.releaseLiveSession(sessionId).catch(() => {
       console.error("Live session lease release failed");
     });
+  }
+
+  private watchAbandonedSessionCreation(
+    createPromise: Promise<CreateLiveSessionResponse>,
+  ): void {
+    void createPromise
+      .then((session) => {
+        if (this.sessionId !== null || this.leaseReleased) return;
+        this.sessionId = session.session.id;
+        this.releaseSessionLease();
+      })
+      .catch(() => {
+        // The backend releases its lease when session creation fails.
+      });
   }
 
   /**

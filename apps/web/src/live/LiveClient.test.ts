@@ -149,6 +149,16 @@ async function flushMicrotasks(): Promise<void> {
   await Promise.resolve();
 }
 
+function createDeferred<T>() {
+  let resolve!: (value: T | PromiseLike<T>) => void;
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<T>((res, rej) => {
+    resolve = res;
+    reject = rej;
+  });
+  return { promise, resolve, reject };
+}
+
 describe("LiveClient.connect", () => {
   let peer: FakePeerConnection;
   let onRemoteStream: ReturnType<typeof vi.fn>;
@@ -478,8 +488,9 @@ describe("LiveClient.connect", () => {
     await closePromise;
   });
 
-  it("rejects connect() if close() is called while backend session creation is pending", async () => {
+  it("R1: releases a session created after close() aborts connect()", async () => {
     let finishBackend: (() => void) | undefined;
+    const releaseLiveSession = vi.fn().mockResolvedValue(undefined);
     const backend: BackendClient = {
       createLiveSession: async () => {
         await new Promise<void>((resolve) => {
@@ -490,6 +501,7 @@ describe("LiveClient.connect", () => {
           transport: { type: "webrtc", sdp: "v=0 fake-answer-sdp" },
         };
       },
+      releaseLiveSession,
     } as unknown as BackendClient;
     const client = makeClient(backend);
     const connectPromise = client.connect(makeFakeStream());
@@ -515,6 +527,142 @@ describe("LiveClient.connect", () => {
       finalized: true,
       reason: "client_requested",
     });
+    expect(releaseLiveSession).toHaveBeenCalledOnce();
+    expect(releaseLiveSession).toHaveBeenCalledWith("sess_123");
+  });
+
+  it("R2: releases a late-created session after an unexpected data-channel close", async () => {
+    const creation = createDeferred<{
+      session: { id: string };
+      transport: { type: "webrtc"; sdp: string };
+    }>();
+    const releaseLiveSession = vi.fn().mockResolvedValue(undefined);
+    const backend: BackendClient = {
+      createLiveSession: vi.fn(() => creation.promise),
+      releaseLiveSession,
+    } as unknown as BackendClient;
+    const client = makeClient(backend);
+    const connectPromise = client.connect(makeFakeStream());
+
+    await vi.waitFor(() => {
+      expect(backend.createLiveSession).toHaveBeenCalledOnce();
+    });
+    peer.dataChannel?.emitClose();
+    await expect(connectPromise).rejects.toThrow(
+      "Data channel closed before session.started",
+    );
+
+    creation.resolve({
+      session: { id: "orphan-session" },
+      transport: { type: "webrtc", sdp: "v=0 fake-answer-sdp" },
+    });
+    await flushMicrotasks();
+
+    expect(releaseLiveSession).toHaveBeenCalledOnce();
+    expect(releaseLiveSession).toHaveBeenCalledWith("orphan-session");
+  });
+
+  it("R3: does not release a lease for a normal successful connect", async () => {
+    const { backend, releaseCalls } = makeFakeBackend();
+    const client = makeClient(backend);
+    const connectPromise = client.connect(makeFakeStream());
+
+    await vi.waitFor(() => {
+      expect(peer.calls).toContain("setRemoteDescription");
+    });
+    peer.dataChannel?.emitMessage({
+      type: "session.started",
+      session: { id: "sess_123" },
+    });
+    await connectPromise;
+
+    expect(releaseCalls).toEqual([]);
+  });
+
+  it("R4: does not release anything when an abandoned session creation fails", async () => {
+    const creation = createDeferred<{
+      session: { id: string };
+      transport: { type: "webrtc"; sdp: string };
+    }>();
+    const releaseLiveSession = vi.fn().mockResolvedValue(undefined);
+    const backend: BackendClient = {
+      createLiveSession: vi.fn(() => creation.promise),
+      releaseLiveSession,
+    } as unknown as BackendClient;
+    const client = makeClient(backend);
+    const connectPromise = client.connect(makeFakeStream());
+
+    await vi.waitFor(() => {
+      expect(backend.createLiveSession).toHaveBeenCalledOnce();
+    });
+    peer.emitConnectionStateChange("failed");
+    await expect(connectPromise).rejects.toThrow(
+      'Peer connection state changed to "failed" before session.started',
+    );
+
+    creation.reject(new Error("Live session creation failed"));
+    await flushMicrotasks();
+
+    expect(releaseLiveSession).not.toHaveBeenCalled();
+  });
+
+  it("R5: reports a late orphan release failure without rejecting connect cleanup", async () => {
+    const creation = createDeferred<{
+      session: { id: string };
+      transport: { type: "webrtc"; sdp: string };
+    }>();
+    const releaseLiveSession = vi
+      .fn()
+      .mockRejectedValue(new Error("release failed"));
+    const backend: BackendClient = {
+      createLiveSession: vi.fn(() => creation.promise),
+      releaseLiveSession,
+    } as unknown as BackendClient;
+    const client = makeClient(backend);
+    const consoleError = vi
+      .spyOn(console, "error")
+      .mockImplementation(() => undefined);
+    const connectPromise = client.connect(makeFakeStream());
+
+    await vi.waitFor(() => {
+      expect(backend.createLiveSession).toHaveBeenCalledOnce();
+    });
+    peer.dataChannel?.emitClose();
+    await expect(connectPromise).rejects.toThrow(
+      "Data channel closed before session.started",
+    );
+    creation.resolve({
+      session: { id: "orphan-session" },
+      transport: { type: "webrtc", sdp: "v=0 fake-answer-sdp" },
+    });
+    await flushMicrotasks();
+
+    expect(releaseLiveSession).toHaveBeenCalledOnce();
+    expect(consoleError).toHaveBeenCalledWith(
+      "Live session lease release failed",
+    );
+    consoleError.mockRestore();
+  });
+
+  it("R6: releases an adopted session exactly once after transport failure", async () => {
+    const { backend, releaseCalls } = makeFakeBackend();
+    const client = makeClient(backend);
+    const connectPromise = client.connect(makeFakeStream());
+
+    await vi.waitFor(() => {
+      expect(peer.calls).toContain("setRemoteDescription");
+    });
+    peer.dataChannel?.emitMessage({
+      type: "session.started",
+      session: { id: "sess_123" },
+    });
+    await connectPromise;
+    peer.emitConnectionStateChange("failed");
+    await flushMicrotasks();
+    peer.dataChannel?.emitClose();
+    await flushMicrotasks();
+
+    expect(releaseCalls).toEqual(["sess_123"]);
   });
 
   it("aborts signaling and never POSTs the SDP if the data channel closes during ICE gathering", async () => {
