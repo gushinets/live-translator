@@ -111,6 +111,13 @@ function createFakeAudio() {
     startCapture: vi.fn(async () => {
       stream = captureStream;
     }),
+    setCaptureStream: vi.fn((nextStream: MediaStream | null) => {
+      stream = nextStream;
+    }),
+    endCaptureTrack: vi.fn(() => {
+      captureTrack.readyState = "ended";
+      audio.onCaptureEnded?.();
+    }),
     stopCapture: vi.fn(() => {
       stream = null;
     }),
@@ -711,6 +718,24 @@ describe("SessionController", () => {
     );
     expect(controller.ownerError).toBe("Microphone access is required for translation.");
     expect(controller.session.state).toBe("idle");
+  });
+
+  it("does not connect or enter setup when the microphone track ends during startup capture", async () => {
+    const audio = createFakeAudio();
+    const live = new FakeLive();
+    audio.startCapture.mockImplementationOnce(async () => {
+      audio.setCaptureStream(audio.captureStream);
+      audio.endCaptureTrack();
+    });
+    const { controller } = createController({ audio, live });
+
+    await expect(controller.startBootstrap()).rejects.toThrow(/microphone/i);
+
+    expect(controller.ownerError).toMatch(/microphone/i);
+    expect(controller.session.state).toBe("idle");
+    expect(controller.hasEnteredInterpreter).toBe(false);
+    expect(live.connect).not.toHaveBeenCalled();
+    expect(audio.stopCapture).toHaveBeenCalledOnce();
   });
 
   it("sets ownerError on microphone and connect failures", async () => {

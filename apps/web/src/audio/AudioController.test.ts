@@ -229,6 +229,16 @@ describe("AudioController", () => {
     await pending;
   });
 
+  it("rejects and releases capture when getUserMedia returns an already-ended track", async () => {
+    track.readyState = "ended";
+
+    await expect(controller.startCapture()).rejects.toThrow(/microphone/i);
+
+    expect(controller.getCaptureStream()).toBeNull();
+    expect(track.removeEventListener).toHaveBeenCalled();
+    expect(track.stop).toHaveBeenCalledOnce();
+  });
+
   it("treats leaving interrupted for suspended as restore", async () => {
     const onAudioInterruption = vi.fn();
     const onAudioRestored = vi.fn();

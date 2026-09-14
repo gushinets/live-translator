@@ -1337,6 +1337,14 @@ export class SessionController {
         new Error("Microphone capture stream is missing"),
       );
     }
+    try {
+      this.assertCaptureStreamLive(stream);
+    } catch (error) {
+      if (this.audio.getCaptureStream() !== null) {
+        this.audio.stopCapture();
+      }
+      this.failMicrophoneCapture(error);
+    }
     if (this.currentSession.state !== "idle") {
       return;
     }
@@ -1464,6 +1472,16 @@ export class SessionController {
       throw new Error(MICROPHONE_DENIED_MESSAGE);
     }
     this.failOwnerRequest("Microphone capture failed", error);
+  }
+
+  private assertCaptureStreamLive(stream: MediaStream): void {
+    const track = stream.getAudioTracks()[0];
+    if (track === undefined) {
+      throw new Error("Microphone capture stream has no audio track");
+    }
+    if (track.readyState !== "live") {
+      throw new Error(MICROPHONE_CAPTURE_ENDED_MESSAGE);
+    }
   }
 
   private failStartup(context: string, error: unknown): never {

@@ -189,6 +189,14 @@ export class AudioController {
       }
       throw new Error("Microphone stream has no audio track");
     }
+    track.addEventListener("ended", this.handleCaptureEnded);
+    if (track.readyState !== "live") {
+      track.removeEventListener("ended", this.handleCaptureEnded);
+      for (const existing of stream.getTracks()) {
+        existing.stop();
+      }
+      throw new Error(`Microphone track is not live (readyState "${track.readyState}")`);
+    }
 
     const analysisStream = cloneStream(stream);
     const micSource = context.createMediaStreamSource(analysisStream);
@@ -201,7 +209,6 @@ export class AudioController {
     this.micSource = micSource;
     this.micAnalyser = micAnalyser;
     this.microphoneSettings = readMicrophoneSettings(track);
-    track.addEventListener("ended", this.handleCaptureEnded);
     console.info("Microphone track settings", this.microphoneSettings);
     this.syncSampler();
   }
