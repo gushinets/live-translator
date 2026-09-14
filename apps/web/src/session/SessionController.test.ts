@@ -1593,6 +1593,43 @@ describe("SessionController turn engine", () => {
     expect(errorSpy).toHaveBeenCalled();
   });
 
+  it("fails closed when source reactivation Gate B unmute rejects", async () => {
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    const { controller, live, audio } = createController();
+    live.setInputMuted.mockImplementation(async (muted: boolean) => {
+      if (!muted) {
+        throw new Error("reactivation unmute failed");
+      }
+    });
+    await enterListening(controller);
+    audio.setOutputAudible.mockClear();
+    emitVoice(audio, true);
+    live.emit({ type: "session.input_transcript.delta", delta: "Hello" });
+    emitVoice(audio, false);
+    await flushMicrotasks();
+
+    expect(controller.session.activeTurn?.sourceIdleAtMs).toBeDefined();
+    expect(live.setInputMuted).toHaveBeenCalledWith(true);
+
+    const unhandled = await collectUnhandledRejectionsDuringFakeTimers(async () => {
+      emitVoice(audio, true);
+      await flushMicrotasks();
+    });
+
+    expect(unhandled).toEqual([]);
+    expect(controller.session.state).toBe("error");
+    expect(controller.session.activeTurn).toBeUndefined();
+    expect(controller.session.recentTurns[0]?.status).toBe("failed");
+    expect(controller.inputReady).toBe(false);
+    expect(controller.ownerError).toBe("reactivation unmute failed");
+    expect(audio.setCaptureEnabled).toHaveBeenLastCalledWith(false);
+    expect(audio.setOutputAudible).toHaveBeenLastCalledWith(false);
+    expect(live.setInputMuted).toHaveBeenLastCalledWith(false);
+    live.emit({ type: "session.input_transcript.delta", delta: "ignored" });
+    expect(controller.session.activeTurn).toBeUndefined();
+    expect(errorSpy).toHaveBeenCalled();
+  });
+
   it("MAX_SOURCE_MS mutes, closes output, fails, warns, and suspends with Resume/Repeat", async () => {
     const { controller, live, audio } = createController();
     await enterListening(controller);

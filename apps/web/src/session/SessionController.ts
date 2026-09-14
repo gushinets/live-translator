@@ -875,7 +875,37 @@ export class SessionController {
       if (wasIdle) {
         this.armMaxSourceTimer();
         if (this.gateBMuted) {
-          if (!(await this.unmuteGateB(generation))) {
+          try {
+            if (!(await this.unmuteGateB(generation))) {
+              return;
+            }
+          } catch (error) {
+            if (this.sessionGeneration !== generation) {
+              return;
+            }
+            this.clearTurnEngineTimers();
+            this.speechInputReady = false;
+            try {
+              this.audio.setCaptureEnabled(false);
+            } catch (captureError) {
+              console.error("Gate A close failed after Gate B unmute failure", {
+                error: captureError,
+                state: this.currentSession.state,
+              });
+            }
+            this.audio.setOutputAudible(false);
+            if (
+              this.currentSession.activeTurn !== undefined &&
+              (this.currentSession.state === "listening" ||
+                this.currentSession.state === "outputting")
+            ) {
+              this.dispatch({ type: "TURN_FAILED" });
+            }
+            this.ownerErrorMessage = error instanceof Error ? error.message : String(error);
+            this.dispatch({
+              type: "SESSION_ERROR",
+              message: this.ownerErrorMessage,
+            });
             return;
           }
         }
