@@ -587,6 +587,24 @@ describe("LiveClient event dispatch", () => {
     });
   });
 
+  it("treats a post-start server error with null code as recoverable", async () => {
+    const { client, peer, channel } = await connectedClient();
+    const onError = vi.fn();
+    client.onError = onError;
+
+    channel.emitMessage({
+      type: "error",
+      error: { message: "model interrupted", code: null },
+    });
+
+    expect(onError).toHaveBeenCalledExactlyOnceWith({
+      type: "error",
+      error: { message: "model interrupted", code: null },
+    });
+    expect(channel.closeCalls).toBe(0);
+    expect(peer.closeCalls).toBe(0);
+  });
+
   it("invokes onUsage for session.usage.updated events", async () => {
     const { client, channel } = await connectedClient();
     const onUsage = vi.fn();
@@ -594,10 +612,8 @@ describe("LiveClient event dispatch", () => {
 
     channel.emitMessage({
       type: "session.usage.updated",
-      usage: {
-        seconds: 5,
-        context_window: { usage_ratio: 0.25 },
-      },
+      usage: { seconds: 5 },
+      context_window: { usage_ratio: 0.25 },
     });
 
     expect(onUsage).toHaveBeenCalledExactlyOnceWith({
@@ -1457,6 +1473,32 @@ describe("LiveClient trusted control commands", () => {
       "append rejected",
     );
     expect(channel.sendCalls).toHaveLength(1);
+  });
+
+  it("fails a command immediately when a nested correlated error has null code", async () => {
+    const { client, channel } = await connectedClient();
+    const pending = client.appendInstructions("BEGIN_INTERPRETER_MODE.", {
+      kind: "startup_interpreter",
+    });
+    const observed = pending.then(
+      () => "resolved",
+      (error: unknown) => (error instanceof Error ? error.message : String(error)),
+    );
+
+    channel.emitMessage({
+      type: "error",
+      error: {
+        message: "append rejected",
+        code: null,
+        client_event_id: "evt-1",
+      },
+    });
+    await flushMicrotasks();
+
+    await expect(Promise.race([observed, Promise.resolve("pending")])).resolves.toBe(
+      "append rejected",
+    );
+    expect(channel.closeCalls).toBe(0);
   });
 
   it("fails mute and unmute immediately when nested correlated errors arrive", async () => {

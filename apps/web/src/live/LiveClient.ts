@@ -14,7 +14,7 @@ import {
   type MuteAcknowledgedEvent,
   type SessionClosedEvent,
   type SessionStartedEvent,
-  type SessionUsage,
+  type SessionUsageSnapshot,
   type TranscriptDeltaEvent,
 } from "./LiveEvents";
 import { waitForIceComplete } from "./waitForIceComplete";
@@ -104,7 +104,7 @@ export class LiveClient {
     | ((event: AppendAcknowledgedEvent) => void)
     | null = null;
   onMuteAcknowledged: ((event: MuteAcknowledgedEvent) => void) | null = null;
-  onUsage: ((usage: SessionUsage) => void) | null = null;
+  onUsage: ((usage: SessionUsageSnapshot) => void) | null = null;
   onError: ((event: LiveClientErrorEvent) => void) | null = null;
   onSessionClosed: ((event: SessionClosedEvent) => void) | null = null;
 
@@ -546,7 +546,14 @@ export class LiveClient {
         this.onMuteAcknowledged?.(serverEvent);
         return;
       case "session.usage.updated":
-        this.onUsage?.(serverEvent.usage);
+        this.onUsage?.(
+          serverEvent.context_window === undefined
+            ? serverEvent.usage
+            : {
+                ...serverEvent.usage,
+                context_window: serverEvent.context_window,
+              },
+        );
         return;
       case "session.closed": {
         // A server-initiated session.closed enters the same non-error

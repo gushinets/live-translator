@@ -67,12 +67,16 @@ export interface SessionUsageContextWindow {
 
 export interface SessionUsage {
   seconds?: number;
+}
+
+export interface SessionUsageSnapshot extends SessionUsage {
   context_window?: SessionUsageContextWindow;
 }
 
 export interface SessionUsageUpdatedEvent {
   type: "session.usage.updated";
   usage: SessionUsage;
+  context_window?: SessionUsageContextWindow;
 }
 
 export interface SessionClosedEvent {
@@ -83,7 +87,7 @@ export interface SessionClosedEvent {
 
 export interface LiveErrorEvent {
   type: "error";
-  error: { message: string; code?: string; client_event_id?: string };
+  error: { message: string; code?: string | null; client_event_id?: string };
 }
 
 export type LiveServerEvent =
@@ -155,6 +159,17 @@ function hasOptionalString(
   return !(key in value) || typeof value[key] === "string";
 }
 
+function hasOptionalNullableString(
+  value: Record<string, unknown>,
+  key: string,
+): boolean {
+  return (
+    !(key in value) ||
+    value[key] === null ||
+    typeof value[key] === "string"
+  );
+}
+
 function hasOptionalNumber(
   value: Record<string, unknown>,
   key: string,
@@ -164,12 +179,15 @@ function hasOptionalNumber(
 
 function hasValidUsage(value: unknown): value is SessionUsage {
   if (!isRecord(value)) return false;
-  if (!hasOptionalNumber(value, "seconds")) return false;
-  if (!("context_window" in value)) return true;
-  const contextWindow = value.context_window;
+  return hasOptionalNumber(value, "seconds");
+}
+
+function hasValidContextWindow(
+  value: unknown,
+): value is SessionUsageContextWindow {
   return (
-    isRecord(contextWindow) &&
-    hasOptionalNumber(contextWindow, "usage_ratio")
+    isRecord(value) &&
+    hasOptionalNumber(value, "usage_ratio")
   );
 }
 
@@ -196,7 +214,11 @@ function hasValidPayload(
     case "session.input_audio.unmuted":
       return hasOptionalString(value, "client_event_id");
     case "session.usage.updated":
-      return hasValidUsage(value.usage);
+      return (
+        hasValidUsage(value.usage) &&
+        (!("context_window" in value) ||
+          hasValidContextWindow(value.context_window))
+      );
     case "session.closed":
       return (
         hasOptionalString(value, "reason") &&
@@ -207,7 +229,7 @@ function hasValidPayload(
       return (
         isRecord(error) &&
         typeof error.message === "string" &&
-        hasOptionalString(error, "code") &&
+        hasOptionalNullableString(error, "code") &&
         hasOptionalString(error, "client_event_id")
       );
     }
