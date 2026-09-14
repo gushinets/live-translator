@@ -342,12 +342,33 @@ export class SessionController {
       throw new Error(`Cannot resume from "${this.currentSession.state}"`);
     }
     const generation = this.sessionGeneration;
+    try {
+      this.assertResumeMedia();
+    } catch (error) {
+      this.audio.setOutputAudible(false);
+      this.failLifecycleResume(error);
+      throw error;
+    }
     this.audio.resetVoiceActivityBaseline();
-    this.audio.setOutputAudible(true);
-    this.recoveryPromptKind = undefined;
-    if (!(await this.unmuteGateB(generation))) {
+    try {
+      if (!(await this.unmuteGateB(generation))) {
+        this.audio.setOutputAudible(false);
+        return;
+      }
+    } catch (error) {
+      if (this.sessionGeneration !== generation) {
+        return;
+      }
+      this.audio.setOutputAudible(false);
+      this.failLifecycleResume(error);
+      throw error;
+    }
+    if (this.sessionGeneration !== generation) {
+      this.audio.setOutputAudible(false);
       return;
     }
+    this.audio.setOutputAudible(true);
+    this.recoveryPromptKind = undefined;
     this.speechInputReady = true;
     this.dispatch({ type: "RESUME" });
   }

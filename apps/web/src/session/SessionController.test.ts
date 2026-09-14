@@ -1626,6 +1626,129 @@ describe("SessionController turn engine", () => {
     expect(controller.recoveryPrompt).toBeUndefined();
   });
 
+  it("manual MAX_SOURCE resume waits for Gate B unmute before reopening output", async () => {
+    const { controller, live, audio } = createController();
+    let releaseUnmute: (() => void) | undefined;
+    live.setInputMuted.mockImplementation(async (muted: boolean) => {
+      if (!muted) {
+        await new Promise<void>((resolve) => {
+          releaseUnmute = resolve;
+        });
+      }
+    });
+    await enterListening(controller);
+    emitVoice(audio, true);
+    await vi.advanceTimersByTimeAsync(runtime.maxSourceMs);
+    await flushMicrotasks();
+
+    const resuming = controller.resumeFromSourceTimeout();
+    await waitUntil(() => releaseUnmute !== undefined);
+
+    expect(live.setInputMuted).toHaveBeenLastCalledWith(false);
+    expect(controller.session.state).toBe("suspended");
+    expect(controller.inputReady).toBe(false);
+    expect(audio.setOutputAudible).toHaveBeenLastCalledWith(false);
+
+    releaseUnmute?.();
+    await resuming;
+
+    expect(audio.resetVoiceActivityBaseline).toHaveBeenCalledOnce();
+    expect(controller.session.state).toBe("listening");
+    expect(controller.inputReady).toBe(true);
+    expect(audio.setOutputAudible).toHaveBeenLastCalledWith(true);
+    const unmuteOrder = live.setInputMuted.mock.invocationCallOrder.at(-1);
+    const outputOrder = audio.setOutputAudible.mock.invocationCallOrder.at(-1);
+    if (unmuteOrder === undefined || outputOrder === undefined) {
+      throw new Error("Gate B unmute or Gate C reopen was not recorded");
+    }
+    expect(unmuteOrder).toBeLessThan(outputOrder);
+  });
+
+  it("manual MAX_SOURCE resume rejects a dead microphone track without opening gates", async () => {
+    const { controller, live, audio } = createController();
+    await enterListening(controller);
+    emitVoice(audio, true);
+    await vi.advanceTimersByTimeAsync(runtime.maxSourceMs);
+    await flushMicrotasks();
+    audio.captureTrack.readyState = "ended";
+
+    await expect(controller.resumeFromSourceTimeout()).rejects.toThrow(
+      'Microphone track is not live (readyState "ended")',
+    );
+
+    expect(controller.session.state).toBe("error");
+    expect(controller.ownerError).toBe('Microphone track is not live (readyState "ended")');
+    expect(controller.inputReady).toBe(false);
+    expect(audio.setOutputAudible).toHaveBeenLastCalledWith(false);
+    expect(live.setInputMuted).not.toHaveBeenLastCalledWith(false);
+  });
+
+  it("manual MAX_SOURCE resume rejects a closed transport without opening gates", async () => {
+    const { controller, live, audio } = createController();
+    await enterListening(controller);
+    emitVoice(audio, true);
+    await vi.advanceTimersByTimeAsync(runtime.maxSourceMs);
+    await flushMicrotasks();
+    live.peerConnectionState = "closed";
+
+    await expect(controller.resumeFromSourceTimeout()).rejects.toThrow(
+      'Peer connection state is "closed"',
+    );
+
+    expect(controller.session.state).toBe("error");
+    expect(controller.ownerError).toBe('Peer connection state is "closed"');
+    expect(controller.inputReady).toBe(false);
+    expect(audio.setOutputAudible).toHaveBeenLastCalledWith(false);
+    expect(live.setInputMuted).not.toHaveBeenLastCalledWith(false);
+  });
+
+  it("manual MAX_SOURCE resume fails safely when Gate B unmute rejects", async () => {
+    const { controller, live, audio } = createController();
+    live.setInputMuted.mockImplementation(async (muted: boolean) => {
+      if (!muted) {
+        throw new Error("unmute failed");
+      }
+    });
+    await enterListening(controller);
+    emitVoice(audio, true);
+    await vi.advanceTimersByTimeAsync(runtime.maxSourceMs);
+    await flushMicrotasks();
+
+    await expect(controller.resumeFromSourceTimeout()).rejects.toThrow("unmute failed");
+
+    expect(live.setInputMuted).toHaveBeenLastCalledWith(false);
+    expect(controller.session.state).toBe("error");
+    expect(controller.ownerError).toBe("unmute failed");
+    expect(controller.inputReady).toBe(false);
+    expect(audio.setOutputAudible).toHaveBeenLastCalledWith(false);
+  });
+
+  it("ignores a pending manual MAX_SOURCE resume unmute after cancel", async () => {
+    const { controller, live, audio } = createController();
+    let releaseUnmute: (() => void) | undefined;
+    live.setInputMuted.mockImplementation(async (muted: boolean) => {
+      if (!muted) {
+        await new Promise<void>((resolve) => {
+          releaseUnmute = resolve;
+        });
+      }
+    });
+    await enterListening(controller);
+    emitVoice(audio, true);
+    await vi.advanceTimersByTimeAsync(runtime.maxSourceMs);
+    await flushMicrotasks();
+
+    const resuming = controller.resumeFromSourceTimeout();
+    await waitUntil(() => releaseUnmute !== undefined);
+    await controller.cancel();
+    releaseUnmute?.();
+    await resuming;
+
+    expect(controller.session.state).toBe("idle");
+    expect(controller.inputReady).toBe(false);
+    expect(audio.setOutputAudible).toHaveBeenLastCalledWith(false);
+  });
+
   it("later-turn double timeout records degraded steering and continues listening", async () => {
     const { controller, live, audio } = createController();
     live.appendInstructions.mockImplementation(
