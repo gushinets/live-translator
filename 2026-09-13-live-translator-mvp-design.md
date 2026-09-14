@@ -1,6 +1,6 @@
 # Live Translator MVP — Technical Design Specification
 
-**Revision:** 1.2.1  
+**Revision:** 1.2.2
 **Status:** Implementation-ready; architecture frozen for first prototype  
 **Date:** 2026-09-13  
 **Target:** First internal prototype  
@@ -11,9 +11,9 @@
 
 ---
 
-## 0. Revision 1.2.1 summary
+## 0. Revision 1.2.2 summary
 
-Revision 1.2.1 preserves the approved product scope and closes the final runtime contradictions found in the v1.1 external review.
+Revision 1.2.2 preserves the approved product scope and records the tested Live runtime corrections found during real API/device-access testing.
 
 The product decisions that remain unchanged are:
 
@@ -30,7 +30,7 @@ The product decisions that remain unchanged are:
 - tiny backend outside the media path;
 - no accounts, billing, history, or saved transcripts.
 
-Revision 1.2.1 includes all Revision 1.2 runtime fixes and adds these final implementation clarifications:
+Revision 1.2.2 includes all Revision 1.2 runtime fixes and adds these final implementation clarifications:
 
 1. `sourceIdle` is no longer allowed to depend on a naive absolute-energy threshold. VAM uses an adaptive noise floor and playback awareness; missing transcript deltas are diagnostic only and never authoritative silence. A `MAX_SOURCE_MS` fail-safe provides an explicit user-mediated escape if quiet cannot be established.
 2. Participant status precedence is defined for early GPT output: while source speech is still active, the source side remains `LISTENING` even if recipient-side output has begun.
@@ -40,7 +40,11 @@ Revision 1.2.1 includes all Revision 1.2 runtime fixes and adds these final impl
 6. Bootstrap UX is explicitly defined on the owner screen with a visible `Skip` action; bootstrap is mandatory as a prompt, while answering it is optional.
 7. `T1` is clamped at zero when model output begins before source idle; early output is measured separately with `earlyOutputLeadMs`.
 8. Initial prototype timeout/cap defaults are specified, including a 10-second ICE timeout with `ERROR` on expiry.
-9. Revision 1.2.1 is the design freeze for the first prototype. Further runtime changes should be driven by real-device/audio spike evidence or upstream Live API changes rather than another speculative architecture cycle.
+9. Revision 1.2.2 is the design freeze for the first prototype. Further runtime changes should be driven by real-device/audio spike evidence or upstream Live API changes rather than another speculative architecture cycle.
+10. Tested OpenAI compatibility requires omitting `session.delegation` from the create-time session payload. Required append events retain `delegation_id: null` for session-wide scope; these are different protocol locations.
+11. `MAX_CONCURRENT_SESSIONS = 5` counts active sessions: a successful creation holds its lease until the client releases the returned session id or the 15-minute TTL expires. Failed creation releases immediately.
+12. Tailscale Serve is the preferred private device-testing path. Funnel is public exposure and is unsupported without a separately protected reverse proxy/access gate; `Origin` validation is not authentication.
+13. Vite preview additional hosts are configured through the local `VITE_ADDITIONAL_ALLOWED_HOST` environment variable and are never hardcoded in committed config.
 
 ## 1. Product goal
 
@@ -99,7 +103,7 @@ The full interaction uses exactly one `gpt-live-1` session:
 - corrections;
 - conversation end.
 
-No second LLM, translation agent, RAG layer, database, or workflow engine is required for MVP v1.2.1.
+No second LLM, translation agent, RAG layer, database, or workflow engine is required for MVP v1.2.2.
 
 ### 2.3 Soft half-duplex product behavior
 
@@ -194,7 +198,7 @@ Context is editable before interpreter mode starts because ASR can be wrong.
 
 ### 3.3 Language bootstrap
 
-For MVP v1.2.1, before the first interpreted turn the app **always** asks Participant A one short question on the owner/start screen:
+For MVP v1.2.2, before the first interpreted turn the app **always** asks Participant A one short question on the owner/start screen:
 
 > "What language does the other person most likely speak?"
 
@@ -228,7 +232,7 @@ Rules:
 - actual later speech and conversation context may override the hint;
 - context does not silently skip bootstrap in v1.2; this avoids an undeclared language-extraction classifier.
 
-No geolocation permission is required for MVP v1.2.1.
+No geolocation permission is required for MVP v1.2.2.
 
 ### 3.4 Conversation screen
 
@@ -407,7 +411,7 @@ interface ParticipantProfile {
 
 The client does **not** claim to receive authoritative source-language codes from GPT-Live transcript events.
 
-There is no client-side language confidence score in MVP v1.2.1.
+There is no client-side language confidence score in MVP v1.2.2.
 
 ### 5.2 Participant A initial hint
 
@@ -419,7 +423,7 @@ This is only a hint.
 
 Participant B receives its explicit initial language hint from the one-question bootstrap. Context remains factual model context but is not treated by the client as a parsed language hint unless a future explicit classifier is implemented.
 
-MVP v1.2.1 does not use device geolocation or IP-geo for language selection.
+MVP v1.2.2 does not use device geolocation or IP-geo for language selection.
 
 ### 5.4 Language switching
 
@@ -431,7 +435,7 @@ The long-lived GPT-Live conversation context is allowed to adapt from actual spe
 
 ### 5.5 Per-turn trusted steering
 
-Per-turn steering is **mandatory** in MVP v1.2.1.
+Per-turn steering is **mandatory** in MVP v1.2.2.
 
 After a turn has fully closed and before the next source turn is accepted, the app MUST append one short trusted instruction. Before a participant has produced accepted real conversation speech, steering may include that participant's initial hint:
 
@@ -522,7 +526,7 @@ Create the Live session with:
 
 - `model = gpt-live-1`;
 - one fixed neutral voice;
-- `delegation = null` / client mode explicitly configured;
+- omit `session.delegation` at create time; use `delegation_id: null` only on required session-wide append events;
 - no tools configured;
 - no web search configured;
 - no backend delegation;
@@ -531,7 +535,7 @@ Create the Live session with:
 
 ### 6.2 Same-language behavior
 
-MVP v1.2.1 does **not** suppress same-language output.
+MVP v1.2.2 does **not** suppress same-language output.
 
 If the source utterance is already in the target language, the interpreter may repeat it according to the documented interpreter pattern.
 
@@ -606,7 +610,7 @@ Because browsers/WebRTC may already have a small amount of remote audio in a jit
 
 ## 8. Audio-control architecture
 
-MVP v1.2.1 has three independent gates.
+MVP v1.2.2 has three independent gates.
 
 ### 8.1 Gate A — local microphone capture
 
@@ -868,7 +872,7 @@ type SessionState =
   | "ended";
 ```
 
-The previous dedicated `turn_finalizing`, `translating`, `overlap`, and `low_confidence` states are removed from the global state machine because MVP v1.2.1 has no reliable client detector that makes them authoritative states.
+The previous dedicated `turn_finalizing`, `translating`, `overlap`, and `low_confidence` states are removed from the global state machine because MVP v1.2.2 has no reliable client detector that makes them authoritative states.
 
 The UI may still show derived labels such as `Translating...` without making them global protocol states.
 
@@ -1143,6 +1147,7 @@ The backend owns the authoritative create payload, including:
 
 ```text
 POST /api/live/session
+DELETE /api/live/session/:sessionId
 GET  /health
 ```
 
@@ -1153,7 +1158,7 @@ GET  /health
 - require a prototype access gate that is **not embedded in the Vite/browser bundle**; acceptable internal options include private-network/VPN access, Cloudflare Access/server-side allowlisting, or a server-issued short-lived credential after server-side authentication;
 - apply per-client/session rate limiting;
 - enforce a 15-minute maximum Live session duration for the internal prototype by default;
-- enforce a small concurrent-session cap; initial internal-prototype default: `MAX_CONCURRENT_SESSIONS = 5`;
+- enforce a small active-session cap; initial internal-prototype default: `MAX_CONCURRENT_SESSIONS = 5`; hold the lease after successful creation, release it on `DELETE /api/live/session/:sessionId`, and retain the 15-minute TTL for abandoned clients;
 - use server-side `OPENAI_API_KEY`;
 - create the trusted `gpt-live-1` WebRTC session;
 - return SDP answer/session metadata.
@@ -1453,7 +1458,7 @@ Closing WebRTC immediately after `session.close` is not considered graceful fina
 
 ## 24. Explicitly out of scope
 
-Do not implement in MVP v1.2.1:
+Do not implement in MVP v1.2.2:
 
 - account creation;
 - login;
@@ -1859,7 +1864,7 @@ Mitigation: display clarification symmetrically / on source side until evidence 
 
 ## 29. Definition of Done
 
-MVP v1.2.1 is complete when two people who do not share a language can:
+MVP v1.2.2 is complete when two people who do not share a language can:
 
 1. open the URL on iPhone or Android;
 2. see the privacy disclosure and grant microphone access;
@@ -1918,7 +1923,7 @@ Reference documentation:
 
 ## 31. Source of truth and product priorities
 
-This Revision 1.2.1 document is the frozen design source of truth for the first Live Translator prototype.
+This Revision 1.2.2 document is the frozen design source of truth for the first Live Translator prototype.
 
 Further architecture revisions are not required before implementation. Change this runtime contract only when:
 

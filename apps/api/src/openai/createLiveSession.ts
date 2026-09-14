@@ -1,7 +1,12 @@
 import OpenAI from "openai";
 import { SILENT_PRE_INTERPRETER_PROMPT } from "../prompts.js";
 
-export type LiveSessionCreator = (sdp: string) => Promise<unknown>;
+export interface LiveSessionResponse {
+  session: { id: string };
+  transport: { type: "webrtc"; sdp: string };
+}
+
+export type LiveSessionCreator = (sdp: string) => Promise<LiveSessionResponse>;
 
 export function makeLiveSessionCreator(
   client = new OpenAI({ maxRetries: 0 }),

@@ -125,6 +125,8 @@ export class LiveClient {
   private closing = false;
   /** Set once a final close result is known, so close() becomes idempotent. */
   private closeResult: LiveCloseResult | null = null;
+  private sessionId: string | null = null;
+  private leaseReleased = false;
   /** Dedupes concurrent close() calls onto a single in-flight operation. */
   private closePromise: Promise<LiveCloseResult> | null = null;
   /** Guards `teardownTransport()` against closing the channel/peer twice. */
@@ -282,12 +284,16 @@ export class LiveClient {
         throw new Error("Missing local SDP after ICE gathering completed");
       }
 
-      const { transport } = await raceAgainstAbort(
+      const session = await raceAgainstAbort(
         this.deps.backend.createLiveSession(localSdp),
         abortIfFailed,
       );
+      this.sessionId = session.session.id;
       await raceAgainstAbort(
-        peer.setRemoteDescription({ type: "answer", sdp: transport.sdp }),
+        peer.setRemoteDescription({
+          type: "answer",
+          sdp: session.transport.sdp,
+        }),
         abortIfFailed,
       );
 
@@ -298,7 +304,7 @@ export class LiveClient {
       // tearing down after a failed connect, for the same reason a local
       // close() or a remote session.closed suppress them (§23).
       this.closing = true;
-      this.teardownTransport();
+      this.teardownTransportAndRelease();
       throw error;
     }
   }
@@ -340,6 +346,7 @@ export class LiveClient {
         reason: DISCONNECTED_CLOSE_REASON,
       };
       this.closeResult = result;
+      this.releaseSessionLease();
       return result;
     }
     this.closePromise = this.performLocalClose(channel);
@@ -373,11 +380,11 @@ export class LiveClient {
         SESSION_CLOSE_TIMEOUT_MS,
       );
 
-      this.teardownTransport();
+      this.teardownTransportAndRelease();
       this.closeResult = result;
       return result;
     } catch (error) {
-      this.teardownTransport();
+      this.teardownTransportAndRelease();
       const result: LiveCloseResult = {
         finalized: false,
         reason: error instanceof Error ? error.message : String(error),
@@ -394,6 +401,20 @@ export class LiveClient {
     this.ackRegistry.rejectAll(new Error("Live session is no longer connected"));
     this.channel?.close();
     this.peer?.close();
+  }
+
+  private teardownTransportAndRelease(): void {
+    this.teardownTransport();
+    this.releaseSessionLease();
+  }
+
+  private releaseSessionLease(): void {
+    const sessionId = this.sessionId;
+    if (sessionId === null || this.leaseReleased) return;
+    this.leaseReleased = true;
+    void this.deps.backend.releaseLiveSession(sessionId).catch(() => {
+      console.error("Live session lease release failed");
+    });
   }
 
   /**
@@ -465,7 +486,7 @@ export class LiveClient {
     this.rejectPendingConnect(
       new Error("Data channel closed before session.started"),
     );
-    this.teardownTransport();
+    this.teardownTransportAndRelease();
     this.onError?.({
       type: "error",
       error: { message: "Live data channel closed unexpectedly" },
@@ -499,7 +520,7 @@ export class LiveClient {
         `Peer connection state changed to "${state}" before session.started`,
       ),
     );
-    this.teardownTransport();
+    this.teardownTransportAndRelease();
     this.onError?.({
       type: "error",
       error: { message: `Peer connection state changed to "${state}"` },
@@ -588,7 +609,7 @@ export class LiveClient {
         this.rejectPendingConnect(
           new Error("session.closed received before session.started"),
         );
-        this.teardownTransport();
+        this.teardownTransportAndRelease();
         this.onSessionClosed?.(serverEvent);
         if (serverEvent.usage !== undefined) this.onUsage?.(serverEvent.usage);
         return;
@@ -615,7 +636,7 @@ export class LiveClient {
               `Live session reported an error before session.started: ${serverEvent.error.message}`,
             ),
           );
-          this.teardownTransport();
+          this.teardownTransportAndRelease();
         }
         this.ackRegistry.fail({
           client_event_id: serverEvent.error.client_event_id,
@@ -632,7 +653,7 @@ export class LiveClient {
       this.closing = true;
       this.rejectPendingConnect(error);
       this.ackRegistry.rejectAll(error);
-      this.teardownTransport();
+      this.teardownTransportAndRelease();
     }
     this.onError?.({
       type: "error",

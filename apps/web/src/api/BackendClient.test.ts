@@ -48,4 +48,22 @@ describe("BackendClient", () => {
       "An SDP offer is required",
     );
   });
+
+  it("releases a Live session lease with an encoded session id", async () => {
+    const fetchMock = vi.fn(
+      async () =>
+        ({
+          ok: true,
+          text: async () => "",
+        }) as unknown as Response,
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    await new BackendClient().releaseLiveSession("live/session-1");
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      "/api/live/session/live%2Fsession-1",
+      { method: "DELETE" },
+    );
+  });
 });

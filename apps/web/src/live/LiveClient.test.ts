@@ -124,6 +124,7 @@ function makeFakeBackend(
   }> = {},
 ) {
   const calls: string[] = [];
+  const releaseCalls: string[] = [];
   const backend: BackendClient = {
     createLiveSession: async (sdp: string) => {
       calls.push(sdp);
@@ -135,8 +136,11 @@ function makeFakeBackend(
         },
       };
     },
+    releaseLiveSession: async (sessionId: string) => {
+      releaseCalls.push(sessionId);
+    },
   } as unknown as BackendClient;
-  return { backend, calls };
+  return { backend, calls, releaseCalls };
 }
 
 async function flushMicrotasks(): Promise<void> {
@@ -550,7 +554,7 @@ describe("LiveClient event dispatch", () => {
   async function connectedClient() {
     const peer = new FakePeerConnection();
     const onRemoteStream = vi.fn();
-    const { backend } = makeFakeBackend();
+    const { backend, releaseCalls } = makeFakeBackend();
     const client = new LiveClient({
       backend,
       peerFactory: () => peer as unknown as RTCPeerConnection,
@@ -566,7 +570,7 @@ describe("LiveClient event dispatch", () => {
     });
     await connectPromise;
     if (peer.dataChannel === null) throw new Error("data channel missing");
-    return { client, peer, channel: peer.dataChannel };
+    return { client, peer, channel: peer.dataChannel, releaseCalls };
   }
 
   it("invokes onTranscriptDelta for transcript delta events", async () => {
@@ -744,7 +748,7 @@ describe("LiveClient event dispatch", () => {
   });
 
   it("invokes onSessionClosed and onUsage when session.closed arrives", async () => {
-    const { client, channel } = await connectedClient();
+    const { client, channel, releaseCalls } = await connectedClient();
     const onSessionClosed = vi.fn();
     const onUsage = vi.fn();
     client.onSessionClosed = onSessionClosed;
@@ -759,6 +763,7 @@ describe("LiveClient event dispatch", () => {
 
     expect(onSessionClosed).toHaveBeenCalledWith(closedEvent);
     expect(onUsage).toHaveBeenCalledWith({ seconds: 42 });
+    expect(releaseCalls).toEqual(["sess_123"]);
   });
 
   it("tears down the transport before invoking onSessionClosed and onUsage for a server-initiated session.closed", async () => {
@@ -1088,11 +1093,12 @@ describe("LiveClient resume validation getters", () => {
 describe("LiveClient.close", () => {
   afterEach(() => {
     vi.useRealTimers();
+    vi.restoreAllMocks();
   });
 
   async function connectedClient() {
     const peer = new FakePeerConnection();
-    const { backend } = makeFakeBackend();
+    const { backend, releaseCalls } = makeFakeBackend();
     const client = new LiveClient({
       backend,
       peerFactory: () => peer as unknown as RTCPeerConnection,
@@ -1108,7 +1114,7 @@ describe("LiveClient.close", () => {
     });
     await connectPromise;
     if (peer.dataChannel === null) throw new Error("data channel missing");
-    return { client, peer, channel: peer.dataChannel };
+    return { client, peer, channel: peer.dataChannel, releaseCalls };
   }
 
   it("is idempotent after peer creation fails before any transport exists", async () => {
@@ -1169,7 +1175,7 @@ describe("LiveClient.close", () => {
   });
 
   it("sends session.close, waits for session.closed, then tears down the transport", async () => {
-    const { client, peer, channel } = await connectedClient();
+    const { client, peer, channel, releaseCalls } = await connectedClient();
 
     const closePromise = client.close();
     await vi.waitFor(() => {
@@ -1193,6 +1199,7 @@ describe("LiveClient.close", () => {
     });
     expect(channel.closeCalls).toBe(1);
     expect(peer.closeCalls).toBe(1);
+    expect(releaseCalls).toEqual(["sess_123"]);
   });
 
   it("finalizes as false after waiting 15 seconds without session.closed", async () => {
@@ -1222,7 +1229,7 @@ describe("LiveClient.close", () => {
   });
 
   it("tears down the data channel and peer as soon as the server ends the session, even if close() is never called", async () => {
-    const { peer, channel } = await connectedClient();
+    const { peer, channel, releaseCalls } = await connectedClient();
 
     channel.emitMessage({
       type: "session.closed",
@@ -1232,6 +1239,39 @@ describe("LiveClient.close", () => {
 
     expect(channel.closeCalls).toBe(1);
     expect(peer.closeCalls).toBe(1);
+    expect(releaseCalls).toEqual(["sess_123"]);
+  });
+
+  it("does not block local close when backend lease release fails", async () => {
+    const peer = new FakePeerConnection();
+    const { backend } = makeFakeBackend();
+    const releaseLiveSession = vi
+      .fn()
+      .mockRejectedValue(new Error("release network failure"));
+    backend.releaseLiveSession = releaseLiveSession;
+    const client = new LiveClient({
+      backend,
+      peerFactory: () => peer as unknown as RTCPeerConnection,
+      onRemoteStream: vi.fn(),
+    });
+    const connectPromise = client.connect(makeFakeStream());
+    await vi.waitFor(() => {
+      expect(peer.calls).toContain("setRemoteDescription");
+    });
+    peer.dataChannel?.emitMessage({
+      type: "session.started",
+      session: { id: "sess_release_failure" },
+    });
+    await connectPromise;
+    if (peer.dataChannel === null) throw new Error("data channel missing");
+
+    const log = vi.spyOn(console, "error").mockImplementation(() => {});
+    const closePromise = client.close();
+    peer.dataChannel.emitMessage({ type: "session.closed" });
+
+    await expect(closePromise).resolves.toMatchObject({ finalized: true });
+    await vi.waitFor(() => expect(releaseLiveSession).toHaveBeenCalledOnce());
+    expect(log).toHaveBeenCalledWith("Live session lease release failed");
   });
 
   it("is idempotent after a server-initiated session.closed: close() resolves with the already-known result instead of throwing", async () => {
