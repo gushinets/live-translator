@@ -872,13 +872,15 @@ export class SessionController {
     try {
       await this.muteGateB();
     } catch (error) {
-      if (!(error instanceof AckTimeoutError)) {
-        throw error;
+      if (this.sessionGeneration !== generation) {
+        return;
       }
-      console.error("Gate B mute ack timed out; continuing turn completion", {
-        error,
-        state: this.currentSession.state,
-      });
+      if (error instanceof AckTimeoutError) {
+        console.error("Gate B mute ack timed out; continuing turn completion", {
+          error,
+          state: this.currentSession.state,
+        });
+      }
     }
     if (this.sessionGeneration !== generation) {
       return;
@@ -1112,7 +1114,19 @@ export class SessionController {
     const generation = this.sessionGeneration;
     this.turnClosing = true;
     try {
-      await this.muteGateB();
+      try {
+        await this.muteGateB(generation);
+      } catch (error) {
+        if (this.sessionGeneration !== generation) {
+          return;
+        }
+        if (error instanceof AckTimeoutError) {
+          console.error("Gate B mute ack timed out; continuing source timeout", {
+            error,
+            state: this.currentSession.state,
+          });
+        }
+      }
       if (this.sessionGeneration !== generation) {
         return;
       }
@@ -1156,9 +1170,7 @@ export class SessionController {
         return false;
       }
       console.error("Gate B mute failed", { error, state: this.currentSession.state });
-      if (error instanceof AckTimeoutError) {
-        this.gateBMuted = true;
-      }
+      this.gateBMuted = true;
       throw error;
     }
     if (this.sessionGeneration !== generation) {
@@ -1971,8 +1983,17 @@ export class SessionController {
     }
 
     this.audio.resetVoiceActivityBaseline();
-    if (!(await this.unmuteGateB(generation))) {
+    try {
+      if (!(await this.unmuteGateB(generation))) {
+        this.audio.setOutputAudible(false);
+        return;
+      }
+    } catch (error) {
+      if (this.sessionGeneration !== generation || this.lifecycleEpoch !== epoch) {
+        return;
+      }
       this.audio.setOutputAudible(false);
+      this.failLifecycleResume(error);
       return;
     }
     if (this.sessionGeneration !== generation || this.lifecycleEpoch !== epoch) {
@@ -1980,7 +2001,13 @@ export class SessionController {
       if (this.sessionGeneration !== generation) {
         return;
       }
-      await this.muteGateB(generation);
+      try {
+        await this.muteGateB(generation);
+      } catch {
+        if (this.sessionGeneration !== generation) {
+          return;
+        }
+      }
       return;
     }
     try {
