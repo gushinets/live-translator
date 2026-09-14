@@ -21,6 +21,7 @@ import type { OrientationController } from "../platform/OrientationController";
 import type { VisibilityController } from "../platform/VisibilityController";
 import type { WakeLockController } from "../platform/WakeLockController";
 import { SessionController } from "./SessionController";
+import { STARTUP_ERROR_MESSAGE } from "./userFacingErrors";
 
 type FakeLiveErrorEvent = {
   type: "error";
@@ -496,6 +497,57 @@ describe("SessionController", () => {
     expect(controller.ownerError).toBe(new ContextTooLongError().message);
     expect(controller.session.state).toBe("bootstrap");
     expect(live.appendInstructions).not.toHaveBeenCalled();
+  });
+
+  it("keeps unrelated context append rate-limit errors on the generic startup path", async () => {
+    const { controller, live } = createController();
+    await controller.startBootstrap();
+    controller.skipBootstrap();
+    controller.setContextText("We are ordering lunch.");
+    live.appendThinking.mockRejectedValueOnce(
+      new Error("content moderation request rate limit exceeded"),
+    );
+
+    await expect(controller.beginInterpreter()).rejects.toThrow(
+      "content moderation request rate limit exceeded",
+    );
+    expect(controller.ownerError).toBe(STARTUP_ERROR_MESSAGE);
+    expect(controller.session.state).toBe("error");
+    expect(live.appendInstructions).not.toHaveBeenCalled();
+  });
+
+  it("keeps unrelated interpreter instruction rate-limit errors on the generic startup path", async () => {
+    const { controller, live } = createController();
+    await controller.startBootstrap();
+    controller.skipBootstrap();
+    live.appendInstructions.mockRejectedValueOnce(
+      new Error("instructions rate limit exceeded"),
+    );
+
+    await expect(controller.beginInterpreter()).rejects.toThrow(
+      "instructions rate limit exceeded",
+    );
+    expect(controller.ownerError).toBe(STARTUP_ERROR_MESSAGE);
+    expect(controller.session.state).toBe("error");
+    expect(controller.hasEnteredInterpreter).toBe(false);
+  });
+
+  it("keeps unrelated first-steering quota errors on the generic startup path", async () => {
+    const { controller, live } = createController();
+    await controller.startBootstrap();
+    controller.skipBootstrap();
+    live.appendInstructions.mockImplementation(async (text: string, policy?: { kind: string }) => {
+      live.callOrder.push(`instructions:${text}`);
+      if (policy?.kind === "first_steering") {
+        throw new Error("payload quota exceeded");
+      }
+      return { eventId: "evt-ok" };
+    });
+
+    await expect(controller.beginInterpreter()).rejects.toThrow("payload quota exceeded");
+    expect(controller.ownerError).toBe(STARTUP_ERROR_MESSAGE);
+    expect(controller.session.state).toBe("error");
+    expect(controller.hasEnteredInterpreter).toBe(false);
   });
 
   it("closes an abandoned context session after 120s", async () => {

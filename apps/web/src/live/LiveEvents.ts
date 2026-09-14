@@ -29,10 +29,13 @@ export function isAppendSizeError(error: unknown): boolean {
   }
   const message = error instanceof Error ? error.message : String(error);
   return (
-    /(?:append|content|context|payload|instructions|thinking|commentary).*(?:too long|too large|exceed|max|limit)/i.test(
+    /\btoo\s+(?:long|large)\b/i.test(message) ||
+    /\b(?:exceeds?|exceeding)\s+(?:the\s+)?(?:maximum|max)\s+(?:tokens?|context|size|length|payload)\s+limit\b/i.test(
       message,
     ) ||
-    /(?:token|tokens).*(?:too long|too large|exceed|max|limit)/i.test(message)
+    /\b(?:maximum|max)\s+(?:tokens?|context|size|length|payload)\s+limit\s+(?:exceeded|reached)\b/i.test(
+      message,
+    )
   );
 }
 
