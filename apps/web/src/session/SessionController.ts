@@ -13,6 +13,7 @@ import { LiveClient, type LiveClientErrorEvent } from "../live/LiveClient";
 import {
   APPEND_CHAR_BUDGET,
   ContextTooLongError,
+  type SessionClosedEvent,
   type TranscriptDeltaEvent,
 } from "../live/LiveEvents";
 import {
@@ -616,11 +617,19 @@ export class SessionController {
   }
 
   private bindLive(): void {
+    const live = this.live;
+    const generation = this.sessionGeneration;
     this.live.onTranscriptDelta = (event) => {
       this.handleTranscriptDelta(event);
     };
     this.live.onSessionStarted = () => {
       this.armMaxSessionTimer();
+    };
+    this.live.onSessionClosed = (event) => {
+      if (this.live !== live || this.sessionGeneration !== generation) {
+        return;
+      }
+      this.handleLiveSessionClosed(event);
     };
     this.live.onError = (event) => {
       this.handleLiveTransportError(event);
@@ -1412,6 +1421,45 @@ export class SessionController {
     console.error("Live transport failed", {
       error: event.error.message,
       state: this.currentSession.state,
+    });
+  }
+
+  private handleLiveSessionClosed(event: SessionClosedEvent): void {
+    const state = this.currentSession.state;
+    if (state === "idle" || state === "ending" || state === "ended" || state === "error") {
+      return;
+    }
+
+    const message = this.enteredInterpreter ? CONNECTION_ERROR_MESSAGE : STARTUP_ERROR_MESSAGE;
+    this.sessionGeneration += 1;
+    this.clearIdleTimer();
+    this.clearMaxSessionTimer();
+    this.clearTurnEngineTimers();
+    this.capturingContext = false;
+    this.capturingBootstrap = false;
+    this.connectInFlight = false;
+    this.interpreterInFlight = false;
+    this.turnClosing = false;
+    this.playbackActive = false;
+    this.leftoverOutputDraining = false;
+    this.leftoverCaptionIdle = true;
+    this.resolveLeftoverDrainWaiters();
+    this.recoveryPromptKind = undefined;
+    this.audio.setOutputAudible(false);
+    if (this.audio.getCaptureStream() !== null) {
+      this.audio.stopCapture();
+    }
+    this.stopPlatformLifecycle();
+    this.hasConnected = false;
+    this.liveConnectStarted = false;
+    this.ownerErrorMessage = message;
+    this.dispatch({
+      type: "SESSION_ERROR",
+      message,
+    });
+    console.error("Live session closed unexpectedly", {
+      reason: event.reason,
+      state,
     });
   }
 

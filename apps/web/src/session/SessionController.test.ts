@@ -6,6 +6,7 @@ import type { LiveClient } from "../live/LiveClient";
 import {
   APPEND_CHAR_BUDGET,
   ContextTooLongError,
+  type SessionClosedEvent,
   type TranscriptDeltaEvent,
 } from "../live/LiveEvents";
 import {
@@ -36,6 +37,7 @@ class FakeLive {
   onTranscriptDelta: ((event: TranscriptDeltaEvent) => void) | null = null;
   onSessionStarted: ((event: { type: "session.started"; session: { id: string } }) => void) | null =
     null;
+  onSessionClosed: ((event: SessionClosedEvent) => void) | null = null;
   onError: ((event: FakeLiveErrorEvent) => void) | null = null;
   readonly callOrder: string[] = [];
   readonly connect = vi.fn(async () => {
@@ -73,6 +75,13 @@ class FakeLive {
       throw new Error("Transcript handler was not installed");
     }
     this.onTranscriptDelta(event);
+  }
+
+  emitSessionClosed(reason = "server_closed"): void {
+    if (this.onSessionClosed === null) {
+      throw new Error("Session closed handler was not installed");
+    }
+    this.onSessionClosed({ type: "session.closed", reason });
   }
 }
 
@@ -944,6 +953,23 @@ async function completeTextOnlyTurn(
   if (controller.session.state !== "listening") {
     throw new Error(`Expected listening after text-only close, got "${controller.session.state}"`);
   }
+}
+
+async function enterOutputtingTurn(
+  controller: SessionController,
+  live: FakeLive,
+  audio: ReturnType<typeof createFakeAudio>,
+): Promise<void> {
+  await enterListening(controller);
+  emitVoice(audio, true);
+  live.emit({ type: "session.input_transcript.delta", delta: "Hello" });
+  live.emit({ type: "session.output_transcript.delta", delta: "Hola" });
+  emitPlayback(audio, true);
+  await flushMicrotasks();
+  emitVoice(audio, false);
+  await flushMicrotasks();
+  expect(controller.session.state).toBe("outputting");
+  expect(controller.session.activeTurn?.speaker).toBe("A");
 }
 
 describe("SessionController turn engine", () => {
@@ -1847,6 +1873,36 @@ describe("SessionController endConversation", () => {
     expect(controller.ownerError).toBe("Incomplete finalization");
     expect(controller.session.state).toBe("idle");
   });
+
+  it("ignores session.closed while a local graceful end is already in progress", async () => {
+    const { controller, live } = createController();
+    await enterListening(controller);
+    let releaseClose: (() => void) | undefined;
+    live.close.mockImplementation(async () => {
+      live.callOrder.push("close");
+      await new Promise<void>((resolve) => {
+        releaseClose = resolve;
+      });
+      return { finalized: true };
+    });
+
+    const ending = controller.endConversation();
+    await flushMicrotasks();
+    expect(controller.session.state).toBe("ending");
+
+    live.emitSessionClosed("client_requested");
+
+    expect(controller.session.state).toBe("ending");
+    expect(controller.ownerError).toBeUndefined();
+    if (releaseClose === undefined) {
+      throw new Error("Live close was not started");
+    }
+    releaseClose();
+    await ending;
+
+    expect(controller.session.state).toBe("idle");
+    expect(controller.ownerError).toBeUndefined();
+  });
 });
 
 describe("SessionController max session duration", () => {
@@ -1908,6 +1964,84 @@ describe("SessionController runtime connection errors", () => {
 
     expect(controller.session.state).toBe("error");
     expect(controller.ownerError).toBe("Unable to continue the live connection.");
+  });
+
+  it("maps remote session.closed while listening to a terminal connection error", async () => {
+    const { controller, live, audio, orientation, wakeLock } = createController();
+    await enterListening(controller);
+    audio.setOutputAudible.mockClear();
+    audio.stopCapture.mockClear();
+
+    live.emitSessionClosed("server_shutdown");
+
+    expect(controller.session.state).toBe("error");
+    expect(controller.ownerError).toBe("Unable to continue the live connection.");
+    expect(audio.setOutputAudible).toHaveBeenLastCalledWith(false);
+    expect(audio.stopCapture).toHaveBeenCalledOnce();
+    expect(audio.getCaptureStream()).toBeNull();
+    expect(orientation.stop).toHaveBeenCalled();
+    expect(wakeLock.release).toHaveBeenCalled();
+
+    live.emit({ type: "session.input_transcript.delta", delta: "ignored" });
+    expect(controller.session.activeTurn).toBeUndefined();
+  });
+
+  it("maps remote session.closed while outputting to a terminal connection error", async () => {
+    const { controller, live, audio } = createController();
+    await enterOutputtingTurn(controller, live, audio);
+    audio.setOutputAudible.mockClear();
+    audio.stopCapture.mockClear();
+
+    live.emitSessionClosed("server_shutdown");
+    await vi.advanceTimersByTimeAsync(runtime.captionIdleMs + runtime.noOutputTimeoutMs);
+    await flushMicrotasks();
+
+    expect(controller.session.state).toBe("error");
+    expect(controller.ownerError).toBe("Unable to continue the live connection.");
+    expect(audio.setOutputAudible).toHaveBeenLastCalledWith(false);
+    expect(audio.stopCapture).toHaveBeenCalledOnce();
+  });
+
+  it("maps remote session.closed during startup to a startup error", async () => {
+    const { controller, live, audio } = createController();
+    await controller.startBootstrap();
+    expect(controller.session.state).toBe("bootstrap");
+    audio.setOutputAudible.mockClear();
+    audio.stopCapture.mockClear();
+
+    live.emitSessionClosed("server_shutdown");
+
+    expect(controller.session.state).toBe("error");
+    expect(controller.ownerError).toBe("Unable to start live translation.");
+    expect(audio.setOutputAudible).toHaveBeenLastCalledWith(false);
+    expect(audio.stopCapture).toHaveBeenCalledOnce();
+    await expect(controller.beginInterpreter()).rejects.toThrow(
+      'Cannot begin interpreter from "error"',
+    );
+  });
+
+  it("ignores stale session.closed callbacks after reset swaps the Live client", async () => {
+    const audio = createFakeAudio();
+    const firstLive = new FakeLive();
+    const replacementLive = new FakeLive();
+    const createLive = vi
+      .fn<() => LiveClient>()
+      .mockReturnValueOnce(firstLive as unknown as LiveClient)
+      .mockReturnValue(replacementLive as unknown as LiveClient);
+    const controller = new SessionController({
+      createLive,
+      audio: audio as unknown as AudioController,
+    });
+    await enterListening(controller);
+    const staleSessionClosed = firstLive.onSessionClosed;
+    expect(staleSessionClosed).toBeTypeOf("function");
+
+    await controller.cancel();
+    expect(controller.session.state).toBe("idle");
+    staleSessionClosed?.({ type: "session.closed", reason: "late_server_close" });
+
+    expect(controller.session.state).toBe("idle");
+    expect(controller.ownerError).toBeUndefined();
   });
 
   it("keeps listening after a recoverable post-start server error", async () => {
