@@ -19,7 +19,6 @@ describe("makeLiveSessionCreator", () => {
       session: {
         model: "gpt-live-1",
         instructions: SILENT_PRE_INTERPRETER_PROMPT,
-        delegation: null,
         store: false,
         audio: { output: { voice: "marin" } },
       },

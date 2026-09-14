@@ -85,9 +85,13 @@ describe("POST /api/live/session", () => {
     });
   });
 
-  it("returns the OpenAI session result unchanged with status 201", async () => {
+  it("returns the OpenAI session result unchanged and releases the creation lease", async () => {
     const createLiveSession = vi.fn().mockResolvedValue(sessionResult);
-    const response = await request(createApp({ createLiveSession }))
+    const release = vi.fn();
+    const leaseRegistry = {
+      acquire: vi.fn().mockReturnValue({ leaseId: "lease-1", release }),
+    };
+    const response = await request(createApp({ createLiveSession, leaseRegistry }))
       .post("/api/live/session")
       .set("Origin", "http://localhost:5173")
       .send({ sdp: "v=0\r\n..." });
@@ -95,19 +99,29 @@ describe("POST /api/live/session", () => {
     expect(response.status).toBe(201);
     expect(response.body).toEqual(sessionResult);
     expect(createLiveSession).toHaveBeenCalledWith("v=0\r\n...");
+    expect(release).toHaveBeenCalledOnce();
   });
 
-  it("rejects the sixth concurrent session", async () => {
-    const createLiveSession = vi.fn().mockResolvedValue(sessionResult);
+  it("rejects the sixth concurrent session creation request", async () => {
+    const pendingSessions: Array<(result: typeof sessionResult) => void> = [];
+    const createLiveSession = vi.fn(
+      () =>
+        new Promise<typeof sessionResult>((resolve) => {
+          pendingSessions.push(resolve);
+        }),
+    );
     const app = createApp({ createLiveSession });
 
-    for (let requestNumber = 0; requestNumber < 5; requestNumber += 1) {
-      const response = await request(app)
-        .post("/api/live/session")
-        .set("Origin", "http://localhost:5173")
-        .send({ sdp: `offer-${requestNumber}` });
-      expect(response.status).toBe(201);
-    }
+    const pendingRequests = Array.from({ length: 5 }, (_, requestNumber) =>
+      Promise.resolve(
+        request(app)
+          .post("/api/live/session")
+          .set("Origin", "http://localhost:5173")
+          .send({ sdp: `offer-${requestNumber}` })
+          .expect(201),
+      ),
+    );
+    await vi.waitFor(() => expect(createLiveSession).toHaveBeenCalledTimes(5));
 
     const response = await request(app)
       .post("/api/live/session")
@@ -117,6 +131,9 @@ describe("POST /api/live/session", () => {
     expect(response.status).toBe(429);
     expect(response.body).toEqual({ error: "Concurrent session limit reached" });
     expect(createLiveSession).toHaveBeenCalledTimes(5);
+
+    for (const resolve of pendingSessions) resolve(sessionResult);
+    await Promise.all(pendingRequests);
   });
 
   it("rate-limits the 21st session creation attempt from the same IP", async () => {
@@ -170,7 +187,7 @@ describe("POST /api/live/session", () => {
     );
   });
 
-  it("maps OpenAI API errors and logs only their status", async () => {
+  it("maps OpenAI API errors and logs safe upstream diagnostics", async () => {
     const apiError = new OpenAI.APIError(
       429,
       { message: "sensitive upstream message" },
@@ -188,7 +205,13 @@ describe("POST /api/live/session", () => {
     expect(response.body).toEqual({ error: "Live session creation failed" });
     expect(logger.error).toHaveBeenCalledWith(
       "OpenAI Live session creation failed",
-      { status: 429 },
+      {
+        status: 429,
+        code: undefined,
+        type: undefined,
+        requestId: null,
+        message: "429 sensitive upstream message",
+      },
     );
   });
 
@@ -214,7 +237,13 @@ describe("POST /api/live/session", () => {
     expect(release).toHaveBeenCalledOnce();
     expect(logger.error).toHaveBeenCalledWith(
       "OpenAI Live session creation failed",
-      { status: 502 },
+      {
+        status: 502,
+        code: undefined,
+        type: undefined,
+        requestId: undefined,
+        message: "sensitive connection failure",
+      },
     );
   });
 });

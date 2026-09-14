@@ -62,11 +62,14 @@ export function createLiveSessionRouter(
       const session = await createLiveSession(parsedRequest.data.sdp);
       response.status(201).json(session);
     } catch (error) {
-      lease.release();
       if (error instanceof OpenAI.APIError) {
         const status = error.status ?? 502;
         logger.error("OpenAI Live session creation failed", {
           status,
+          code: error.code,
+          type: error.type,
+          requestId: error.requestID,
+          message: error.message,
         });
         response
           .status(status)
@@ -77,6 +80,8 @@ export function createLiveSessionRouter(
         errorType: error instanceof Error ? error.name : typeof error,
       });
       throw error;
+    } finally {
+      lease.release();
     }
   });
 

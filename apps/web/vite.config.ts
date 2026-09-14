@@ -62,6 +62,7 @@ export default defineConfig({
   },
   preview: {
     port: 4173,
+    allowedHosts: ["mg-notebook.tail1098da.ts.net"],
     proxy: {
       "/api": "http://127.0.0.1:3001",
     },
