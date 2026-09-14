@@ -4,13 +4,11 @@
  */
 export function BootstrapPrompt({
   transcript,
-  onMicrophone,
   onSkip,
   onAccept,
   actionsDisabled = false,
 }: {
   transcript: string;
-  onMicrophone: () => void;
   onSkip: () => void;
   onAccept: () => void;
   actionsDisabled?: boolean;
@@ -19,10 +17,13 @@ export function BootstrapPrompt({
   return (
     <section>
       <p>What language does the other person most likely speak?</p>
-      <button type="button" onClick={onMicrophone} aria-label="microphone">
-        Say the language
-      </button>
-      {transcript.length > 0 ? <p>{transcript}</p> : null}
+      <p>Listening automatically. Ask them to say the language.</p>
+      {transcript.length > 0 ? (
+        <div aria-live="polite">
+          <p>Recognized language hint</p>
+          <p>{transcript}</p>
+        </div>
+      ) : null}
       {hint.length > 0 ? (
         <button type="button" disabled={actionsDisabled} onClick={onAccept}>
           Accept

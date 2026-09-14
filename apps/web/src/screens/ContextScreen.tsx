@@ -156,7 +156,6 @@ export function ContextScreen({
         <BootstrapPrompt
           transcript={controller.bootstrapText}
           actionsDisabled={controller.isInterpreterStarting === true}
-          onMicrophone={() => undefined}
           onSkip={() => {
             void handleSkip();
           }}
