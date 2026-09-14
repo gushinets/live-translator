@@ -1133,9 +1133,13 @@ describe("SessionController turn engine", () => {
   it("keeps translated text usable when remote audio playback cannot start", async () => {
     const { controller, live, audio } = createController();
     const playError = new Error("autoplay blocked");
-    audio.audioElement.play = vi.fn(async () => {
-      throw playError;
-    });
+    let rejectPlay: ((error: Error) => void) | undefined;
+    audio.audioElement.play = vi.fn(
+      () =>
+        new Promise<void>((_resolve, reject) => {
+          rejectPlay = reject;
+        }),
+    );
     vi.spyOn(console, "error").mockImplementation(() => {});
 
     await enterListening(controller);
@@ -1153,9 +1157,14 @@ describe("SessionController turn engine", () => {
 
     expect(controller.session.state).toBe("outputting");
     expect(controller.session.activeTurn?.translatedText).toBe("Hola");
+
+    emitPlayback(audio, true);
+    await flushMicrotasks();
+
     expect(controller.session.activeTurn?.audioOutputStarted).toBe(false);
 
     emitVoice(audio, false);
+    rejectPlay?.(playError);
     await flushMicrotasks();
     await vi.advanceTimersByTimeAsync(runtime.audioStartGraceMs);
     await flushMicrotasks();
@@ -1163,14 +1172,44 @@ describe("SessionController turn engine", () => {
     expect(controller.session.state).toBe("listening");
     expect(controller.session.recentTurns[0]?.translatedText).toBe("Hola");
     expect(controller.session.recentTurns[0]?.audioOutputStarted).toBe(false);
+    expect(controller.session.recentTurns[0]?.firstAudibleOutputAtMs).toBeUndefined();
     expect(controller.session.expectedSpeaker).toBe("B");
     expect(controller.inputReady).toBe(true);
+    expect(controller.metrics.snapshot().textOnlyCompletionCount).toBe(1);
+    expect(controller.metrics.snapshot().lastTurn?.t2Ms).toBeUndefined();
 
     emitVoice(audio, true);
     live.emit({ type: "session.input_transcript.delta", delta: "Next" });
 
     expect(controller.session.activeTurn?.originalText).toBe("Next");
     expect(controller.session.expectedSpeaker).toBe("B");
+  });
+
+  it("tracks buffered remote playback activity once media playback succeeds", async () => {
+    const { controller, live, audio } = createController();
+    let resolvePlay: (() => void) | undefined;
+    audio.audioElement.play = vi.fn(
+      () =>
+        new Promise<void>((resolve) => {
+          resolvePlay = resolve;
+        }),
+    );
+
+    await enterListening(controller);
+    controller.handleRemoteStream({ id: "remote" } as MediaStream);
+    emitVoice(audio, true);
+    live.emit({ type: "session.input_transcript.delta", delta: "Hello" });
+    live.emit({ type: "session.output_transcript.delta", delta: "Hola" });
+
+    emitPlayback(audio, true);
+    await flushMicrotasks();
+    expect(controller.session.activeTurn?.audioOutputStarted).toBe(false);
+
+    resolvePlay?.();
+    await flushMicrotasks();
+
+    expect(controller.session.activeTurn?.audioOutputStarted).toBe(true);
+    expect(controller.session.activeTurn?.firstAudibleOutputAtMs).toBeDefined();
   });
 
   it("does not mute Gate B merely because audible output started", async () => {

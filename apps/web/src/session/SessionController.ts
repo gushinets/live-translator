@@ -45,6 +45,8 @@ export type RecoveryPrompt = "repeat" | "resume-repeat";
 
 export type LifecycleSuspendReason = "orientation" | "visibility" | "audio";
 
+type RemotePlaybackState = "ready" | "pending" | "failed";
+
 export interface SessionControllerDeps {
   createLive: () => LiveClient;
   audio: Pick<
@@ -106,6 +108,9 @@ export class SessionController {
   private lifecycleQueue: Promise<void> = Promise.resolve();
   private gateBMuted = false;
   private playbackActive = false;
+  private remotePlaybackGeneration = 0;
+  private remotePlaybackState: RemotePlaybackState = "ready";
+  private pendingRemotePlaybackActivity: AudioActivityEvent | null = null;
   private turnClosing = false;
   private speechInputReady = false;
   private recoveryPromptKind: RecoveryPrompt | undefined;
@@ -272,14 +277,63 @@ export class SessionController {
   }
 
   handleRemoteStream(stream: MediaStream): void {
-    const generation = this.sessionGeneration;
+    const sessionGeneration = this.sessionGeneration;
+    const playbackGeneration = this.remotePlaybackGeneration + 1;
+    this.remotePlaybackGeneration = playbackGeneration;
+    this.remotePlaybackState = "pending";
+    this.pendingRemotePlaybackActivity = null;
     this.audio.attachRemoteStream(stream);
-    void this.audio.audioElement.play().catch((error: unknown) => {
-      if (this.sessionGeneration !== generation) {
-        return;
-      }
-      console.error("Remote audio play failed", { error });
-    });
+    void this.audio.audioElement
+      .play()
+      .then(() => {
+        if (
+          this.sessionGeneration !== sessionGeneration ||
+          this.remotePlaybackGeneration !== playbackGeneration
+        ) {
+          return;
+        }
+        this.remotePlaybackState = "ready";
+        const pending = this.pendingRemotePlaybackActivity;
+        this.pendingRemotePlaybackActivity = null;
+        if (pending?.active === true) {
+          void this.handlePlaybackActivity(pending);
+        }
+      })
+      .catch((error: unknown) => {
+        if (
+          this.sessionGeneration !== sessionGeneration ||
+          this.remotePlaybackGeneration !== playbackGeneration
+        ) {
+          return;
+        }
+        this.remotePlaybackState = "failed";
+        this.pendingRemotePlaybackActivity = null;
+        if (this.playbackActive) {
+          this.playbackActive = false;
+          this.finishPlaybackIdleWait();
+        }
+        console.error("Remote audio play failed", { error });
+      });
+  }
+
+  private acceptRemotePlaybackActivity(event: AudioActivityEvent): boolean {
+    if (this.remotePlaybackState === "ready") {
+      return true;
+    }
+    if (this.remotePlaybackState === "pending") {
+      this.pendingRemotePlaybackActivity = event.active ? event : null;
+    }
+    return false;
+  }
+
+  private resetRemotePlaybackTracking(): void {
+    this.remotePlaybackGeneration += 1;
+    this.remotePlaybackState = "ready";
+    this.pendingRemotePlaybackActivity = null;
+    if (this.playbackActive) {
+      this.playbackActive = false;
+      this.finishPlaybackIdleWait();
+    }
   }
 
   async resumeFromSourceTimeout(): Promise<void> {
@@ -827,6 +881,9 @@ export class SessionController {
   }
 
   private async handlePlaybackActivity(event: AudioActivityEvent): Promise<void> {
+    if (!this.acceptRemotePlaybackActivity(event)) {
+      return;
+    }
     const wasActive = this.playbackActive;
     this.playbackActive = event.active;
     if (!event.active) {
@@ -1549,6 +1606,7 @@ export class SessionController {
     this.turnClosing = false;
     this.speechInputReady = false;
     this.playbackActive = false;
+    this.resetRemotePlaybackTracking();
     this.leftoverOutputDraining = false;
     this.leftoverCaptionIdle = true;
     this.resolveLeftoverDrainWaiters();
@@ -1962,6 +2020,7 @@ export class SessionController {
     this.interpreterWork = null;
     this.gateBMuted = false;
     this.playbackActive = false;
+    this.resetRemotePlaybackTracking();
     this.turnClosing = false;
     this.speechInputReady = false;
     this.leftoverOutputDraining = false;
