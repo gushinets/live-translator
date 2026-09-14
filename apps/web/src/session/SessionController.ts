@@ -585,6 +585,7 @@ export class SessionController {
     if (this.currentSession.state === "idle" || this.currentSession.state === "ended") {
       throw new Error(`Cannot end a session in state "${this.currentSession.state}"`);
     }
+    this.sessionGeneration += 1;
     this.clearIdleTimer();
     this.clearMaxSessionTimer();
     this.clearTurnEngineTimers();
@@ -931,7 +932,17 @@ export class SessionController {
     if (this.sessionGeneration !== generation) {
       return;
     }
-    await this.unmuteGateB();
+    try {
+      await this.unmuteGateB();
+    } catch (error) {
+      if (this.sessionGeneration !== generation) {
+        return;
+      }
+      throw error;
+    }
+    if (this.sessionGeneration !== generation) {
+      return;
+    }
     if (sourceIdleAtMs === undefined) {
       throw new Error("Cannot complete a turn without sourceIdleAtMs");
     }
@@ -960,7 +971,18 @@ export class SessionController {
     this.dispatch({ type: "TURN_FAILED" });
     this.beginLeftoverOutputDrain();
     this.recoveryPromptKind = "repeat";
-    await this.unmuteGateB();
+    const generation = this.sessionGeneration;
+    try {
+      await this.unmuteGateB();
+    } catch (error) {
+      if (this.sessionGeneration !== generation) {
+        return;
+      }
+      throw error;
+    }
+    if (this.sessionGeneration !== generation) {
+      return;
+    }
     this.notify();
   }
 

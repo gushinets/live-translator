@@ -1903,6 +1903,83 @@ describe("SessionController endConversation", () => {
     expect(controller.session.state).toBe("idle");
     expect(controller.ownerError).toBeUndefined();
   });
+
+  it("does not unmute after close rejects a pending later steering ack", async () => {
+    const { controller, live, audio } = createController();
+    let rejectSteering: ((error: Error) => void) | undefined;
+    live.appendInstructions.mockImplementation(async (text: string, policy?: { kind: string }) => {
+      live.callOrder.push(`instructions:${text}`);
+      if (policy?.kind === "later_steering") {
+        await new Promise<void>((_resolve, reject) => {
+          rejectSteering = reject;
+        });
+      }
+      return { eventId: "evt-steer" };
+    });
+    live.setInputMuted.mockImplementation(async (muted: boolean) => {
+      live.callOrder.push(`setInputMuted:${muted}`);
+    });
+    live.close.mockImplementation(async () => {
+      live.callOrder.push("close");
+      rejectSteering?.(new Error("Live client is closing"));
+      return { finalized: true };
+    });
+    await enterListening(controller);
+    emitVoice(audio, true);
+    live.emit({ type: "session.input_transcript.delta", delta: "Hello" });
+    live.emit({ type: "session.output_transcript.delta", delta: "Hola" });
+    emitVoice(audio, false);
+    await flushMicrotasks();
+    await vi.advanceTimersByTimeAsync(runtime.audioStartGraceMs);
+    await flushMicrotasks();
+    await vi.waitFor(() => {
+      if (rejectSteering === undefined) {
+        throw new Error("later steering append was not started");
+      }
+    });
+
+    await controller.endConversation();
+    await flushMicrotasks();
+
+    const closeIndex = live.callOrder.indexOf("close");
+    expect(closeIndex).toBeGreaterThanOrEqual(0);
+    expect(live.callOrder.slice(closeIndex + 1)).not.toContain("setInputMuted:false");
+    expect(controller.session.state).toBe("idle");
+  });
+
+  it("handles a pending unmute rejection after local end starts", async () => {
+    const { controller, live, audio } = createController();
+    let rejectUnmute: ((error: Error) => void) | undefined;
+    live.setInputMuted.mockImplementation(async (muted: boolean) => {
+      live.callOrder.push(`setInputMuted:${muted}`);
+      if (!muted) {
+        await new Promise<void>((_resolve, reject) => {
+          rejectUnmute = reject;
+        });
+      }
+    });
+    await enterListening(controller);
+    emitVoice(audio, true);
+    live.emit({ type: "session.input_transcript.delta", delta: "Hello" });
+    live.emit({ type: "session.output_transcript.delta", delta: "Hola" });
+    emitVoice(audio, false);
+    await flushMicrotasks();
+    await vi.advanceTimersByTimeAsync(runtime.audioStartGraceMs);
+    await flushMicrotasks();
+    await vi.waitFor(() => {
+      if (rejectUnmute === undefined) {
+        throw new Error("unmute was not started");
+      }
+    });
+
+    const ending = controller.endConversation();
+    rejectUnmute?.(new Error("Live client is closing"));
+    await ending;
+    await flushMicrotasks();
+
+    expect(controller.session.state).toBe("idle");
+    expect(controller.ownerError).toBeUndefined();
+  });
 });
 
 describe("SessionController max session duration", () => {
