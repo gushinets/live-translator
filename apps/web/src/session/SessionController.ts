@@ -50,6 +50,7 @@ export interface SessionControllerDeps {
     AudioController,
     | "primeOutput"
     | "setOutputAudible"
+    | "setCaptureEnabled"
     | "startCapture"
     | "stopCapture"
     | "getCaptureStream"
@@ -1618,6 +1619,7 @@ export class SessionController {
     if (!this.conversationCanSuspend()) {
       return;
     }
+    const generation = this.sessionGeneration;
     const active = this.currentSession.activeTurn;
     this.discardedUnfinishedOnSuspend =
       active !== undefined && active.turnCompletedAtMs === undefined && !active.corrected;
@@ -1626,15 +1628,34 @@ export class SessionController {
     if (this.playbackActive && !this.leftoverOutputDraining) {
       this.beginLeftoverOutputDrain();
     }
-    this.audio.setOutputAudible(false);
-    await this.muteGateB();
-    if (!this.conversationCanSuspend()) {
+    try {
+      this.audio.setCaptureEnabled(false);
+    } catch (error) {
+      this.ownerErrorMessage = error instanceof Error ? error.message : String(error);
+      this.dispatch({
+        type: "SESSION_ERROR",
+        message: this.ownerErrorMessage,
+      });
+      console.error("Lifecycle suspend failed", {
+        error,
+        state: this.currentSession.state,
+      });
       return;
     }
+    this.audio.setOutputAudible(false);
     this.dispatch({ type: "SUSPEND" });
     this.lifecycleSuspendReason = reason;
     this.recoveryPromptKind = undefined;
     this.notify();
+    try {
+      if (!(await this.muteGateB(generation))) {
+        return;
+      }
+    } catch {
+      if (this.sessionGeneration !== generation) {
+        return;
+      }
+    }
   }
 
   private resumePreconditionsMet(): boolean {
@@ -1750,7 +1771,6 @@ export class SessionController {
     }
 
     this.audio.resetVoiceActivityBaseline();
-    this.audio.setOutputAudible(true);
     if (!(await this.unmuteGateB(generation))) {
       this.audio.setOutputAudible(false);
       return;
@@ -1763,6 +1783,13 @@ export class SessionController {
       await this.muteGateB(generation);
       return;
     }
+    try {
+      this.audio.setCaptureEnabled(true);
+    } catch (error) {
+      this.failLifecycleResume(error);
+      return;
+    }
+    this.audio.setOutputAudible(true);
     this.dispatch({ type: "RESUME" });
     this.recoveryPromptKind = this.discardedUnfinishedOnSuspend ? "repeat" : undefined;
     this.lifecycleSuspendReason = undefined;

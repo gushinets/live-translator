@@ -100,11 +100,14 @@ function createFakeAudio() {
     getTracks: () => [captureTrack],
   } as unknown as MediaStream;
   let stream: MediaStream | null = null;
-  return {
+  const audio = {
     captureStream,
     captureTrack,
     primeOutput: vi.fn(async () => {}),
     setOutputAudible: vi.fn(),
+    setCaptureEnabled: vi.fn((enabled: boolean) => {
+      captureTrack.enabled = enabled;
+    }),
     startCapture: vi.fn(async () => {
       stream = captureStream;
     }),
@@ -122,6 +125,7 @@ function createFakeAudio() {
     onAudioRestored: null as (() => void) | null,
     resetVoiceActivityBaseline: vi.fn(),
   };
+  return audio;
 }
 
 class FakeOrientation {
@@ -2287,6 +2291,8 @@ describe("SessionController PWA lifecycle suspension (§11.3 / §19)", () => {
     expect(controller.session.activeTurn).toBeUndefined();
     expect(controller.session.recentTurns[0]?.status).toBe("discarded");
     expect(controller.session.expectedSpeaker).toBe("A");
+    expect(audio.setCaptureEnabled).toHaveBeenLastCalledWith(false);
+    expect(audio.captureTrack.enabled).toBe(false);
     expect(audio.setOutputAudible).toHaveBeenLastCalledWith(false);
     expect(live.setInputMuted).toHaveBeenCalledWith(true);
     expect(controller.recoveryPrompt).toBeUndefined();
@@ -2307,9 +2313,16 @@ describe("SessionController PWA lifecycle suspension (§11.3 / §19)", () => {
 
     expect(controller.session.state).toBe("suspended");
     expect(controller.session.recentTurns[0]?.status).toBe("discarded");
+    expect(audio.setCaptureEnabled).toHaveBeenLastCalledWith(false);
+    expect(audio.captureTrack.enabled).toBe(false);
     expect(audio.setOutputAudible).toHaveBeenLastCalledWith(false);
     expect(live.setInputMuted).toHaveBeenCalledWith(true);
     expect(controller.session.expectedSpeaker).toBe("A");
+
+    emitVoice(audio, true);
+    live.emit({ type: "session.input_transcript.delta", delta: "ignored" });
+    expect(controller.session.state).toBe("suspended");
+    expect(controller.session.activeTurn).toBeUndefined();
   });
 
   it("audio interruption while a source turn is active suspends and discards the unfinished turn", async () => {
@@ -2328,8 +2341,96 @@ describe("SessionController PWA lifecycle suspension (§11.3 / §19)", () => {
 
     expect(controller.session.state).toBe("suspended");
     expect(controller.session.recentTurns[0]?.status).toBe("discarded");
+    expect(audio.setCaptureEnabled).toHaveBeenLastCalledWith(false);
+    expect(audio.captureTrack.enabled).toBe(false);
     expect(audio.setOutputAudible).toHaveBeenLastCalledWith(false);
     expect(live.setInputMuted).toHaveBeenCalledWith(true);
+  });
+
+  it("enters suspended immediately while Gate B mute is still pending", async () => {
+    const visibility = new FakeVisibility();
+    const live = new FakeLive();
+    let releaseMute: (() => void) | undefined;
+    live.setInputMuted.mockImplementation(async (muted: boolean) => {
+      live.callOrder.push(`setInputMuted:${muted}`);
+      if (muted) {
+        await new Promise<void>((resolve) => {
+          releaseMute = resolve;
+        });
+      }
+    });
+    const { controller, audio } = createController({
+      live,
+      orientation: new FakeOrientation(),
+      visibility,
+      wakeLock: new FakeWakeLock(),
+    });
+    await startSourceTurn(controller, live, audio);
+
+    visibility.hide();
+    await waitUntil(() => releaseMute !== undefined);
+
+    expect(controller.session.state).toBe("suspended");
+    expect(audio.setCaptureEnabled).toHaveBeenLastCalledWith(false);
+    expect(audio.captureTrack.enabled).toBe(false);
+    expect(audio.setOutputAudible).toHaveBeenLastCalledWith(false);
+
+    releaseMute?.();
+    await flushLifecycle();
+  });
+
+  it("stays suspended when Gate B mute times out during suspend", async () => {
+    const visibility = new FakeVisibility();
+    const live = new FakeLive();
+    live.setInputMuted.mockImplementation(async (muted: boolean) => {
+      live.callOrder.push(`setInputMuted:${muted}`);
+      if (muted) {
+        throw new AckTimeoutError("evt-mute");
+      }
+    });
+    const { controller, audio } = createController({
+      live,
+      orientation: new FakeOrientation(),
+      visibility,
+      wakeLock: new FakeWakeLock(),
+    });
+    await startSourceTurn(controller, live, audio);
+
+    visibility.hide();
+    await flushLifecycle();
+
+    expect(controller.session.state).toBe("suspended");
+    expect(audio.setCaptureEnabled).toHaveBeenLastCalledWith(false);
+    expect(audio.captureTrack.enabled).toBe(false);
+    expect(audio.setOutputAudible).toHaveBeenLastCalledWith(false);
+    expect(live.setInputMuted).not.toHaveBeenLastCalledWith(false);
+  });
+
+  it("stays suspended when Gate B mute rejects during suspend", async () => {
+    const visibility = new FakeVisibility();
+    const live = new FakeLive();
+    live.setInputMuted.mockImplementation(async (muted: boolean) => {
+      live.callOrder.push(`setInputMuted:${muted}`);
+      if (muted) {
+        throw new Error("network failed");
+      }
+    });
+    const { controller, audio } = createController({
+      live,
+      orientation: new FakeOrientation(),
+      visibility,
+      wakeLock: new FakeWakeLock(),
+    });
+    await startSourceTurn(controller, live, audio);
+
+    visibility.hide();
+    await flushLifecycle();
+
+    expect(controller.session.state).toBe("suspended");
+    expect(audio.setCaptureEnabled).toHaveBeenLastCalledWith(false);
+    expect(audio.captureTrack.enabled).toBe(false);
+    expect(audio.setOutputAudible).toHaveBeenLastCalledWith(false);
+    expect(live.setInputMuted).not.toHaveBeenLastCalledWith(false);
   });
 
   it("successful lifecycle resume appends expected-speaker steering, returns to listening, and asks the same source to repeat", async () => {
@@ -2358,8 +2459,16 @@ describe("SessionController PWA lifecycle suspension (§11.3 / §19)", () => {
       buildSteering({ expectedSource: "A", recipient: "B" }),
       { kind: "later_steering", sessionState: "suspended" },
     );
+    expect(audio.setCaptureEnabled).toHaveBeenLastCalledWith(true);
+    expect(audio.captureTrack.enabled).toBe(true);
     expect(audio.setOutputAudible).toHaveBeenLastCalledWith(true);
     expect(live.setInputMuted).toHaveBeenLastCalledWith(false);
+    const unmuteOrder = live.setInputMuted.mock.invocationCallOrder.at(-1);
+    const gateAOrder = audio.setCaptureEnabled.mock.invocationCallOrder.at(-1);
+    if (unmuteOrder === undefined || gateAOrder === undefined) {
+      throw new Error("Gate B or Gate A restore was not recorded");
+    }
+    expect(unmuteOrder).toBeLessThan(gateAOrder);
   });
 
   it("portrait restore after landscape resume asks the same source to repeat", async () => {
@@ -2720,6 +2829,10 @@ describe("SessionController PWA lifecycle suspension (§11.3 / §19)", () => {
     visibility.show();
     expect(controller.recoveryPrompt).toBeUndefined();
     expect(live.setInputMuted).not.toHaveBeenLastCalledWith(false);
+    expect(controller.session.state).toBe("suspended");
+    expect(audio.setCaptureEnabled).toHaveBeenLastCalledWith(false);
+    expect(audio.captureTrack.enabled).toBe(false);
+
     const finishMute = releaseMute;
     if (finishMute === undefined) {
       throw new Error("Gate B mute did not start");
@@ -2729,6 +2842,8 @@ describe("SessionController PWA lifecycle suspension (§11.3 / §19)", () => {
 
     expect(controller.session.state).toBe("listening");
     expect(controller.recoveryPrompt).toBe("repeat");
+    expect(audio.setCaptureEnabled).toHaveBeenLastCalledWith(true);
+    expect(audio.captureTrack.enabled).toBe(true);
     expect(audio.setOutputAudible).toHaveBeenLastCalledWith(true);
     expect(live.setInputMuted).toHaveBeenLastCalledWith(false);
   });
