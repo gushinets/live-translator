@@ -342,6 +342,22 @@ export class SessionController {
       throw new Error(`Cannot resume from "${this.currentSession.state}"`);
     }
     const generation = this.sessionGeneration;
+    const ensureMuted = async (): Promise<void> => {
+      if (this.sessionGeneration !== generation || this.currentSession.state !== "suspended") {
+        return;
+      }
+      try {
+        await this.muteGateB(generation);
+      } catch (error) {
+        if (this.sessionGeneration !== generation) {
+          return;
+        }
+        console.error("Gate B re-mute failed while recovering from MAX_SOURCE_MS", {
+          error,
+          state: this.currentSession.state,
+        });
+      }
+    };
     try {
       this.assertResumeMedia();
     } catch (error) {
@@ -350,21 +366,42 @@ export class SessionController {
       throw error;
     }
     this.audio.resetVoiceActivityBaseline();
+    if (this.sessionGeneration !== generation || this.currentSession.state !== "suspended") {
+      this.audio.setOutputAudible(false);
+      return;
+    }
     try {
       if (!(await this.unmuteGateB(generation))) {
         this.audio.setOutputAudible(false);
         return;
       }
     } catch (error) {
-      if (this.sessionGeneration !== generation) {
+      if (this.sessionGeneration !== generation || this.currentSession.state !== "suspended") {
         return;
       }
       this.audio.setOutputAudible(false);
       this.failLifecycleResume(error);
       throw error;
     }
-    if (this.sessionGeneration !== generation) {
+    if (this.sessionGeneration !== generation || this.currentSession.state !== "suspended") {
       this.audio.setOutputAudible(false);
+      await ensureMuted();
+      return;
+    }
+    try {
+      this.audio.setCaptureEnabled(true);
+    } catch (error) {
+      if (this.sessionGeneration !== generation) {
+        return;
+      }
+      this.audio.setOutputAudible(false);
+      await ensureMuted();
+      this.failLifecycleResume(error);
+      throw error;
+    }
+    if (this.sessionGeneration !== generation || this.currentSession.state !== "suspended") {
+      this.audio.setOutputAudible(false);
+      await ensureMuted();
       return;
     }
     this.audio.setOutputAudible(true);
@@ -1164,11 +1201,10 @@ export class SessionController {
     }
     this.clearTurnEngineTimers();
     const generation = this.sessionGeneration;
+    this.speechInputReady = false;
     this.turnClosing = true;
     try {
-      try {
-        await this.muteGateB(generation);
-      } catch (error) {
+      void this.muteGateB(generation).catch((error) => {
         if (this.sessionGeneration !== generation) {
           return;
         }
@@ -1177,13 +1213,25 @@ export class SessionController {
             error,
             state: this.currentSession.state,
           });
+          return;
         }
-      }
+        console.error("Gate B mute failed during source timeout", {
+          error,
+          state: this.currentSession.state,
+        });
+      });
       if (this.sessionGeneration !== generation) {
         return;
       }
+      try {
+        this.audio.setCaptureEnabled(false);
+      } catch (error) {
+        console.error("Gate A close failed during source timeout", {
+          error,
+          state: this.currentSession.state,
+        });
+      }
       this.audio.setOutputAudible(false);
-      this.speechInputReady = false;
       this.dispatch({ type: "TURN_FAILED" });
       this.beginLeftoverOutputDrain();
       this.dispatch({ type: "SUSPEND" });
