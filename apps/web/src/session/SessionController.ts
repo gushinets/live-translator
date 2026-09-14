@@ -36,6 +36,7 @@ import {
 import {
   CONNECTION_ERROR_MESSAGE,
   INCOMPLETE_FINALIZATION_MESSAGE,
+  MICROPHONE_CAPTURE_ENDED_MESSAGE,
   MICROPHONE_DENIED_MESSAGE,
   STARTUP_ERROR_MESSAGE,
 } from "./userFacingErrors";
@@ -62,6 +63,7 @@ export interface SessionControllerDeps {
     onPlaybackActivity: AudioController["onPlaybackActivity"];
     onAudioInterruption: AudioController["onAudioInterruption"];
     onAudioRestored: AudioController["onAudioRestored"];
+    onCaptureEnded: AudioController["onCaptureEnded"];
   };
   orientation?: OrientationController;
   visibility?: VisibilityController;
@@ -666,6 +668,9 @@ export class SessionController {
     };
     this.audio.onAudioRestored = () => {
       void this.handleAudioRestored();
+    };
+    this.audio.onCaptureEnded = () => {
+      this.handleCaptureEnded();
     };
   }
 
@@ -1641,6 +1646,42 @@ export class SessionController {
       await this.wakeLock.reacquire();
       await this.resumeFromLifecycle();
     });
+  }
+
+  private handleCaptureEnded(): void {
+    const state = this.currentSession.state;
+    if (state === "idle" || state === "ending" || state === "ended" || state === "error") {
+      return;
+    }
+
+    this.sessionGeneration += 1;
+    this.clearIdleTimer();
+    this.clearMaxSessionTimer();
+    this.clearTurnEngineTimers();
+    this.capturingContext = false;
+    this.capturingBootstrap = false;
+    this.connectInFlight = false;
+    this.interpreterInFlight = false;
+    this.turnClosing = false;
+    this.speechInputReady = false;
+    this.playbackActive = false;
+    this.leftoverOutputDraining = false;
+    this.leftoverCaptionIdle = true;
+    this.resolveLeftoverDrainWaiters();
+    this.recoveryPromptKind = undefined;
+    this.audio.setOutputAudible(false);
+    if (this.audio.getCaptureStream() !== null) {
+      this.audio.stopCapture();
+    }
+    this.stopPlatformLifecycle();
+    this.hasConnected = false;
+    this.liveConnectStarted = false;
+    this.ownerErrorMessage = MICROPHONE_CAPTURE_ENDED_MESSAGE;
+    this.dispatch({
+      type: "SESSION_ERROR",
+      message: MICROPHONE_CAPTURE_ENDED_MESSAGE,
+    });
+    console.error("Microphone capture ended", { state });
   }
 
   private clearTurnEngineTimersKeepingLeftoverDrain(): void {

@@ -70,6 +70,7 @@ export class AudioController {
   onPlaybackActivity: ((event: AudioActivityEvent) => void) | null = null;
   onAudioInterruption: (() => void) | null = null;
   onAudioRestored: (() => void) | null = null;
+  onCaptureEnded: (() => void) | null = null;
 
   readonly audioElement: HTMLAudioElement;
 
@@ -281,8 +282,10 @@ export class AudioController {
   private contextWasInterrupted = false;
 
   private readonly handleCaptureEnded = (): void => {
-    this.onAudioInterruption?.();
-    this.onAudioRestored?.();
+    if (this.captureTrack?.readyState !== "ended") {
+      return;
+    }
+    this.onCaptureEnded?.();
   };
 
   private readonly handleContextStateChange = (): void => {

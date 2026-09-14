@@ -123,6 +123,7 @@ function createFakeAudio() {
     onPlaybackActivity: null as ((event: { active: boolean; atMs: number }) => void) | null,
     onAudioInterruption: null as (() => void) | null,
     onAudioRestored: null as (() => void) | null,
+    onCaptureEnded: null as (() => void) | null,
     resetVoiceActivityBaseline: vi.fn(),
   };
   return audio;
@@ -2791,6 +2792,38 @@ describe("SessionController PWA lifecycle suspension (§11.3 / §19)", () => {
 
     expect(controller.session.state).toBe("error");
     expect(controller.ownerError).toMatch(/microphone/i);
+    expect(controller.inputReady).toBe(false);
+    expect(audio.getCaptureStream()).toBeNull();
+    expect(live.setInputMuted).not.toHaveBeenCalledWith(true);
+    const originalText = controller.session.activeTurn?.originalText;
+    live.emit({ type: "session.input_transcript.delta", delta: "ignored" });
+    expect(controller.session.activeTurn?.originalText).toBe(originalText);
+  });
+
+  it("keeps a suspended session terminal when the mic track ends before restore", async () => {
+    const visibility = new FakeVisibility();
+    const { audio, track } = createDispatchableAudio();
+    const { controller, live } = createController({
+      audio,
+      orientation: new FakeOrientation(),
+      visibility,
+      wakeLock: new FakeWakeLock(),
+    });
+    await startSourceTurn(controller, live, audio);
+    visibility.hide();
+    await flushMicrotasks();
+    expect(controller.session.state).toBe("suspended");
+
+    track.end();
+    await flushLifecycle();
+    visibility.show();
+    await flushLifecycle();
+
+    expect(controller.session.state).toBe("error");
+    expect(controller.ownerError).toMatch(/microphone/i);
+    expect(controller.inputReady).toBe(false);
+    expect(audio.getCaptureStream()).toBeNull();
+    expect(live.setInputMuted).not.toHaveBeenLastCalledWith(false);
   });
 
   it("resumes after AudioContext leaves interrupted when media is still live", async () => {
