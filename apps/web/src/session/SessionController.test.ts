@@ -438,6 +438,7 @@ describe("SessionController", () => {
     ]);
     expect(audio.setOutputAudible).toHaveBeenLastCalledWith(true);
     expect(controller.session.state).toBe("listening");
+    expect(controller.inputReady).toBe(true);
     expect(live.setInputMuted).not.toHaveBeenCalled();
   });
 
@@ -959,6 +960,28 @@ async function completeTextOnlyTurn(
   }
 }
 
+async function completeTextOnlyTurnUntilLaterSteeringStarts(
+  controller: SessionController,
+  live: FakeLive,
+  audio: ReturnType<typeof createFakeAudio>,
+): Promise<void> {
+  emitVoice(audio, true);
+  live.emit({
+    type: "session.input_transcript.delta",
+    delta: "Hello",
+    start_ms: 10,
+    end_ms: 40,
+  });
+  live.emit({ type: "session.output_transcript.delta", delta: "Hola" });
+  emitVoice(audio, false);
+  await flushMicrotasks();
+  await vi.advanceTimersByTimeAsync(runtime.audioStartGraceMs);
+  await flushMicrotasks();
+  if (controller.session.state !== "listening") {
+    throw new Error(`Expected listening during text-only close, got "${controller.session.state}"`);
+  }
+}
+
 async function enterOutputtingTurn(
   controller: SessionController,
   live: FakeLive,
@@ -1200,6 +1223,7 @@ describe("SessionController turn engine", () => {
     expect(audio.setOutputAudible).toHaveBeenLastCalledWith(true);
     expect(controller.session.state).toBe("listening");
     expect(controller.session.expectedSpeaker).toBe("A");
+    expect(controller.inputReady).toBe(true);
     expect(controller.recoveryPrompt).toBeUndefined();
   });
 
@@ -1220,6 +1244,7 @@ describe("SessionController turn engine", () => {
     expect(controller.session.state).toBe("listening");
     expect(controller.session.expectedSpeaker).toBe("B");
     expect(controller.steeringDegraded).toBe(true);
+    expect(controller.inputReady).toBe(true);
   });
 
   it("ignores residual output transcript after the active turn is cleared", async () => {
@@ -1354,6 +1379,8 @@ describe("SessionController turn engine", () => {
 
     expect(controller.session.state).toBe("listening");
     expect(controller.session.activeTurn).toBeUndefined();
+    expect(controller.session.expectedSpeaker).toBe("B");
+    expect(controller.inputReady).toBe(false);
     emitVoice(audio, true);
     live.emit({ type: "session.input_transcript.delta", delta: "Next" });
     expect(controller.session.activeTurn).toBeUndefined();
@@ -1368,10 +1395,70 @@ describe("SessionController turn engine", () => {
     await flushMicrotasks();
 
     expect(live.setInputMuted).toHaveBeenLastCalledWith(false);
+    expect(controller.inputReady).toBe(true);
     emitVoice(audio, true);
     live.emit({ type: "session.input_transcript.delta", delta: "Next" });
     expect(controller.session.activeTurn?.originalText).toBe("Next");
     expect(controller.session.expectedSpeaker).toBe("B");
+  });
+
+  it("does not mark input ready while Gate B unmute is still pending after steering", async () => {
+    const { controller, live, audio } = createController();
+    let releaseUnmute: (() => void) | undefined;
+    live.setInputMuted.mockImplementation(async (muted: boolean) => {
+      live.callOrder.push(`setInputMuted:${muted}`);
+      if (!muted) {
+        await new Promise<void>((resolve) => {
+          releaseUnmute = resolve;
+        });
+      }
+    });
+    await enterListening(controller);
+    await completeTextOnlyTurnUntilLaterSteeringStarts(controller, live, audio);
+    await vi.waitFor(() => {
+      if (releaseUnmute === undefined) {
+        throw new Error("Gate B unmute did not start");
+      }
+    });
+
+    expect(controller.session.state).toBe("listening");
+    expect(controller.session.expectedSpeaker).toBe("B");
+    expect(controller.inputReady).toBe(false);
+
+    releaseUnmute?.();
+    await flushMicrotasks();
+
+    expect(controller.inputReady).toBe(true);
+  });
+
+  it("stays not ready and errors when Gate B unmute fails after turn completion", async () => {
+    const { controller, live, audio } = createController();
+    let rejectUnmute: ((error: Error) => void) | undefined;
+    live.setInputMuted.mockImplementation(async (muted: boolean) => {
+      live.callOrder.push(`setInputMuted:${muted}`);
+      if (!muted) {
+        await new Promise<void>((_resolve, reject) => {
+          rejectUnmute = reject;
+        });
+      }
+    });
+    await enterListening(controller);
+    await completeTextOnlyTurnUntilLaterSteeringStarts(controller, live, audio);
+    await vi.waitFor(() => {
+      if (rejectUnmute === undefined) {
+        throw new Error("Gate B unmute did not start");
+      }
+    });
+
+    expect(controller.session.state).toBe("listening");
+    expect(controller.inputReady).toBe(false);
+
+    rejectUnmute?.(new Error("unmute failed"));
+    await flushMicrotasks();
+
+    expect(controller.session.state).toBe("error");
+    expect(controller.ownerError).toBe("unmute failed");
+    expect(controller.inputReady).toBe(false);
   });
 
   it("does not attach residual output to the next source turn before leftover drain", async () => {

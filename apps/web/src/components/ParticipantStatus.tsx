@@ -19,6 +19,7 @@ export type ParticipantStatusLabel =
 export function deriveParticipantStatus(input: {
   sessionState: SessionState;
   expectedSpeaker: Side;
+  inputReady: boolean;
   side: Side;
   sourceSpeaker?: Side;
   sourceActive: boolean;
@@ -57,7 +58,7 @@ export function deriveParticipantStatus(input: {
     return recipientOutputLabel;
   }
 
-  if (input.side === input.expectedSpeaker) {
+  if (input.side === input.expectedSpeaker && input.inputReady) {
     return "YOUR TURN";
   }
   return "WAITING";

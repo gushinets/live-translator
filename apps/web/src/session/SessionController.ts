@@ -105,6 +105,7 @@ export class SessionController {
   private gateBMuted = false;
   private playbackActive = false;
   private turnClosing = false;
+  private speechInputReady = false;
   private recoveryPromptKind: RecoveryPrompt | undefined;
   private steeringDegradedFlag = false;
   private correctionEpoch = 0;
@@ -183,6 +184,14 @@ export class SessionController {
 
   get steeringDegraded(): boolean {
     return this.steeringDegradedFlag;
+  }
+
+  get inputReady(): boolean {
+    return (
+      this.currentSession.state === "listening" &&
+      this.currentSession.activeTurn === undefined &&
+      this.speechInputReady
+    );
   }
 
   get isConnectInFlight(): boolean {
@@ -279,6 +288,7 @@ export class SessionController {
     if (!(await this.unmuteGateB(generation))) {
       return;
     }
+    this.speechInputReady = true;
     this.dispatch({ type: "RESUME" });
   }
 
@@ -441,6 +451,7 @@ export class SessionController {
       this.capturingBootstrap = false;
       this.audio.setOutputAudible(true);
       this.enteredInterpreter = true;
+      this.speechInputReady = true;
       this.dispatch({ type: "INTERPRETER_READY" });
       await this.startPlatformLifecycle();
     } finally {
@@ -543,6 +554,7 @@ export class SessionController {
     this.clearCompletionTimer();
     this.clearCaptionIdleTimer();
     this.audio.setOutputAudible(false);
+    this.speechInputReady = false;
     this.dispatch({ type: "CORRECTION_START" });
     this.beginLeftoverOutputDrain();
     try {
@@ -595,6 +607,7 @@ export class SessionController {
     this.clearTurnEngineTimers();
     this.capturingContext = false;
     this.capturingBootstrap = false;
+    this.speechInputReady = false;
     this.audio.setOutputAudible(false);
     this.dispatch({ type: "END" });
     let closeResult: { finalized: boolean };
@@ -699,6 +712,7 @@ export class SessionController {
           `Cannot start a source turn from transcript while session state is "${this.currentSession.state}"`,
         );
       }
+      this.speechInputReady = false;
       this.dispatch({
         type: "SOURCE_ACTIVE",
         turnId: crypto.randomUUID(),
@@ -753,6 +767,7 @@ export class SessionController {
       const activeTurn = this.currentSession.activeTurn;
       const wasIdle = activeTurn?.sourceIdleAtMs !== undefined;
       if (activeTurn === undefined) {
+        this.speechInputReady = false;
         this.dispatch({
           type: "SOURCE_ACTIVE",
           turnId: crypto.randomUUID(),
@@ -895,6 +910,7 @@ export class SessionController {
     const firstAudibleOutputAtMs = turn.firstAudibleOutputAtMs;
     const playbackEndAtMs = turn.playbackEndAtMs;
     const audioOutputStarted = turn.audioOutputStarted;
+    this.speechInputReady = false;
     this.dispatch({ type: "TURN_CLOSED", speaker });
     const turnCompletedAtMs = this.currentSession.recentTurns.at(-1)?.turnCompletedAtMs;
     this.beginLeftoverOutputDrain();
@@ -939,12 +955,20 @@ export class SessionController {
       return;
     }
     try {
-      await this.unmuteGateB();
+      if (!(await this.unmuteGateB(generation))) {
+        return;
+      }
     } catch (error) {
       if (this.sessionGeneration !== generation) {
         return;
       }
-      throw error;
+      this.speechInputReady = false;
+      this.ownerErrorMessage = error instanceof Error ? error.message : String(error);
+      this.dispatch({
+        type: "SESSION_ERROR",
+        message: this.ownerErrorMessage,
+      });
+      return;
     }
     if (this.sessionGeneration !== generation) {
       return;
@@ -963,6 +987,9 @@ export class SessionController {
         audioOutputStarted,
       });
     }
+    if (appendError === undefined) {
+      this.speechInputReady = true;
+    }
     this.notify();
     if (appendError !== undefined) {
       throw appendError;
@@ -974,21 +1001,31 @@ export class SessionController {
       return;
     }
     this.conversationMetrics.recordNoOutputWatchdog();
+    this.speechInputReady = false;
     this.dispatch({ type: "TURN_FAILED" });
     this.beginLeftoverOutputDrain();
     this.recoveryPromptKind = "repeat";
     const generation = this.sessionGeneration;
     try {
-      await this.unmuteGateB();
+      if (!(await this.unmuteGateB(generation))) {
+        return;
+      }
     } catch (error) {
       if (this.sessionGeneration !== generation) {
         return;
       }
-      throw error;
+      this.speechInputReady = false;
+      this.ownerErrorMessage = error instanceof Error ? error.message : String(error);
+      this.dispatch({
+        type: "SESSION_ERROR",
+        message: this.ownerErrorMessage,
+      });
+      return;
     }
     if (this.sessionGeneration !== generation) {
       return;
     }
+    this.speechInputReady = true;
     this.notify();
   }
 
@@ -1009,6 +1046,7 @@ export class SessionController {
         return;
       }
       this.audio.setOutputAudible(false);
+      this.speechInputReady = false;
       this.dispatch({ type: "TURN_FAILED" });
       this.beginLeftoverOutputDrain();
       this.dispatch({ type: "SUSPEND" });
@@ -1454,6 +1492,7 @@ export class SessionController {
     ) {
       return;
     }
+    this.speechInputReady = false;
     this.audio.setOutputAudible(false);
     this.ownerErrorMessage = CONNECTION_ERROR_MESSAGE;
     this.dispatch({
@@ -1482,6 +1521,7 @@ export class SessionController {
     this.connectInFlight = false;
     this.interpreterInFlight = false;
     this.turnClosing = false;
+    this.speechInputReady = false;
     this.playbackActive = false;
     this.leftoverOutputDraining = false;
     this.leftoverCaptionIdle = true;
@@ -1621,6 +1661,7 @@ export class SessionController {
     }
     const generation = this.sessionGeneration;
     const active = this.currentSession.activeTurn;
+    this.speechInputReady = false;
     this.discardedUnfinishedOnSuspend =
       active !== undefined && active.turnCompletedAtMs === undefined && !active.corrected;
     this.clearTurnEngineTimersKeepingLeftoverDrain();
@@ -1790,6 +1831,7 @@ export class SessionController {
       return;
     }
     this.audio.setOutputAudible(true);
+    this.speechInputReady = true;
     this.dispatch({ type: "RESUME" });
     this.recoveryPromptKind = this.discardedUnfinishedOnSuspend ? "repeat" : undefined;
     this.lifecycleSuspendReason = undefined;
@@ -1827,6 +1869,7 @@ export class SessionController {
   }
 
   private failLifecycleResume(error: unknown): void {
+    this.speechInputReady = false;
     this.ownerErrorMessage = error instanceof Error ? error.message : String(error);
     this.dispatch({
       type: "SESSION_ERROR",
@@ -1858,6 +1901,7 @@ export class SessionController {
     this.gateBMuted = false;
     this.playbackActive = false;
     this.turnClosing = false;
+    this.speechInputReady = false;
     this.leftoverOutputDraining = false;
     this.leftoverCaptionIdle = true;
     this.resolveLeftoverDrainWaiters();

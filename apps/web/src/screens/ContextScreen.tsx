@@ -19,6 +19,7 @@ import { ConversationScreen } from "./ConversationScreen";
  */
 export interface ContextScreenController {
   readonly session: TranslationSession;
+  readonly inputReady: boolean;
   readonly contextText: string;
   readonly bootstrapText: string;
   readonly ownerError?: string;

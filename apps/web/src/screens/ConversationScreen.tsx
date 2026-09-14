@@ -10,6 +10,7 @@ import type { TranslationSession } from "../session/SessionState";
 
 export interface ConversationScreenController {
   readonly session: TranslationSession;
+  readonly inputReady: boolean;
   readonly recoveryPrompt?: RecoveryPrompt;
   readonly ownerError?: string;
   readonly suspendReason?: LifecycleSuspendReason;
@@ -43,6 +44,7 @@ export function ConversationScreen({
   const statusA = deriveParticipantStatus({
     sessionState: session.state,
     expectedSpeaker: session.expectedSpeaker,
+    inputReady: controller.inputReady,
     side: "A",
     sourceSpeaker,
     sourceActive,
@@ -52,6 +54,7 @@ export function ConversationScreen({
   const statusB = deriveParticipantStatus({
     sessionState: session.state,
     expectedSpeaker: session.expectedSpeaker,
+    inputReady: controller.inputReady,
     side: "B",
     sourceSpeaker,
     sourceActive,

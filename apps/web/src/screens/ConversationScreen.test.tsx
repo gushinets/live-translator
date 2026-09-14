@@ -46,6 +46,7 @@ function session(overrides: Partial<TranslationSession> = {}): TranslationSessio
 
 class FakeConversationController implements ConversationScreenController {
   session: TranslationSession;
+  inputReady = true;
   recoveryPrompt: RecoveryPrompt | undefined;
   ownerError: string | undefined;
   suspendReason: LifecycleSuspendReason | undefined;
@@ -121,6 +122,19 @@ describe("ConversationScreen orientation and status", () => {
     );
     render(<ConversationScreen controller={controller} />);
     expect(screen.getByTestId("participant-status-A")).toHaveTextContent("YOUR TURN");
+    expect(screen.getByTestId("participant-status-B")).toHaveTextContent("WAITING");
+  });
+
+  it("does not show YOUR TURN while the expected source input is not ready", () => {
+    const controller = new FakeConversationController(
+      session({ state: "listening", expectedSpeaker: "A" }),
+    );
+    controller.inputReady = false;
+
+    render(<ConversationScreen controller={controller} />);
+
+    expect(screen.getByTestId("participant-status-A")).not.toHaveTextContent("YOUR TURN");
+    expect(screen.getByTestId("participant-status-A")).toHaveTextContent("WAITING");
     expect(screen.getByTestId("participant-status-B")).toHaveTextContent("WAITING");
   });
 

@@ -14,6 +14,7 @@ function idleSession(): TranslationSession {
 
 class FakeOwnerController implements ContextScreenController {
   session: TranslationSession = idleSession();
+  inputReady = true;
   contextText = "";
   bootstrapText = "";
   ownerError: string | undefined;
