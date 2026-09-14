@@ -11,8 +11,9 @@ import type { Side, Turn } from "../conversation/Turn";
 import { AckTimeoutError } from "../live/AckRegistry";
 import { LiveClient, type LiveClientErrorEvent } from "../live/LiveClient";
 import {
-  APPEND_CHAR_BUDGET,
   ContextTooLongError,
+  assertAppendWithinBudget,
+  isAppendSizeError,
   type SessionClosedEvent,
   type TranscriptDeltaEvent,
 } from "../live/LiveEvents";
@@ -448,18 +449,14 @@ export class SessionController {
       const edited = this.contextBuffer.trim();
       if (edited.length > 0 && !this.authoritativeContextSent) {
         const payload = buildAuthoritativeContext(edited);
-        if (payload.length > APPEND_CHAR_BUDGET) {
-          this.ownerErrorMessage = new ContextTooLongError().message;
-          this.notify();
-          throw new ContextTooLongError();
-        }
+        this.assertStartupAppendWithinBudget(payload);
         try {
           await live.appendThinking(payload, { kind: "startup_interpreter" });
         } catch (error) {
           if (this.sessionGeneration !== generation) {
             return;
           }
-          this.failStartup("Authoritative context append failed", error);
+          this.failStartupAppend("Authoritative context append failed", error);
         }
         if (this.sessionGeneration !== generation) {
           return;
@@ -475,7 +472,7 @@ export class SessionController {
         if (this.sessionGeneration !== generation) {
           return;
         }
-        this.failStartup("BEGIN_INTERPRETER_MODE append failed", error);
+        this.failStartupAppend("BEGIN_INTERPRETER_MODE append failed", error);
       }
       if (this.sessionGeneration !== generation) {
         return;
@@ -500,7 +497,7 @@ export class SessionController {
         if (this.sessionGeneration !== generation) {
           return;
         }
-        this.failStartup("First steering append failed", error);
+        this.failStartupAppend("First steering append failed", error);
       }
       if (this.sessionGeneration !== generation) {
         return;
@@ -1534,6 +1531,18 @@ export class SessionController {
     this.failOwnerRequest("Microphone capture failed", error);
   }
 
+  private assertStartupAppendWithinBudget(text: string): void {
+    try {
+      assertAppendWithinBudget(text);
+    } catch (error) {
+      if (error instanceof ContextTooLongError) {
+        this.ownerErrorMessage = error.message;
+        this.notify();
+      }
+      throw error;
+    }
+  }
+
   private assertCaptureStreamLive(stream: MediaStream): void {
     const track = stream.getAudioTracks()[0];
     if (track === undefined) {
@@ -1542,6 +1551,17 @@ export class SessionController {
     if (track.readyState !== "live") {
       throw new Error(MICROPHONE_CAPTURE_ENDED_MESSAGE);
     }
+  }
+
+  private failStartupAppend(context: string, error: unknown): never {
+    if (isAppendSizeError(error)) {
+      console.error(context, { error, state: this.currentSession.state });
+      const mapped = new ContextTooLongError();
+      this.ownerErrorMessage = mapped.message;
+      this.notify();
+      throw mapped;
+    }
+    this.failStartup(context, error);
   }
 
   private failStartup(context: string, error: unknown): never {

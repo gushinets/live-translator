@@ -1475,6 +1475,26 @@ describe("LiveClient trusted control commands", () => {
     expect(channel.sendCalls).toHaveLength(1);
   });
 
+  it("fails an append immediately when a correlated server size rejection arrives", async () => {
+    const { client, channel } = await connectedClient();
+    vi.useFakeTimers();
+    const pending = client.appendThinking("Authoritative conversation context: hello.", {
+      kind: "startup_interpreter",
+    });
+
+    channel.emitMessage({
+      type: "error",
+      error: {
+        message: "append content exceeds maximum token limit",
+        client_event_id: "evt-1",
+      },
+    });
+    await flushMicrotasks();
+
+    await expect(pending).rejects.toThrow("append content exceeds maximum token limit");
+    expect(channel.sendCalls).toHaveLength(1);
+  });
+
   it("fails a command immediately when a nested correlated error has null code", async () => {
     const { client, channel } = await connectedClient();
     const pending = client.appendInstructions("BEGIN_INTERPRETER_MODE.", {

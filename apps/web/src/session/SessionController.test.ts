@@ -481,6 +481,23 @@ describe("SessionController", () => {
     );
   });
 
+  it("shows the shorten-context prompt when the server rejects context append size", async () => {
+    const { controller, live } = createController();
+    await controller.startBootstrap();
+    controller.skipBootstrap();
+    controller.setContextText("We are ordering lunch.");
+    live.appendThinking.mockRejectedValueOnce(
+      new Error("append content exceeds maximum token limit"),
+    );
+
+    await expect(controller.beginInterpreter()).rejects.toBeInstanceOf(
+      ContextTooLongError,
+    );
+    expect(controller.ownerError).toBe(new ContextTooLongError().message);
+    expect(controller.session.state).toBe("bootstrap");
+    expect(live.appendInstructions).not.toHaveBeenCalled();
+  });
+
   it("closes an abandoned context session after 120s", async () => {
     vi.useFakeTimers();
     const { controller, live, audio } = createController();

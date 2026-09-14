@@ -4,12 +4,15 @@
  *
  * Application-generated control events use unique `event_id` values.
  * Acknowledgments are correlated by `client_event_id`. Append payloads are
- * preflighted against a conservative character budget standing in for the
- * Live 500-token event limit; oversized text is rejected, never truncated.
+ * preflighted with a small local heuristic to avoid obvious append-size
+ * failures. This is not a tokenizer and does not guarantee any token count;
+ * oversized text is rejected locally, never truncated.
  */
 
-/** Conservative character stand-in for the Live 500-token append limit. */
+/** Hard local safety cap; not a token guarantee. */
 export const APPEND_CHAR_BUDGET = 1800;
+
+const APPEND_COMPLEXITY_BUDGET = 500;
 
 export class ContextTooLongError extends Error {
   constructor() {
@@ -20,8 +23,32 @@ export class ContextTooLongError extends Error {
   }
 }
 
-function assertAppendWithinBudget(text: string): void {
-  if (text.length > APPEND_CHAR_BUDGET) {
+export function isAppendSizeError(error: unknown): boolean {
+  if (error instanceof ContextTooLongError) {
+    return true;
+  }
+  const message = error instanceof Error ? error.message : String(error);
+  return (
+    /(?:append|content|context|payload|instructions|thinking|commentary).*(?:too long|too large|exceed|max|limit)/i.test(
+      message,
+    ) ||
+    /(?:token|tokens).*(?:too long|too large|exceed|max|limit)/i.test(message)
+  );
+}
+
+function estimateAppendComplexity(text: string): number {
+  let total = 0;
+  for (const char of text) {
+    total += char.charCodeAt(0) <= 0x7f ? 0.25 : 1;
+  }
+  return total;
+}
+
+export function assertAppendWithinBudget(text: string): void {
+  if (
+    text.length > APPEND_CHAR_BUDGET ||
+    estimateAppendComplexity(text) > APPEND_COMPLEXITY_BUDGET
+  ) {
     throw new ContextTooLongError();
   }
 }
