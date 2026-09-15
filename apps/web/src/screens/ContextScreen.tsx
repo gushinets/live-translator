@@ -16,6 +16,7 @@ import {
   traceConversationRenderPredicate,
 } from "../live/StartupTrace";
 import { ConversationScreen } from "./ConversationScreen";
+import "./ContextScreen.css";
 
 /**
  * Owner start-flow surface used by ContextScreen. SessionController implements
@@ -154,6 +155,12 @@ export function ContextScreen({
     sessionState === "connecting" ||
     sessionState === "error" ||
     controller.isConnectInFlight === true;
+  const isContextListening = sessionState === "context";
+  const showCancel =
+    controller.session.state !== "idle" ||
+    controller.ownerError !== undefined ||
+    controller.isConnectInFlight === true;
+
   traceConversationRenderPredicate({
     state: sessionState,
     isConversation,
@@ -163,81 +170,134 @@ export function ContextScreen({
   });
 
   return (
-    <section>
+    <section
+      className={isOwnerSetup ? "setup-screen" : undefined}
+      aria-label={isOwnerSetup ? "Translator setup" : undefined}
+    >
       <div ref={audioHostRef} hidden />
       {!isOwnerSetup ? (
         <ConversationScreen controller={controller} />
       ) : (
-        <>
-      <h1>Live Translator</h1>
-      {controller.ownerError !== undefined ? (
-        <ErrorOverlay message={controller.ownerError} />
-      ) : null}
-      {isBootstrap ? (
-        <BootstrapPrompt
-          transcript={controller.bootstrapText}
-          actionsDisabled={controller.isInterpreterStarting === true}
-          onSkip={() => {
-            void handleSkip();
-          }}
-          onAccept={() => {
-            void handleAccept();
-          }}
-        />
-      ) : (
-        <button
-          type="button"
-          disabled={isBusy}
-          onClick={() => {
-            void controller.startContextCapture().catch((error: unknown) => {
-              console.error("Failed to start context capture", {
-                error,
-                state: controller.session.state,
-              });
-            });
-          }}
-        >
-          Tell me the context (optional)
-        </button>
-      )}
-      <label>
-        Context
-        <textarea
-          aria-label="Context"
-          value={controller.contextText}
-          onChange={(event) => {
-            controller.setContextText(event.target.value);
-          }}
-        />
-      </label>
-      <button type="button" onClick={() => controller.clearContext()}>
-        Clear
-      </button>
-      {isBootstrap ? null : (
-        <button
-          type="button"
-          disabled={isBusy}
-          onClick={() => {
-            void handleStart();
-          }}
-        >
-          Start translation
-        </button>
-      )}
-      <PrivacyDisclosure />
-      {controller.session.state === "idle" &&
-      controller.ownerError === undefined &&
-      controller.isConnectInFlight !== true ? null : (
-        <button
-          type="button"
-          onClick={() => {
-            void controller.cancel();
-          }}
-        >
-          Cancel
-        </button>
-      )}
-        </>
+        <div className="setup-shell">
+          <header className="setup-header">
+            <div className="setup-brand-lockup">
+              <span className="setup-brand-mark" aria-hidden="true">
+                LT
+              </span>
+              <div>
+                <p className="setup-brand-kicker">Live interpreter</p>
+                <h1>Live Translator</h1>
+              </div>
+            </div>
+            <p className="setup-header-copy">
+              One phone, two people, real-time translation.
+            </p>
+          </header>
+
+          <div className="setup-card">
+            {controller.ownerError !== undefined ? (
+              <ErrorOverlay message={controller.ownerError} />
+            ) : null}
+
+            {isBootstrap ? (
+              <BootstrapPrompt
+                transcript={controller.bootstrapText}
+                actionsDisabled={controller.isInterpreterStarting === true}
+                onSkip={() => {
+                  void handleSkip();
+                }}
+                onAccept={() => {
+                  void handleAccept();
+                }}
+              />
+            ) : (
+              <>
+                <div className="setup-intro">
+                  <p className="setup-kicker">Before you start</p>
+                  <h2>Ready when you are</h2>
+                  <p>
+                    Context is optional, but a short note can make names, places,
+                    and situations easier to translate.
+                  </p>
+                </div>
+
+                <button
+                  className="setup-secondary-action setup-context-action"
+                  type="button"
+                  disabled={isBusy}
+                  onClick={() => {
+                    void controller.startContextCapture().catch((error: unknown) => {
+                      console.error("Failed to start context capture", {
+                        error,
+                        state: controller.session.state,
+                      });
+                    });
+                  }}
+                >
+                  Tell me the context (optional)
+                </button>
+
+                {isContextListening ? (
+                  <p className="setup-inline-status" role="status">
+                    <span className="setup-status-dot" aria-hidden="true" />
+                    Listening for context
+                  </p>
+                ) : null}
+
+                <label className="setup-field">
+                  <span className="setup-field-label">
+                    Context <span>Optional</span>
+                  </span>
+                  <textarea
+                    aria-label="Context"
+                    value={controller.contextText}
+                    placeholder="For example: hotel check-in, delivery, appointment…"
+                    onChange={(event) => {
+                      controller.setContextText(event.target.value);
+                    }}
+                  />
+                </label>
+
+                <div className="setup-field-footer">
+                  <span>Keep it short. Nothing is saved as conversation history.</span>
+                  <button
+                    className="setup-text-action"
+                    type="button"
+                    onClick={() => controller.clearContext()}
+                  >
+                    Clear
+                  </button>
+                </div>
+
+                <button
+                  className="setup-primary-action"
+                  type="button"
+                  disabled={isBusy}
+                  onClick={() => {
+                    void handleStart();
+                  }}
+                >
+                  Start translation
+                </button>
+              </>
+            )}
+          </div>
+
+          <footer className="setup-footer">
+            <PrivacyDisclosure />
+            {showCancel ? (
+              <button
+                className="setup-cancel-action"
+                type="button"
+                onClick={() => {
+                  void controller.cancel();
+                }}
+              >
+                Cancel
+              </button>
+            ) : null}
+          </footer>
+        </div>
       )}
     </section>
   );
