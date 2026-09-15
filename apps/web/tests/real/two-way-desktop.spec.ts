@@ -17,13 +17,23 @@ declare global {
   interface Window {
     __liveTranslatorRealMic?: {
       isReady(): boolean;
-      startBase64Audio(base64: string): Promise<void>;
+      startAudioBytes(bytes: number[]): Promise<void>;
     };
   }
 }
 
-function readAudioFixture(name: string): string {
-  return readFileSync(new URL(`./fixtures/${name}`, import.meta.url), "utf8").trim();
+function readAudioFixture(name: string): number[] {
+  const encoded = readFileSync(new URL(`./fixtures/${name}`, import.meta.url), "utf8")
+    .replace(/[\t\n\f\r ]+/g, "")
+    .trim();
+
+  const canonicalBase64 =
+    /^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/;
+  if (encoded.length === 0 || !canonicalBase64.test(encoded)) {
+    throw new Error(`Audio fixture ${name} is not valid base64`);
+  }
+
+  return Array.from(Buffer.from(encoded, "base64"));
 }
 
 async function installDeterministicMicrophone(page: Page): Promise<void> {
@@ -59,12 +69,10 @@ async function installDeterministicMicrophone(page: Page): Promise<void> {
 
     window.__liveTranslatorRealMic = {
       isReady: () => destination !== null,
-      startBase64Audio: async (base64: string): Promise<void> => {
+      startAudioBytes: async (bytes: number[]): Promise<void> => {
         const microphone = await ensureMicrophone();
-        const bytes = Uint8Array.from(atob(base64), (character) =>
-          character.charCodeAt(0),
-        );
-        const decoded = await microphone.context.decodeAudioData(bytes.buffer.slice(0));
+        const audioBytes = Uint8Array.from(bytes);
+        const decoded = await microphone.context.decodeAudioData(audioBytes.buffer.slice(0));
         const source = microphone.context.createBufferSource();
         source.buffer = decoded;
         source.connect(microphone.destination);
@@ -74,14 +82,14 @@ async function installDeterministicMicrophone(page: Page): Promise<void> {
   });
 }
 
-async function startMicrophoneFixture(page: Page, base64: string): Promise<void> {
-  await page.evaluate(async (fixture) => {
+async function startMicrophoneFixture(page: Page, bytes: number[]): Promise<void> {
+  await page.evaluate(async (fixtureBytes) => {
     const microphone = window.__liveTranslatorRealMic;
     if (microphone === undefined) {
       throw new Error("Deterministic microphone hook is unavailable");
     }
-    await microphone.startBase64Audio(fixture);
-  }, base64);
+    await microphone.startAudioBytes(fixtureBytes);
+  }, bytes);
 }
 
 async function readAudioElementState(page: Page): Promise<AudioElementState> {
