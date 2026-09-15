@@ -1,4 +1,33 @@
-import { expect, test } from "@playwright/test";
+import { expect, test, type Locator } from "@playwright/test";
+
+async function contrastRatio(locator: Locator): Promise<number> {
+  return locator.evaluate((element) => {
+    function parseRgb(value: string): [number, number, number] {
+      const match = value.match(/rgba?\((\d+),\s*(\d+),\s*(\d+)/);
+      if (match === null) {
+        throw new Error(`Unsupported color: ${value}`);
+      }
+      return [Number(match[1]), Number(match[2]), Number(match[3])];
+    }
+
+    function luminance([red, green, blue]: [number, number, number]): number {
+      const channels = [red, green, blue].map((channel) => {
+        const value = channel / 255;
+        return value <= 0.04045
+          ? value / 12.92
+          : ((value + 0.055) / 1.055) ** 2.4;
+      });
+      return 0.2126 * channels[0] + 0.7152 * channels[1] + 0.0722 * channels[2];
+    }
+
+    const foreground = parseRgb(getComputedStyle(element).color);
+    const backgroundElement = element.closest(".setup-screen") ?? document.body;
+    const background = parseRgb(getComputedStyle(backgroundElement).backgroundColor);
+    const light = Math.max(luminance(foreground), luminance(background));
+    const dark = Math.min(luminance(foreground), luminance(background));
+    return (light + 0.05) / (dark + 0.05);
+  });
+}
 
 test.describe("mobile setup layout", () => {
   test.use({ viewport: { width: 390, height: 844 } });
@@ -30,5 +59,17 @@ test.describe("mobile setup layout", () => {
     const contextActionBox = await contextAction.boundingBox();
     expect(contextActionBox).not.toBeNull();
     expect(contextActionBox?.height ?? 0).toBeGreaterThanOrEqual(44);
+  });
+
+  test("keeps small secondary setup copy at readable contrast", async ({ page }) => {
+    await page.goto("/");
+
+    const privacy = page.locator(".privacy-disclosure");
+    await expect(privacy).toBeVisible();
+    expect(await contrastRatio(privacy)).toBeGreaterThanOrEqual(4.5);
+
+    const fieldFooter = page.locator(".setup-field-footer > span");
+    await expect(fieldFooter).toBeVisible();
+    expect(await contrastRatio(fieldFooter)).toBeGreaterThanOrEqual(4.5);
   });
 });
