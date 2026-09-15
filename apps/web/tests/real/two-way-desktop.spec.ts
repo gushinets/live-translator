@@ -458,9 +458,7 @@ test.describe("real GPT-Live desktop conversation", () => {
     safeStage("a_to_b_text_and_audio");
 
     try {
-      await expect(page.getByTestId("participant-status-B")).toHaveText("YOUR TURN", {
-        timeout: 8_000,
-      });
+      await expect(page.getByTestId("participant-status-B")).toHaveText("YOUR TURN");
     } catch (error) {
       const inboundBytesBeforeRmsSample = await inboundAudioBytesReceived(page);
       const rms = await remoteAudioRmsSummary(page, 2_000);
