@@ -22,5 +22,31 @@ jobs:
       - run: pnpm typecheck
       - run: pnpm test
       - run: pnpm build
+      - name: Diagnose audio fixture encoding
+        shell: bash
+        run: |
+          node <<'NODE'
+          const { readFileSync } = require('node:fs');
+          const names = ['bootstrap.mp3.b64', 'participant-a.mp3.b64', 'participant-b.mp3.b64'];
+          for (const name of names) {
+            const raw = readFileSync(`apps/web/tests/real/fixtures/${name}`, 'utf8');
+            const value = raw.replace(/[\t\n\f\r ]+/g, '').trim();
+            const invalid = [...value]
+              .map((character, index) => ({ character, index, code: character.codePointAt(0) }))
+              .filter(({ character }) => !/[A-Za-z0-9+/=]/.test(character));
+            const firstPadding = value.indexOf('=');
+            const paddingOnlyAtEnd = firstPadding === -1 || /^=+$/.test(value.slice(firstPadding));
+            console.log(JSON.stringify({
+              name,
+              length: value.length,
+              mod4: value.length % 4,
+              invalidCount: invalid.length,
+              firstInvalidIndex: invalid[0]?.index ?? null,
+              firstInvalidCodePoint: invalid[0]?.code ?? null,
+              firstPadding,
+              paddingOnlyAtEnd,
+            }));
+          }
+          NODE
       - name: Load and parse real-Live test module
         run: pnpm --filter @live-translator/web exec playwright test --config=playwright.real.config.ts --list
