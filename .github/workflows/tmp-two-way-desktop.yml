@@ -29,6 +29,8 @@ jobs:
       - run: pnpm --filter @live-translator/web exec playwright install --with-deps chromium
       - name: Playwright
         run: pnpm --filter @live-translator/web exec playwright test
+      - name: Parse opt-in real-Live suite
+        run: pnpm --filter @live-translator/web exec playwright test --config=playwright.real.config.ts --list
       - name: Check real-Live credential availability
         env:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
