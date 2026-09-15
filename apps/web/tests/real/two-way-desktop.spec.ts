@@ -51,7 +51,8 @@ declare global {
   interface Window {
     __liveTranslatorRealMic?: {
       isReady(): boolean;
-      playBase64Audio(base64: string): Promise<void>;
+      startBase64Audio(base64: string): Promise<void>;
+      waitForPlaybackComplete(): Promise<void>;
     };
     __liveTranslatorRealDiagnostics?: {
       events: RealLiveEventDiagnostic[];
@@ -80,6 +81,7 @@ async function installDeterministicMicrophone(page: Page): Promise<void> {
   await page.addInitScript(() => {
     let context: AudioContext | null = null;
     let destination: MediaStreamAudioDestinationNode | null = null;
+    let playbackComplete: Promise<void> | null = null;
     const liveEvents: RealLiveEventDiagnostic[] = [];
 
     async function ensureMicrophone(): Promise<{
@@ -213,7 +215,10 @@ async function installDeterministicMicrophone(page: Page): Promise<void> {
 
     window.__liveTranslatorRealMic = {
       isReady: () => destination !== null,
-      playBase64Audio: async (base64: string): Promise<void> => {
+      startBase64Audio: async (base64: string): Promise<void> => {
+        if (playbackComplete !== null) {
+          throw new Error("A real-Live microphone fixture is already playing");
+        }
         const microphone = await ensureMicrophone();
         const bytes = Uint8Array.from(atob(base64), (character) =>
           character.charCodeAt(0),
@@ -222,24 +227,53 @@ async function installDeterministicMicrophone(page: Page): Promise<void> {
         const source = microphone.context.createBufferSource();
         source.buffer = decoded;
         source.connect(microphone.destination);
-        await new Promise<void>((resolve) => {
-          source.addEventListener("ended", () => resolve(), { once: true });
-          source.start();
+        playbackComplete = new Promise<void>((resolve) => {
+          source.addEventListener(
+            "ended",
+            () => {
+              window.setTimeout(() => {
+                playbackComplete = null;
+                resolve();
+              }, 350);
+            },
+            { once: true },
+          );
         });
-        await new Promise<void>((resolve) => window.setTimeout(resolve, 350));
+        source.start();
+      },
+      waitForPlaybackComplete: async (): Promise<void> => {
+        const currentPlayback = playbackComplete;
+        if (currentPlayback !== null) {
+          await currentPlayback;
+        }
       },
     };
   });
 }
 
-async function playMicrophoneFixture(page: Page, base64: string): Promise<void> {
+async function startMicrophoneFixture(page: Page, base64: string): Promise<void> {
   await page.evaluate(async (fixture) => {
     const microphone = window.__liveTranslatorRealMic;
     if (microphone === undefined) {
       throw new Error("Deterministic microphone hook is unavailable");
     }
-    await microphone.playBase64Audio(fixture);
+    await microphone.startBase64Audio(fixture);
   }, base64);
+}
+
+async function waitForMicrophoneFixture(page: Page): Promise<void> {
+  await page.evaluate(async () => {
+    const microphone = window.__liveTranslatorRealMic;
+    if (microphone === undefined) {
+      throw new Error("Deterministic microphone hook is unavailable");
+    }
+    await microphone.waitForPlaybackComplete();
+  });
+}
+
+async function playMicrophoneFixture(page: Page, base64: string): Promise<void> {
+  await startMicrophoneFixture(page, base64);
+  await waitForMicrophoneFixture(page);
 }
 
 async function readAudioElementState(page: Page): Promise<AudioElementState> {
@@ -439,9 +473,9 @@ test.describe("real GPT-Live desktop conversation", () => {
     const firstTurnEventStart = await liveEventCount(page);
     const outboundBytesBeforeA = await outboundAudioBytesSent(page);
     const inboundBytesBeforeA = await inboundAudioBytesReceived(page);
-    const participantAPlayback = playMicrophoneFixture(page, PARTICIPANT_A_AUDIO);
+    await startMicrophoneFixture(page, PARTICIPANT_A_AUDIO);
     await expect(page.getByTestId("participant-status-A")).toHaveText("LISTENING");
-    await participantAPlayback;
+    await waitForMicrophoneFixture(page);
     await expect
       .poll(() => outboundAudioBytesSent(page), { timeout: 5_000 })
       .toBeGreaterThan(outboundBytesBeforeA);
@@ -504,9 +538,9 @@ test.describe("real GPT-Live desktop conversation", () => {
     const secondTurnEventStart = await liveEventCount(page);
     const outboundBytesBeforeB = await outboundAudioBytesSent(page);
     const inboundBytesBeforeB = await inboundAudioBytesReceived(page);
-    const participantBPlayback = playMicrophoneFixture(page, PARTICIPANT_B_AUDIO);
+    await startMicrophoneFixture(page, PARTICIPANT_B_AUDIO);
     await expect(page.getByTestId("participant-status-B")).toHaveText("LISTENING");
-    await participantBPlayback;
+    await waitForMicrophoneFixture(page);
     await expect
       .poll(() => outboundAudioBytesSent(page), { timeout: 5_000 })
       .toBeGreaterThan(outboundBytesBeforeB);
