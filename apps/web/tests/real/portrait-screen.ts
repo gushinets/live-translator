@@ -59,51 +59,24 @@ export async function emulatePortraitScreen(page: Page): Promise<void> {
     RTCDataChannel.prototype.send = function (
       data: string | Blob | ArrayBuffer | ArrayBufferView,
     ): void {
-      let parsedType: string | undefined;
-      let eventId: string | undefined;
       if (typeof data === "string") {
         try {
           const parsed = JSON.parse(data) as {
             type?: unknown;
             event_id?: unknown;
           };
-          parsedType = typeof parsed.type === "string" ? parsed.type : undefined;
-          eventId = typeof parsed.event_id === "string" ? parsed.event_id : undefined;
+          if (typeof parsed.type === "string") {
+            console.log(
+              `${prefix} outbound=${JSON.stringify({
+                type: parsed.type,
+                eventId: typeof parsed.event_id === "string" ? parsed.event_id : undefined,
+                atMs: performance.now(),
+              })}`,
+            );
+          }
         } catch {
           console.log(`${prefix} outbound=<invalid-json>`);
         }
-      }
-
-      if (parsedType === "session.input_audio.mute") {
-        const requestedAtMs = performance.now();
-        console.log(
-          `${prefix} mute_delay=${JSON.stringify({
-            eventId,
-            requestedAtMs,
-            delayMs: 1_000,
-          })}`,
-        );
-        window.setTimeout(() => {
-          console.log(
-            `${prefix} outbound=${JSON.stringify({
-              type: parsedType,
-              eventId,
-              atMs: performance.now(),
-            })}`,
-          );
-          Reflect.apply(originalSend, this, [data]);
-        }, 1_000);
-        return;
-      }
-
-      if (parsedType !== undefined) {
-        console.log(
-          `${prefix} outbound=${JSON.stringify({
-            type: parsedType,
-            eventId,
-            atMs: performance.now(),
-          })}`,
-        );
       }
       Reflect.apply(originalSend, this, [data]);
     };
