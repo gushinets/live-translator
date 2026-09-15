@@ -17,12 +17,12 @@ declare global {
   interface Window {
     __liveTranslatorRealMic?: {
       isReady(): boolean;
-      startAudioBytes(bytes: number[]): Promise<void>;
+      playBase64Audio(base64: string): Promise<void>;
     };
   }
 }
 
-function readAudioFixture(name: string): number[] {
+function readAudioFixture(name: string): string {
   const encoded = readFileSync(new URL(`./fixtures/${name}`, import.meta.url), "utf8")
     .replace(/[\t\n\f\r ]+/g, "")
     .trim();
@@ -33,7 +33,7 @@ function readAudioFixture(name: string): number[] {
     throw new Error(`Audio fixture ${name} is not valid base64`);
   }
 
-  return Array.from(Buffer.from(encoded, "base64"));
+  return encoded;
 }
 
 async function installDeterministicMicrophone(page: Page): Promise<void> {
@@ -69,27 +69,33 @@ async function installDeterministicMicrophone(page: Page): Promise<void> {
 
     window.__liveTranslatorRealMic = {
       isReady: () => destination !== null,
-      startAudioBytes: async (bytes: number[]): Promise<void> => {
+      playBase64Audio: async (base64: string): Promise<void> => {
         const microphone = await ensureMicrophone();
-        const audioBytes = Uint8Array.from(bytes);
-        const decoded = await microphone.context.decodeAudioData(audioBytes.buffer.slice(0));
+        const bytes = Uint8Array.from(atob(base64), (character) =>
+          character.charCodeAt(0),
+        );
+        const decoded = await microphone.context.decodeAudioData(bytes.buffer.slice(0));
         const source = microphone.context.createBufferSource();
         source.buffer = decoded;
         source.connect(microphone.destination);
-        source.start();
+        await new Promise<void>((resolve) => {
+          source.addEventListener("ended", () => resolve(), { once: true });
+          source.start();
+        });
+        await new Promise<void>((resolve) => window.setTimeout(resolve, 350));
       },
     };
   });
 }
 
-async function startMicrophoneFixture(page: Page, bytes: number[]): Promise<void> {
-  await page.evaluate(async (fixtureBytes) => {
+async function playMicrophoneFixture(page: Page, base64: string): Promise<void> {
+  await page.evaluate(async (fixture) => {
     const microphone = window.__liveTranslatorRealMic;
     if (microphone === undefined) {
       throw new Error("Deterministic microphone hook is unavailable");
     }
-    await microphone.startAudioBytes(fixtureBytes);
-  }, bytes);
+    await microphone.playBase64Audio(fixture);
+  }, base64);
 }
 
 async function readAudioElementState(page: Page): Promise<AudioElementState> {
@@ -156,7 +162,7 @@ test.describe("real GPT-Live desktop conversation", () => {
       .toBe(true);
     safeStage("bootstrap_connected");
 
-    await startMicrophoneFixture(page, BOOTSTRAP_AUDIO);
+    await playMicrophoneFixture(page, BOOTSTRAP_AUDIO);
     await expect(page.getByRole("button", { name: "Accept" })).toBeVisible();
     await expect
       .poll(() => page.locator(".bootstrap-hint-value").evaluate((element) =>
@@ -172,7 +178,7 @@ test.describe("real GPT-Live desktop conversation", () => {
     expect(liveSessionStatuses).toEqual([201]);
     safeStage("interpreter_ready");
 
-    await startMicrophoneFixture(page, PARTICIPANT_A_AUDIO);
+    await playMicrophoneFixture(page, PARTICIPANT_A_AUDIO);
     await expect(page.getByTestId("participant-status-A")).toHaveText("LISTENING");
     await expect.poll(() => hasNonEmptyText(page, "current-primary-A")).toBe(true);
     await expect.poll(() => hasNonEmptyText(page, "current-primary-B")).toBe(true);
@@ -190,7 +196,7 @@ test.describe("real GPT-Live desktop conversation", () => {
     await expect(page.getByTestId("participant-status-A")).toHaveText("WAITING");
     safeStage("a_turn_closed");
 
-    await startMicrophoneFixture(page, PARTICIPANT_B_AUDIO);
+    await playMicrophoneFixture(page, PARTICIPANT_B_AUDIO);
     await expect(page.getByTestId("participant-status-B")).toHaveText("LISTENING");
     await expect.poll(() => hasNonEmptyText(page, "current-primary-B")).toBe(true);
     await expect.poll(() => hasNonEmptyText(page, "current-primary-A")).toBe(true);
