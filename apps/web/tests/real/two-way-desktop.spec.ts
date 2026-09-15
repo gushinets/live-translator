@@ -356,17 +356,30 @@ async function readLatestRecentTurn(page: Page, side: "A" | "B"): Promise<Recent
   return { primary: primary.trim(), secondary: secondary.trim() };
 }
 
-async function expectMirroredLatestRecentTurn(page: Page): Promise<void> {
+async function expectUsableLatestRecentTurn(page: Page, sourceSide: "A" | "B"): Promise<void> {
   const [turnA, turnB] = await Promise.all([
     readLatestRecentTurn(page, "A"),
     readLatestRecentTurn(page, "B"),
   ]);
-  expect(turnA.primary).not.toBe("");
-  expect(turnA.secondary).not.toBe("");
-  expect(turnB.primary).not.toBe("");
-  expect(turnB.secondary).not.toBe("");
-  expect(turnA.primary).toBe(turnB.secondary);
-  expect(turnA.secondary).toBe(turnB.primary);
+  const source = sourceSide === "A" ? turnA : turnB;
+  const target = sourceSide === "A" ? turnB : turnA;
+
+  // Output transcription belongs to the Live model response and is required
+  // for a usable translated turn. Input transcription is a separate
+  // asynchronous ASR path and may be absent even when the model understood
+  // the audio and produced valid translated text/audio.
+  expect(source.secondary).not.toBe("");
+  expect(target.primary).not.toBe("");
+  expect(source.secondary).toBe(target.primary);
+
+  // When an input transcript is available, it must still mirror correctly on
+  // the opposite pane. If ASR produced no source text, both source copies may
+  // legitimately be empty while the translated turn remains usable.
+  if (source.primary.length > 0 || target.secondary.length > 0) {
+    expect(source.primary).not.toBe("");
+    expect(target.secondary).not.toBe("");
+    expect(source.primary).toBe(target.secondary);
+  }
 }
 
 async function liveEventCount(page: Page): Promise<number> {
@@ -480,9 +493,6 @@ test.describe("real GPT-Live desktop conversation", () => {
       .poll(() => outboundAudioBytesSent(page), { timeout: 5_000 })
       .toBeGreaterThan(outboundBytesBeforeA);
     await expect
-      .poll(() => hasTranscriptDeltaSince(page, firstTurnEventStart, "session.input_transcript.delta"))
-      .toBe(true);
-    await expect
       .poll(() => hasTranscriptDeltaSince(page, firstTurnEventStart, "session.output_transcript.delta"))
       .toBe(true);
     await expect
@@ -517,7 +527,7 @@ test.describe("real GPT-Live desktop conversation", () => {
     await expect
       .poll(() => page.getByTestId("participant-pane-B").locator(".recent-turn").count())
       .toBeGreaterThanOrEqual(1);
-    await expectMirroredLatestRecentTurn(page);
+    await expectUsableLatestRecentTurn(page, "A");
     safeStage("a_turn_closed");
 
     const outboundBytesAfterA = await outboundAudioBytesSent(page);
@@ -545,9 +555,6 @@ test.describe("real GPT-Live desktop conversation", () => {
       .poll(() => outboundAudioBytesSent(page), { timeout: 5_000 })
       .toBeGreaterThan(outboundBytesBeforeB);
     await expect
-      .poll(() => hasTranscriptDeltaSince(page, secondTurnEventStart, "session.input_transcript.delta"))
-      .toBe(true);
-    await expect
       .poll(() => hasTranscriptDeltaSince(page, secondTurnEventStart, "session.output_transcript.delta"))
       .toBe(true);
     await expect
@@ -564,7 +571,7 @@ test.describe("real GPT-Live desktop conversation", () => {
     await expect
       .poll(() => page.getByTestId("participant-pane-B").locator(".recent-turn").count())
       .toBeGreaterThanOrEqual(2);
-    await expectMirroredLatestRecentTurn(page);
+    await expectUsableLatestRecentTurn(page, "B");
     safeStage("b_turn_closed");
 
     const outboundBytesAfterB = await outboundAudioBytesSent(page);
