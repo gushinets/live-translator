@@ -20,6 +20,8 @@ jobs:
           version: 10.34.1
       - run: pnpm install --frozen-lockfile
       - run: pnpm typecheck
+      - name: Verify full unit suite
+        run: pnpm test
       - name: Verify voice activity estimator regression
         run: pnpm --filter @live-translator/web exec vitest run src/audio/VoiceActivityEstimator.test.ts
       - run: pnpm --filter @live-translator/web exec playwright install --with-deps chromium
