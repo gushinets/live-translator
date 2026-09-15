@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
-import { runtime } from "../config/runtime";
 import { VoiceActivityMonitor } from "./VoiceActivityMonitor";
+
+const SOURCE_TAIL_GRACE_MS = 1_000;
 
 function pushQuietBaseline(monitor: VoiceActivityMonitor): void {
   for (let i = 0; i < 100; i += 1) {
@@ -25,13 +26,13 @@ describe("VoiceActivityMonitor", () => {
 
     expect(events).toEqual([{ active: true, atMs: 5_150 }]);
 
-    monitor.pushRms(0, false, 5_650 + runtime.sourceTailGraceMs - 50);
+    monitor.pushRms(0, false, 5_650 + SOURCE_TAIL_GRACE_MS - 50);
     expect(events).toEqual([{ active: true, atMs: 5_150 }]);
 
-    monitor.pushRms(0, false, 5_650 + runtime.sourceTailGraceMs);
+    monitor.pushRms(0, false, 5_650 + SOURCE_TAIL_GRACE_MS);
     expect(events).toEqual([
       { active: true, atMs: 5_150 },
-      { active: false, atMs: 5_650 + runtime.sourceTailGraceMs },
+      { active: false, atMs: 5_650 + SOURCE_TAIL_GRACE_MS },
     ]);
   });
 });
