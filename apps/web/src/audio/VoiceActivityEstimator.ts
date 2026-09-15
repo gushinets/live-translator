@@ -88,7 +88,17 @@ export class VoiceActivityEstimator {
       this.consecutiveEnterFrames = 0;
     }
 
-    if (!this.isActive && !playbackActive && isRepresentative) {
+    // Once a frame has started a speech candidate, keep the baseline fixed
+    // until that candidate is either confirmed by the next frame or rejected
+    // by a below-threshold frame. Otherwise the first candidate itself raises
+    // the adaptive threshold and can prevent an equally loud second frame
+    // from ever confirming speech.
+    if (
+      !this.isActive &&
+      !playbackActive &&
+      isRepresentative &&
+      this.consecutiveEnterFrames === 0
+    ) {
       this.noiseFloor =
         (1 - VAM_NOISE_FLOOR_EMA_ALPHA) * this.noiseFloor +
         VAM_NOISE_FLOOR_EMA_ALPHA * rms;
