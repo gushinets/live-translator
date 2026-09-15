@@ -1,0 +1,24 @@
+name: Temporary mobile contrast RED
+
+on:
+  push:
+    branches:
+      - feat/mobile-setup-ui
+
+jobs:
+  red:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.34.1
+          run_install: false
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm build
+      - run: pnpm --filter @live-translator/web exec playwright install --with-deps chromium
+      - name: Mobile setup spec
+        run: pnpm --filter @live-translator/web exec playwright test tests/e2e/mobile-setup.spec.ts
