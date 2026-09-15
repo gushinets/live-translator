@@ -33,6 +33,11 @@ interface TurnSnapshot {
   remoteAudio: AudioElementState;
 }
 
+interface RecentTurnText {
+  primary: string;
+  secondary: string;
+}
+
 declare global {
   interface Window {
     __liveTranslatorRealMic?: {
@@ -42,6 +47,7 @@ declare global {
     __liveTranslatorRealDiagnostics?: {
       events: RealLiveEventDiagnostic[];
       outboundAudioBytesSent(): Promise<number>;
+      inboundAudioBytesReceived(): Promise<number>;
     };
   }
 }
@@ -112,6 +118,20 @@ async function installDeterministicMicrophone(page: Page): Promise<void> {
             }
           });
           return bytesSent;
+        },
+        inboundAudioBytesReceived: async (): Promise<number> => {
+          const report = await peer.getStats();
+          let bytesReceived = 0;
+          report.forEach((entry) => {
+            if (
+              entry.type === "inbound-rtp" &&
+              entry.kind === "audio" &&
+              typeof entry.bytesReceived === "number"
+            ) {
+              bytesReceived += entry.bytesReceived;
+            }
+          });
+          return bytesReceived;
         },
       };
       return channel;
@@ -209,14 +229,6 @@ async function hasLiveAudibleRemoteAudio(page: Page): Promise<boolean> {
   );
 }
 
-async function hasNonEmptyText(page: Page, testId: string): Promise<boolean> {
-  const locator = page.getByTestId(testId);
-  if ((await locator.count()) === 0) {
-    return false;
-  }
-  return locator.evaluate((element) => (element.textContent ?? "").trim().length > 0);
-}
-
 async function testIdText(page: Page, testId: string): Promise<string> {
   const locator = page.getByTestId(testId);
   if ((await locator.count()) === 0) {
@@ -250,6 +262,31 @@ async function readTurnSnapshot(page: Page): Promise<TurnSnapshot> {
   };
 }
 
+async function readLatestRecentTurn(page: Page, side: "A" | "B"): Promise<RecentTurnText> {
+  const latest = page.getByTestId(`participant-pane-${side}`).locator(".recent-turn").last();
+  if ((await latest.count()) === 0) {
+    return { primary: "", secondary: "" };
+  }
+  const primary = (await latest.locator(".recent-turn-primary").textContent()) ?? "";
+  const secondaryLocator = latest.locator(".recent-turn-secondary");
+  const secondary =
+    (await secondaryLocator.count()) === 0 ? "" : ((await secondaryLocator.textContent()) ?? "");
+  return { primary: primary.trim(), secondary: secondary.trim() };
+}
+
+async function expectMirroredLatestRecentTurn(page: Page): Promise<void> {
+  const [turnA, turnB] = await Promise.all([
+    readLatestRecentTurn(page, "A"),
+    readLatestRecentTurn(page, "B"),
+  ]);
+  expect(turnA.primary).not.toBe("");
+  expect(turnA.secondary).not.toBe("");
+  expect(turnB.primary).not.toBe("");
+  expect(turnB.secondary).not.toBe("");
+  expect(turnA.primary).toBe(turnB.secondary);
+  expect(turnA.secondary).toBe(turnB.primary);
+}
+
 async function liveEventCount(page: Page): Promise<number> {
   return page.evaluate(() => window.__liveTranslatorRealDiagnostics?.events.length ?? 0);
 }
@@ -261,9 +298,24 @@ async function liveEventsSince(page: Page, startIndex: number): Promise<RealLive
   );
 }
 
+async function hasTranscriptDeltaSince(
+  page: Page,
+  startIndex: number,
+  type: "session.input_transcript.delta" | "session.output_transcript.delta",
+): Promise<boolean> {
+  const events = await liveEventsSince(page, startIndex);
+  return events.some((event) => event.type === type && (event.delta ?? "").trim().length > 0);
+}
+
 async function outboundAudioBytesSent(page: Page): Promise<number> {
   return page.evaluate(async () => {
     return (await window.__liveTranslatorRealDiagnostics?.outboundAudioBytesSent()) ?? 0;
+  });
+}
+
+async function inboundAudioBytesReceived(page: Page): Promise<number> {
+  return page.evaluate(async () => {
+    return (await window.__liveTranslatorRealDiagnostics?.inboundAudioBytesReceived()) ?? 0;
   });
 }
 
@@ -320,45 +372,70 @@ test.describe("real GPT-Live desktop conversation", () => {
 
     const firstTurnEventStart = await liveEventCount(page);
     const outboundBytesBeforeA = await outboundAudioBytesSent(page);
+    const inboundBytesBeforeA = await inboundAudioBytesReceived(page);
     const participantAPlayback = playMicrophoneFixture(page, PARTICIPANT_A_AUDIO);
     await expect(page.getByTestId("participant-status-A")).toHaveText("LISTENING");
     await participantAPlayback;
     await expect
       .poll(() => outboundAudioBytesSent(page), { timeout: 5_000 })
       .toBeGreaterThan(outboundBytesBeforeA);
-    await page.waitForTimeout(3_000);
+    await expect
+      .poll(() => hasTranscriptDeltaSince(page, firstTurnEventStart, "session.input_transcript.delta"))
+      .toBe(true);
+    await expect
+      .poll(() => hasTranscriptDeltaSince(page, firstTurnEventStart, "session.output_transcript.delta"))
+      .toBe(true);
+    await expect
+      .poll(() => inboundAudioBytesReceived(page))
+      .toBeGreaterThan(inboundBytesBeforeA);
+    await expect.poll(() => hasLiveAudibleRemoteAudio(page)).toBe(true);
+    safeStage("a_to_b_text_and_audio");
+
+    await expect(page.getByTestId("participant-status-B")).toHaveText("YOUR TURN");
+    await expect(page.getByTestId("participant-status-A")).toHaveText("WAITING");
+    await expect
+      .poll(() => page.getByTestId("participant-pane-A").locator(".recent-turn").count())
+      .toBeGreaterThanOrEqual(1);
+    await expect
+      .poll(() => page.getByTestId("participant-pane-B").locator(".recent-turn").count())
+      .toBeGreaterThanOrEqual(1);
+    await expectMirroredLatestRecentTurn(page);
+    safeStage("a_turn_closed");
+
     const outboundBytesAfterA = await outboundAudioBytesSent(page);
+    const inboundBytesAfterA = await inboundAudioBytesReceived(page);
     const firstTurnEvents = await liveEventsSince(page, firstTurnEventStart);
     const firstTurnSnapshot = await readTurnSnapshot(page);
     console.log(
       `[real-live-debug] a_boundary=${JSON.stringify({
         outboundBytesBeforeA,
         outboundBytesAfterA,
+        inboundBytesBeforeA,
+        inboundBytesAfterA,
         events: firstTurnEvents,
         snapshot: firstTurnSnapshot,
       })}`,
     );
 
-    await Promise.all([
-      expect.poll(() => hasNonEmptyText(page, "current-primary-A")).toBe(true),
-      expect.poll(() => hasNonEmptyText(page, "current-primary-B")).toBe(true),
-      expect(page.getByTestId("participant-status-B")).toHaveText("SPEAKING"),
-      expect.poll(() => hasLiveAudibleRemoteAudio(page)).toBe(true),
-    ]);
-    safeStage("a_to_b_text_and_audio");
-
-    await expect(page.getByTestId("participant-status-B")).toHaveText("YOUR TURN");
-    await expect(page.getByTestId("participant-status-A")).toHaveText("WAITING");
-    safeStage("a_turn_closed");
-
-    await Promise.all([
-      playMicrophoneFixture(page, PARTICIPANT_B_AUDIO),
-      expect(page.getByTestId("participant-status-B")).toHaveText("LISTENING"),
-      expect.poll(() => hasNonEmptyText(page, "current-primary-B")).toBe(true),
-      expect.poll(() => hasNonEmptyText(page, "current-primary-A")).toBe(true),
-      expect(page.getByTestId("participant-status-A")).toHaveText("SPEAKING"),
-      expect.poll(() => hasLiveAudibleRemoteAudio(page)).toBe(true),
-    ]);
+    const secondTurnEventStart = await liveEventCount(page);
+    const outboundBytesBeforeB = await outboundAudioBytesSent(page);
+    const inboundBytesBeforeB = await inboundAudioBytesReceived(page);
+    const participantBPlayback = playMicrophoneFixture(page, PARTICIPANT_B_AUDIO);
+    await expect(page.getByTestId("participant-status-B")).toHaveText("LISTENING");
+    await participantBPlayback;
+    await expect
+      .poll(() => outboundAudioBytesSent(page), { timeout: 5_000 })
+      .toBeGreaterThan(outboundBytesBeforeB);
+    await expect
+      .poll(() => hasTranscriptDeltaSince(page, secondTurnEventStart, "session.input_transcript.delta"))
+      .toBe(true);
+    await expect
+      .poll(() => hasTranscriptDeltaSince(page, secondTurnEventStart, "session.output_transcript.delta"))
+      .toBe(true);
+    await expect
+      .poll(() => inboundAudioBytesReceived(page))
+      .toBeGreaterThan(inboundBytesBeforeB);
+    await expect.poll(() => hasLiveAudibleRemoteAudio(page)).toBe(true);
     safeStage("b_to_a_text_and_audio");
 
     await expect(page.getByTestId("participant-status-A")).toHaveText("YOUR TURN");
@@ -369,7 +446,23 @@ test.describe("real GPT-Live desktop conversation", () => {
     await expect
       .poll(() => page.getByTestId("participant-pane-B").locator(".recent-turn").count())
       .toBeGreaterThanOrEqual(2);
+    await expectMirroredLatestRecentTurn(page);
     safeStage("b_turn_closed");
+
+    const outboundBytesAfterB = await outboundAudioBytesSent(page);
+    const inboundBytesAfterB = await inboundAudioBytesReceived(page);
+    const secondTurnEvents = await liveEventsSince(page, secondTurnEventStart);
+    const secondTurnSnapshot = await readTurnSnapshot(page);
+    console.log(
+      `[real-live-debug] b_boundary=${JSON.stringify({
+        outboundBytesBeforeB,
+        outboundBytesAfterB,
+        inboundBytesBeforeB,
+        inboundBytesAfterB,
+        events: secondTurnEvents,
+        snapshot: secondTurnSnapshot,
+      })}`,
+    );
 
     await page.getByRole("button", { name: "End conversation" }).click();
     await expect(page.getByRole("button", { name: "Start translation" })).toBeVisible({
