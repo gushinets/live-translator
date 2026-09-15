@@ -3,16 +3,31 @@ import type { Page } from "@playwright/test";
 const PORTRAIT_SCREEN = { width: 390, height: 844 };
 const STATUS_TRACE_PREFIX = "[real-live-status]";
 const ANALYSER_TRACE_PREFIX = "[real-live-analyser]";
+const STARTUP_TRACE_PREFIX = "[live-translator:startup]";
 
 export async function emulatePortraitScreen(page: Page): Promise<void> {
   page.on("console", (message) => {
     const text = message.text();
-    if (text.startsWith(STATUS_TRACE_PREFIX) || text.startsWith(ANALYSER_TRACE_PREFIX)) {
+    if (
+      text.startsWith(STATUS_TRACE_PREFIX) ||
+      text.startsWith(ANALYSER_TRACE_PREFIX) ||
+      text.startsWith(STARTUP_TRACE_PREFIX)
+    ) {
       console.log(text);
+      return;
+    }
+    if (message.type() === "error") {
+      console.log(`[real-live-browser-error] ${text}`);
     }
   });
 
   await page.addInitScript(() => {
+    try {
+      localStorage.setItem("liveTranslatorStartupTrace", "1");
+    } catch {
+      // Diagnostics must not change test behavior when storage is unavailable.
+    }
+
     interface AnalyserStats {
       calls: number;
       lastRms: number;
