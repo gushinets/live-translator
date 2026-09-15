@@ -43,7 +43,13 @@ export class VoiceActivityEstimator {
       if (playbackActive || !isRepresentative) {
         return;
       }
-      this.noiseFloor = rms;
+      // The first representative frame after reset can already be speech.
+      // Treat it as a provisional quiet baseline, not as authoritative
+      // ambient noise, otherwise a speech frame can raise the adaptive
+      // enter threshold above the rest of the same utterance and VAD will
+      // never enter active. Inactive EMA learning is still free to raise
+      // this baseline toward genuinely steady ambient noise on later frames.
+      this.noiseFloor = Math.min(rms, VAM_QUIET_FLOOR);
       return;
     }
 
