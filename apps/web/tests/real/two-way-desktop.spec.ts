@@ -123,6 +123,17 @@ async function readAudioElementState(page: Page): Promise<AudioElementState> {
   });
 }
 
+async function hasLiveAudibleRemoteAudio(page: Page): Promise<boolean> {
+  const audio = await readAudioElementState(page);
+  return (
+    audio.exists &&
+    audio.audioTracks >= 1 &&
+    audio.liveAudioTracks >= 1 &&
+    audio.muted === false &&
+    audio.paused === false
+  );
+}
+
 async function hasNonEmptyText(page: Page, testId: string): Promise<boolean> {
   const locator = page.getByTestId(testId);
   if ((await locator.count()) === 0) {
@@ -167,9 +178,11 @@ test.describe("real GPT-Live desktop conversation", () => {
     await playMicrophoneFixture(page, BOOTSTRAP_AUDIO);
     await expect(page.getByRole("button", { name: "Accept" })).toBeVisible();
     await expect
-      .poll(() => page.locator(".bootstrap-hint-value").evaluate((element) =>
-        (element.textContent ?? "").trim().length > 0,
-      ))
+      .poll(() =>
+        page
+          .locator(".bootstrap-hint-value")
+          .evaluate((element) => (element.textContent ?? "").trim().length > 0),
+      )
       .toBe(true);
     safeStage("bootstrap_hint_received");
 
@@ -180,36 +193,28 @@ test.describe("real GPT-Live desktop conversation", () => {
     expect(liveSessionStatuses).toEqual([201]);
     safeStage("interpreter_ready");
 
-    await playMicrophoneFixture(page, PARTICIPANT_A_AUDIO);
-    await expect(page.getByTestId("participant-status-A")).toHaveText("LISTENING");
-    await expect.poll(() => hasNonEmptyText(page, "current-primary-A")).toBe(true);
-    await expect.poll(() => hasNonEmptyText(page, "current-primary-B")).toBe(true);
-    await expect(page.getByTestId("participant-status-B")).toHaveText("SPEAKING");
-
-    const audioDuringBOutput = await readAudioElementState(page);
-    expect(audioDuringBOutput.exists).toBe(true);
-    expect(audioDuringBOutput.audioTracks).toBeGreaterThanOrEqual(1);
-    expect(audioDuringBOutput.liveAudioTracks).toBeGreaterThanOrEqual(1);
-    expect(audioDuringBOutput.muted).toBe(false);
-    expect(audioDuringBOutput.paused).toBe(false);
+    await Promise.all([
+      playMicrophoneFixture(page, PARTICIPANT_A_AUDIO),
+      expect(page.getByTestId("participant-status-A")).toHaveText("LISTENING"),
+      expect.poll(() => hasNonEmptyText(page, "current-primary-A")).toBe(true),
+      expect.poll(() => hasNonEmptyText(page, "current-primary-B")).toBe(true),
+      expect(page.getByTestId("participant-status-B")).toHaveText("SPEAKING"),
+      expect.poll(() => hasLiveAudibleRemoteAudio(page)).toBe(true),
+    ]);
     safeStage("a_to_b_text_and_audio");
 
     await expect(page.getByTestId("participant-status-B")).toHaveText("YOUR TURN");
     await expect(page.getByTestId("participant-status-A")).toHaveText("WAITING");
     safeStage("a_turn_closed");
 
-    await playMicrophoneFixture(page, PARTICIPANT_B_AUDIO);
-    await expect(page.getByTestId("participant-status-B")).toHaveText("LISTENING");
-    await expect.poll(() => hasNonEmptyText(page, "current-primary-B")).toBe(true);
-    await expect.poll(() => hasNonEmptyText(page, "current-primary-A")).toBe(true);
-    await expect(page.getByTestId("participant-status-A")).toHaveText("SPEAKING");
-
-    const audioDuringAOutput = await readAudioElementState(page);
-    expect(audioDuringAOutput.exists).toBe(true);
-    expect(audioDuringAOutput.audioTracks).toBeGreaterThanOrEqual(1);
-    expect(audioDuringAOutput.liveAudioTracks).toBeGreaterThanOrEqual(1);
-    expect(audioDuringAOutput.muted).toBe(false);
-    expect(audioDuringAOutput.paused).toBe(false);
+    await Promise.all([
+      playMicrophoneFixture(page, PARTICIPANT_B_AUDIO),
+      expect(page.getByTestId("participant-status-B")).toHaveText("LISTENING"),
+      expect.poll(() => hasNonEmptyText(page, "current-primary-B")).toBe(true),
+      expect.poll(() => hasNonEmptyText(page, "current-primary-A")).toBe(true),
+      expect(page.getByTestId("participant-status-A")).toHaveText("SPEAKING"),
+      expect.poll(() => hasLiveAudibleRemoteAudio(page)).toBe(true),
+    ]);
     safeStage("b_to_a_text_and_audio");
 
     await expect(page.getByTestId("participant-status-A")).toHaveText("YOUR TURN");
