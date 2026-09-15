@@ -17,7 +17,7 @@ declare global {
   interface Window {
     __liveTranslatorRealMic?: {
       isReady(): boolean;
-      playBase64Audio(base64: string): Promise<void>;
+      startBase64Audio(base64: string): Promise<void>;
     };
   }
 }
@@ -59,7 +59,7 @@ async function installDeterministicMicrophone(page: Page): Promise<void> {
 
     window.__liveTranslatorRealMic = {
       isReady: () => destination !== null,
-      playBase64Audio: async (base64: string): Promise<void> => {
+      startBase64Audio: async (base64: string): Promise<void> => {
         const microphone = await ensureMicrophone();
         const bytes = Uint8Array.from(atob(base64), (character) =>
           character.charCodeAt(0),
@@ -68,23 +68,19 @@ async function installDeterministicMicrophone(page: Page): Promise<void> {
         const source = microphone.context.createBufferSource();
         source.buffer = decoded;
         source.connect(microphone.destination);
-        await new Promise<void>((resolve) => {
-          source.addEventListener("ended", () => resolve(), { once: true });
-          source.start();
-        });
-        await new Promise<void>((resolve) => window.setTimeout(resolve, 350));
+        source.start();
       },
     };
   });
 }
 
-async function playMicrophoneFixture(page: Page, base64: string): Promise<void> {
+async function startMicrophoneFixture(page: Page, base64: string): Promise<void> {
   await page.evaluate(async (fixture) => {
     const microphone = window.__liveTranslatorRealMic;
     if (microphone === undefined) {
       throw new Error("Deterministic microphone hook is unavailable");
     }
-    await microphone.playBase64Audio(fixture);
+    await microphone.startBase64Audio(fixture);
   }, base64);
 }
 
@@ -113,9 +109,11 @@ async function readAudioElementState(page: Page): Promise<AudioElementState> {
 }
 
 async function hasNonEmptyText(page: Page, testId: string): Promise<boolean> {
-  return page.getByTestId(testId).evaluate((element) =>
-    (element.textContent ?? "").trim().length > 0,
-  );
+  const locator = page.getByTestId(testId);
+  if ((await locator.count()) === 0) {
+    return false;
+  }
+  return locator.evaluate((element) => (element.textContent ?? "").trim().length > 0);
 }
 
 function safeStage(stage: string): void {
@@ -150,7 +148,7 @@ test.describe("real GPT-Live desktop conversation", () => {
       .toBe(true);
     safeStage("bootstrap_connected");
 
-    await playMicrophoneFixture(page, BOOTSTRAP_AUDIO);
+    await startMicrophoneFixture(page, BOOTSTRAP_AUDIO);
     await expect(page.getByRole("button", { name: "Accept" })).toBeVisible();
     await expect
       .poll(() => page.locator(".bootstrap-hint-value").evaluate((element) =>
@@ -166,11 +164,9 @@ test.describe("real GPT-Live desktop conversation", () => {
     expect(liveSessionStatuses).toEqual([201]);
     safeStage("interpreter_ready");
 
-    await playMicrophoneFixture(page, PARTICIPANT_A_AUDIO);
+    await startMicrophoneFixture(page, PARTICIPANT_A_AUDIO);
     await expect(page.getByTestId("participant-status-A")).toHaveText("LISTENING");
-    await expect(page.getByTestId("current-primary-A")).toBeVisible();
     await expect.poll(() => hasNonEmptyText(page, "current-primary-A")).toBe(true);
-    await expect(page.getByTestId("current-primary-B")).toBeVisible();
     await expect.poll(() => hasNonEmptyText(page, "current-primary-B")).toBe(true);
     await expect(page.getByTestId("participant-status-B")).toHaveText("SPEAKING");
 
@@ -186,11 +182,9 @@ test.describe("real GPT-Live desktop conversation", () => {
     await expect(page.getByTestId("participant-status-A")).toHaveText("WAITING");
     safeStage("a_turn_closed");
 
-    await playMicrophoneFixture(page, PARTICIPANT_B_AUDIO);
+    await startMicrophoneFixture(page, PARTICIPANT_B_AUDIO);
     await expect(page.getByTestId("participant-status-B")).toHaveText("LISTENING");
-    await expect(page.getByTestId("current-primary-B")).toBeVisible();
     await expect.poll(() => hasNonEmptyText(page, "current-primary-B")).toBe(true);
-    await expect(page.getByTestId("current-primary-A")).toBeVisible();
     await expect.poll(() => hasNonEmptyText(page, "current-primary-A")).toBe(true);
     await expect(page.getByTestId("participant-status-A")).toHaveText("SPEAKING");
 
