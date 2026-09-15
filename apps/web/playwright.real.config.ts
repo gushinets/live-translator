@@ -1,6 +1,7 @@
 import { defineConfig, devices } from "@playwright/test";
 
 const WEB_ORIGIN = "http://127.0.0.1:4173";
+const PORTRAIT_VIEWPORT = { width: 390, height: 844 };
 
 export default defineConfig({
   testDir: "./tests/real",
@@ -15,7 +16,7 @@ export default defineConfig({
   outputDir: "test-results/real-live",
   use: {
     baseURL: WEB_ORIGIN,
-    viewport: { width: 390, height: 844 },
+    viewport: PORTRAIT_VIEWPORT,
     trace: "off",
     screenshot: "off",
     video: "off",
@@ -48,7 +49,8 @@ export default defineConfig({
       name: "chromium-real-live",
       use: {
         ...devices["Desktop Chrome"],
-        viewport: { width: 390, height: 844 },
+        viewport: PORTRAIT_VIEWPORT,
+        screen: PORTRAIT_VIEWPORT,
       },
     },
   ],
