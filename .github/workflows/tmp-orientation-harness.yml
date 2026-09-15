@@ -1,0 +1,22 @@
+name: Temporary orientation harness verification
+
+on:
+  push:
+    branches:
+      - test/real-two-way-desktop
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.34.1
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm --filter @live-translator/web exec playwright install --with-deps chromium
+      - name: Verify portrait screen contract
+        run: pnpm --filter @live-translator/web exec playwright test --config=playwright.real.config.ts tests/real/orientation-harness.spec.ts
