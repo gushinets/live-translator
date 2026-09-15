@@ -20,6 +20,11 @@ import {
   type SessionUsageSnapshot,
   type TranscriptDeltaEvent,
 } from "./LiveEvents";
+import {
+  traceAppendAck,
+  traceAppendError,
+  traceAppendSent,
+} from "./StartupTrace";
 import { waitForIceComplete } from "./waitForIceComplete";
 
 /** Binding spec 1.2.1 §14.3 step 6 / ambiguity resolution. */
@@ -563,10 +568,13 @@ export class LiveClient {
       this.handleMalformedServerEvent(serverEvent.message);
       return;
     }
-    this.dispatchServerEvent(serverEvent.event);
+    this.dispatchServerEvent(serverEvent.event, parsed);
   }
 
-  private dispatchServerEvent(serverEvent: LiveServerEvent): void {
+  private dispatchServerEvent(
+    serverEvent: LiveServerEvent,
+    rawServerEvent: unknown,
+  ): void {
     switch (serverEvent.type) {
       case "session.started":
         this.started = true;
@@ -582,6 +590,7 @@ export class LiveClient {
       case "session.instructions.appended":
       case "session.thinking.appended":
       case "session.commentary.appended":
+        traceAppendAck(serverEvent, rawServerEvent);
         this.ackRegistry.accept(serverEvent);
         this.onAppendAcknowledged?.(serverEvent);
         return;
@@ -634,6 +643,7 @@ export class LiveClient {
         return;
       }
       case "error":
+        traceAppendError(rawServerEvent);
         // A server-reported error before session.started means the
         // session never actually started. Only in that pre-start case —
         // guarded by `!this.started`, so a normal post-start error report
@@ -698,9 +708,9 @@ export class LiveClient {
     build: (eventId: string) => LiveClientEvent,
   ): Promise<AckResult> {
     this.assertSteeringAllowed(policy);
-    const first = await this.attemptAppend(build);
+    const first = await this.attemptAppend(policy.kind, build);
     if (first.ok) return { eventId: first.eventId };
-    const retry = await this.attemptAppend(build);
+    const retry = await this.attemptAppend(policy.kind, build);
     if (retry.ok) return { eventId: retry.eventId };
     if (policy.kind === "later_steering") {
       return { eventId: retry.eventId, degraded: true };
@@ -709,6 +719,7 @@ export class LiveClient {
   }
 
   private async attemptAppend(
+    appendKind: AppendPolicyKind,
     build: (eventId: string) => LiveClientEvent,
   ): Promise<
     | { ok: true; eventId: string }
@@ -720,6 +731,7 @@ export class LiveClient {
       eventId,
       runtime.steeringAckTimeoutMs,
     );
+    traceAppendSent(command, appendKind);
     try {
       this.send(command);
     } catch (error) {

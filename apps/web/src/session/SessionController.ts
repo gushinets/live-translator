@@ -25,6 +25,7 @@ import {
   buildSteering,
   buildUnfinishedTurnWarning,
 } from "../live/LivePrompts";
+import { traceBeginInterpreter } from "../live/StartupTrace";
 import { ConversationMetrics } from "../metrics/ConversationMetrics";
 import { OrientationController } from "../platform/OrientationController";
 import { VisibilityController } from "../platform/VisibilityController";
@@ -530,12 +531,19 @@ export class SessionController {
   }
 
   private async runBeginInterpreter(): Promise<void> {
+    const generation = this.sessionGeneration;
+    traceBeginInterpreter("session.beginInterpreter.start", {
+      generation,
+      state: this.currentSession.state,
+      enteredInterpreter: this.enteredInterpreter,
+      gateCOpen: this.enteredInterpreter,
+      interpreterInFlight: this.interpreterInFlight,
+    });
     if (this.currentSession.state !== "bootstrap") {
       throw new Error(`Cannot begin interpreter from "${this.currentSession.state}"`);
     }
 
     const live = this.live;
-    const generation = this.sessionGeneration;
     this.interpreterInFlight = true;
     this.ownerErrorMessage = undefined;
     this.notify();
@@ -603,10 +611,25 @@ export class SessionController {
       this.enteredInterpreter = true;
       this.speechInputReady = true;
       this.dispatch({ type: "INTERPRETER_READY" });
+      traceBeginInterpreter("session.interpreter_ready", {
+        generation,
+        state: this.currentSession.state,
+        enteredInterpreter: this.enteredInterpreter,
+        gateCOpen: true,
+        interpreterInFlight: this.interpreterInFlight,
+      });
       await this.startPlatformLifecycle();
     } finally {
       if (this.sessionGeneration === generation) {
         this.interpreterInFlight = false;
+        traceBeginInterpreter("session.beginInterpreter.finish", {
+          generation,
+          currentGeneration: this.sessionGeneration,
+          state: this.currentSession.state,
+          enteredInterpreter: this.enteredInterpreter,
+          gateCOpen: this.enteredInterpreter,
+          interpreterInFlight: this.interpreterInFlight,
+        });
         this.notify();
       }
     }

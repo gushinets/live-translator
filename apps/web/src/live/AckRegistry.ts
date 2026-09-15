@@ -4,6 +4,8 @@
  * unmatched or id-less acknowledgments never resolve a different waiter.
  */
 
+import { traceAckErrorType, traceAckRegistry } from "./StartupTrace";
+
 export class AckTimeoutError extends Error {
   readonly eventId: string;
 
@@ -39,9 +41,18 @@ export class AckRegistry {
     return new Promise<{ client_event_id: string }>((resolve, reject) => {
       const timer = window.setTimeout(() => {
         this.pending.delete(eventId);
+        traceAckRegistry("ack.timeout", {
+          clientEventId: eventId,
+          pendingCount: this.pending.size,
+          errorType: "AckTimeoutError",
+        });
         reject(new AckTimeoutError(eventId));
       }, timeoutMs);
       this.pending.set(eventId, { resolve, reject, timer });
+      traceAckRegistry("ack.wait", {
+        clientEventId: eventId,
+        pendingCount: this.pending.size,
+      });
     });
   }
 
@@ -50,6 +61,10 @@ export class AckRegistry {
     const waiter = this.pending.get(event.client_event_id);
     if (waiter === undefined) return;
     this.pending.delete(event.client_event_id);
+    traceAckRegistry("ack.resolve", {
+      clientEventId: event.client_event_id,
+      pendingCount: this.pending.size,
+    });
     window.clearTimeout(waiter.timer);
     waiter.resolve({ client_event_id: event.client_event_id });
   }
@@ -59,14 +74,24 @@ export class AckRegistry {
     const waiter = this.pending.get(event.client_event_id);
     if (waiter === undefined) return;
     this.pending.delete(event.client_event_id);
+    traceAckRegistry("ack.reject", {
+      clientEventId: event.client_event_id,
+      pendingCount: this.pending.size,
+      errorType: "server_error",
+    });
     window.clearTimeout(waiter.timer);
     waiter.reject(new Error(event.message));
   }
 
   rejectAll(error: Error): void {
-    const waiters = [...this.pending.values()];
+    const waiters = [...this.pending.entries()];
     this.pending.clear();
-    for (const waiter of waiters) {
+    for (const [clientEventId, waiter] of waiters) {
+      traceAckRegistry("ack.reject_all", {
+        clientEventId,
+        pendingCount: this.pending.size,
+        errorType: traceAckErrorType(error),
+      });
       window.clearTimeout(waiter.timer);
       waiter.reject(error);
     }
