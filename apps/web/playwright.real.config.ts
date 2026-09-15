@@ -12,7 +12,7 @@ export default defineConfig({
     timeout: 30_000,
   },
   reporter: [["list"]],
-  outputDir: "test-results-real",
+  outputDir: "test-results/real-live",
   use: {
     baseURL: WEB_ORIGIN,
     viewport: { width: 390, height: 844 },
