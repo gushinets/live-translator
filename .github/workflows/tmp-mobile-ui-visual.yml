@@ -33,4 +33,4 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: mobile-setup-visual
-          path: mobile-setup-390x844.png
+          path: apps/web/mobile-setup-390x844.png
