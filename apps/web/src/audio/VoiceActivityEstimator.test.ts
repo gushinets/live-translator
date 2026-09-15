@@ -54,6 +54,16 @@ describe("VoiceActivityEstimator", () => {
     expect(estimator.active).toBe(true);
   });
 
+  it("does not raise the adaptive floor between consecutive candidate speech frames", () => {
+    const estimator = new VoiceActivityEstimator();
+    pushQuiet(estimator, 0.01, 100);
+
+    estimator.pushRms(0.03, false, 5_100);
+    estimator.pushRms(0.03, false, 5_150);
+
+    expect(estimator.active).toBe(true);
+  });
+
   it("does not enter active on a single frame above threshold", () => {
     const estimator = new VoiceActivityEstimator();
     pushQuiet(estimator, 0.01, 100);
