@@ -25,6 +25,7 @@ import {
   buildSteering,
   buildUnfinishedTurnWarning,
 } from "../live/LivePrompts";
+import { traceAckErrorType, traceBeginInterpreter } from "../live/StartupTrace";
 import { ConversationMetrics } from "../metrics/ConversationMetrics";
 import { OrientationController } from "../platform/OrientationController";
 import { VisibilityController } from "../platform/VisibilityController";
@@ -529,13 +530,31 @@ export class SessionController {
     }
   }
 
+  private traceBeginInterpreterCancelled(generation: number): void {
+    traceBeginInterpreter("session.beginInterpreter.cancelled", {
+      generation,
+      currentGeneration: this.sessionGeneration,
+      state: this.currentSession.state,
+      enteredInterpreter: this.enteredInterpreter,
+      gateCOpen: this.enteredInterpreter,
+      interpreterInFlight: this.interpreterInFlight,
+    });
+  }
+
   private async runBeginInterpreter(): Promise<void> {
+    const generation = this.sessionGeneration;
+    traceBeginInterpreter("session.beginInterpreter.start", {
+      generation,
+      state: this.currentSession.state,
+      enteredInterpreter: this.enteredInterpreter,
+      gateCOpen: this.enteredInterpreter,
+      interpreterInFlight: this.interpreterInFlight,
+    });
     if (this.currentSession.state !== "bootstrap") {
       throw new Error(`Cannot begin interpreter from "${this.currentSession.state}"`);
     }
 
     const live = this.live;
-    const generation = this.sessionGeneration;
     this.interpreterInFlight = true;
     this.ownerErrorMessage = undefined;
     this.notify();
@@ -545,14 +564,21 @@ export class SessionController {
         const payload = buildAuthoritativeContext(edited);
         this.assertStartupAppendWithinBudget(payload);
         try {
-          await live.appendThinking(payload, { kind: "startup_interpreter" });
+          await live.appendThinking(payload, {
+            kind: "startup_interpreter",
+            startupGeneration: generation,
+            startupState: this.currentSession.state,
+            startupStage: "authoritative_context",
+          });
         } catch (error) {
           if (this.sessionGeneration !== generation) {
+            this.traceBeginInterpreterCancelled(generation);
             return;
           }
           this.failStartupAppend("Authoritative context append failed", error);
         }
         if (this.sessionGeneration !== generation) {
+          this.traceBeginInterpreterCancelled(generation);
           return;
         }
         this.authoritativeContextSent = true;
@@ -561,14 +587,19 @@ export class SessionController {
       try {
         await live.appendInstructions(buildInterpreterInstructions(), {
           kind: "startup_interpreter",
+          startupGeneration: generation,
+          startupState: this.currentSession.state,
+          startupStage: "interpreter_contract",
         });
       } catch (error) {
         if (this.sessionGeneration !== generation) {
+          this.traceBeginInterpreterCancelled(generation);
           return;
         }
         this.failStartupAppend("BEGIN_INTERPRETER_MODE append failed", error);
       }
       if (this.sessionGeneration !== generation) {
+        this.traceBeginInterpreterCancelled(generation);
         return;
       }
 
@@ -585,15 +616,20 @@ export class SessionController {
           {
             kind: "first_steering",
             sessionState: this.currentSession.state,
+            startupGeneration: generation,
+            startupState: this.currentSession.state,
+            startupStage: "first_steering",
           },
         );
       } catch (error) {
         if (this.sessionGeneration !== generation) {
+          this.traceBeginInterpreterCancelled(generation);
           return;
         }
         this.failStartupAppend("First steering append failed", error);
       }
       if (this.sessionGeneration !== generation) {
+        this.traceBeginInterpreterCancelled(generation);
         return;
       }
 
@@ -603,10 +639,36 @@ export class SessionController {
       this.enteredInterpreter = true;
       this.speechInputReady = true;
       this.dispatch({ type: "INTERPRETER_READY" });
+      traceBeginInterpreter("session.interpreter_ready", {
+        generation,
+        state: this.currentSession.state,
+        enteredInterpreter: this.enteredInterpreter,
+        gateCOpen: true,
+        interpreterInFlight: this.interpreterInFlight,
+      });
       await this.startPlatformLifecycle();
+    } catch (error) {
+      traceBeginInterpreter("session.beginInterpreter.failure", {
+        generation,
+        currentGeneration: this.sessionGeneration,
+        state: this.currentSession.state,
+        enteredInterpreter: this.enteredInterpreter,
+        gateCOpen: this.enteredInterpreter,
+        interpreterInFlight: this.interpreterInFlight,
+        errorType: traceAckErrorType(error),
+      });
+      throw error;
     } finally {
       if (this.sessionGeneration === generation) {
         this.interpreterInFlight = false;
+        traceBeginInterpreter("session.beginInterpreter.finish", {
+          generation,
+          currentGeneration: this.sessionGeneration,
+          state: this.currentSession.state,
+          enteredInterpreter: this.enteredInterpreter,
+          gateCOpen: this.enteredInterpreter,
+          interpreterInFlight: this.interpreterInFlight,
+        });
         this.notify();
       }
     }
@@ -632,6 +694,15 @@ export class SessionController {
     const pendingConnect = this.connectWork;
     const shouldWaitForMic =
       pendingConnect !== null && !this.hasConnected && !this.liveConnectStarted;
+    const generation = this.sessionGeneration;
+    traceBeginInterpreter("session.cancel", {
+      generation,
+      currentGeneration: generation + 1,
+      state: this.currentSession.state,
+      enteredInterpreter: this.enteredInterpreter,
+      gateCOpen: this.enteredInterpreter,
+      interpreterInFlight: this.interpreterInFlight,
+    });
     this.sessionGeneration += 1;
     this.clearIdleTimer();
     this.clearMaxSessionTimer();

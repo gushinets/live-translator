@@ -423,10 +423,18 @@ describe("SessionController", () => {
 
     expect(live.appendThinking).toHaveBeenCalledExactlyOnceWith(
       buildAuthoritativeContext("We are ordering lunch."),
-      { kind: "startup_interpreter" },
+      {
+        kind: "startup_interpreter",
+        startupGeneration: 0,
+        startupState: "bootstrap",
+        startupStage: "authoritative_context",
+      },
     );
     expect(live.appendInstructions).toHaveBeenNthCalledWith(1, buildInterpreterInstructions(), {
       kind: "startup_interpreter",
+      startupGeneration: 0,
+      startupState: "bootstrap",
+      startupStage: "interpreter_contract",
     });
     expect(live.appendInstructions).toHaveBeenNthCalledWith(
       2,
@@ -435,7 +443,13 @@ describe("SessionController", () => {
         recipient: "B",
         initialRecipientHint: "Spanish",
       }),
-      { kind: "first_steering", sessionState: "bootstrap" },
+      {
+        kind: "first_steering",
+        sessionState: "bootstrap",
+        startupGeneration: 0,
+        startupState: "bootstrap",
+        startupStage: "first_steering",
+      },
     );
     expect(live.callOrder.slice(1)).toEqual([
       `thinking:${buildAuthoritativeContext("We are ordering lunch.")}`,
@@ -463,7 +477,13 @@ describe("SessionController", () => {
     expect(live.appendInstructions).toHaveBeenNthCalledWith(
       2,
       buildSteering({ expectedSource: "A", recipient: "B" }),
-      { kind: "first_steering", sessionState: "bootstrap" },
+      {
+        kind: "first_steering",
+        sessionState: "bootstrap",
+        startupGeneration: 0,
+        startupState: "bootstrap",
+        startupStage: "first_steering",
+      },
     );
     expect(controller.session.state).toBe("listening");
   });

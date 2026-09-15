@@ -1,9 +1,14 @@
 import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createInitialSession, type TranslationSession } from "../session/SessionState";
+import { STARTUP_TRACE_STORAGE_KEY } from "../live/StartupTrace";
 import { ContextScreen, type ContextScreenController } from "./ContextScreen";
 
-afterEach(cleanup);
+afterEach(() => {
+  cleanup();
+  localStorage.clear();
+  vi.restoreAllMocks();
+});
 
 function idleSession(): TranslationSession {
   return createInitialSession(
@@ -174,6 +179,29 @@ describe("ContextScreen", () => {
     expect(controller.beginInterpreter).toHaveBeenCalledOnce();
   });
 
+  it("traces accept and skip boundaries without bootstrap content", async () => {
+    const info = vi.spyOn(console, "info").mockImplementation(() => undefined);
+    localStorage.setItem(STARTUP_TRACE_STORAGE_KEY, "1");
+    const controller = new FakeOwnerController();
+    render(<ContextScreen controller={controller} />);
+
+    fireEvent.click(screen.getByRole("button", { name: "Start translation" }));
+    await screen.findByRole("button", { name: "Skip" });
+    act(() => {
+      controller.setBootstrapText("translate a private medical transcript");
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: "Skip" }));
+    fireEvent.click(screen.getByRole("button", { name: "Accept" }));
+
+    const output = info.mock.calls.map(([line]) => String(line)).join("\n");
+    expect(output).toContain('"event":"ui.bootstrap.skip_invoked"');
+    expect(output).toContain('"event":"ui.bootstrap.accept_invoked"');
+    expect(output).toContain('"action":"skip"');
+    expect(output).toContain('"action":"accept"');
+    expect(output).not.toContain("private medical transcript");
+  });
+
   it("mounts the Gate C audio element in the document", () => {
     const controller = new FakeOwnerController();
     controller.audioElement = document.createElement("audio");
@@ -259,6 +287,22 @@ describe("ContextScreen", () => {
     expect(screen.getByTestId("participant-pane-B")).toHaveStyle({
       transform: "rotate(180deg)",
     });
+  });
+
+  it("traces the conversation render predicate outcome", () => {
+    const info = vi.spyOn(console, "info").mockImplementation(() => undefined);
+    localStorage.setItem(STARTUP_TRACE_STORAGE_KEY, "1");
+    const controller = new FakeOwnerController();
+    controller.session = { ...controller.session, state: "listening" };
+    controller.hasEnteredInterpreter = true;
+
+    render(<ContextScreen controller={controller} />);
+
+    const output = info.mock.calls.map(([line]) => String(line)).join("\n");
+    expect(output).toContain('"event":"ui.conversation.render_predicate"');
+    expect(output).toContain('"state":"listening"');
+    expect(output).toContain('"is_conversation":true');
+    expect(output).toContain('"rendered_screen":"conversation"');
   });
 
   it("shows the translator title on the owner start screen", () => {

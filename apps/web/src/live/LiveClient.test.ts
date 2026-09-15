@@ -8,6 +8,7 @@ import {
   ContextTooLongError,
   type SessionClosedEvent,
 } from "./LiveEvents";
+import { STARTUP_TRACE_STORAGE_KEY } from "./StartupTrace";
 
 class FakeDataChannel extends EventTarget {
   readyState: RTCDataChannelState = "open";
@@ -1493,6 +1494,7 @@ describe("LiveClient.close", () => {
 describe("LiveClient trusted control commands", () => {
   afterEach(() => {
     vi.useRealTimers();
+    localStorage.clear();
     vi.restoreAllMocks();
   });
 
@@ -1738,7 +1740,52 @@ describe("LiveClient trusted control commands", () => {
   });
 
   it("fails an instructions append immediately when a nested correlated error arrives", async () => {
+    const info = vi.spyOn(console, "info").mockImplementation(() => undefined);
+    localStorage.setItem(STARTUP_TRACE_STORAGE_KEY, "1");
     const { client, channel } = await connectedClient();
+    const pending = client.appendInstructions("BEGIN_INTERPRETER_MODE.", {
+      kind: "startup_interpreter",
+      startupGeneration: 2,
+      startupState: "bootstrap",
+      startupStage: "interpreter_contract",
+    });
+    const observed = pending.then(
+      () => "resolved",
+      (error: unknown) => (error instanceof Error ? error.message : String(error)),
+    );
+
+    channel.emitMessage({
+      type: "error",
+      event_id: "srv-error-1",
+      error: {
+        message: "append rejected",
+        code: "bad_request",
+        type: "invalid_request_error",
+        client_event_id: "evt-1",
+      },
+    });
+    await flushMicrotasks();
+
+    await expect(Promise.race([observed, Promise.resolve("pending")])).resolves.toBe(
+      "append rejected",
+    );
+    expect(channel.sendCalls).toHaveLength(1);
+    const output = info.mock.calls.map(([line]) => String(line)).join("\n");
+    expect(output).toContain('"event":"live.append.error"');
+    expect(output).toContain('"server_event_id":"srv-error-1"');
+    expect(output).toContain('"nested_client_event_id":"evt-1"');
+    expect(output).toContain('"error_code":"bad_request"');
+    expect(output).toContain('"error_type":"invalid_request_error"');
+    expect(output).toContain('"event":"ack.reject"');
+    expect(output).toContain('"startup_generation":2');
+    expect(output).toContain('"startup_state":"bootstrap"');
+    expect(output).toContain('"startup_stage":"interpreter_contract"');
+    expect(output).not.toContain("append rejected");
+  });
+
+  it("fails only the matching append when a top-level error client_event_id arrives", async () => {
+    const { client, channel } = await connectedClient();
+    vi.useFakeTimers();
     const pending = client.appendInstructions("BEGIN_INTERPRETER_MODE.", {
       kind: "startup_interpreter",
     });
@@ -1749,7 +1796,19 @@ describe("LiveClient trusted control commands", () => {
 
     channel.emitMessage({
       type: "error",
-      error: { message: "append rejected", client_event_id: "evt-1" },
+      client_event_id: "evt-other",
+      error: { message: "other append rejected" },
+    });
+    await flushMicrotasks();
+
+    await expect(Promise.race([observed, Promise.resolve("pending")])).resolves.toBe(
+      "pending",
+    );
+
+    channel.emitMessage({
+      type: "error",
+      client_event_id: "evt-1",
+      error: { message: "append rejected" },
     });
     await flushMicrotasks();
 
@@ -1838,6 +1897,76 @@ describe("LiveClient trusted control commands", () => {
       "unmute rejected",
     );
     expect(channel.sendCalls).toHaveLength(2);
+  });
+
+  it("traces sent commands and matching acknowledgments with startup stage metadata", async () => {
+    const info = vi.spyOn(console, "info").mockImplementation(() => undefined);
+    localStorage.setItem(STARTUP_TRACE_STORAGE_KEY, "1");
+    const { client, channel } = await connectedClient();
+
+    const pending = client.appendInstructions("BEGIN_INTERPRETER_MODE.", {
+      kind: "startup_interpreter",
+      startupGeneration: 3,
+      startupState: "bootstrap",
+      startupStage: "interpreter_contract",
+    });
+
+    const beforeAck = info.mock.calls.map(([line]) => String(line)).join("\n");
+    expect(beforeAck).toContain('"event":"ack.wait"');
+    expect(beforeAck).toContain('"event":"live.append.sent"');
+    expect(beforeAck).toContain('"command_type":"session.instructions.append"');
+    expect(beforeAck).toContain('"event_id":"evt-1"');
+    expect(beforeAck).toContain('"startup_generation":3');
+    expect(beforeAck).toContain('"startup_state":"bootstrap"');
+    expect(beforeAck).toContain('"startup_stage":"interpreter_contract"');
+
+    channel.emitMessage({
+      type: "session.instructions.appended",
+      event_id: "srv-1",
+      client_event_id: "evt-1",
+    });
+
+    await expect(pending).resolves.toEqual({ eventId: "evt-1" });
+    const output = info.mock.calls.map(([line]) => String(line)).join("\n");
+    expect(output).toContain('"event":"live.append.ack"');
+    expect(output).toContain('"server_event_id":"srv-1"');
+    expect(output).toContain('"client_event_id":"evt-1"');
+    expect(output).toContain('"event":"ack.resolve"');
+    expect(output).toContain('"startup_generation":3');
+    expect(output).toContain('"startup_state":"bootstrap"');
+    expect(output).toContain('"startup_stage":"interpreter_contract"');
+  });
+
+  it("traces local send failures without marking the append sent or logging messages", async () => {
+    const info = vi.spyOn(console, "info").mockImplementation(() => undefined);
+    localStorage.setItem(STARTUP_TRACE_STORAGE_KEY, "1");
+    const { client, channel } = await connectedClient();
+    const error = new Error("channel is not open");
+    error.name = "InvalidStateError";
+    channel.send = () => {
+      throw error;
+    };
+
+    await expect(
+      client.appendInstructions("BEGIN_INTERPRETER_MODE.", {
+        kind: "startup_interpreter",
+        startupGeneration: 4,
+        startupState: "bootstrap",
+        startupStage: "interpreter_contract",
+      }),
+    ).rejects.toThrow("channel is not open");
+
+    const output = info.mock.calls.map(([line]) => String(line)).join("\n");
+    expect(output).toContain('"event":"live.append.send_failed"');
+    expect(output).toContain('"command_type":"session.instructions.append"');
+    expect(output).toContain('"event_id":"evt-1"');
+    expect(output).toContain('"error_type":"InvalidStateError"');
+    expect(output).toContain('"startup_generation":4');
+    expect(output).toContain('"startup_state":"bootstrap"');
+    expect(output).toContain('"startup_stage":"interpreter_contract"');
+    expect(output).toContain('"event":"ack.reject"');
+    expect(output).not.toContain('"event":"live.append.sent"');
+    expect(output).not.toContain("channel is not open");
   });
 
   it("does not leak an ack waiter if send() throws", async () => {
