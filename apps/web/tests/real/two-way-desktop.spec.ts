@@ -38,6 +38,15 @@ interface RecentTurnText {
   secondary: string;
 }
 
+interface RemoteRmsSummary {
+  samples: number;
+  min: number | null;
+  max: number | null;
+  average: number | null;
+  aboveActiveFloor: number;
+  tail: number[];
+}
+
 declare global {
   interface Window {
     __liveTranslatorRealMic?: {
@@ -48,6 +57,7 @@ declare global {
       events: RealLiveEventDiagnostic[];
       outboundAudioBytesSent(): Promise<number>;
       inboundAudioBytesReceived(): Promise<number>;
+      remoteAudioRmsSamples(durationMs: number): Promise<number[]>;
     };
   }
 }
@@ -71,6 +81,22 @@ async function installDeterministicMicrophone(page: Page): Promise<void> {
     let context: AudioContext | null = null;
     let destination: MediaStreamAudioDestinationNode | null = null;
     const liveEvents: RealLiveEventDiagnostic[] = [];
+
+    async function ensureMicrophone(): Promise<{
+      context: AudioContext;
+      destination: MediaStreamAudioDestinationNode;
+    }> {
+      if (context === null) {
+        context = new AudioContext();
+      }
+      if (context.state !== "running") {
+        await context.resume();
+      }
+      if (destination === null) {
+        destination = context.createMediaStreamDestination();
+      }
+      return { context, destination };
+    }
 
     const originalCreateDataChannel = RTCPeerConnection.prototype.createDataChannel;
     RTCPeerConnection.prototype.createDataChannel = function (
@@ -133,25 +159,47 @@ async function installDeterministicMicrophone(page: Page): Promise<void> {
           });
           return bytesReceived;
         },
+        remoteAudioRmsSamples: async (durationMs: number): Promise<number[]> => {
+          const element = document.querySelector("audio");
+          if (!(element instanceof HTMLAudioElement) || !(element.srcObject instanceof MediaStream)) {
+            return [];
+          }
+          const microphone = await ensureMicrophone();
+          const analysisStream = element.srcObject.clone();
+          const source = microphone.context.createMediaStreamSource(analysisStream);
+          const analyser = microphone.context.createAnalyser();
+          analyser.fftSize = 2048;
+          const silentSink = microphone.context.createGain();
+          silentSink.gain.value = 0;
+          source.connect(analyser);
+          analyser.connect(silentSink);
+          silentSink.connect(microphone.context.destination);
+          const samples = new Float32Array(analyser.fftSize);
+          const rmsValues: number[] = [];
+          const deadline = performance.now() + durationMs;
+          try {
+            while (performance.now() < deadline) {
+              analyser.getFloatTimeDomainData(samples);
+              let sumSquares = 0;
+              for (const sample of samples) {
+                sumSquares += sample * sample;
+              }
+              rmsValues.push(Math.sqrt(sumSquares / samples.length));
+              await new Promise<void>((resolve) => window.setTimeout(resolve, 50));
+            }
+          } finally {
+            source.disconnect();
+            analyser.disconnect();
+            silentSink.disconnect();
+            for (const track of analysisStream.getTracks()) {
+              track.stop();
+            }
+          }
+          return rmsValues;
+        },
       };
       return channel;
     };
-
-    async function ensureMicrophone(): Promise<{
-      context: AudioContext;
-      destination: MediaStreamAudioDestinationNode;
-    }> {
-      if (context === null) {
-        context = new AudioContext();
-      }
-      if (context.state !== "running") {
-        await context.resume();
-      }
-      if (destination === null) {
-        destination = context.createMediaStreamDestination();
-      }
-      return { context, destination };
-    }
 
     Object.defineProperty(navigator.mediaDevices, "getUserMedia", {
       configurable: true,
@@ -319,6 +367,24 @@ async function inboundAudioBytesReceived(page: Page): Promise<number> {
   });
 }
 
+async function remoteAudioRmsSummary(page: Page, durationMs: number): Promise<RemoteRmsSummary> {
+  const values = await page.evaluate(async (duration) => {
+    return (await window.__liveTranslatorRealDiagnostics?.remoteAudioRmsSamples(duration)) ?? [];
+  }, durationMs);
+  const min = values.length === 0 ? null : Math.min(...values);
+  const max = values.length === 0 ? null : Math.max(...values);
+  const average =
+    values.length === 0 ? null : values.reduce((sum, value) => sum + value, 0) / values.length;
+  return {
+    samples: values.length,
+    min,
+    max,
+    average,
+    aboveActiveFloor: values.filter((value) => value >= 0.015).length,
+    tail: values.slice(-10),
+  };
+}
+
 function safeStage(stage: string): void {
   console.log(`[real-live] stage=${stage}`);
 }
@@ -391,7 +457,27 @@ test.describe("real GPT-Live desktop conversation", () => {
     await expect.poll(() => hasLiveAudibleRemoteAudio(page)).toBe(true);
     safeStage("a_to_b_text_and_audio");
 
-    await expect(page.getByTestId("participant-status-B")).toHaveText("YOUR TURN");
+    try {
+      await expect(page.getByTestId("participant-status-B")).toHaveText("YOUR TURN", {
+        timeout: 8_000,
+      });
+    } catch (error) {
+      const inboundBytesBeforeRmsSample = await inboundAudioBytesReceived(page);
+      const rms = await remoteAudioRmsSummary(page, 2_000);
+      const inboundBytesAfterRmsSample = await inboundAudioBytesReceived(page);
+      const events = await liveEventsSince(page, firstTurnEventStart);
+      const snapshot = await readTurnSnapshot(page);
+      console.log(
+        `[real-live-debug] a_stuck_output=${JSON.stringify({
+          inboundBytesBeforeRmsSample,
+          inboundBytesAfterRmsSample,
+          rms,
+          events,
+          snapshot,
+        })}`,
+      );
+      throw error;
+    }
     await expect(page.getByTestId("participant-status-A")).toHaveText("WAITING");
     await expect
       .poll(() => page.getByTestId("participant-pane-A").locator(".recent-turn").count())
