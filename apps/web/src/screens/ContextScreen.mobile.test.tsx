@@ -1,6 +1,5 @@
 import { cleanup, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it } from "vitest";
-import type { Side } from "../conversation/Turn";
 import type { LifecycleSuspendReason, RecoveryPrompt } from "../session/SessionController";
 import { createInitialSession, type TranslationSession } from "../session/SessionState";
 import { ContextScreen, type ContextScreenController } from "./ContextScreen";
@@ -43,10 +42,10 @@ class MobileUiController implements ContextScreenController {
   }
   async startBootstrap(): Promise<void> {}
   skipBootstrap(): void {}
-  acceptBootstrap(_text: string): void {}
+  acceptBootstrap(): void {}
   async beginInterpreter(): Promise<void> {}
   async cancel(): Promise<void> {}
-  async correctLastTurn(_side: Side): Promise<void> {}
+  async correctLastTurn(): Promise<void> {}
   async endConversation(): Promise<void> {}
   async resumeFromSourceTimeout(): Promise<void> {}
 }
