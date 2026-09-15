@@ -94,8 +94,9 @@ describe("ContextScreen", () => {
   it("treats context as optional and always shows the privacy disclosure", () => {
     render(<ContextScreen controller={new FakeOwnerController()} />);
 
-    expect(screen.getByText(/Tell me the context/i)).toBeInTheDocument();
-    expect(screen.getByText(/optional/i)).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "Tell me the context (optional)" }),
+    ).toBeInTheDocument();
     expect(
       screen.getByText(
         "Speech is sent to OpenAI for live translation. This app does not save conversation history. OpenAI API data-handling rules still apply.",

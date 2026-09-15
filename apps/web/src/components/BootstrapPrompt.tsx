@@ -14,24 +14,55 @@ export function BootstrapPrompt({
   actionsDisabled?: boolean;
 }) {
   const hint = transcript.trim();
+
   return (
-    <section>
-      <p>What language does the other person most likely speak?</p>
-      <p>Listening automatically. Ask them to say the language.</p>
+    <section className="bootstrap-prompt" aria-labelledby="bootstrap-title">
+      <div className="bootstrap-status" role="status" aria-live="polite">
+        <span className="bootstrap-status-dot" aria-hidden="true" />
+        {actionsDisabled ? "Starting translator…" : "Listening for language"}
+      </div>
+
+      <div className="bootstrap-copy">
+        <p className="setup-kicker">Language check</p>
+        <h2 id="bootstrap-title" className="bootstrap-title">
+          What language does the other person most likely speak?
+        </h2>
+        <p className="bootstrap-description">
+          Listening automatically. Ask them to say the language.
+        </p>
+      </div>
+
       {transcript.length > 0 ? (
-        <div aria-live="polite">
-          <p>Recognized language hint</p>
-          <p>{transcript}</p>
+        <div className="bootstrap-hint" aria-live="polite">
+          <p className="bootstrap-hint-label">Recognized language hint</p>
+          <p className="bootstrap-hint-value">{transcript}</p>
         </div>
-      ) : null}
-      {hint.length > 0 ? (
-        <button type="button" disabled={actionsDisabled} onClick={onAccept}>
-          Accept
+      ) : (
+        <div className="bootstrap-waiting" aria-hidden="true">
+          Waiting for a short language hint…
+        </div>
+      )}
+
+      <div className="bootstrap-actions">
+        {hint.length > 0 ? (
+          <button
+            className="setup-primary-action"
+            type="button"
+            disabled={actionsDisabled}
+            onClick={onAccept}
+          >
+            Accept
+          </button>
+        ) : null}
+        <button
+          className="setup-secondary-action"
+          type="button"
+          disabled={actionsDisabled}
+          onClick={onSkip}
+        >
+          Skip
         </button>
-      ) : null}
-      <button type="button" disabled={actionsDisabled} onClick={onSkip}>
-        Skip
-      </button>
+      </div>
     </section>
   );
 }
