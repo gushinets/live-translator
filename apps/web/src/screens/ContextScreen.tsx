@@ -11,6 +11,10 @@ import {
 } from "../session/SessionController";
 import type { TranslationSession } from "../session/SessionState";
 import type { Side } from "../conversation/Turn";
+import {
+  traceBootstrapAction,
+  traceConversationRenderPredicate,
+} from "../live/StartupTrace";
 import { ConversationScreen } from "./ConversationScreen";
 
 /**
@@ -93,6 +97,11 @@ export function ContextScreen({
     if (controller.isInterpreterStarting === true) {
       return;
     }
+    traceBootstrapAction("skip", {
+      state: controller.session.state,
+      isInterpreterStarting: false,
+      enteredInterpreter: controller.hasEnteredInterpreter === true,
+    });
     controller.skipBootstrap();
     try {
       await controller.beginInterpreter();
@@ -111,6 +120,11 @@ export function ContextScreen({
     if (controller.isInterpreterStarting === true) {
       return;
     }
+    traceBootstrapAction("accept", {
+      state: controller.session.state,
+      isInterpreterStarting: false,
+      enteredInterpreter: controller.hasEnteredInterpreter === true,
+    });
     const hint = controller.bootstrapText.trim();
     controller.acceptBootstrap(hint);
     try {
@@ -140,6 +154,13 @@ export function ContextScreen({
     sessionState === "connecting" ||
     sessionState === "error" ||
     controller.isConnectInFlight === true;
+  traceConversationRenderPredicate({
+    state: sessionState,
+    isConversation,
+    isOwnerSetup,
+    enteredInterpreter: controller.hasEnteredInterpreter === true,
+    isInterpreterStarting: controller.isInterpreterStarting === true,
+  });
 
   return (
     <section>

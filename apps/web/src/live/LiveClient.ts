@@ -23,7 +23,11 @@ import {
 import {
   traceAppendAck,
   traceAppendError,
+  traceAppendErrorClientEventId,
+  traceAppendSendFailed,
   traceAppendSent,
+  traceAckErrorType,
+  type StartupTraceContext,
 } from "./StartupTrace";
 import { waitForIceComplete } from "./waitForIceComplete";
 
@@ -56,6 +60,9 @@ export type AppendPolicyKind =
 export interface AppendPolicy {
   kind: AppendPolicyKind;
   sessionState?: SessionState;
+  startupGeneration?: number;
+  startupState?: SessionState;
+  startupStage?: string;
 }
 
 export interface AckResult {
@@ -82,6 +89,23 @@ function createDeferred<T>(): Deferred<T> {
     resolve = res;
   });
   return { promise, resolve };
+}
+
+function traceContextFromPolicy(
+  policy: AppendPolicy,
+): StartupTraceContext | undefined {
+  if (
+    policy.startupGeneration === undefined &&
+    policy.startupState === undefined &&
+    policy.startupStage === undefined
+  ) {
+    return undefined;
+  }
+  return {
+    startupGeneration: policy.startupGeneration,
+    startupState: policy.startupState,
+    startupStage: policy.startupStage,
+  };
 }
 
 /**
@@ -590,7 +614,11 @@ export class LiveClient {
       case "session.instructions.appended":
       case "session.thinking.appended":
       case "session.commentary.appended":
-        traceAppendAck(serverEvent, rawServerEvent);
+        traceAppendAck(
+          serverEvent,
+          rawServerEvent,
+          this.ackRegistry.traceContextFor(serverEvent.client_event_id),
+        );
         this.ackRegistry.accept(serverEvent);
         this.onAppendAcknowledged?.(serverEvent);
         return;
@@ -643,7 +671,12 @@ export class LiveClient {
         return;
       }
       case "error":
-        traceAppendError(rawServerEvent);
+        traceAppendError(
+          rawServerEvent,
+          this.ackRegistry.traceContextFor(
+            traceAppendErrorClientEventId(rawServerEvent),
+          ),
+        );
         // A server-reported error before session.started means the
         // session never actually started. Only in that pre-start case —
         // guarded by `!this.started`, so a normal post-start error report
@@ -708,9 +741,10 @@ export class LiveClient {
     build: (eventId: string) => LiveClientEvent,
   ): Promise<AckResult> {
     this.assertSteeringAllowed(policy);
-    const first = await this.attemptAppend(policy.kind, build);
+    const traceContext = traceContextFromPolicy(policy);
+    const first = await this.attemptAppend(policy.kind, traceContext, build);
     if (first.ok) return { eventId: first.eventId };
-    const retry = await this.attemptAppend(policy.kind, build);
+    const retry = await this.attemptAppend(policy.kind, traceContext, build);
     if (retry.ok) return { eventId: retry.eventId };
     if (policy.kind === "later_steering") {
       return { eventId: retry.eventId, degraded: true };
@@ -720,6 +754,7 @@ export class LiveClient {
 
   private async attemptAppend(
     appendKind: AppendPolicyKind,
+    traceContext: StartupTraceContext | undefined,
     build: (eventId: string) => LiveClientEvent,
   ): Promise<
     | { ok: true; eventId: string }
@@ -730,14 +765,16 @@ export class LiveClient {
     const wait = this.ackRegistry.waitFor(
       eventId,
       runtime.steeringAckTimeoutMs,
+      traceContext,
     );
-    traceAppendSent(command, appendKind);
     try {
       this.send(command);
     } catch (error) {
+      traceAppendSendFailed(command, appendKind, error, traceContext);
       this.failAckAfterSendError(eventId, wait, error);
       throw error;
     }
+    traceAppendSent(command, appendKind, traceContext);
     try {
       await wait;
       return { ok: true, eventId };
@@ -758,6 +795,7 @@ export class LiveClient {
     this.ackRegistry.fail({
       client_event_id: eventId,
       message: error instanceof Error ? error.message : String(error),
+      errorType: traceAckErrorType(error),
     });
   }
 }

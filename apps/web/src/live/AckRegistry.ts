@@ -4,7 +4,11 @@
  * unmatched or id-less acknowledgments never resolve a different waiter.
  */
 
-import { traceAckErrorType, traceAckRegistry } from "./StartupTrace";
+import {
+  traceAckErrorType,
+  traceAckRegistry,
+  type StartupTraceContext,
+} from "./StartupTrace";
 
 export class AckTimeoutError extends Error {
   readonly eventId: string;
@@ -20,6 +24,7 @@ interface PendingAck {
   resolve: (event: { client_event_id: string }) => void;
   reject: (error: Error) => void;
   timer: number;
+  traceContext?: StartupTraceContext;
 }
 
 export class AckRegistry {
@@ -32,6 +37,7 @@ export class AckRegistry {
   waitFor(
     eventId: string,
     timeoutMs: number,
+    traceContext?: StartupTraceContext,
   ): Promise<{ client_event_id: string }> {
     if (this.pending.has(eventId)) {
       throw new Error(
@@ -45,15 +51,22 @@ export class AckRegistry {
           clientEventId: eventId,
           pendingCount: this.pending.size,
           errorType: "AckTimeoutError",
+          ...traceContext,
         });
         reject(new AckTimeoutError(eventId));
       }, timeoutMs);
-      this.pending.set(eventId, { resolve, reject, timer });
+      this.pending.set(eventId, { resolve, reject, timer, traceContext });
       traceAckRegistry("ack.wait", {
         clientEventId: eventId,
         pendingCount: this.pending.size,
+        ...traceContext,
       });
     });
+  }
+
+  traceContextFor(clientEventId: string | undefined): StartupTraceContext | undefined {
+    if (clientEventId === undefined) return undefined;
+    return this.pending.get(clientEventId)?.traceContext;
   }
 
   accept(event: { client_event_id?: string }): void {
@@ -64,12 +77,17 @@ export class AckRegistry {
     traceAckRegistry("ack.resolve", {
       clientEventId: event.client_event_id,
       pendingCount: this.pending.size,
+      ...waiter.traceContext,
     });
     window.clearTimeout(waiter.timer);
     waiter.resolve({ client_event_id: event.client_event_id });
   }
 
-  fail(event: { client_event_id?: string; message: string }): void {
+  fail(event: {
+    client_event_id?: string;
+    message: string;
+    errorType?: string;
+  }): void {
     if (event.client_event_id === undefined) return;
     const waiter = this.pending.get(event.client_event_id);
     if (waiter === undefined) return;
@@ -77,7 +95,8 @@ export class AckRegistry {
     traceAckRegistry("ack.reject", {
       clientEventId: event.client_event_id,
       pendingCount: this.pending.size,
-      errorType: "server_error",
+      errorType: event.errorType ?? "server_error",
+      ...waiter.traceContext,
     });
     window.clearTimeout(waiter.timer);
     waiter.reject(new Error(event.message));
@@ -91,6 +110,7 @@ export class AckRegistry {
         clientEventId,
         pendingCount: this.pending.size,
         errorType: traceAckErrorType(error),
+        ...waiter.traceContext,
       });
       window.clearTimeout(waiter.timer);
       waiter.reject(error);
