@@ -32,11 +32,35 @@ describe("VoiceActivityEstimator", () => {
     expect(estimator.active).toBe(false);
   });
 
+  it("detects speech that starts immediately after reset before an ambient baseline exists", () => {
+    const estimator = new VoiceActivityEstimator();
+    estimator.pushRms(0, false, 0);
+    estimator.pushRms(0.08, false, 50);
+    estimator.pushRms(0.09, false, 100);
+    estimator.pushRms(0.08, false, 150);
+
+    expect(estimator.active).toBe(true);
+
+    estimator.pushRms(0, false, 200);
+    estimator.pushRms(0, false, 650);
+    expect(estimator.active).toBe(false);
+  });
+
   it("raises speech state above adaptive floor", () => {
     const estimator = new VoiceActivityEstimator();
     for (let i = 0; i < 100; i++) estimator.pushRms(0.01, false, i * 50);
     estimator.pushRms(0.08, false, 5_100);
     estimator.pushRms(0.09, false, 5_150);
+    expect(estimator.active).toBe(true);
+  });
+
+  it("does not raise the adaptive floor between consecutive candidate speech frames", () => {
+    const estimator = new VoiceActivityEstimator();
+    pushQuiet(estimator, 0.01, 100);
+
+    estimator.pushRms(0.03, false, 5_100);
+    estimator.pushRms(0.03, false, 5_150);
+
     expect(estimator.active).toBe(true);
   });
 

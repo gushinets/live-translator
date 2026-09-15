@@ -16,6 +16,8 @@ export const runtime = {
   maxSessionMs: 900_000,
   /** Maximum duration for a single uninterrupted source turn. */
   maxSourceMs: 30_000,
+  /** Keeps Gate B open briefly after local VAD goes quiet so the source tail reaches Live. */
+  sourceTailGraceMs: 1_000,
   /** §10.2: local remote-audio inactivity window used to derive `playbackIdle`. */
   playbackIdleMs: 500,
   /** §10.2: output-transcript inactivity window used to derive `captionIdle`. */

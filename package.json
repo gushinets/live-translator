@@ -6,6 +6,7 @@
     "dev": "pnpm --parallel --filter @live-translator/web --filter @live-translator/api dev",
     "build": "pnpm -r build",
     "test": "vitest run --workspace vitest.workspace.ts",
+    "test:real-two-way": "pnpm --filter @live-translator/web exec playwright test --config=playwright.real.config.ts",
     "lint": "pnpm -r lint",
     "typecheck": "pnpm -r typecheck"
   },
