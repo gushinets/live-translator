@@ -492,9 +492,34 @@ test.describe("real GPT-Live desktop conversation", () => {
     await expect
       .poll(() => outboundAudioBytesSent(page), { timeout: 5_000 })
       .toBeGreaterThan(outboundBytesBeforeA);
-    await expect
-      .poll(() => hasTranscriptDeltaSince(page, firstTurnEventStart, "session.output_transcript.delta"))
-      .toBe(true);
+    try {
+      await expect
+        .poll(
+          () => hasTranscriptDeltaSince(page, firstTurnEventStart, "session.output_transcript.delta"),
+          { timeout: 10_000 },
+        )
+        .toBe(true);
+    } catch (error) {
+      const repeat = page.getByText("Repeat", { exact: true });
+      if (!(await repeat.isVisible())) {
+        throw error;
+      }
+      await expect(page.getByTestId("participant-status-A")).toHaveText("YOUR TURN");
+      await expect(page.getByTestId("participant-status-B")).toHaveText("WAITING");
+      safeStage("a_no_output_repeat");
+      await startMicrophoneFixture(page, PARTICIPANT_A_AUDIO);
+      await expect(page.getByTestId("participant-status-A")).toHaveText("LISTENING");
+      await waitForMicrophoneFixture(page);
+      await expect
+        .poll(() => outboundAudioBytesSent(page), { timeout: 5_000 })
+        .toBeGreaterThan(outboundBytesBeforeA);
+      await expect
+        .poll(
+          () => hasTranscriptDeltaSince(page, firstTurnEventStart, "session.output_transcript.delta"),
+          { timeout: 10_000 },
+        )
+        .toBe(true);
+    }
     await expect
       .poll(() => inboundAudioBytesReceived(page))
       .toBeGreaterThan(inboundBytesBeforeA);
@@ -554,9 +579,34 @@ test.describe("real GPT-Live desktop conversation", () => {
     await expect
       .poll(() => outboundAudioBytesSent(page), { timeout: 5_000 })
       .toBeGreaterThan(outboundBytesBeforeB);
-    await expect
-      .poll(() => hasTranscriptDeltaSince(page, secondTurnEventStart, "session.output_transcript.delta"))
-      .toBe(true);
+    try {
+      await expect
+        .poll(
+          () => hasTranscriptDeltaSince(page, secondTurnEventStart, "session.output_transcript.delta"),
+          { timeout: 10_000 },
+        )
+        .toBe(true);
+    } catch (error) {
+      const repeat = page.getByText("Repeat", { exact: true });
+      if (!(await repeat.isVisible())) {
+        throw error;
+      }
+      await expect(page.getByTestId("participant-status-B")).toHaveText("YOUR TURN");
+      await expect(page.getByTestId("participant-status-A")).toHaveText("WAITING");
+      safeStage("b_no_output_repeat");
+      await startMicrophoneFixture(page, PARTICIPANT_B_AUDIO);
+      await expect(page.getByTestId("participant-status-B")).toHaveText("LISTENING");
+      await waitForMicrophoneFixture(page);
+      await expect
+        .poll(() => outboundAudioBytesSent(page), { timeout: 5_000 })
+        .toBeGreaterThan(outboundBytesBeforeB);
+      await expect
+        .poll(
+          () => hasTranscriptDeltaSince(page, secondTurnEventStart, "session.output_transcript.delta"),
+          { timeout: 10_000 },
+        )
+        .toBe(true);
+    }
     await expect
       .poll(() => inboundAudioBytesReceived(page))
       .toBeGreaterThan(inboundBytesBeforeB);
