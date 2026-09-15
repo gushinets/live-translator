@@ -216,7 +216,7 @@
 }
 
 .setup-field textarea::placeholder {
-  color: #70675c;
+  color: #8f8374;
 }
 
 .setup-field textarea:focus-visible {
@@ -230,7 +230,7 @@
   justify-content: space-between;
   gap: 0.8rem;
   margin-top: -0.35rem;
-  color: #7f7569;
+  color: #8f8374;
   font-size: 0.75rem;
   line-height: 1.4;
 }
@@ -318,7 +318,7 @@
   border: 1px dashed #3a3027;
   border-radius: 1rem;
   padding: 1rem;
-  color: #756b60;
+  color: #8f8374;
   font-size: 0.86rem;
   text-align: center;
 }
@@ -337,7 +337,7 @@
 
 .privacy-disclosure {
   margin: 0;
-  color: #746b60;
+  color: #8f8374;
   font-size: 0.72rem;
   line-height: 1.45;
   text-align: center;
