@@ -3,7 +3,7 @@
  */
 export function PrivacyDisclosure() {
   return (
-    <p>
+    <p className="privacy-disclosure">
       Speech is sent to OpenAI for live translation. This app does not save conversation history. OpenAI API data-handling rules still apply.
     </p>
   );
