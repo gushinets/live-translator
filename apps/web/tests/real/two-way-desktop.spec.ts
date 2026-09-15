@@ -14,11 +14,34 @@ interface AudioElementState {
   liveAudioTracks: number;
 }
 
+interface RealLiveEventDiagnostic {
+  type: string;
+  delta?: string;
+  errorMessage?: string;
+  atMs: number;
+}
+
+interface TurnSnapshot {
+  statusA: string;
+  statusB: string;
+  primaryA: string;
+  primaryB: string;
+  secondaryA: string;
+  secondaryB: string;
+  recentA: number;
+  recentB: number;
+  remoteAudio: AudioElementState;
+}
+
 declare global {
   interface Window {
     __liveTranslatorRealMic?: {
       isReady(): boolean;
       playBase64Audio(base64: string): Promise<void>;
+    };
+    __liveTranslatorRealDiagnostics?: {
+      events: RealLiveEventDiagnostic[];
+      outboundAudioBytesSent(): Promise<number>;
     };
   }
 }
@@ -41,6 +64,58 @@ async function installDeterministicMicrophone(page: Page): Promise<void> {
   await page.addInitScript(() => {
     let context: AudioContext | null = null;
     let destination: MediaStreamAudioDestinationNode | null = null;
+    const liveEvents: RealLiveEventDiagnostic[] = [];
+
+    const originalCreateDataChannel = RTCPeerConnection.prototype.createDataChannel;
+    RTCPeerConnection.prototype.createDataChannel = function (
+      label: string,
+      dataChannelDict?: RTCDataChannelInit,
+    ): RTCDataChannel {
+      const channel = originalCreateDataChannel.call(this, label, dataChannelDict);
+      const peer = this;
+      channel.addEventListener("message", (event) => {
+        if (typeof event.data !== "string") {
+          return;
+        }
+        try {
+          const parsed = JSON.parse(event.data) as {
+            type?: unknown;
+            delta?: unknown;
+            error?: { message?: unknown };
+          };
+          if (typeof parsed.type !== "string") {
+            return;
+          }
+          liveEvents.push({
+            type: parsed.type,
+            delta: typeof parsed.delta === "string" ? parsed.delta : undefined,
+            errorMessage:
+              typeof parsed.error?.message === "string" ? parsed.error.message : undefined,
+            atMs: performance.now(),
+          });
+        } catch {
+          liveEvents.push({ type: "<invalid-json>", atMs: performance.now() });
+        }
+      });
+      window.__liveTranslatorRealDiagnostics = {
+        events: liveEvents,
+        outboundAudioBytesSent: async (): Promise<number> => {
+          const report = await peer.getStats();
+          let bytesSent = 0;
+          report.forEach((entry) => {
+            if (
+              entry.type === "outbound-rtp" &&
+              entry.kind === "audio" &&
+              typeof entry.bytesSent === "number"
+            ) {
+              bytesSent += entry.bytesSent;
+            }
+          });
+          return bytesSent;
+        },
+      };
+      return channel;
+    };
 
     async function ensureMicrophone(): Promise<{
       context: AudioContext;
@@ -142,6 +217,56 @@ async function hasNonEmptyText(page: Page, testId: string): Promise<boolean> {
   return locator.evaluate((element) => (element.textContent ?? "").trim().length > 0);
 }
 
+async function testIdText(page: Page, testId: string): Promise<string> {
+  const locator = page.getByTestId(testId);
+  if ((await locator.count()) === 0) {
+    return "";
+  }
+  return locator.evaluate((element) => (element.textContent ?? "").trim());
+}
+
+async function readTurnSnapshot(page: Page): Promise<TurnSnapshot> {
+  const [statusA, statusB, primaryA, primaryB, secondaryA, secondaryB, recentA, recentB] =
+    await Promise.all([
+      testIdText(page, "participant-status-A"),
+      testIdText(page, "participant-status-B"),
+      testIdText(page, "current-primary-A"),
+      testIdText(page, "current-primary-B"),
+      testIdText(page, "current-secondary-A"),
+      testIdText(page, "current-secondary-B"),
+      page.getByTestId("participant-pane-A").locator(".recent-turn").count(),
+      page.getByTestId("participant-pane-B").locator(".recent-turn").count(),
+    ]);
+  return {
+    statusA,
+    statusB,
+    primaryA,
+    primaryB,
+    secondaryA,
+    secondaryB,
+    recentA,
+    recentB,
+    remoteAudio: await readAudioElementState(page),
+  };
+}
+
+async function liveEventCount(page: Page): Promise<number> {
+  return page.evaluate(() => window.__liveTranslatorRealDiagnostics?.events.length ?? 0);
+}
+
+async function liveEventsSince(page: Page, startIndex: number): Promise<RealLiveEventDiagnostic[]> {
+  return page.evaluate(
+    (index) => window.__liveTranslatorRealDiagnostics?.events.slice(index) ?? [],
+    startIndex,
+  );
+}
+
+async function outboundAudioBytesSent(page: Page): Promise<number> {
+  return page.evaluate(async () => {
+    return (await window.__liveTranslatorRealDiagnostics?.outboundAudioBytesSent()) ?? 0;
+  });
+}
+
 function safeStage(stage: string): void {
   console.log(`[real-live] stage=${stage}`);
 }
@@ -193,9 +318,28 @@ test.describe("real GPT-Live desktop conversation", () => {
     expect(liveSessionStatuses).toEqual([201]);
     safeStage("interpreter_ready");
 
+    const firstTurnEventStart = await liveEventCount(page);
+    const outboundBytesBeforeA = await outboundAudioBytesSent(page);
+    const participantAPlayback = playMicrophoneFixture(page, PARTICIPANT_A_AUDIO);
+    await expect(page.getByTestId("participant-status-A")).toHaveText("LISTENING");
+    await participantAPlayback;
+    await expect
+      .poll(() => outboundAudioBytesSent(page), { timeout: 5_000 })
+      .toBeGreaterThan(outboundBytesBeforeA);
+    await page.waitForTimeout(3_000);
+    const outboundBytesAfterA = await outboundAudioBytesSent(page);
+    const firstTurnEvents = await liveEventsSince(page, firstTurnEventStart);
+    const firstTurnSnapshot = await readTurnSnapshot(page);
+    console.log(
+      `[real-live-debug] a_boundary=${JSON.stringify({
+        outboundBytesBeforeA,
+        outboundBytesAfterA,
+        events: firstTurnEvents,
+        snapshot: firstTurnSnapshot,
+      })}`,
+    );
+
     await Promise.all([
-      playMicrophoneFixture(page, PARTICIPANT_A_AUDIO),
-      expect(page.getByTestId("participant-status-A")).toHaveText("LISTENING"),
       expect.poll(() => hasNonEmptyText(page, "current-primary-A")).toBe(true),
       expect.poll(() => hasNonEmptyText(page, "current-primary-B")).toBe(true),
       expect(page.getByTestId("participant-status-B")).toHaveText("SPEAKING"),
