@@ -19,6 +19,9 @@ jobs:
         with:
           version: 10.34.1
       - run: pnpm install --frozen-lockfile
+      - run: pnpm typecheck
       - run: pnpm --filter @live-translator/web exec playwright install --with-deps chromium
+      - name: Verify real harness collection
+        run: pnpm --filter @live-translator/web exec playwright test --config=playwright.real.config.ts --list
       - name: Verify portrait screen contract
         run: pnpm --filter @live-translator/web exec playwright test --config=playwright.real.config.ts tests/real/orientation-harness.spec.ts
