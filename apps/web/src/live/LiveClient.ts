@@ -670,12 +670,12 @@ export class LiveClient {
         if (serverEvent.usage !== undefined) this.onUsage?.(serverEvent.usage);
         return;
       }
-      case "error":
+      case "error": {
+        const errorClientEventId =
+          traceAppendErrorClientEventId(rawServerEvent);
         traceAppendError(
           rawServerEvent,
-          this.ackRegistry.traceContextFor(
-            traceAppendErrorClientEventId(rawServerEvent),
-          ),
+          this.ackRegistry.traceContextFor(errorClientEventId),
         );
         // A server-reported error before session.started means the
         // session never actually started. Only in that pre-start case —
@@ -701,11 +701,12 @@ export class LiveClient {
           this.teardownTransportAndRelease();
         }
         this.ackRegistry.fail({
-          client_event_id: serverEvent.error.client_event_id,
+          client_event_id: errorClientEventId,
           message: serverEvent.error.message,
         });
         this.onError?.({ type: "error", error: serverEvent.error });
         return;
+      }
     }
   }
 

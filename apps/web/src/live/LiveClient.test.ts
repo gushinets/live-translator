@@ -1783,6 +1783,41 @@ describe("LiveClient trusted control commands", () => {
     expect(output).not.toContain("append rejected");
   });
 
+  it("fails only the matching append when a top-level error client_event_id arrives", async () => {
+    const { client, channel } = await connectedClient();
+    vi.useFakeTimers();
+    const pending = client.appendInstructions("BEGIN_INTERPRETER_MODE.", {
+      kind: "startup_interpreter",
+    });
+    const observed = pending.then(
+      () => "resolved",
+      (error: unknown) => (error instanceof Error ? error.message : String(error)),
+    );
+
+    channel.emitMessage({
+      type: "error",
+      client_event_id: "evt-other",
+      error: { message: "other append rejected" },
+    });
+    await flushMicrotasks();
+
+    await expect(Promise.race([observed, Promise.resolve("pending")])).resolves.toBe(
+      "pending",
+    );
+
+    channel.emitMessage({
+      type: "error",
+      client_event_id: "evt-1",
+      error: { message: "append rejected" },
+    });
+    await flushMicrotasks();
+
+    await expect(Promise.race([observed, Promise.resolve("pending")])).resolves.toBe(
+      "append rejected",
+    );
+    expect(channel.sendCalls).toHaveLength(1);
+  });
+
   it("fails an append immediately when a correlated server size rejection arrives", async () => {
     const { client, channel } = await connectedClient();
     vi.useFakeTimers();
