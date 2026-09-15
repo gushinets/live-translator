@@ -1,0 +1,41 @@
+name: Temporary two-way desktop validation
+
+on:
+  push:
+    branches:
+      - test/real-two-way-desktop
+
+jobs:
+  baseline:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.34.1
+          run_install: false
+      - run: pnpm install --frozen-lockfile
+      - name: Lint
+        run: pnpm lint
+      - name: Typecheck
+        run: pnpm typecheck
+      - name: Unit tests
+        run: pnpm test
+      - name: Build
+        run: pnpm build
+      - run: pnpm --filter @live-translator/web exec playwright install --with-deps chromium
+      - name: Playwright
+        run: pnpm --filter @live-translator/web exec playwright test
+      - name: Check real-Live credential availability
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+        shell: bash
+        run: |
+          if [ -n "${OPENAI_API_KEY:-}" ]; then
+            echo "OPENAI_KEY_AVAILABLE=true"
+          else
+            echo "OPENAI_KEY_AVAILABLE=false"
+          fi
