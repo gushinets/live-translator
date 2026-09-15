@@ -1,9 +1,9 @@
 import { readFileSync } from "node:fs";
 import { expect, test, type Page } from "@playwright/test";
 
-const BOOTSTRAP_AUDIO = readAudioFixture("bootstrap.mp3.b64");
 const PARTICIPANT_A_AUDIO = readAudioFixture("participant-a.mp3.b64");
 const PARTICIPANT_B_AUDIO = readAudioFixture("participant-b.mp3.b64");
+const BOOTSTRAP_AUDIO = PARTICIPANT_B_AUDIO;
 
 interface AudioElementState {
   exists: boolean;
