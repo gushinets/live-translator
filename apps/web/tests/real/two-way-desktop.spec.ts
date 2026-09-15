@@ -1,5 +1,6 @@
 import { readFileSync } from "node:fs";
 import { expect, test, type Page } from "@playwright/test";
+import { emulatePortraitScreen } from "./portrait-screen";
 
 const PARTICIPANT_A_AUDIO = readAudioFixture("participant-a.mp3.b64");
 const PARTICIPANT_B_AUDIO = readAudioFixture("participant-b.mp3.b64");
@@ -138,6 +139,7 @@ test.describe("real GPT-Live desktop conversation", () => {
   test("completes one translated A turn and one translated B turn with remote audio", async ({
     page,
   }) => {
+    await emulatePortraitScreen(page);
     await installDeterministicMicrophone(page);
 
     const liveSessionStatuses: number[] = [];
