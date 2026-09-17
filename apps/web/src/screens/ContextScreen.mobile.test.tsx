@@ -51,19 +51,27 @@ class MobileUiController implements ContextScreenController {
 }
 
 describe("ContextScreen mobile setup UI", () => {
+  it("renders a concise Russian owner screen without promotional copy", () => {
+    render(<ContextScreen controller={new MobileUiController()} />);
+
+    expect(screen.getByRole("heading", { name: "Переводчик" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Начать перевод" })).toBeInTheDocument();
+    expect(screen.getByLabelText("Контекст")).toBeInTheDocument();
+    expect(screen.queryByText(/One phone, two people/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/Ready when you are/i)).not.toBeInTheDocument();
+  });
+
   it("renders setup as an accessible mobile app shell with a primary action", () => {
     render(<ContextScreen controller={new MobileUiController()} />);
 
-    const setup = screen.getByRole("region", { name: "Translator setup" });
+    const setup = screen.getByRole("region", { name: "Настройка переводчика" });
     expect(setup).toHaveClass("setup-screen");
     expect(setup.querySelector(".setup-shell")).not.toBeNull();
     expect(setup.querySelector(".setup-card")).not.toBeNull();
-    expect(screen.getByRole("button", { name: "Start translation" })).toHaveClass(
+    expect(screen.getByRole("button", { name: "Начать перевод" })).toHaveClass(
       "setup-primary-action",
     );
-    expect(screen.getByText(/Speech is sent to OpenAI/i)).toHaveClass(
-      "privacy-disclosure",
-    );
+    expect(screen.queryByText(/Речь обрабатывает OpenAI/i)).not.toBeInTheDocument();
   });
 
   it("renders bootstrap as a focused listening state", () => {
@@ -72,11 +80,11 @@ describe("ContextScreen mobile setup UI", () => {
 
     render(<ContextScreen controller={controller} />);
 
-    expect(screen.getByRole("status")).toHaveTextContent("Listening for language");
-    expect(screen.getByText("What language does the other person most likely speak?")).toHaveClass(
+    expect(screen.getByRole("status")).toHaveTextContent("Слушаю язык");
+    expect(screen.getByText("На каком языке говорит собеседник?")).toHaveClass(
       "bootstrap-title",
     );
-    expect(screen.getByRole("button", { name: "Skip" })).toHaveClass(
+    expect(screen.getByRole("button", { name: "Пропустить" })).toHaveClass(
       "setup-secondary-action",
     );
   });
@@ -89,8 +97,8 @@ describe("ContextScreen mobile setup UI", () => {
 
     render(<ContextScreen controller={controller} />);
 
-    expect(screen.getByText("Starting translator…")).toHaveAttribute("role", "status");
-    expect(screen.getByRole("button", { name: "Accept" })).toBeDisabled();
-    expect(screen.getByRole("button", { name: "Skip" })).toBeDisabled();
+    expect(screen.getByText("Запускаю перевод…")).toHaveAttribute("role", "status");
+    expect(screen.getByRole("button", { name: "Продолжить" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Пропустить" })).toBeDisabled();
   });
 });

@@ -1,7 +1,6 @@
 import { useEffect, useReducer, useRef, useState } from "react";
 import { ErrorOverlay } from "../components/ErrorOverlay";
 import { BootstrapPrompt } from "../components/BootstrapPrompt";
-import { PrivacyDisclosure } from "../components/PrivacyDisclosure";
 import { ContextTooLongError } from "../live/LiveEvents";
 import {
   createDefaultSessionController,
@@ -172,7 +171,7 @@ export function ContextScreen({
   return (
     <section
       className={isOwnerSetup ? "setup-screen" : undefined}
-      aria-label={isOwnerSetup ? "Translator setup" : undefined}
+      aria-label={isOwnerSetup ? "Настройка переводчика" : undefined}
     >
       <div ref={audioHostRef} hidden />
       {!isOwnerSetup ? (
@@ -180,18 +179,7 @@ export function ContextScreen({
       ) : (
         <div className="setup-shell">
           <header className="setup-header">
-            <div className="setup-brand-lockup">
-              <span className="setup-brand-mark" aria-hidden="true">
-                LT
-              </span>
-              <div>
-                <p className="setup-brand-kicker">Live interpreter</p>
-                <h1>Live Translator</h1>
-              </div>
-            </div>
-            <p className="setup-header-copy">
-              One phone, two people, real-time translation.
-            </p>
+            <h1>Переводчик</h1>
           </header>
 
           <div className="setup-card">
@@ -212,15 +200,6 @@ export function ContextScreen({
               />
             ) : (
               <>
-                <div className="setup-intro">
-                  <p className="setup-kicker">Before you start</p>
-                  <h2>Ready when you are</h2>
-                  <p>
-                    Context is optional, but a short note can make names, places,
-                    and situations easier to translate.
-                  </p>
-                </div>
-
                 <button
                   className="setup-secondary-action setup-context-action"
                   type="button"
@@ -234,24 +213,25 @@ export function ContextScreen({
                     });
                   }}
                 >
-                  Tell me the context (optional)
+                  Продиктовать контекст
                 </button>
 
                 {isContextListening ? (
                   <p className="setup-inline-status" role="status">
                     <span className="setup-status-dot" aria-hidden="true" />
-                    Listening for context
+                    Слушаю контекст
                   </p>
                 ) : null}
 
                 <label className="setup-field">
                   <span className="setup-field-label">
-                    Context <span>Optional</span>
+                    Контекст <span>необязательно</span>
                   </span>
                   <textarea
-                    aria-label="Context"
+                    aria-label="Контекст"
+                    className="resize-none"
                     value={controller.contextText}
-                    placeholder="For example: hotel check-in, delivery, appointment…"
+                    placeholder="Например: заселение в отель или доставка"
                     onChange={(event) => {
                       controller.setContextText(event.target.value);
                     }}
@@ -259,13 +239,13 @@ export function ContextScreen({
                 </label>
 
                 <div className="setup-field-footer">
-                  <span>Keep it short. Nothing is saved as conversation history.</span>
+                  <span>Коротко опишите ситуацию</span>
                   <button
                     className="setup-text-action"
                     type="button"
                     onClick={() => controller.clearContext()}
                   >
-                    Clear
+                    Очистить
                   </button>
                 </div>
 
@@ -277,14 +257,13 @@ export function ContextScreen({
                     void handleStart();
                   }}
                 >
-                  Start translation
+                  Начать перевод
                 </button>
               </>
             )}
           </div>
 
           <footer className="setup-footer">
-            <PrivacyDisclosure />
             {showCancel ? (
               <button
                 className="setup-cancel-action"
@@ -293,7 +272,7 @@ export function ContextScreen({
                   void controller.cancel();
                 }}
               >
-                Cancel
+                Отмена
               </button>
             ) : null}
           </footer>

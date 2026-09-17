@@ -19,27 +19,26 @@ export function BootstrapPrompt({
     <section className="bootstrap-prompt" aria-labelledby="bootstrap-title">
       <div className="bootstrap-status" role="status" aria-live="polite">
         <span className="bootstrap-status-dot" aria-hidden="true" />
-        {actionsDisabled ? "Starting translator…" : "Listening for language"}
+        {actionsDisabled ? "Запускаю перевод…" : "Слушаю язык"}
       </div>
 
       <div className="bootstrap-copy">
-        <p className="setup-kicker">Language check</p>
         <h2 id="bootstrap-title" className="bootstrap-title">
-          What language does the other person most likely speak?
+          На каком языке говорит собеседник?
         </h2>
         <p className="bootstrap-description">
-          Listening automatically. Ask them to say the language.
+          Назовите язык вслух или пропустите этот шаг.
         </p>
       </div>
 
       {transcript.length > 0 ? (
         <div className="bootstrap-hint" aria-live="polite">
-          <p className="bootstrap-hint-label">Recognized language hint</p>
+          <p className="bootstrap-hint-label">Распознано</p>
           <p className="bootstrap-hint-value">{transcript}</p>
         </div>
       ) : (
         <div className="bootstrap-waiting" aria-hidden="true">
-          Waiting for a short language hint…
+          Жду название языка…
         </div>
       )}
 
@@ -51,7 +50,7 @@ export function BootstrapPrompt({
             disabled={actionsDisabled}
             onClick={onAccept}
           >
-            Accept
+            Продолжить
           </button>
         ) : null}
         <button
@@ -60,7 +59,7 @@ export function BootstrapPrompt({
           disabled={actionsDisabled}
           onClick={onSkip}
         >
-          Skip
+          Пропустить
         </button>
       </div>
     </section>

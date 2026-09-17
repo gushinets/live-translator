@@ -806,7 +806,7 @@ export class SessionController {
         return;
       }
       this.finishPlaybackIdleWait();
-      this.ownerErrorMessage = error instanceof Error ? error.message : String(error);
+      this.ownerErrorMessage = CONNECTION_ERROR_MESSAGE;
       this.dispatch({
         type: "SESSION_ERROR",
         message: this.ownerErrorMessage,
@@ -1687,7 +1687,7 @@ export class SessionController {
         error,
         state: this.currentSession.state,
       });
-      this.ownerErrorMessage = error instanceof Error ? error.message : String(error);
+      this.ownerErrorMessage = STARTUP_ERROR_MESSAGE;
       this.dispatch({
         type: "SESSION_ERROR",
         message: this.ownerErrorMessage,
@@ -1845,7 +1845,10 @@ export class SessionController {
   }
 
   private failOwnerRequest(context: string, error: unknown): never {
-    this.ownerErrorMessage = error instanceof Error ? error.message : String(error);
+    this.ownerErrorMessage =
+      error instanceof Error && error.message === MICROPHONE_CAPTURE_ENDED_MESSAGE
+        ? MICROPHONE_CAPTURE_ENDED_MESSAGE
+        : STARTUP_ERROR_MESSAGE;
     this.notify();
     console.error(context, { error, state: this.currentSession.state });
     throw error;

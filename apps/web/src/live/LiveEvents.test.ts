@@ -56,7 +56,7 @@ describe("append payload builders", () => {
       ContextTooLongError,
     );
     expect(() => buildInstructionsAppendCommand("evt-big", oversized)).toThrow(
-      "This text is too long to send. Please shorten the context and try again.",
+      "Текст слишком длинный. Сократите контекст и попробуйте снова.",
     );
     expect(() => buildThinkingAppendCommand("evt-big", oversized)).toThrow(
       ContextTooLongError,

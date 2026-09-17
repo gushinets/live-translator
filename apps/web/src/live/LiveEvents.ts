@@ -17,7 +17,7 @@ const APPEND_COMPLEXITY_BUDGET = 500;
 export class ContextTooLongError extends Error {
   constructor() {
     super(
-      "This text is too long to send. Please shorten the context and try again.",
+      "Текст слишком длинный. Сократите контекст и попробуйте снова.",
     );
     this.name = "ContextTooLongError";
   }

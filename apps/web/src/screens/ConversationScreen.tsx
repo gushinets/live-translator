@@ -72,7 +72,7 @@ export function ConversationScreen({
           aria-modal="true"
           style={{ transform: "none" }}
         >
-          <p>Rotate the phone vertically</p>
+          <p>Поверните телефон вертикально</p>
         </div>
       ) : null}
       <ParticipantPane
@@ -106,7 +106,7 @@ export function ConversationScreen({
             });
           }}
         >
-          End conversation
+          Завершить
         </button>
         {controller.recoveryPrompt === "resume-repeat" ? (
           <button
@@ -120,10 +120,10 @@ export function ConversationScreen({
               });
             }}
           >
-            Resume / Repeat
+            Продолжить / повторить
           </button>
         ) : null}
-        {controller.recoveryPrompt === "repeat" ? <p>Repeat</p> : null}
+        {controller.recoveryPrompt === "repeat" ? <p>Повторите</p> : null}
         {terminalAlert === undefined && controller.ownerError !== undefined ? (
           <ErrorOverlay message={controller.ownerError} />
         ) : null}

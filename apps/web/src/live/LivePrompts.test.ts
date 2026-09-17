@@ -10,25 +10,29 @@ import {
 
 describe("buildSteering", () => {
   it("includes the recipient language hint when one is still valid", () => {
-    expect(
-      buildSteering({
-        expectedSource: "A",
-        recipient: "B",
-        initialRecipientHint: "Spanish",
-      }),
-    ).toBe(
-      "The next expected source speaker is Participant A.\nInterpret their speech for Participant B.\nParticipant B's initial explicit language hint is Spanish. This is a soft startup hint; actual conversation evidence has priority.",
+    const text = buildSteering({
+      expectedSource: "A",
+      recipient: "B",
+      initialRecipientHint: "Spanish",
+    });
+
+    expect(text).toContain(
+      "Participant B's initial explicit language hint is Spanish",
     );
+    expect(text).toContain("Use the language Participant B most recently spoke");
   });
 
   it("omits the language line when no still-valid startup hint exists", () => {
-    expect(
-      buildSteering({
-        expectedSource: "A",
-        recipient: "B",
-      }),
-    ).toBe(
-      "The next expected source speaker is Participant A.\nInterpret their speech for Participant B.\nUse the established conversation context and the recipient's actual recent speech.",
+    const text = buildSteering({
+      expectedSource: "A",
+      recipient: "B",
+    });
+
+    expect(text).toContain(
+      "Use the language Participant B most recently spoke",
+    );
+    expect(text).toContain(
+      "If Participant B has not spoken yet, infer the target language only for this first interpretation",
     );
   });
 });
@@ -45,6 +49,12 @@ describe("buildInterpreterInstructions", () => {
     );
     expect(text).toContain(
       "Manual speaker-side corrections sent by the application override previous speaker assumptions.",
+    );
+    expect(text).toContain(
+      "After Participant A or B speaks, remember the language of that utterance as that participant's current language",
+    );
+    expect(text).toContain(
+      "Never choose the source speaker's language merely because it is the language of the current utterance",
     );
   });
 });

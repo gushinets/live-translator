@@ -91,19 +91,15 @@ class FakeOwnerController implements ContextScreenController {
 }
 
 describe("ContextScreen", () => {
-  it("treats context as optional and always shows the privacy disclosure", () => {
+  it("treats context as optional without extra footer copy", () => {
     render(<ContextScreen controller={new FakeOwnerController()} />);
 
     expect(
-      screen.getByRole("button", { name: "Tell me the context (optional)" }),
+      screen.getByRole("button", { name: "Продиктовать контекст" }),
     ).toBeInTheDocument();
+    expect(screen.queryByText(/Речь обрабатывает OpenAI/i)).not.toBeInTheDocument();
     expect(
-      screen.getByText(
-        "Speech is sent to OpenAI for live translation. This app does not save conversation history. OpenAI API data-handling rules still apply.",
-      ),
-    ).toBeInTheDocument();
-    expect(
-      screen.getByRole("button", { name: "Start translation" }),
+      screen.getByRole("button", { name: "Начать перевод" }),
     ).toBeEnabled();
   });
 
@@ -114,31 +110,31 @@ describe("ContextScreen", () => {
 
     render(<ContextScreen controller={controller} />);
 
-    const editor = screen.getByRole("textbox", { name: "Context" });
+    const editor = screen.getByRole("textbox", { name: "Контекст" });
     expect(editor).toHaveValue("I'm Russian and a courier is at my door.");
 
     fireEvent.change(editor, { target: { value: "Hotel check-in in Madrid." } });
     expect(controller.contextText).toBe("Hotel check-in in Madrid.");
 
-    fireEvent.click(screen.getByRole("button", { name: "Clear" }));
+    fireEvent.click(screen.getByRole("button", { name: "Очистить" }));
     expect(controller.contextText).toBe("");
-    expect(screen.getByRole("textbox", { name: "Context" })).toHaveValue("");
+    expect(screen.getByRole("textbox", { name: "Контекст" })).toHaveValue("");
   });
 
   it("enters bootstrap from Start even when context is empty", async () => {
     const controller = new FakeOwnerController();
     render(<ContextScreen controller={controller} />);
 
-    fireEvent.click(screen.getByRole("button", { name: "Start translation" }));
+    fireEvent.click(screen.getByRole("button", { name: "Начать перевод" }));
 
     expect(controller.session.state).toBe("bootstrap");
     expect(
-      await screen.findByText("What language does the other person most likely speak?"),
+      await screen.findByText("На каком языке говорит собеседник?"),
     ).toBeInTheDocument();
     expect(
-      screen.getByText("Listening automatically. Ask them to say the language."),
+      screen.getByText("Назовите язык вслух или пропустите этот шаг."),
     ).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Skip" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Пропустить" })).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "microphone" })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Say the language" })).not.toBeInTheDocument();
     expect(screen.queryByRole("combobox")).not.toBeInTheDocument();
@@ -150,8 +146,8 @@ describe("ContextScreen", () => {
     const controller = new FakeOwnerController();
     render(<ContextScreen controller={controller} />);
 
-    fireEvent.click(screen.getByRole("button", { name: "Start translation" }));
-    fireEvent.click(await screen.findByRole("button", { name: "Skip" }));
+    fireEvent.click(screen.getByRole("button", { name: "Начать перевод" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Пропустить" }));
 
     expect(controller.skipBootstrap).toHaveBeenCalledOnce();
     expect(controller.acceptBootstrap).not.toHaveBeenCalled();
@@ -162,19 +158,19 @@ describe("ContextScreen", () => {
     const controller = new FakeOwnerController();
     render(<ContextScreen controller={controller} />);
 
-    fireEvent.click(screen.getByRole("button", { name: "Start translation" }));
-    await screen.findByRole("button", { name: "Skip" });
+    fireEvent.click(screen.getByRole("button", { name: "Начать перевод" }));
+    await screen.findByRole("button", { name: "Пропустить" });
 
-    expect(screen.queryByRole("button", { name: "Accept" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Продолжить" })).not.toBeInTheDocument();
     expect(controller.acceptBootstrap).not.toHaveBeenCalled();
     expect(controller.beginInterpreter).not.toHaveBeenCalled();
 
     act(() => {
       controller.setBootstrapText("Spanish");
     });
-    expect(screen.getByText("Recognized language hint")).toBeInTheDocument();
+    expect(screen.getByText("Распознано")).toBeInTheDocument();
     expect(screen.getByText("Spanish")).toBeInTheDocument();
-    fireEvent.click(await screen.findByRole("button", { name: "Accept" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Продолжить" }));
 
     expect(controller.acceptBootstrap).toHaveBeenCalledExactlyOnceWith("Spanish");
     expect(controller.beginInterpreter).toHaveBeenCalledOnce();
@@ -186,14 +182,14 @@ describe("ContextScreen", () => {
     const controller = new FakeOwnerController();
     render(<ContextScreen controller={controller} />);
 
-    fireEvent.click(screen.getByRole("button", { name: "Start translation" }));
-    await screen.findByRole("button", { name: "Skip" });
+    fireEvent.click(screen.getByRole("button", { name: "Начать перевод" }));
+    await screen.findByRole("button", { name: "Пропустить" });
     act(() => {
       controller.setBootstrapText("translate a private medical transcript");
     });
 
-    fireEvent.click(screen.getByRole("button", { name: "Skip" }));
-    fireEvent.click(screen.getByRole("button", { name: "Accept" }));
+    fireEvent.click(screen.getByRole("button", { name: "Пропустить" }));
+    fireEvent.click(screen.getByRole("button", { name: "Продолжить" }));
 
     const output = info.mock.calls.map(([line]) => String(line)).join("\n");
     expect(output).toContain('"event":"ui.bootstrap.skip_invoked"');
@@ -220,9 +216,9 @@ describe("ContextScreen", () => {
 
     render(<ContextScreen controller={controller} />);
 
-    expect(screen.getByRole("button", { name: "Skip" })).toBeDisabled();
-    expect(screen.getByRole("button", { name: "Accept" })).toBeDisabled();
-    expect(screen.getByRole("button", { name: "Cancel" })).toBeEnabled();
+    expect(screen.getByRole("button", { name: "Пропустить" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Продолжить" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Отмена" })).toBeEnabled();
   });
 
   it("shows Cancel while connect is in flight from idle", () => {
@@ -232,8 +228,8 @@ describe("ContextScreen", () => {
 
     render(<ContextScreen controller={controller} />);
 
-    expect(screen.getByRole("button", { name: "Cancel" })).toBeEnabled();
-    expect(screen.getByRole("button", { name: "Start translation" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Отмена" })).toBeEnabled();
+    expect(screen.getByRole("button", { name: "Начать перевод" })).toBeDisabled();
   });
 
   it("shows ownerError after a connect failure and keeps Cancel enabled", () => {
@@ -246,7 +242,7 @@ describe("ContextScreen", () => {
     expect(screen.getByRole("alert")).toHaveTextContent(
       "Microphone access is required for translation.",
     );
-    expect(screen.getByRole("button", { name: "Cancel" })).toBeEnabled();
+    expect(screen.getByRole("button", { name: "Отмена" })).toBeEnabled();
   });
 
   it("shows startup errors on the owner screen instead of conversation", () => {
@@ -256,9 +252,9 @@ describe("ContextScreen", () => {
 
     render(<ContextScreen controller={controller} />);
 
-    expect(screen.getByRole("button", { name: "Start translation" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Начать перевод" })).toBeInTheDocument();
     expect(screen.getByRole("alert")).toHaveTextContent("Unable to start live translation.");
-    expect(screen.queryByRole("button", { name: "End conversation" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Завершить" })).not.toBeInTheDocument();
   });
 
   it("keeps in-conversation errors on ConversationScreen", () => {
@@ -269,12 +265,12 @@ describe("ContextScreen", () => {
 
     render(<ContextScreen controller={controller} />);
 
-    expect(screen.getByRole("button", { name: "End conversation" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Завершить" })).toBeInTheDocument();
     const alerts = screen.getAllByRole("alert");
     expect(alerts).toHaveLength(2);
     expect(alerts[0]).toHaveTextContent("Unable to continue the live connection.");
     expect(alerts[1]).toHaveTextContent("Unable to continue the live connection.");
-    expect(screen.queryByRole("button", { name: "Start translation" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Начать перевод" })).not.toBeInTheDocument();
   });
 
   it("shows the conversation screen instead of the interpreter stub once listening", () => {
@@ -284,7 +280,7 @@ describe("ContextScreen", () => {
     render(<ContextScreen controller={controller} />);
 
     expect(screen.queryByText("Interpreter active")).not.toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "End conversation" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Завершить" })).toBeInTheDocument();
     expect(screen.getByTestId("participant-pane-B")).toHaveStyle({
       transform: "rotate(180deg)",
     });
@@ -310,7 +306,7 @@ describe("ContextScreen", () => {
     render(<ContextScreen controller={new FakeOwnerController()} />);
 
     expect(
-      screen.getByRole("heading", { level: 1, name: "Live Translator" }),
+      screen.getByRole("heading", { level: 1, name: "Переводчик" }),
     ).toBeInTheDocument();
   });
 
@@ -321,6 +317,6 @@ describe("ContextScreen", () => {
     render(<ContextScreen controller={controller} />);
 
     expect(screen.queryByRole("heading", { level: 1 })).not.toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "End conversation" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Завершить" })).toBeInTheDocument();
   });
 });

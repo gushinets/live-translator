@@ -44,8 +44,8 @@ test.describe("mocked conversation runtime", () => {
       expect(await harness.peerCreateCount()).toBe(1);
     }
 
-    await expect(page.getByTestId("participant-status-A")).toHaveText("YOUR TURN");
-    await expect(page.getByTestId("participant-status-B")).toHaveText("WAITING");
+    await expect(page.getByTestId("participant-status-A")).toHaveText("ГОВОРИТЕ");
+    await expect(page.getByTestId("participant-status-B")).toHaveText("ОЖИДАНИЕ");
     await expect(page.getByTestId("participant-pane-A").locator(".recent-turn")).toHaveCount(
       MAX_RECENT_TURNS,
     );
@@ -66,25 +66,25 @@ test.describe("mocked conversation runtime", () => {
     await harness.sourceActive();
     await harness.inputDelta("Where is apartment 12?", 100, 400);
     await expect(page.getByTestId("current-primary-A")).toHaveText("Where is apartment 12?");
-    await expect(page.getByTestId("participant-status-A")).toHaveText("LISTENING");
-    await expect(page.getByTestId("participant-status-B")).toHaveText("WAITING");
+    await expect(page.getByTestId("participant-status-A")).toHaveText("СЛУШАЮ");
+    await expect(page.getByTestId("participant-status-B")).toHaveText("ОЖИДАНИЕ");
 
     await harness.outputDelta("¿Dónde está el apartamento 12?");
     await harness.playbackActive();
 
-    await expect(page.getByTestId("participant-status-A")).toHaveText("LISTENING");
-    await expect(page.getByTestId("participant-status-B")).toHaveText("SPEAKING");
+    await expect(page.getByTestId("participant-status-A")).toHaveText("СЛУШАЮ");
+    await expect(page.getByTestId("participant-status-B")).toHaveText("ПЕРЕВОД");
     await expect(page.getByTestId("current-primary-B")).toHaveText(
       "¿Dónde está el apartamento 12?",
     );
     expect(await harness.lastGateBCommand()).toBeUndefined();
-    await expect(page.getByTestId("participant-status-B")).not.toHaveText("YOUR TURN");
-    await expect(page.getByTestId("participant-status-A")).not.toHaveText("WAITING");
+    await expect(page.getByTestId("participant-status-B")).not.toHaveText("ГОВОРИТЕ");
+    await expect(page.getByTestId("participant-status-A")).not.toHaveText("ОЖИДАНИЕ");
 
     await harness.sourceQuiet();
     await expect.poll(async () => harness.lastGateBCommand()).toBe("mute");
-    await expect(page.getByTestId("participant-status-A")).toHaveText("WAITING");
-    await expect(page.getByTestId("participant-status-B")).toHaveText("SPEAKING");
+    await expect(page.getByTestId("participant-status-A")).toHaveText("ОЖИДАНИЕ");
+    await expect(page.getByTestId("participant-status-B")).toHaveText("ПЕРЕВОД");
   });
 
   test("text-only captions close after audio grace without playback", async ({ page }) => {
@@ -96,8 +96,8 @@ test.describe("mocked conversation runtime", () => {
       original: "Hello from A",
       translation: "Hola desde A",
     });
-    await expect(page.getByTestId("participant-status-B")).toHaveText("YOUR TURN");
-    await expect(page.getByTestId("participant-status-A")).toHaveText("WAITING");
+    await expect(page.getByTestId("participant-status-B")).toHaveText("ГОВОРИТЕ");
+    await expect(page.getByTestId("participant-status-A")).toHaveText("ОЖИДАНИЕ");
     await expect(page.getByText("Hello from A")).toHaveCount(2);
     await expect(page.getByText("Hola desde A")).toHaveCount(2);
   });
@@ -113,13 +113,13 @@ test.describe("mocked conversation runtime", () => {
     await expect(page.getByTestId("current-primary-A")).toHaveText("Hello");
     await harness.sourceQuiet();
     await expect.poll(async () => harness.lastGateBCommand()).toBe("mute");
-    await expect(page.getByText("Repeat")).toHaveCount(0);
-    await expect(page.getByTestId("participant-status-B")).toHaveText("WAITING");
+    await expect(page.getByText("Повторите")).toHaveCount(0);
+    await expect(page.getByTestId("participant-status-B")).toHaveText("ОЖИДАНИЕ");
 
     await harness.advance(runtime.noOutputTimeoutMs);
-    await expect(page.getByText("Repeat")).toBeVisible();
-    await expect(page.getByTestId("participant-status-A")).toHaveText("YOUR TURN");
-    await expect(page.getByTestId("participant-status-B")).toHaveText("WAITING");
+    await expect(page.getByText("Повторите")).toBeVisible();
+    await expect(page.getByTestId("participant-status-A")).toHaveText("ГОВОРИТЕ");
+    await expect(page.getByTestId("participant-status-B")).toHaveText("ОЖИДАНИЕ");
     expect(await harness.lastSteeringContent()).toBe(steeringBefore);
   });
 
@@ -132,13 +132,13 @@ test.describe("mocked conversation runtime", () => {
     await harness.inputDelta("Hello");
     await harness.outputDelta("Hola");
     await harness.playbackActive();
-    await expect(page.getByTestId("participant-status-A")).toHaveText("LISTENING");
-    await expect(page.getByTestId("participant-status-B")).toHaveText("SPEAKING");
+    await expect(page.getByTestId("participant-status-A")).toHaveText("СЛУШАЮ");
+    await expect(page.getByTestId("participant-status-B")).toHaveText("ПЕРЕВОД");
     await expect.poll(async () => harness.isOutputMuted()).toBe(false);
 
     await page.getByTestId("participant-pane-B").click();
-    await expect(page.getByTestId("participant-status-A")).toHaveText("CORRECTING");
-    await expect(page.getByTestId("participant-status-B")).toHaveText("CORRECTING");
+    await expect(page.getByTestId("participant-status-A")).toHaveText("ИСПРАВЛЯЮ");
+    await expect(page.getByTestId("participant-status-B")).toHaveText("ИСПРАВЛЯЮ");
     await expect.poll(async () => harness.isOutputMuted()).toBe(true);
 
     await harness.outputDelta("stale-wrong-side");
@@ -146,7 +146,7 @@ test.describe("mocked conversation runtime", () => {
     await expect(page.getByTestId("current-primary-B")).toHaveText("Hola");
 
     await harness.playbackIdle();
-    await expect(page.getByTestId("participant-status-A")).not.toHaveText("CORRECTING");
+    await expect(page.getByTestId("participant-status-A")).not.toHaveText("ИСПРАВЛЯЮ");
     await expect(page.getByTestId("current-primary-B")).toHaveText("Hello");
     await expect(page.getByText("stale-wrong-side")).toHaveCount(0);
     await expect.poll(async () => harness.isOutputMuted()).toBe(true);
@@ -159,8 +159,8 @@ test.describe("mocked conversation runtime", () => {
 
     await harness.sourceQuiet();
     await harness.advance(runtime.audioStartGraceMs);
-    await expect(page.getByTestId("participant-status-A")).toHaveText("YOUR TURN");
-    await expect(page.getByTestId("participant-status-B")).toHaveText("WAITING");
+    await expect(page.getByTestId("participant-status-A")).toHaveText("ГОВОРИТЕ");
+    await expect(page.getByTestId("participant-status-B")).toHaveText("ОЖИДАНИЕ");
     const steering = await harness.lastSteeringContent();
     expect(steering).toContain("The next expected source speaker is Participant A.");
     expect(steering).toContain("Interpret their speech for Participant B.");
@@ -184,13 +184,13 @@ async function completeTextOnlyTurn(
   await expect(page.getByTestId(`current-primary-${turn.recipient}`)).toHaveText(
     turn.translation,
   );
-  await expect(page.getByTestId(`participant-status-${turn.speaker}`)).toHaveText("LISTENING");
+  await expect(page.getByTestId(`participant-status-${turn.speaker}`)).toHaveText("СЛУШАЮ");
   expect(await harness.lastGateBCommand()).not.toBe("mute");
   await harness.sourceQuiet();
   await expect.poll(async () => harness.lastGateBCommand()).toBe("mute");
   await harness.advance(runtime.audioStartGraceMs);
-  await expect(page.getByTestId(`participant-status-${turn.recipient}`)).toHaveText("YOUR TURN");
-  await expect(page.getByTestId(`participant-status-${turn.speaker}`)).toHaveText("WAITING");
+  await expect(page.getByTestId(`participant-status-${turn.recipient}`)).toHaveText("ГОВОРИТЕ");
+  await expect(page.getByTestId(`participant-status-${turn.speaker}`)).toHaveText("ОЖИДАНИЕ");
   await harness.waitForGateBUnmuted();
   await harness.advance(runtime.captionIdleMs);
 }

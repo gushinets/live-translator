@@ -1,6 +1,6 @@
 {
-  "name": "Live Translator",
-  "short_name": "Translator",
+  "name": "Переводчик",
+  "short_name": "Переводчик",
   "description": "Two-person live interpreter on one phone.",
   "start_url": "/",
   "scope": "/",

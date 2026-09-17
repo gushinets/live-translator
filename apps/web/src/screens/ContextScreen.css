@@ -3,6 +3,26 @@
   box-sizing: border-box;
 }
 
+html {
+  scrollbar-color: #8f8374 #0f0d0b;
+  scrollbar-width: thin;
+}
+
+*::-webkit-scrollbar {
+  width: 0.6rem;
+  height: 0.6rem;
+}
+
+*::-webkit-scrollbar-track {
+  background: #0f0d0b;
+}
+
+*::-webkit-scrollbar-thumb {
+  border: 2px solid #0f0d0b;
+  border-radius: 999px;
+  background: #8f8374;
+}
+
 .setup-screen {
   min-height: 100svh;
   min-height: 100dvh;
@@ -29,38 +49,7 @@
 }
 
 .setup-header {
-  padding: 0.4rem 0.15rem 0;
-}
-
-.setup-brand-lockup {
-  display: flex;
-  align-items: center;
-  gap: 0.8rem;
-}
-
-.setup-brand-mark {
-  display: grid;
-  width: 2.9rem;
-  height: 2.9rem;
-  flex: 0 0 auto;
-  place-items: center;
-  border: 1px solid rgba(244, 234, 213, 0.3);
-  border-radius: 0.9rem;
-  background: rgba(244, 234, 213, 0.08);
-  color: #f4ead5;
-  font-size: 0.82rem;
-  font-weight: 700;
-  letter-spacing: 0.12em;
-}
-
-.setup-brand-kicker,
-.setup-kicker {
-  margin: 0;
-  color: #b9aa94;
-  font-size: 0.72rem;
-  font-weight: 700;
-  letter-spacing: 0.14em;
-  text-transform: uppercase;
+  padding: 0.5rem 0.15rem 0.2rem;
 }
 
 .setup-header h1 {
@@ -72,14 +61,6 @@
   line-height: 1;
 }
 
-.setup-header-copy {
-  max-width: 28rem;
-  margin: 0.8rem 0 0;
-  color: #9f9382;
-  font-size: 0.92rem;
-  line-height: 1.45;
-}
-
 .setup-card {
   display: flex;
   flex-direction: column;
@@ -88,7 +69,7 @@
   border: 1px solid #312920;
   border-radius: 1.4rem;
   background: rgba(28, 23, 19, 0.96);
-  box-shadow: 0 1.25rem 3rem rgba(0, 0, 0, 0.28);
+  box-shadow: 0 0.8rem 2rem rgba(0, 0, 0, 0.22);
 }
 
 .setup-card .error-overlay {
@@ -104,12 +85,6 @@
   text-align: left;
 }
 
-.setup-intro {
-  display: grid;
-  gap: 0.5rem;
-}
-
-.setup-intro h2,
 .bootstrap-title {
   margin: 0;
   color: #f7f0e4;
@@ -119,7 +94,6 @@
   line-height: 1.04;
 }
 
-.setup-intro > p:last-child,
 .bootstrap-description {
   margin: 0;
   color: #ada08e;
@@ -143,6 +117,7 @@
   font-size: 0.96rem;
   font-weight: 700;
   line-height: 1.2;
+  cursor: pointer;
   transition:
     transform 120ms ease,
     background-color 120ms ease,
@@ -204,7 +179,7 @@
 .setup-field textarea {
   width: 100%;
   min-height: 7.5rem;
-  resize: vertical;
+  resize: none;
   border: 1px solid #3b3128;
   border-radius: 1rem;
   outline: none;
@@ -245,6 +220,7 @@
   color: #c9baa5;
   font-size: 0.8rem;
   font-weight: 700;
+  cursor: pointer;
 }
 
 .setup-inline-status,
@@ -333,14 +309,6 @@
   gap: 0.7rem;
   margin-top: auto;
   padding: 0.2rem 0.25rem 0;
-}
-
-.privacy-disclosure {
-  margin: 0;
-  color: #8f8374;
-  font-size: 0.72rem;
-  line-height: 1.45;
-  text-align: center;
 }
 
 .setup-cancel-action {

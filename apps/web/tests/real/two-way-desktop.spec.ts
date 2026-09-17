@@ -106,7 +106,6 @@ async function installDeterministicMicrophone(page: Page): Promise<void> {
       dataChannelDict?: RTCDataChannelInit,
     ): RTCDataChannel {
       const channel = originalCreateDataChannel.call(this, label, dataChannelDict);
-      const peer = this;
       channel.addEventListener("message", (event) => {
         if (typeof event.data !== "string") {
           return;
@@ -134,7 +133,7 @@ async function installDeterministicMicrophone(page: Page): Promise<void> {
       window.__liveTranslatorRealDiagnostics = {
         events: liveEvents,
         outboundAudioBytesSent: async (): Promise<number> => {
-          const report = await peer.getStats();
+          const report = await this.getStats();
           let bytesSent = 0;
           report.forEach((entry) => {
             if (
@@ -148,7 +147,7 @@ async function installDeterministicMicrophone(page: Page): Promise<void> {
           return bytesSent;
         },
         inboundAudioBytesReceived: async (): Promise<number> => {
-          const report = await peer.getStats();
+          const report = await this.getStats();
           let bytesReceived = 0;
           report.forEach((entry) => {
             if (
@@ -457,8 +456,8 @@ test.describe("real GPT-Live desktop conversation", () => {
     await page.goto("/");
     safeStage("setup_loaded");
 
-    await page.getByRole("button", { name: "Start translation" }).click();
-    await expect(page.getByRole("button", { name: "Skip" })).toBeVisible();
+    await page.getByRole("button", { name: "Начать перевод" }).click();
+    await expect(page.getByRole("button", { name: "Пропустить" })).toBeVisible();
     expect(liveSessionStatuses).toEqual([201]);
     await expect
       .poll(() => page.evaluate(() => window.__liveTranslatorRealMic?.isReady() === true))
@@ -466,7 +465,7 @@ test.describe("real GPT-Live desktop conversation", () => {
     safeStage("bootstrap_connected");
 
     await playMicrophoneFixture(page, BOOTSTRAP_AUDIO);
-    await expect(page.getByRole("button", { name: "Accept" })).toBeVisible();
+    await expect(page.getByRole("button", { name: "Продолжить" })).toBeVisible();
     await expect
       .poll(() =>
         page
@@ -476,10 +475,10 @@ test.describe("real GPT-Live desktop conversation", () => {
       .toBe(true);
     safeStage("bootstrap_hint_received");
 
-    await page.getByRole("button", { name: "Accept" }).click();
-    await expect(page.getByRole("button", { name: "End conversation" })).toBeVisible();
-    await expect(page.getByTestId("participant-status-A")).toHaveText("YOUR TURN");
-    await expect(page.getByTestId("participant-status-B")).toHaveText("WAITING");
+    await page.getByRole("button", { name: "Продолжить" }).click();
+    await expect(page.getByRole("button", { name: "Завершить" })).toBeVisible();
+    await expect(page.getByTestId("participant-status-A")).toHaveText("ГОВОРИТЕ");
+    await expect(page.getByTestId("participant-status-B")).toHaveText("ОЖИДАНИЕ");
     expect(liveSessionStatuses).toEqual([201]);
     safeStage("interpreter_ready");
 
@@ -487,7 +486,7 @@ test.describe("real GPT-Live desktop conversation", () => {
     const outboundBytesBeforeA = await outboundAudioBytesSent(page);
     const inboundBytesBeforeA = await inboundAudioBytesReceived(page);
     await startMicrophoneFixture(page, PARTICIPANT_A_AUDIO);
-    await expect(page.getByTestId("participant-status-A")).toHaveText("LISTENING");
+    await expect(page.getByTestId("participant-status-A")).toHaveText("СЛУШАЮ");
     await waitForMicrophoneFixture(page);
     await expect
       .poll(() => outboundAudioBytesSent(page), { timeout: 5_000 })
@@ -500,15 +499,15 @@ test.describe("real GPT-Live desktop conversation", () => {
         )
         .toBe(true);
     } catch (error) {
-      const repeat = page.getByText("Repeat", { exact: true });
+      const repeat = page.getByText("Повторите", { exact: true });
       if (!(await repeat.isVisible())) {
         throw error;
       }
-      await expect(page.getByTestId("participant-status-A")).toHaveText("YOUR TURN");
-      await expect(page.getByTestId("participant-status-B")).toHaveText("WAITING");
+      await expect(page.getByTestId("participant-status-A")).toHaveText("ГОВОРИТЕ");
+      await expect(page.getByTestId("participant-status-B")).toHaveText("ОЖИДАНИЕ");
       safeStage("a_no_output_repeat");
       await startMicrophoneFixture(page, PARTICIPANT_A_AUDIO);
-      await expect(page.getByTestId("participant-status-A")).toHaveText("LISTENING");
+      await expect(page.getByTestId("participant-status-A")).toHaveText("СЛУШАЮ");
       await waitForMicrophoneFixture(page);
       await expect
         .poll(() => outboundAudioBytesSent(page), { timeout: 5_000 })
@@ -527,7 +526,7 @@ test.describe("real GPT-Live desktop conversation", () => {
     safeStage("a_to_b_text_and_audio");
 
     try {
-      await expect(page.getByTestId("participant-status-B")).toHaveText("YOUR TURN");
+      await expect(page.getByTestId("participant-status-B")).toHaveText("ГОВОРИТЕ");
     } catch (error) {
       const inboundBytesBeforeRmsSample = await inboundAudioBytesReceived(page);
       const rms = await remoteAudioRmsSummary(page, 2_000);
@@ -545,7 +544,7 @@ test.describe("real GPT-Live desktop conversation", () => {
       );
       throw error;
     }
-    await expect(page.getByTestId("participant-status-A")).toHaveText("WAITING");
+    await expect(page.getByTestId("participant-status-A")).toHaveText("ОЖИДАНИЕ");
     await expect
       .poll(() => page.getByTestId("participant-pane-A").locator(".recent-turn").count())
       .toBeGreaterThanOrEqual(1);
@@ -574,7 +573,7 @@ test.describe("real GPT-Live desktop conversation", () => {
     const outboundBytesBeforeB = await outboundAudioBytesSent(page);
     const inboundBytesBeforeB = await inboundAudioBytesReceived(page);
     await startMicrophoneFixture(page, PARTICIPANT_B_AUDIO);
-    await expect(page.getByTestId("participant-status-B")).toHaveText("LISTENING");
+    await expect(page.getByTestId("participant-status-B")).toHaveText("СЛУШАЮ");
     await waitForMicrophoneFixture(page);
     await expect
       .poll(() => outboundAudioBytesSent(page), { timeout: 5_000 })
@@ -587,15 +586,15 @@ test.describe("real GPT-Live desktop conversation", () => {
         )
         .toBe(true);
     } catch (error) {
-      const repeat = page.getByText("Repeat", { exact: true });
+      const repeat = page.getByText("Повторите", { exact: true });
       if (!(await repeat.isVisible())) {
         throw error;
       }
-      await expect(page.getByTestId("participant-status-B")).toHaveText("YOUR TURN");
-      await expect(page.getByTestId("participant-status-A")).toHaveText("WAITING");
+      await expect(page.getByTestId("participant-status-B")).toHaveText("ГОВОРИТЕ");
+      await expect(page.getByTestId("participant-status-A")).toHaveText("ОЖИДАНИЕ");
       safeStage("b_no_output_repeat");
       await startMicrophoneFixture(page, PARTICIPANT_B_AUDIO);
-      await expect(page.getByTestId("participant-status-B")).toHaveText("LISTENING");
+      await expect(page.getByTestId("participant-status-B")).toHaveText("СЛУШАЮ");
       await waitForMicrophoneFixture(page);
       await expect
         .poll(() => outboundAudioBytesSent(page), { timeout: 5_000 })
@@ -613,8 +612,8 @@ test.describe("real GPT-Live desktop conversation", () => {
     await expect.poll(() => hasLiveAudibleRemoteAudio(page)).toBe(true);
     safeStage("b_to_a_text_and_audio");
 
-    await expect(page.getByTestId("participant-status-A")).toHaveText("YOUR TURN");
-    await expect(page.getByTestId("participant-status-B")).toHaveText("WAITING");
+    await expect(page.getByTestId("participant-status-A")).toHaveText("ГОВОРИТЕ");
+    await expect(page.getByTestId("participant-status-B")).toHaveText("ОЖИДАНИЕ");
     await expect
       .poll(() => page.getByTestId("participant-pane-A").locator(".recent-turn").count())
       .toBeGreaterThanOrEqual(2);
@@ -639,8 +638,8 @@ test.describe("real GPT-Live desktop conversation", () => {
       })}`,
     );
 
-    await page.getByRole("button", { name: "End conversation" }).click();
-    await expect(page.getByRole("button", { name: "Start translation" })).toBeVisible({
+    await page.getByRole("button", { name: "Завершить" }).click();
+    await expect(page.getByRole("button", { name: "Начать перевод" })).toBeVisible({
       timeout: 25_000,
     });
     expect(liveSessionStatuses).toEqual([201]);

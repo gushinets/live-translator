@@ -8,9 +8,6 @@ declare global {
   }
 }
 
-const PRIVACY_COPY =
-  "Speech is sent to OpenAI for live translation. This app does not save conversation history. OpenAI API data-handling rules still apply.";
-
 async function installLiveStubs(page: Page): Promise<void> {
   await page.addInitScript(() => {
     class FakeTrack extends EventTarget {
@@ -238,21 +235,21 @@ async function installLiveStubs(page: Page): Promise<void> {
   });
 }
 
-test.describe("startup privacy", () => {
-  test("shows the privacy disclosure before translation", async ({ page }) => {
+test.describe("startup copy", () => {
+  test("does not show the removed OpenAI footer copy", async ({ page }) => {
     await installLiveStubs(page);
     await page.goto("/");
 
-    await expect(page.getByText(PRIVACY_COPY)).toBeVisible();
-    await expect(page.getByRole("button", { name: "Start translation" })).toBeVisible();
-    await expect(page.getByRole("button", { name: "End conversation" })).toHaveCount(0);
+    await expect(page.getByText(/Речь обрабатывает OpenAI/i)).toHaveCount(0);
+    await expect(page.getByRole("button", { name: "Начать перевод" })).toBeVisible();
+    await expect(page.getByRole("button", { name: "Завершить" })).toHaveCount(0);
 
-    await page.getByRole("button", { name: "Start translation" }).click();
-    await expect(page.getByText(PRIVACY_COPY)).toBeVisible();
-    await expect(page.getByRole("button", { name: "End conversation" })).toHaveCount(0);
+    await page.getByRole("button", { name: "Начать перевод" }).click();
+    await expect(page.getByText(/Речь обрабатывает OpenAI/i)).toHaveCount(0);
+    await expect(page.getByRole("button", { name: "Завершить" })).toHaveCount(0);
 
-    await page.getByRole("button", { name: "Skip" }).click();
-    await expect(page.getByRole("button", { name: "End conversation" })).toBeVisible();
-    await expect(page.getByText(PRIVACY_COPY)).toHaveCount(0);
+    await page.getByRole("button", { name: "Пропустить" }).click();
+    await expect(page.getByRole("button", { name: "Завершить" })).toBeVisible();
+    await expect(page.getByText(/Речь обрабатывает OpenAI/i)).toHaveCount(0);
   });
 });

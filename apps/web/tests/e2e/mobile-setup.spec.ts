@@ -35,12 +35,12 @@ test.describe("mobile setup layout", () => {
   test("fits a portrait viewport and keeps primary controls touch friendly", async ({ page }) => {
     await page.goto("/");
 
-    const setup = page.getByRole("region", { name: "Translator setup" });
+    const setup = page.getByRole("region", { name: "Настройка переводчика" });
     await expect(setup).toBeVisible();
-    await expect(page.getByRole("heading", { level: 1, name: "Live Translator" })).toBeVisible();
-    await expect(page.getByRole("textbox", { name: "Context" })).toBeVisible();
+    await expect(page.getByRole("heading", { level: 1, name: "Переводчик" })).toBeVisible();
+    await expect(page.getByRole("textbox", { name: "Контекст" })).toBeVisible();
 
-    const start = page.getByRole("button", { name: "Start translation" });
+    const start = page.getByRole("button", { name: "Начать перевод" });
     await expect(start).toBeVisible();
 
     const fitsViewport = await page.evaluate(() =>
@@ -54,19 +54,15 @@ test.describe("mobile setup layout", () => {
     expect(startBox?.width ?? 0).toBeGreaterThanOrEqual(44);
 
     const contextAction = page.getByRole("button", {
-      name: "Tell me the context (optional)",
+      name: "Продиктовать контекст",
     });
     const contextActionBox = await contextAction.boundingBox();
     expect(contextActionBox).not.toBeNull();
     expect(contextActionBox?.height ?? 0).toBeGreaterThanOrEqual(44);
   });
 
-  test("keeps small secondary setup copy at readable contrast", async ({ page }) => {
+  test("keeps secondary setup copy at readable contrast", async ({ page }) => {
     await page.goto("/");
-
-    const privacy = page.locator(".privacy-disclosure");
-    await expect(privacy).toBeVisible();
-    expect(await contrastRatio(privacy)).toBeGreaterThanOrEqual(4.5);
 
     const fieldFooter = page.locator(".setup-field-footer > span");
     await expect(fieldFooter).toBeVisible();
