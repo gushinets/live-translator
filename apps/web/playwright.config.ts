@@ -12,6 +12,7 @@ export default defineConfig({
   use: {
     baseURL: "http://127.0.0.1:4173",
     trace: "on-first-retry",
+    serviceWorkers: "block",
     viewport: { width: 390, height: 844 },
   },
   webServer: {
@@ -24,6 +25,10 @@ export default defineConfig({
     {
       name: "chromium",
       use: { ...devices["Desktop Chrome"], viewport: { width: 390, height: 844 } },
+    },
+    {
+      name: "webkit",
+      use: { ...devices["iPhone 13"] },
     },
   ],
 });
