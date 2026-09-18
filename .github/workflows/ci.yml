@@ -16,7 +16,7 @@ concurrency:
 
 jobs:
   quality:
-    name: Lint, typecheck, test, build
+    name: Lint, typecheck, test, build, API smoke
     runs-on: ubuntu-latest
     timeout-minutes: 15
 
@@ -51,10 +51,45 @@ jobs:
       - name: Build
         run: pnpm build
 
+      - name: Production API smoke
+        env:
+          NODE_ENV: production
+          OPENAI_API_KEY: ci-smoke-placeholder
+          WEB_ORIGIN: http://127.0.0.1:4173
+        run: |
+          pnpm --filter @live-translator/api exec node dist/server.js > /tmp/live-translator-api.log 2>&1 &
+          api_pid=$!
+          trap 'kill "$api_pid" 2>/dev/null || true' EXIT
+
+          for attempt in $(seq 1 20); do
+            if curl --fail --silent http://127.0.0.1:3001/health > /tmp/live-translator-health.json; then
+              cat /tmp/live-translator-health.json
+              grep -q '"status":"ok"' /tmp/live-translator-health.json
+              exit 0
+            fi
+
+            if ! kill -0 "$api_pid" 2>/dev/null; then
+              cat /tmp/live-translator-api.log
+              exit 1
+            fi
+
+            sleep 1
+          done
+
+          cat /tmp/live-translator-api.log
+          echo "API health check did not become ready"
+          exit 1
+
   e2e:
-    name: Browser E2E
+    name: Browser E2E (${{ matrix.browser }})
     runs-on: ubuntu-latest
     timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        browser:
+          - chromium
+          - webkit
 
     steps:
       - name: Checkout
@@ -75,17 +110,17 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
-      - name: Install Chromium
-        run: pnpm --filter @live-translator/web exec playwright install --with-deps chromium
+      - name: Install ${{ matrix.browser }}
+        run: pnpm --filter @live-translator/web exec playwright install --with-deps ${{ matrix.browser }}
 
       - name: Run Playwright E2E
-        run: pnpm --filter @live-translator/web exec playwright test --config=playwright.config.ts
+        run: pnpm --filter @live-translator/web exec playwright test --config=playwright.config.ts --project=${{ matrix.browser }}
 
       - name: Upload Playwright report
         if: failure()
         uses: actions/upload-artifact@v4
         with:
-          name: playwright-report
+          name: playwright-report-${{ matrix.browser }}
           path: |
             apps/web/playwright-report/
             apps/web/test-results/
