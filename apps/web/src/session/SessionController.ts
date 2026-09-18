@@ -1024,7 +1024,7 @@ export class SessionController {
             if (!(await this.unmuteGateB(generation))) {
               return;
             }
-          } catch (error) {
+          } catch {
             if (this.sessionGeneration !== generation) {
               return;
             }
@@ -1046,7 +1046,7 @@ export class SessionController {
             ) {
               this.dispatch({ type: "TURN_FAILED" });
             }
-            this.ownerErrorMessage = error instanceof Error ? error.message : String(error);
+            this.ownerErrorMessage = CONNECTION_ERROR_MESSAGE;
             this.dispatch({
               type: "SESSION_ERROR",
               message: this.ownerErrorMessage,
@@ -1219,7 +1219,7 @@ export class SessionController {
       });
       this.audio.setOutputAudible(false);
       this.speechInputReady = false;
-      this.ownerErrorMessage = error instanceof Error ? error.message : String(error);
+      this.ownerErrorMessage = CONNECTION_ERROR_MESSAGE;
       this.dispatch({
         type: "SESSION_ERROR",
         message: this.ownerErrorMessage,
@@ -1233,12 +1233,12 @@ export class SessionController {
       if (!(await this.unmuteGateB(generation))) {
         return;
       }
-    } catch (error) {
+    } catch {
       if (this.sessionGeneration !== generation) {
         return;
       }
       this.speechInputReady = false;
-      this.ownerErrorMessage = error instanceof Error ? error.message : String(error);
+      this.ownerErrorMessage = CONNECTION_ERROR_MESSAGE;
       this.dispatch({
         type: "SESSION_ERROR",
         message: this.ownerErrorMessage,
@@ -1280,12 +1280,12 @@ export class SessionController {
       if (!(await this.unmuteGateB(generation))) {
         return;
       }
-    } catch (error) {
+    } catch {
       if (this.sessionGeneration !== generation) {
         return;
       }
       this.speechInputReady = false;
-      this.ownerErrorMessage = error instanceof Error ? error.message : String(error);
+      this.ownerErrorMessage = CONNECTION_ERROR_MESSAGE;
       this.dispatch({
         type: "SESSION_ERROR",
         message: this.ownerErrorMessage,
@@ -1345,7 +1345,7 @@ export class SessionController {
       }
       if (!this.closeGateAForSafety("Gate A close failed during source timeout")) {
         this.audio.setOutputAudible(false);
-        this.ownerErrorMessage = "Microphone capture could not be disabled";
+        this.ownerErrorMessage = MICROPHONE_CAPTURE_ENDED_MESSAGE;
         this.dispatch({
           type: "SESSION_ERROR",
           message: this.ownerErrorMessage,
@@ -2097,7 +2097,7 @@ export class SessionController {
     try {
       this.audio.setCaptureEnabled(false);
     } catch (error) {
-      this.ownerErrorMessage = error instanceof Error ? error.message : String(error);
+      this.ownerErrorMessage = CONNECTION_ERROR_MESSAGE;
       this.dispatch({
         type: "SESSION_ERROR",
         message: this.ownerErrorMessage,
@@ -2310,7 +2310,7 @@ export class SessionController {
 
   private failLifecycleResume(error: unknown): void {
     this.speechInputReady = false;
-    this.ownerErrorMessage = error instanceof Error ? error.message : String(error);
+    this.ownerErrorMessage = CONNECTION_ERROR_MESSAGE;
     this.dispatch({
       type: "SESSION_ERROR",
       message: this.ownerErrorMessage,

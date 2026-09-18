@@ -1691,7 +1691,7 @@ describe("SessionController turn engine", () => {
     expect(controller.session.activeTurn).toBeUndefined();
     expect(controller.session.recentTurns[0]?.status).toBe("failed");
     expect(controller.inputReady).toBe(false);
-    expect(controller.ownerError).toBe("reactivation unmute failed");
+    expect(controller.ownerError).toBe(CONNECTION_ERROR_MESSAGE);
     expect(audio.setCaptureEnabled).toHaveBeenLastCalledWith(false);
     expect(audio.setOutputAudible).toHaveBeenLastCalledWith(false);
     expect(live.setInputMuted).toHaveBeenLastCalledWith(false);
@@ -2181,7 +2181,7 @@ describe("SessionController turn engine", () => {
     );
 
     expect(controller.session.state).toBe("error");
-    expect(controller.ownerError).toBe('Microphone track is not live (readyState "ended")');
+    expect(controller.ownerError).toBe(CONNECTION_ERROR_MESSAGE);
     expect(controller.inputReady).toBe(false);
     expect(audio.setOutputAudible).toHaveBeenLastCalledWith(false);
     expect(live.setInputMuted).not.toHaveBeenLastCalledWith(false);
@@ -2200,7 +2200,7 @@ describe("SessionController turn engine", () => {
     );
 
     expect(controller.session.state).toBe("error");
-    expect(controller.ownerError).toBe('Peer connection state is "closed"');
+    expect(controller.ownerError).toBe(CONNECTION_ERROR_MESSAGE);
     expect(controller.inputReady).toBe(false);
     expect(audio.setOutputAudible).toHaveBeenLastCalledWith(false);
     expect(live.setInputMuted).not.toHaveBeenLastCalledWith(false);
@@ -2227,7 +2227,7 @@ describe("SessionController turn engine", () => {
     expect(errorSpy).toHaveBeenCalled();
     expect(live.setInputMuted).toHaveBeenLastCalledWith(false);
     expect(controller.session.state).toBe("error");
-    expect(controller.ownerError).toBe("unmute failed");
+    expect(controller.ownerError).toBe(CONNECTION_ERROR_MESSAGE);
     expect(controller.inputReady).toBe(false);
     expect(audio.setOutputAudible).toHaveBeenLastCalledWith(false);
     expect(audio.setCaptureEnabled).toHaveBeenLastCalledWith(false);
@@ -2253,7 +2253,7 @@ describe("SessionController turn engine", () => {
     await expect(controller.resumeFromSourceTimeout()).rejects.toThrow("capture enable failed");
 
     expect(controller.session.state).toBe("error");
-    expect(controller.ownerError).toBe("capture enable failed");
+    expect(controller.ownerError).toBe(CONNECTION_ERROR_MESSAGE);
     expect(controller.inputReady).toBe(false);
     expect(audio.setCaptureEnabled).toHaveBeenCalledWith(false);
     expect(audio.setCaptureEnabled).toHaveBeenCalledWith(true);
@@ -2596,7 +2596,7 @@ describe("SessionController turn engine", () => {
 
       expect(unhandled).toEqual([]);
       expect(controller.session.state).toBe("error");
-      expect(controller.ownerError).toBe("instructions rejected");
+      expect(controller.ownerError).toBe(CONNECTION_ERROR_MESSAGE);
       expect(controller.inputReady).toBe(false);
       expect(audio.setOutputAudible).toHaveBeenLastCalledWith(false);
       expect(live.callOrder.slice(turnCloseCallStart)).not.toContain("setInputMuted:false");
@@ -2668,7 +2668,7 @@ describe("SessionController turn engine", () => {
     await flushMicrotasks();
 
     expect(controller.session.state).toBe("error");
-    expect(controller.ownerError).toBe("unmute failed");
+    expect(controller.ownerError).toBe(CONNECTION_ERROR_MESSAGE);
     expect(controller.inputReady).toBe(false);
   });
 
@@ -3648,7 +3648,7 @@ describe("SessionController PWA lifecycle suspension (§11.3 / §19)", () => {
     audio: ReturnType<typeof createFakeAudio> | AudioController,
   ): void {
     expect(controller.session.state).toBe("error");
-    expect(controller.ownerError).toBe("resume steering rejected");
+    expect(controller.ownerError).toBe(CONNECTION_ERROR_MESSAGE);
     expect(controller.inputReady).toBe(false);
     expect(audio.setCaptureEnabled).toHaveBeenLastCalledWith(false);
     expect(audio.setOutputAudible).toHaveBeenLastCalledWith(false);
@@ -3886,7 +3886,7 @@ describe("SessionController PWA lifecycle suspension (§11.3 / §19)", () => {
     expect(unhandled).toEqual([]);
     expect(live.setInputMuted).toHaveBeenLastCalledWith(false);
     expect(controller.session.state).toBe("error");
-    expect(controller.ownerError).toBe("unmute failed");
+    expect(controller.ownerError).toBe(CONNECTION_ERROR_MESSAGE);
     expect(controller.inputReady).toBe(false);
     expect(audio.setCaptureEnabled).toHaveBeenLastCalledWith(false);
     expect(audio.captureTrack.enabled).toBe(false);
@@ -4047,7 +4047,7 @@ describe("SessionController PWA lifecycle suspension (§11.3 / §19)", () => {
     await flushLifecycle();
 
     expect(controller.session.state).toBe("error");
-    expect(controller.ownerError).toMatch(/Microphone track is not live/);
+    expect(controller.ownerError).toBe(CONNECTION_ERROR_MESSAGE);
     expect(controller.session.expectedSpeaker).toBe("A");
     expect(live.setInputMuted).not.toHaveBeenLastCalledWith(false);
   });
@@ -4068,7 +4068,7 @@ describe("SessionController PWA lifecycle suspension (§11.3 / §19)", () => {
     await flushLifecycle();
 
     expect(controller.session.state).toBe("error");
-    expect(controller.ownerError).toMatch(/peer/i);
+    expect(controller.ownerError).toBe(CONNECTION_ERROR_MESSAGE);
   });
 
   it("fails resume to error when the data channel is not open", async () => {
@@ -4087,7 +4087,7 @@ describe("SessionController PWA lifecycle suspension (§11.3 / §19)", () => {
     await flushLifecycle();
 
     expect(controller.session.state).toBe("error");
-    expect(controller.ownerError).toMatch(/data channel/i);
+    expect(controller.ownerError).toBe(CONNECTION_ERROR_MESSAGE);
   });
 
   it("fails resume to error when peer connection state cannot be read", async () => {
@@ -4106,7 +4106,7 @@ describe("SessionController PWA lifecycle suspension (§11.3 / §19)", () => {
     await flushLifecycle();
 
     expect(controller.session.state).toBe("error");
-    expect(controller.ownerError).toMatch(/peer/i);
+    expect(controller.ownerError).toBe(CONNECTION_ERROR_MESSAGE);
   });
 
   it("does not resume while orientation is still landscape", async () => {

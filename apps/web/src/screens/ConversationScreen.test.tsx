@@ -284,15 +284,15 @@ describe("ConversationScreen typography and clarification", () => {
 });
 
 describe("ConversationScreen actions", () => {
-  it("lets a keyboard user correct the active participant side", () => {
+  it("keeps the pane readable and gives correction its own native button", () => {
     const controller = new FakeConversationController();
     render(<ConversationScreen controller={controller} />);
 
     const sideA = screen.getByTestId("participant-pane-A");
-    expect(sideA).toHaveAttribute("role", "button");
-    expect(sideA).toHaveAttribute("tabindex", "0");
+    expect(sideA).not.toHaveAttribute("role", "button");
+    expect(sideA).not.toHaveAttribute("tabindex");
 
-    fireEvent.keyDown(sideA, { key: "Enter" });
+    fireEvent.click(screen.getByRole("button", { name: "Исправить: говорил участник A" }));
     expect(controller.correctLastTurn).toHaveBeenCalledExactlyOnceWith("A");
   });
 
@@ -310,9 +310,9 @@ describe("ConversationScreen actions", () => {
     );
     render(<ConversationScreen controller={controller} />);
 
-    fireEvent.click(screen.getByTestId("participant-pane-B"));
+    fireEvent.click(screen.getByRole("button", { name: "Исправить: говорил участник B" }));
     expect(controller.correctLastTurn).toHaveBeenCalledExactlyOnceWith("B");
-    fireEvent.click(screen.getByTestId("participant-pane-A"));
+    fireEvent.click(screen.getByRole("button", { name: "Исправить: говорил участник A" }));
     expect(controller.correctLastTurn).toHaveBeenLastCalledWith("A");
   });
 

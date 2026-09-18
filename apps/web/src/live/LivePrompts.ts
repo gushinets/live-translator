@@ -12,7 +12,7 @@ export function buildSteering(input: {
   const hint = input.initialRecipientHint
     ? `\nParticipant ${input.recipient}'s initial explicit language hint is ${input.initialRecipientHint}. This is a soft startup hint; actual conversation evidence has priority.`
     : `\nIf Participant ${input.recipient} has not spoken yet, infer the target language only for this first interpretation from the conversation context.`;
-  return `The next expected source speaker is Participant ${input.expectedSource}.\nInterpret their speech for Participant ${input.recipient}.${hint}\nUse the language Participant ${input.recipient} most recently spoke. Once they speak, their actual spoken language replaces any hint or guess. Never use the current source language unless Participant ${input.recipient} most recently spoke that same language.`;
+  return `The next expected source speaker is Participant ${input.expectedSource}.\nInterpret their speech for Participant ${input.recipient}.${hint}\nUse the language Participant ${input.recipient} most recently spoke. Once they speak, their actual spoken language replaces any hint or guess. Never select the current source language solely because it is the language of the current utterance.`;
 }
 
 export function buildInterpreterInstructions(): string {

@@ -157,8 +157,7 @@ The first screen contains:
 - a large microphone/context affordance;
 - recognized context text when context was dictated;
 - edit / clear / re-record context actions;
-- a large **Start translation** button;
-- a short privacy disclosure.
+- a large **Start translation** button.
 
 Example:
 
@@ -177,9 +176,6 @@ Example:
 |   [ edit ] [ clear ]        |
 |                             |
 |   [ START TRANSLATION ]     |
-|                             |
-| Speech is sent to OpenAI    |
-| for live translation.       |
 +-----------------------------+
 ```
 
@@ -1193,8 +1189,6 @@ src/
     ParticipantPane.tsx
     ParticipantStatus.tsx
     ContextRecorder.tsx
-    PrivacyDisclosure.tsx
-
   live/
     LiveClient.ts
     LiveEvents.ts
@@ -1386,11 +1380,9 @@ Required policy:
 
 ---
 
-## 21. Privacy disclosure
+## 21. Privacy
 
-Before first active translation, show a concise disclosure such as:
-
-> Speech is sent to OpenAI for live translation. This app does not save conversation history. OpenAI API data-handling rules still apply.
+The MVP does not show a blocking or persistent in-app disclosure about OpenAI processing.
 
 Product behavior:
 
@@ -1867,7 +1859,7 @@ Mitigation: display clarification symmetrically / on source side until evidence 
 MVP v1.2.2 is complete when two people who do not share a language can:
 
 1. open the URL on iPhone or Android;
-2. see the privacy disclosure and grant microphone access;
+2. grant microphone access;
 3. avoid a language-picker UI;
 4. optionally dictate and edit context;
 5. press one Start button;

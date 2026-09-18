@@ -45,22 +45,19 @@ export function ParticipantPane({
     <section
       className={`participant-pane${rotated ? " participant-pane--rotated" : ""}`}
       data-testid={`participant-pane-${side}`}
-      aria-label={`Участник ${side}. Нажмите, если говорила эта сторона.`}
-      role="button"
-      tabIndex={0}
+      aria-label={`Участник ${side}`}
       style={
         rotated
           ? { transform: "rotate(180deg)", overflow: "hidden" }
           : { overflow: "hidden" }
       }
-      onClick={onTap}
-      onKeyDown={(event) => {
-        if (event.key === "Enter" || event.key === " ") {
-          event.preventDefault();
-          onTap();
-        }
-      }}
     >
+      <button
+        className="participant-correction-target"
+        type="button"
+        aria-label={`Исправить: говорил участник ${side}`}
+        onClick={onTap}
+      />
       <ParticipantStatus side={side} label={status} />
       {alertText !== undefined ? (
         <p className="participant-alert" role="alert" data-testid={`participant-alert-${side}`}>

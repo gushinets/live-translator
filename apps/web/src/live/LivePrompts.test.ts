@@ -20,6 +20,10 @@ describe("buildSteering", () => {
       "Participant B's initial explicit language hint is Spanish",
     );
     expect(text).toContain("Use the language Participant B most recently spoke");
+    expect(text).toContain(
+      "Never select the current source language solely because it is the language of the current utterance",
+    );
+    expect(text).not.toContain("Never use the current source language unless");
   });
 
   it("omits the language line when no still-valid startup hint exists", () => {

@@ -68,4 +68,13 @@ test.describe("mobile setup layout", () => {
     await expect(fieldFooter).toBeVisible();
     expect(await contrastRatio(fieldFooter)).toBeGreaterThanOrEqual(4.5);
   });
+
+  test("uses a Russian PWA description", async ({ request }) => {
+    const response = await request.get("/manifest.webmanifest");
+    const manifest = await response.json();
+
+    expect(manifest.description).toBe(
+      "Переводчик для разговора двух людей на одном телефоне.",
+    );
+  });
 });

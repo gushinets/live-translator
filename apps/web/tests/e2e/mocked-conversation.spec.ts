@@ -136,7 +136,7 @@ test.describe("mocked conversation runtime", () => {
     await expect(page.getByTestId("participant-status-B")).toHaveText("ПЕРЕВОД");
     await expect.poll(async () => harness.isOutputMuted()).toBe(false);
 
-    await page.getByTestId("participant-pane-B").click();
+    await page.getByRole("button", { name: "Исправить: говорил участник B" }).click();
     await expect(page.getByTestId("participant-status-A")).toHaveText("ИСПРАВЛЯЮ");
     await expect(page.getByTestId("participant-status-B")).toHaveText("ИСПРАВЛЯЮ");
     await expect.poll(async () => harness.isOutputMuted()).toBe(true);

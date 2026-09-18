@@ -43,7 +43,7 @@ body,
 }
 
 .conversation-center button:focus-visible,
-.participant-pane:focus-visible {
+.participant-correction-target:focus-visible {
   outline: 2px solid #f4ead5;
   outline-offset: -3px;
 }
@@ -58,6 +58,7 @@ body,
 }
 
 .participant-pane {
+  position: relative;
   box-sizing: border-box;
   flex: 1 1 0;
   display: flex;
@@ -68,6 +69,16 @@ body,
   width: 100%;
   margin: 0;
   padding: 0.75rem 1rem;
+  cursor: pointer;
+}
+
+.participant-correction-target {
+  position: absolute;
+  z-index: 1;
+  inset: 0;
+  border: 0;
+  padding: 0;
+  background: transparent;
   cursor: pointer;
 }
 
