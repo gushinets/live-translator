@@ -1401,7 +1401,7 @@ Do not describe `store: false` as a complete privacy or retention guarantee.
 
 Show:
 
-> Microphone access is required for translation.
+> Для перевода нужен доступ к микрофону.
 
 Provide retry/settings guidance where the browser permits it.
 
