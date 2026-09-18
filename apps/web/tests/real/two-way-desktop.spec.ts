@@ -2,8 +2,8 @@ import { readFileSync } from "node:fs";
 import { expect, test, type Page } from "@playwright/test";
 import { emulatePortraitScreen } from "./portrait-screen";
 
-const PARTICIPANT_A_AUDIO = readAudioFixture("participant-a.mp3.b64");
-const PARTICIPANT_B_AUDIO = readAudioFixture("participant-b.mp3.b64");
+const PARTICIPANT_A_AUDIO = readAudioFixture("participant-a.mp3.b64"); // Russian
+const PARTICIPANT_B_AUDIO = readAudioFixture("participant-b.mp3.b64"); // English
 const BOOTSTRAP_AUDIO = PARTICIPANT_B_AUDIO;
 
 interface AudioElementState {
@@ -46,6 +46,8 @@ interface RemoteRmsSummary {
   aboveActiveFloor: number;
   tail: number[];
 }
+
+type Script = "cyrillic" | "latin";
 
 declare global {
   interface Window {
@@ -355,7 +357,19 @@ async function readLatestRecentTurn(page: Page, side: "A" | "B"): Promise<Recent
   return { primary: primary.trim(), secondary: secondary.trim() };
 }
 
-async function expectUsableLatestRecentTurn(page: Page, sourceSide: "A" | "B"): Promise<void> {
+function expectDominantScript(text: string, expected: Script): void {
+  const cyrillic = (text.match(/[А-ЯЁ]/gi) ?? []).length;
+  const latin = (text.match(/[A-Z]/gi) ?? []).length;
+  expect(expected === "cyrillic" ? cyrillic : latin).toBeGreaterThan(
+    expected === "cyrillic" ? latin : cyrillic,
+  );
+}
+
+async function expectUsableLatestRecentTurn(
+  page: Page,
+  sourceSide: "A" | "B",
+  expectedTargetScript: Script,
+): Promise<void> {
   const [turnA, turnB] = await Promise.all([
     readLatestRecentTurn(page, "A"),
     readLatestRecentTurn(page, "B"),
@@ -370,6 +384,7 @@ async function expectUsableLatestRecentTurn(page: Page, sourceSide: "A" | "B"): 
   expect(source.secondary).not.toBe("");
   expect(target.primary).not.toBe("");
   expect(source.secondary).toBe(target.primary);
+  expectDominantScript(target.primary, expectedTargetScript);
 
   // When an input transcript is available, it must still mirror correctly on
   // the opposite pane. If ASR produced no source text, both source copies may
@@ -436,7 +451,7 @@ function safeStage(stage: string): void {
 }
 
 test.describe("real GPT-Live desktop conversation", () => {
-  test("completes one translated A turn and one translated B turn with remote audio", async ({
+  test("translates Russian A to English B and English B to Russian A with remote audio", async ({
     page,
   }) => {
     await emulatePortraitScreen(page);
@@ -551,7 +566,7 @@ test.describe("real GPT-Live desktop conversation", () => {
     await expect
       .poll(() => page.getByTestId("participant-pane-B").locator(".recent-turn").count())
       .toBeGreaterThanOrEqual(1);
-    await expectUsableLatestRecentTurn(page, "A");
+    await expectUsableLatestRecentTurn(page, "A", "latin");
     safeStage("a_turn_closed");
 
     const outboundBytesAfterA = await outboundAudioBytesSent(page);
@@ -620,7 +635,7 @@ test.describe("real GPT-Live desktop conversation", () => {
     await expect
       .poll(() => page.getByTestId("participant-pane-B").locator(".recent-turn").count())
       .toBeGreaterThanOrEqual(2);
-    await expectUsableLatestRecentTurn(page, "B");
+    await expectUsableLatestRecentTurn(page, "B", "cyrillic");
     safeStage("b_turn_closed");
 
     const outboundBytesAfterB = await outboundAudioBytesSent(page);
