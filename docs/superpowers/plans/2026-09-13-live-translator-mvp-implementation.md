@@ -127,7 +127,6 @@ live-translator/
         components/
           ParticipantPane.tsx
           ParticipantStatus.tsx
-          PrivacyDisclosure.tsx
           BootstrapPrompt.tsx
           ErrorOverlay.tsx
         metrics/
@@ -927,7 +926,6 @@ git commit -m "feat: add audio gates and playback-aware voice activity"
 **Files:**
 - Create: `apps/web/src/screens/ContextScreen.tsx`
 - Create: `apps/web/src/screens/ContextScreen.test.tsx`
-- Create: `apps/web/src/components/PrivacyDisclosure.tsx`
 - Create: `apps/web/src/components/BootstrapPrompt.tsx`
 - Create: `apps/web/src/session/SessionController.ts`
 - Create: `apps/web/src/session/SessionController.test.ts`
@@ -945,7 +943,7 @@ git commit -m "feat: add audio gates and playback-aware voice activity"
 
 Test:
 - context is optional;
-- privacy disclosure is visible;
+- no blocking or persistent OpenAI disclosure is rendered;
 - recognized context can be edited/cleared;
 - Start always enters bootstrap;
 - bootstrap includes `Skip` and no language picker/select element.
@@ -1239,12 +1237,11 @@ git commit -m "feat: add pwa suspension and lifecycle handling"
 
 ---
 
-### Task 12: Add errors, privacy, metrics, max-duration enforcement, and observability
+### Task 12: Add errors, metrics, max-duration enforcement, and observability
 
 **Files:**
 - Create: `apps/web/src/metrics/ConversationMetrics.ts`
 - Create: `apps/web/src/metrics/ConversationMetrics.test.ts`
-- Modify: `apps/web/src/components/PrivacyDisclosure.tsx`
 - Modify: `apps/web/src/session/SessionController.ts`
 - Modify: `apps/web/src/screens/ConversationScreen.tsx`
 - Create: `apps/web/tests/e2e/startup.spec.ts`
@@ -1284,11 +1281,9 @@ Record only numeric/event counters:
 
 Do not send transcript text to analytics.
 
-- [ ] **Step 3: Add privacy disclosure copy exactly at startup**
+- [ ] **Step 3: Keep privacy behavior aligned with the product specification**
 
-```text
-Speech is sent to OpenAI for live translation. This app does not save conversation history. OpenAI API data-handling rules still apply.
-```
+Do not add a blocking or persistent in-app OpenAI disclosure. Continue to avoid application-side transcript persistence and keep data-handling policy documented in the product specification.
 
 - [ ] **Step 4: Enforce 15-minute maximum session in SessionController**
 
@@ -1297,11 +1292,11 @@ Start the timer at `session.started`. At 900,000 ms, enter `ending`, send `sessi
 - [ ] **Step 5: Add explicit startup and runtime errors**
 
 Map:
-- `NotAllowedError` -> microphone permission message;
-- ICE timeout -> `Unable to establish live connection`;
-- data channel / peer failure -> connection error;
-- critical startup steering double timeout -> startup error;
-- graceful close timeout -> `Incomplete finalization` diagnostic before resource release.
+- `NotAllowedError` -> `Для перевода нужен доступ к микрофону.`;
+- ICE timeout -> `Не удалось запустить перевод.`;
+- data channel / peer failure -> `Соединение прервано. Запустите перевод заново.`;
+- critical startup steering double timeout -> `Не удалось запустить перевод.`;
+- graceful close timeout -> `Не удалось корректно завершить перевод` before resource release.
 
 - [ ] **Step 6: Run tests and commit**
 
@@ -1309,7 +1304,7 @@ Map:
 pnpm --filter @live-translator/web test
 pnpm --filter @live-translator/web exec playwright test tests/e2e/startup.spec.ts
 git add apps/web
-git commit -m "feat: add privacy errors metrics and session limits"
+git commit -m "feat: add errors metrics and session limits"
 ```
 
 ---

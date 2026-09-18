@@ -71,9 +71,20 @@ export function ParticipantStatus({
   side: Side;
   label: ParticipantStatusLabel;
 }) {
+  const visibleLabel: Record<ParticipantStatusLabel, string> = {
+    "YOUR TURN": "ГОВОРИТЕ",
+    LISTENING: "СЛУШАЮ",
+    WAITING: "ОЖИДАНИЕ",
+    TRANSLATING: "ПЕРЕВОЖУ",
+    SPEAKING: "ПЕРЕВОД",
+    CORRECTING: "ИСПРАВЛЯЮ",
+    PAUSED: "ПАУЗА",
+    ERROR: "ОШИБКА",
+  };
+
   return (
     <p className="participant-status" data-testid={`participant-status-${side}`}>
-      {label}
+      {visibleLabel[label]}
     </p>
   );
 }

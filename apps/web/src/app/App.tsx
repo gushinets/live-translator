@@ -24,8 +24,8 @@ export function App({
     <main>
       {shouldShowSpikeScreen && DevSpikeScreen !== null ? (
         <>
-          <h1>Live Translator</h1>
-          <Suspense fallback={<p>Loading DEV transport spike…</p>}>
+          <h1>Переводчик</h1>
+          <Suspense fallback={<p>Загрузка тестового режима…</p>}>
             <DevSpikeScreen createSession={createSpikeSession} />
           </Suspense>
         </>

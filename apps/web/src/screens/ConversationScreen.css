@@ -39,6 +39,13 @@ body,
   color: #14110e;
   border: 0;
   padding: 0.35rem 0.8rem;
+  cursor: pointer;
+}
+
+.conversation-center button:focus-visible,
+.participant-correction-target:focus-visible {
+  outline: 2px solid #f4ead5;
+  outline-offset: -3px;
 }
 
 .error-overlay {
@@ -51,14 +58,27 @@ body,
 }
 
 .participant-pane {
+  position: relative;
+  box-sizing: border-box;
   flex: 1 1 0;
   display: flex;
   flex-direction: column;
   min-height: 0;
+  min-width: 0;
   overflow: hidden;
   width: 100%;
   margin: 0;
   padding: 0.75rem 1rem;
+  cursor: pointer;
+}
+
+.participant-correction-target {
+  position: absolute;
+  z-index: 1;
+  inset: 0;
+  border: 0;
+  padding: 0;
+  background: transparent;
   cursor: pointer;
 }
 

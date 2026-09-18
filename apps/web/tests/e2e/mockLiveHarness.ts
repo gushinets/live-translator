@@ -122,10 +122,10 @@ export class MockLiveHarness {
 
   async startListeningConversation(): Promise<void> {
     await this.page.goto("/");
-    await this.page.getByRole("button", { name: "Start translation" }).click();
-    await this.page.getByRole("button", { name: "Skip" }).click();
-    await expect(this.page.getByRole("button", { name: "End conversation" })).toBeVisible();
-    await expect(this.page.getByTestId("participant-status-A")).toHaveText("YOUR TURN");
+    await this.page.getByRole("button", { name: "Начать перевод" }).click();
+    await this.page.getByRole("button", { name: "Пропустить" }).click();
+    await expect(this.page.getByRole("button", { name: "Завершить" })).toBeVisible();
+    await expect(this.page.getByTestId("participant-status-A")).toHaveText("ГОВОРИТЕ");
     await this.page.waitForFunction(
       () =>
         window.__liveTranslatorTestAudio !== undefined &&

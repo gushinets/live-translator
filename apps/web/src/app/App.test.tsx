@@ -13,7 +13,7 @@ describe("App", () => {
   it("renders the translator title", () => {
     render(<App />);
     expect(
-      screen.getByRole("heading", { name: "Live Translator" }),
+      screen.getByRole("heading", { name: "Переводчик" }),
     ).toBeInTheDocument();
   });
 
@@ -43,16 +43,12 @@ describe("App", () => {
     render(<App isDevelopment={false} />);
 
     expect(
-      screen.getByRole("heading", { name: "Live Translator" }),
+      screen.getByRole("heading", { name: "Переводчик" }),
     ).toBeInTheDocument();
     expect(
-      screen.getByRole("button", { name: "Start translation" }),
+      screen.getByRole("button", { name: "Начать перевод" }),
     ).toBeInTheDocument();
-    expect(
-      screen.getByText(
-        "Speech is sent to OpenAI for live translation. This app does not save conversation history. OpenAI API data-handling rules still apply.",
-      ),
-    ).toBeInTheDocument();
+    expect(screen.queryByText(/Речь обрабатывает OpenAI/i)).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Connect" })).not.toBeInTheDocument();
     expect(
       screen.queryByLabelText("Live transport device spike"),

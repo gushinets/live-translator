@@ -237,10 +237,10 @@ async function installLiveStubs(page: Page): Promise<void> {
 
 async function startListeningConversation(page: Page): Promise<void> {
   await page.goto("/");
-  await page.getByRole("button", { name: "Start translation" }).click();
-  await page.getByRole("button", { name: "Skip" }).click();
-  await expect(page.getByRole("button", { name: "End conversation" })).toBeVisible();
-  await expect(page.getByTestId("participant-status-A")).toHaveText("YOUR TURN");
+  await page.getByRole("button", { name: "Начать перевод" }).click();
+  await page.getByRole("button", { name: "Пропустить" }).click();
+  await expect(page.getByRole("button", { name: "Завершить" })).toBeVisible();
+  await expect(page.getByTestId("participant-status-A")).toHaveText("ГОВОРИТЕ");
 }
 
 async function emitSourceTranscript(page: Page, delta: string): Promise<void> {
@@ -294,14 +294,14 @@ test.describe("PWA suspension", () => {
     await page.evaluate(() => {
       window.__setVisibility?.("hidden");
     });
-    await expect(page.getByTestId("participant-status-A")).toHaveText("PAUSED");
-    await expect(page.getByTestId("participant-status-B")).toHaveText("PAUSED");
+    await expect(page.getByTestId("participant-status-A")).toHaveText("ПАУЗА");
+    await expect(page.getByTestId("participant-status-B")).toHaveText("ПАУЗА");
 
     await page.evaluate(() => {
       window.__setVisibility?.("visible");
     });
-    await expect(page.getByText("Repeat")).toBeVisible();
-    await expect(page.getByTestId("participant-status-A")).toHaveText("YOUR TURN");
+    await expect(page.getByText("Повторите")).toBeVisible();
+    await expect(page.getByTestId("participant-status-A")).toHaveText("ГОВОРИТЕ");
   });
 
   test("landscape suspends an active source turn until portrait is restored", async ({ page }) => {
@@ -313,14 +313,14 @@ test.describe("PWA suspension", () => {
     await page.evaluate(() => {
       window.__setOrientation?.("landscape-primary");
     });
-    await expect(page.getByTestId("participant-status-A")).toHaveText("PAUSED");
+    await expect(page.getByTestId("participant-status-A")).toHaveText("ПАУЗА");
     await expect(page.getByTestId("rotate-overlay")).toBeVisible();
-    await expect(page.getByTestId("rotate-overlay")).toHaveText(/rotate/i);
+    await expect(page.getByTestId("rotate-overlay")).toHaveText(/поверните/i);
 
     await page.evaluate(() => {
       window.__setOrientation?.("portrait-primary");
     });
-    await expect(page.getByText("Repeat")).toBeVisible();
-    await expect(page.getByTestId("participant-status-A")).toHaveText("YOUR TURN");
+    await expect(page.getByText("Повторите")).toBeVisible();
+    await expect(page.getByTestId("participant-status-A")).toHaveText("ГОВОРИТЕ");
   });
 });

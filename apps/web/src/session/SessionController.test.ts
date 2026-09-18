@@ -22,7 +22,13 @@ import type { OrientationController } from "../platform/OrientationController";
 import type { VisibilityController } from "../platform/VisibilityController";
 import type { WakeLockController } from "../platform/WakeLockController";
 import { SessionController } from "./SessionController";
-import { STARTUP_ERROR_MESSAGE } from "./userFacingErrors";
+import {
+  CONNECTION_ERROR_MESSAGE,
+  INCOMPLETE_FINALIZATION_MESSAGE,
+  MICROPHONE_CAPTURE_ENDED_MESSAGE,
+  MICROPHONE_DENIED_MESSAGE,
+  STARTUP_ERROR_MESSAGE,
+} from "./userFacingErrors";
 
 type FakeLiveErrorEvent = {
   type: "error";
@@ -499,7 +505,7 @@ describe("SessionController", () => {
     expect(live.appendInstructions).not.toHaveBeenCalled();
     expect(controller.session.state).toBe("bootstrap");
     expect(controller.ownerError).toBe(
-      "This text is too long to send. Please shorten the context and try again.",
+      "Текст слишком длинный. Сократите контекст и попробуйте снова.",
     );
   });
 
@@ -721,7 +727,7 @@ describe("SessionController", () => {
 
     await expect(controller.beginInterpreter()).rejects.toThrow("ack timeout");
     expect(controller.session.state).toBe("error");
-    expect(controller.ownerError).toBe("Unable to start live translation.");
+    expect(controller.ownerError).toBe(STARTUP_ERROR_MESSAGE);
     expect(controller.hasEnteredInterpreter).toBe(false);
     expect(audio.setOutputAudible).not.toHaveBeenCalledWith(true);
     expect(live.appendThinking).toHaveBeenCalledOnce();
@@ -742,7 +748,7 @@ describe("SessionController", () => {
 
     await expect(controller.beginInterpreter()).rejects.toThrow("ack timeout");
     expect(controller.session.state).toBe("error");
-    expect(controller.ownerError).toBe("Unable to start live translation.");
+    expect(controller.ownerError).toBe(STARTUP_ERROR_MESSAGE);
     expect(controller.hasEnteredInterpreter).toBe(false);
     expect(audio.setOutputAudible).not.toHaveBeenCalledWith(true);
   });
@@ -826,7 +832,7 @@ describe("SessionController", () => {
         "WebRTC is unavailable",
       );
       expect(controller.session.state).toBe("error");
-      expect(controller.ownerError).toBe("WebRTC is unavailable");
+      expect(controller.ownerError).toBe(STARTUP_ERROR_MESSAGE);
 
       const unhandled = await collectUnhandledRejectionsDuring(() => {
         void controller.cancel();
@@ -884,9 +890,9 @@ describe("SessionController", () => {
     const { controller } = createController({ audio });
 
     await expect(controller.startContextCapture()).rejects.toThrow(
-      "Microphone access is required for translation.",
+      MICROPHONE_DENIED_MESSAGE,
     );
-    expect(controller.ownerError).toBe("Microphone access is required for translation.");
+    expect(controller.ownerError).toBe(MICROPHONE_DENIED_MESSAGE);
     expect(controller.session.state).toBe("idle");
   });
 
@@ -899,9 +905,9 @@ describe("SessionController", () => {
     });
     const { controller } = createController({ audio, live });
 
-    await expect(controller.startBootstrap()).rejects.toThrow(/microphone/i);
+    await expect(controller.startBootstrap()).rejects.toThrow(MICROPHONE_CAPTURE_ENDED_MESSAGE);
 
-    expect(controller.ownerError).toMatch(/microphone/i);
+    expect(controller.ownerError).toBe(MICROPHONE_CAPTURE_ENDED_MESSAGE);
     expect(controller.session.state).toBe("idle");
     expect(controller.hasEnteredInterpreter).toBe(false);
     expect(live.connect).not.toHaveBeenCalled();
@@ -937,7 +943,7 @@ describe("SessionController", () => {
       expect(unhandled).toEqual([]);
       expect(live.close).toHaveBeenCalledOnce();
       expect(controller.session.state).toBe("error");
-      expect(controller.ownerError).toMatch(/microphone/i);
+      expect(controller.ownerError).toBe(MICROPHONE_CAPTURE_ENDED_MESSAGE);
     } finally {
       rejectConnect?.(new Error("test cleanup"));
       await starting.catch(() => {});
@@ -968,7 +974,7 @@ describe("SessionController", () => {
     expect(unhandled).toEqual([]);
     expect(first.close).toHaveBeenCalledOnce();
     expect(controller.session.state).toBe("error");
-    expect(controller.ownerError).toMatch(/microphone/i);
+    expect(controller.ownerError).toBe(MICROPHONE_CAPTURE_ENDED_MESSAGE);
 
     await controller.cancel();
     expect(controller.session.state).toBe("idle");
@@ -994,7 +1000,7 @@ describe("SessionController", () => {
     await expect(micController.startContextCapture()).rejects.toThrow(
       "Microphone access is required for translation.",
     );
-    expect(micController.ownerError).toBe("Microphone access is required for translation.");
+    expect(micController.ownerError).toBe(STARTUP_ERROR_MESSAGE);
 
     const live = new FakeLive();
     live.connect.mockRejectedValueOnce(new Error("Unable to establish live connection"));
@@ -1003,7 +1009,7 @@ describe("SessionController", () => {
     await expect(connectController.startContextCapture()).rejects.toThrow(
       "Unable to establish live connection",
     );
-    expect(connectController.ownerError).toBe("Unable to establish live connection");
+    expect(connectController.ownerError).toBe(STARTUP_ERROR_MESSAGE);
   });
 
   it("ignores a late interpreter append after cancel and stays idle", async () => {
@@ -1157,7 +1163,7 @@ describe("SessionController", () => {
     await expect(controller.startContextCapture()).rejects.toThrow(
       "Microphone access is required for translation.",
     );
-    expect(controller.ownerError).toBe("Microphone access is required for translation.");
+    expect(controller.ownerError).toBe(STARTUP_ERROR_MESSAGE);
 
     await controller.startContextCapture();
 
@@ -1685,7 +1691,7 @@ describe("SessionController turn engine", () => {
     expect(controller.session.activeTurn).toBeUndefined();
     expect(controller.session.recentTurns[0]?.status).toBe("failed");
     expect(controller.inputReady).toBe(false);
-    expect(controller.ownerError).toBe("reactivation unmute failed");
+    expect(controller.ownerError).toBe(CONNECTION_ERROR_MESSAGE);
     expect(audio.setCaptureEnabled).toHaveBeenLastCalledWith(false);
     expect(audio.setOutputAudible).toHaveBeenLastCalledWith(false);
     expect(live.setInputMuted).toHaveBeenLastCalledWith(false);
@@ -2175,7 +2181,7 @@ describe("SessionController turn engine", () => {
     );
 
     expect(controller.session.state).toBe("error");
-    expect(controller.ownerError).toBe('Microphone track is not live (readyState "ended")');
+    expect(controller.ownerError).toBe(CONNECTION_ERROR_MESSAGE);
     expect(controller.inputReady).toBe(false);
     expect(audio.setOutputAudible).toHaveBeenLastCalledWith(false);
     expect(live.setInputMuted).not.toHaveBeenLastCalledWith(false);
@@ -2194,7 +2200,7 @@ describe("SessionController turn engine", () => {
     );
 
     expect(controller.session.state).toBe("error");
-    expect(controller.ownerError).toBe('Peer connection state is "closed"');
+    expect(controller.ownerError).toBe(CONNECTION_ERROR_MESSAGE);
     expect(controller.inputReady).toBe(false);
     expect(audio.setOutputAudible).toHaveBeenLastCalledWith(false);
     expect(live.setInputMuted).not.toHaveBeenLastCalledWith(false);
@@ -2221,7 +2227,7 @@ describe("SessionController turn engine", () => {
     expect(errorSpy).toHaveBeenCalled();
     expect(live.setInputMuted).toHaveBeenLastCalledWith(false);
     expect(controller.session.state).toBe("error");
-    expect(controller.ownerError).toBe("unmute failed");
+    expect(controller.ownerError).toBe(CONNECTION_ERROR_MESSAGE);
     expect(controller.inputReady).toBe(false);
     expect(audio.setOutputAudible).toHaveBeenLastCalledWith(false);
     expect(audio.setCaptureEnabled).toHaveBeenLastCalledWith(false);
@@ -2247,7 +2253,7 @@ describe("SessionController turn engine", () => {
     await expect(controller.resumeFromSourceTimeout()).rejects.toThrow("capture enable failed");
 
     expect(controller.session.state).toBe("error");
-    expect(controller.ownerError).toBe("capture enable failed");
+    expect(controller.ownerError).toBe(CONNECTION_ERROR_MESSAGE);
     expect(controller.inputReady).toBe(false);
     expect(audio.setCaptureEnabled).toHaveBeenCalledWith(false);
     expect(audio.setCaptureEnabled).toHaveBeenCalledWith(true);
@@ -2590,7 +2596,7 @@ describe("SessionController turn engine", () => {
 
       expect(unhandled).toEqual([]);
       expect(controller.session.state).toBe("error");
-      expect(controller.ownerError).toBe("instructions rejected");
+      expect(controller.ownerError).toBe(CONNECTION_ERROR_MESSAGE);
       expect(controller.inputReady).toBe(false);
       expect(audio.setOutputAudible).toHaveBeenLastCalledWith(false);
       expect(live.callOrder.slice(turnCloseCallStart)).not.toContain("setInputMuted:false");
@@ -2662,7 +2668,7 @@ describe("SessionController turn engine", () => {
     await flushMicrotasks();
 
     expect(controller.session.state).toBe("error");
-    expect(controller.ownerError).toBe("unmute failed");
+    expect(controller.ownerError).toBe(CONNECTION_ERROR_MESSAGE);
     expect(controller.inputReady).toBe(false);
   });
 
@@ -3139,7 +3145,7 @@ describe("SessionController correction", () => {
 
     await expect(controller.correctLastTurn("B")).rejects.toThrow("correction ack timeout");
     expect(controller.session.state).toBe("error");
-    expect(controller.ownerError).toBe("correction ack timeout");
+    expect(controller.ownerError).toBe(CONNECTION_ERROR_MESSAGE);
     expect(audio.setOutputAudible).toHaveBeenLastCalledWith(false);
     expect(live.appendCommentary).not.toHaveBeenCalled();
   });
@@ -3188,7 +3194,10 @@ describe("SessionController endConversation", () => {
       audio.getCaptureStream.mockReturnValue(null);
     });
     controller.subscribe(() => {
-      if (controller.ownerError === "Incomplete finalization" && !order.includes("shown")) {
+      if (
+        controller.ownerError === INCOMPLETE_FINALIZATION_MESSAGE &&
+        !order.includes("shown")
+      ) {
         order.push("shown");
       }
     });
@@ -3196,7 +3205,7 @@ describe("SessionController endConversation", () => {
     await controller.endConversation();
 
     expect(order).toEqual(["close", "shown", "release"]);
-    expect(controller.ownerError).toBe("Incomplete finalization");
+    expect(controller.ownerError).toBe(INCOMPLETE_FINALIZATION_MESSAGE);
     expect(controller.session.state).toBe("idle");
   });
 
@@ -3414,7 +3423,7 @@ describe("SessionController runtime connection errors", () => {
     });
 
     expect(controller.session.state).toBe("error");
-    expect(controller.ownerError).toBe("Unable to continue the live connection.");
+    expect(controller.ownerError).toBe(CONNECTION_ERROR_MESSAGE);
     expect(controller.hasEnteredInterpreter).toBe(true);
   });
 
@@ -3429,7 +3438,7 @@ describe("SessionController runtime connection errors", () => {
     });
 
     expect(controller.session.state).toBe("error");
-    expect(controller.ownerError).toBe("Unable to continue the live connection.");
+    expect(controller.ownerError).toBe(CONNECTION_ERROR_MESSAGE);
   });
 
   it("maps remote session.closed while listening to a terminal connection error", async () => {
@@ -3441,7 +3450,7 @@ describe("SessionController runtime connection errors", () => {
     live.emitSessionClosed("server_shutdown");
 
     expect(controller.session.state).toBe("error");
-    expect(controller.ownerError).toBe("Unable to continue the live connection.");
+    expect(controller.ownerError).toBe(CONNECTION_ERROR_MESSAGE);
     expect(audio.setOutputAudible).toHaveBeenLastCalledWith(false);
     expect(audio.stopCapture).toHaveBeenCalledOnce();
     expect(audio.getCaptureStream()).toBeNull();
@@ -3463,7 +3472,7 @@ describe("SessionController runtime connection errors", () => {
     await flushMicrotasks();
 
     expect(controller.session.state).toBe("error");
-    expect(controller.ownerError).toBe("Unable to continue the live connection.");
+    expect(controller.ownerError).toBe(CONNECTION_ERROR_MESSAGE);
     expect(audio.setOutputAudible).toHaveBeenLastCalledWith(false);
     expect(audio.stopCapture).toHaveBeenCalledOnce();
   });
@@ -3478,7 +3487,7 @@ describe("SessionController runtime connection errors", () => {
     live.emitSessionClosed("server_shutdown");
 
     expect(controller.session.state).toBe("error");
-    expect(controller.ownerError).toBe("Unable to start live translation.");
+    expect(controller.ownerError).toBe(STARTUP_ERROR_MESSAGE);
     expect(audio.setOutputAudible).toHaveBeenLastCalledWith(false);
     expect(audio.stopCapture).toHaveBeenCalledOnce();
     await expect(controller.beginInterpreter()).rejects.toThrow(
@@ -3639,7 +3648,7 @@ describe("SessionController PWA lifecycle suspension (§11.3 / §19)", () => {
     audio: ReturnType<typeof createFakeAudio> | AudioController,
   ): void {
     expect(controller.session.state).toBe("error");
-    expect(controller.ownerError).toBe("resume steering rejected");
+    expect(controller.ownerError).toBe(CONNECTION_ERROR_MESSAGE);
     expect(controller.inputReady).toBe(false);
     expect(audio.setCaptureEnabled).toHaveBeenLastCalledWith(false);
     expect(audio.setOutputAudible).toHaveBeenLastCalledWith(false);
@@ -3877,7 +3886,7 @@ describe("SessionController PWA lifecycle suspension (§11.3 / §19)", () => {
     expect(unhandled).toEqual([]);
     expect(live.setInputMuted).toHaveBeenLastCalledWith(false);
     expect(controller.session.state).toBe("error");
-    expect(controller.ownerError).toBe("unmute failed");
+    expect(controller.ownerError).toBe(CONNECTION_ERROR_MESSAGE);
     expect(controller.inputReady).toBe(false);
     expect(audio.setCaptureEnabled).toHaveBeenLastCalledWith(false);
     expect(audio.captureTrack.enabled).toBe(false);
@@ -4038,7 +4047,7 @@ describe("SessionController PWA lifecycle suspension (§11.3 / §19)", () => {
     await flushLifecycle();
 
     expect(controller.session.state).toBe("error");
-    expect(controller.ownerError).toMatch(/microphone/i);
+    expect(controller.ownerError).toBe(CONNECTION_ERROR_MESSAGE);
     expect(controller.session.expectedSpeaker).toBe("A");
     expect(live.setInputMuted).not.toHaveBeenLastCalledWith(false);
   });
@@ -4059,7 +4068,7 @@ describe("SessionController PWA lifecycle suspension (§11.3 / §19)", () => {
     await flushLifecycle();
 
     expect(controller.session.state).toBe("error");
-    expect(controller.ownerError).toMatch(/peer/i);
+    expect(controller.ownerError).toBe(CONNECTION_ERROR_MESSAGE);
   });
 
   it("fails resume to error when the data channel is not open", async () => {
@@ -4078,7 +4087,7 @@ describe("SessionController PWA lifecycle suspension (§11.3 / §19)", () => {
     await flushLifecycle();
 
     expect(controller.session.state).toBe("error");
-    expect(controller.ownerError).toMatch(/data channel/i);
+    expect(controller.ownerError).toBe(CONNECTION_ERROR_MESSAGE);
   });
 
   it("fails resume to error when peer connection state cannot be read", async () => {
@@ -4097,7 +4106,7 @@ describe("SessionController PWA lifecycle suspension (§11.3 / §19)", () => {
     await flushLifecycle();
 
     expect(controller.session.state).toBe("error");
-    expect(controller.ownerError).toMatch(/peer/i);
+    expect(controller.ownerError).toBe(CONNECTION_ERROR_MESSAGE);
   });
 
   it("does not resume while orientation is still landscape", async () => {
@@ -4206,7 +4215,7 @@ describe("SessionController PWA lifecycle suspension (§11.3 / §19)", () => {
     await flushLifecycle();
 
     expect(controller.session.state).toBe("error");
-    expect(controller.ownerError).toMatch(/microphone/i);
+    expect(controller.ownerError).toBe(MICROPHONE_CAPTURE_ENDED_MESSAGE);
     expect(controller.inputReady).toBe(false);
     expect(audio.getCaptureStream()).toBeNull();
     expect(live.setInputMuted).not.toHaveBeenCalledWith(true);
@@ -4235,7 +4244,7 @@ describe("SessionController PWA lifecycle suspension (§11.3 / §19)", () => {
     await flushLifecycle();
 
     expect(controller.session.state).toBe("error");
-    expect(controller.ownerError).toMatch(/microphone/i);
+    expect(controller.ownerError).toBe(MICROPHONE_CAPTURE_ENDED_MESSAGE);
     expect(controller.inputReady).toBe(false);
     expect(audio.getCaptureStream()).toBeNull();
     expect(live.setInputMuted).not.toHaveBeenLastCalledWith(false);

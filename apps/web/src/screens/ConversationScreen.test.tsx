@@ -92,8 +92,8 @@ describe("ConversationScreen orientation and status", () => {
 
     render(<ConversationScreen controller={controller} />);
 
-    expect(screen.getByTestId("participant-status-A")).toHaveTextContent("LISTENING");
-    expect(screen.getByTestId("participant-status-B")).toHaveTextContent(/TRANSLATING|SPEAKING/);
+    expect(screen.getByTestId("participant-status-A")).toHaveTextContent("СЛУШАЮ");
+    expect(screen.getByTestId("participant-status-B")).toHaveTextContent(/ПЕРЕВОЖУ|ПЕРЕВОД/);
     expect(screen.getByTestId("participant-pane-B")).toHaveStyle({
       transform: "rotate(180deg)",
     });
@@ -108,6 +108,8 @@ describe("ConversationScreen orientation and status", () => {
     expect(conversationCss).toMatch(/\.conversation-screen\s*\{[^}]*height:\s*100svh/s);
     expect(conversationCss).toMatch(/\.conversation-screen\s*\{[^}]*height:\s*100dvh/s);
     expect(conversationCss).toMatch(/\.conversation-screen\s*\{[^}]*overflow:\s*hidden/s);
+    expect(conversationCss).toMatch(/\.participant-pane\s*\{[^}]*box-sizing:\s*border-box/s);
+    expect(conversationCss).toMatch(/\.participant-pane\s*\{[^}]*min-width:\s*0/s);
     expect(screen.queryByRole("heading", { level: 1 })).not.toBeInTheDocument();
     const panes = [...root!.querySelectorAll("[data-testid^='participant-pane-']")];
     expect(panes[0]).toHaveAttribute("data-testid", "participant-pane-B");
@@ -121,8 +123,8 @@ describe("ConversationScreen orientation and status", () => {
       session({ state: "listening", expectedSpeaker: "A" }),
     );
     render(<ConversationScreen controller={controller} />);
-    expect(screen.getByTestId("participant-status-A")).toHaveTextContent("YOUR TURN");
-    expect(screen.getByTestId("participant-status-B")).toHaveTextContent("WAITING");
+    expect(screen.getByTestId("participant-status-A")).toHaveTextContent("ГОВОРИТЕ");
+    expect(screen.getByTestId("participant-status-B")).toHaveTextContent("ОЖИДАНИЕ");
   });
 
   it("does not show YOUR TURN while the expected source input is not ready", () => {
@@ -133,9 +135,9 @@ describe("ConversationScreen orientation and status", () => {
 
     render(<ConversationScreen controller={controller} />);
 
-    expect(screen.getByTestId("participant-status-A")).not.toHaveTextContent("YOUR TURN");
-    expect(screen.getByTestId("participant-status-A")).toHaveTextContent("WAITING");
-    expect(screen.getByTestId("participant-status-B")).toHaveTextContent("WAITING");
+    expect(screen.getByTestId("participant-status-A")).not.toHaveTextContent("ГОВОРИТЕ");
+    expect(screen.getByTestId("participant-status-A")).toHaveTextContent("ОЖИДАНИЕ");
+    expect(screen.getByTestId("participant-status-B")).toHaveTextContent("ОЖИДАНИЕ");
   });
 
   it("does not show LISTENING or YOUR TURN after connection-loss error", () => {
@@ -155,10 +157,10 @@ describe("ConversationScreen orientation and status", () => {
 
     render(<ConversationScreen controller={controller} />);
 
-    expect(screen.getByTestId("participant-status-A")).not.toHaveTextContent("LISTENING");
-    expect(screen.getByTestId("participant-status-B")).not.toHaveTextContent("LISTENING");
-    expect(screen.getByTestId("participant-status-A")).not.toHaveTextContent("YOUR TURN");
-    expect(screen.getByTestId("participant-status-B")).not.toHaveTextContent("YOUR TURN");
+    expect(screen.getByTestId("participant-status-A")).not.toHaveTextContent("СЛУШАЮ");
+    expect(screen.getByTestId("participant-status-B")).not.toHaveTextContent("СЛУШАЮ");
+    expect(screen.getByTestId("participant-status-A")).not.toHaveTextContent("ГОВОРИТЕ");
+    expect(screen.getByTestId("participant-status-B")).not.toHaveTextContent("ГОВОРИТЕ");
     expect(screen.getByTestId("participant-pane-A")).toHaveTextContent(
       "Unable to continue the live connection.",
     );
@@ -184,10 +186,10 @@ describe("ConversationScreen orientation and status", () => {
       }),
     );
     render(<ConversationScreen controller={controller} />);
-    expect(screen.getByTestId("participant-status-A")).not.toHaveTextContent("LISTENING");
-    expect(screen.getByTestId("participant-status-B")).not.toHaveTextContent("LISTENING");
-    expect(screen.getByTestId("participant-status-A")).not.toHaveTextContent("YOUR TURN");
-    expect(screen.getByTestId("participant-status-B")).not.toHaveTextContent("YOUR TURN");
+    expect(screen.getByTestId("participant-status-A")).not.toHaveTextContent("СЛУШАЮ");
+    expect(screen.getByTestId("participant-status-B")).not.toHaveTextContent("СЛУШАЮ");
+    expect(screen.getByTestId("participant-status-A")).not.toHaveTextContent("ГОВОРИТЕ");
+    expect(screen.getByTestId("participant-status-B")).not.toHaveTextContent("ГОВОРИТЕ");
   });
 
   it("shows CORRECTING on both panes while correcting and PAUSED on both while suspended", () => {
@@ -198,14 +200,14 @@ describe("ConversationScreen orientation and status", () => {
       }),
     );
     const { unmount } = render(<ConversationScreen controller={correcting} />);
-    expect(screen.getByTestId("participant-status-A")).toHaveTextContent("CORRECTING");
-    expect(screen.getByTestId("participant-status-B")).toHaveTextContent("CORRECTING");
+    expect(screen.getByTestId("participant-status-A")).toHaveTextContent("ИСПРАВЛЯЮ");
+    expect(screen.getByTestId("participant-status-B")).toHaveTextContent("ИСПРАВЛЯЮ");
     unmount();
 
     const suspended = new FakeConversationController(session({ state: "suspended" }));
     render(<ConversationScreen controller={suspended} />);
-    expect(screen.getByTestId("participant-status-A")).toHaveTextContent("PAUSED");
-    expect(screen.getByTestId("participant-status-B")).toHaveTextContent("PAUSED");
+    expect(screen.getByTestId("participant-status-A")).toHaveTextContent("ПАУЗА");
+    expect(screen.getByTestId("participant-status-B")).toHaveTextContent("ПАУЗА");
   });
 });
 
@@ -282,6 +284,18 @@ describe("ConversationScreen typography and clarification", () => {
 });
 
 describe("ConversationScreen actions", () => {
+  it("keeps the pane readable and gives correction its own native button", () => {
+    const controller = new FakeConversationController();
+    render(<ConversationScreen controller={controller} />);
+
+    const sideA = screen.getByTestId("participant-pane-A");
+    expect(sideA).not.toHaveAttribute("role", "button");
+    expect(sideA).not.toHaveAttribute("tabindex");
+
+    fireEvent.click(screen.getByRole("button", { name: "Исправить: говорил участник A" }));
+    expect(controller.correctLastTurn).toHaveBeenCalledExactlyOnceWith("A");
+  });
+
   it("taps invoke correctLastTurn for that side", () => {
     const controller = new FakeConversationController(
       session({
@@ -296,16 +310,16 @@ describe("ConversationScreen actions", () => {
     );
     render(<ConversationScreen controller={controller} />);
 
-    fireEvent.click(screen.getByTestId("participant-pane-B"));
+    fireEvent.click(screen.getByRole("button", { name: "Исправить: говорил участник B" }));
     expect(controller.correctLastTurn).toHaveBeenCalledExactlyOnceWith("B");
-    fireEvent.click(screen.getByTestId("participant-pane-A"));
+    fireEvent.click(screen.getByRole("button", { name: "Исправить: говорил участник A" }));
     expect(controller.correctLastTurn).toHaveBeenLastCalledWith("A");
   });
 
   it("End conversation calls endConversation", () => {
     const controller = new FakeConversationController();
     render(<ConversationScreen controller={controller} />);
-    fireEvent.click(screen.getByRole("button", { name: "End conversation" }));
+    fireEvent.click(screen.getByRole("button", { name: "Завершить" }));
     expect(controller.endConversation).toHaveBeenCalledOnce();
   });
 
@@ -313,7 +327,7 @@ describe("ConversationScreen actions", () => {
     const controller = new FakeConversationController(session({ state: "suspended" }));
     controller.recoveryPrompt = "resume-repeat";
     render(<ConversationScreen controller={controller} />);
-    fireEvent.click(screen.getByRole("button", { name: "Resume / Repeat" }));
+    fireEvent.click(screen.getByRole("button", { name: "Продолжить / повторить" }));
     expect(controller.resumeFromSourceTimeout).toHaveBeenCalledOnce();
   });
 
@@ -321,8 +335,8 @@ describe("ConversationScreen actions", () => {
     const controller = new FakeConversationController();
     controller.recoveryPrompt = "repeat";
     render(<ConversationScreen controller={controller} />);
-    expect(screen.getByText("Repeat")).toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: "Resume / Repeat" })).not.toBeInTheDocument();
+    expect(screen.getByText("Повторите")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Продолжить / повторить" })).not.toBeInTheDocument();
   });
 
   it("renders ErrorOverlay with the explicit message", () => {
@@ -337,7 +351,7 @@ describe("ConversationScreen actions", () => {
     oriented.suspendReason = "orientation";
     const { unmount } = render(<ConversationScreen controller={oriented} />);
     const overlay = screen.getByTestId("rotate-overlay");
-    expect(overlay).toHaveTextContent(/rotate/i);
+    expect(overlay).toHaveTextContent("Поверните телефон вертикально");
     expect(overlay).toHaveStyle({ transform: "none" });
     expect(screen.queryByTestId("rotate-overlay")).toBeInTheDocument();
     unmount();
