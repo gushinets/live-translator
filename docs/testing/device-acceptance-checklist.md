@@ -16,15 +16,9 @@ Replace `NOT RUN` only with observations from a human session on real hardware w
 
 ## Local device access
 
-For a phone connected to the same tailnet, prefer Tailscale Serve:
+Desktop development and automated tests use the local Vite/API endpoints directly and require no VPN or tunnel.
 
-```text
-tailscale serve http://127.0.0.1:4173
-```
-
-Open the HTTPS URL shown by `tailscale serve status` on the phone. Serve keeps the prototype private to the tailnet. The phone must be logged into the same tailnet, and the local API must still have the server-side `OPENAI_API_KEY`.
-
-Tailscale Funnel is public internet exposure, not authentication. Do not expose the raw Vite preview/API proxy through Funnel. Use Funnel only behind a separately configured protected reverse proxy/access gate (for example, server-side Basic Auth or an identity-aware proxy); credentials must stay outside the browser bundle. `Origin` validation is a CSRF/browser signal, not a user access control.
+For a physical phone, use an HTTPS endpoint under the developer's control that forwards to the local preview/API or to a deployed test environment. Keep `OPENAI_API_KEY` server-side and never place it in the browser bundle. If the endpoint is reachable outside a trusted local network, protect it with an access gate such as server-side Basic Auth or an identity-aware proxy. `Origin` validation is a CSRF/browser signal, not user authentication.
 
 Audio constants in `apps/web/src/config/runtime.ts` and `apps/web/src/audio/VoiceActivityEstimator.ts` were **not** changed. There is no device evidence to justify tuning.
 
