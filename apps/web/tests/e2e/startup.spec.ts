@@ -1,3 +1,4 @@
+import { completeLanguageSetup } from "./mockLiveHarness";
 import { expect, test, type Page } from "@playwright/test";
 
 declare global {
@@ -248,7 +249,13 @@ test.describe("startup copy", () => {
     await expect(page.getByText(/Речь обрабатывает OpenAI/i)).toHaveCount(0);
     await expect(page.getByRole("button", { name: "Завершить" })).toHaveCount(0);
 
-    await page.getByRole("button", { name: "Пропустить" }).click();
+    await completeLanguageSetup(page, async delta => {
+      await page.evaluate(text => {
+        window.__testLiveChannel?.dispatchEvent(new MessageEvent("message", {
+          data: JSON.stringify({ type: "session.input_transcript.delta", delta: text }),
+        }));
+      }, delta);
+    });
     await expect(page.getByRole("button", { name: "Завершить" })).toBeVisible();
     await expect(page.getByText(/Речь обрабатывает OpenAI/i)).toHaveCount(0);
   });

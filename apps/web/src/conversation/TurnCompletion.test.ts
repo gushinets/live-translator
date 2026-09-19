@@ -166,7 +166,7 @@ describe("evaluateTurnCompletion", () => {
 describe("buildTurnCompletionSnapshot", () => {
   it("derives caption idle from output-transcript inactivity, not missing input deltas", () => {
     const turn = {
-      ...createTurn({ id: "t1", speaker: "A" as const, sideSource: "prior" as const, nowMs: 1_000 }),
+      ...createTurn({ id: "t1", speaker: "A" as const, sideSource: "language" as const, nowMs: 1_000 }),
       sourceIdleAtMs: 2_000,
       translatedText: "Hola",
       firstOutputTextAtMs: 1_500,

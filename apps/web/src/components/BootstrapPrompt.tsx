@@ -1,66 +1,57 @@
-/**
- * Owner-only Participant B language prompt. Binding spec 1.2.1 §3.3 / §4.3.
- * The question is UI text, never spoken by GPT-Live. There is no language picker.
- */
+import type { Side } from "../conversation/Turn";
+import { languageName } from "../side/SideResolver";
+
+/** Two separate speech samples establish the fixed language pair. */
 export function BootstrapPrompt({
-  transcript,
-  onSkip,
-  onAccept,
-  actionsDisabled = false,
+  transcript, side, recording, languageA, languageB,
+  onRecord, onAccept, onBegin, actionsDisabled = false,
 }: {
   transcript: string;
-  onSkip: () => void;
+  side: Side;
+  recording: boolean;
+  languageA?: string;
+  languageB?: string;
+  onRecord: () => void;
   onAccept: () => void;
+  onBegin: () => void;
   actionsDisabled?: boolean;
 }) {
-  const hint = transcript.trim();
-
+  const ready = languageA !== undefined && languageB !== undefined;
   return (
-    <section className="bootstrap-prompt" aria-labelledby="bootstrap-title">
+    <section className="bootstrap-prompt" aria-labelledby="bootstrap-title" aria-busy={actionsDisabled}>
       <div className="bootstrap-status" role="status" aria-live="polite">
         <span className="bootstrap-status-dot" aria-hidden="true" />
-        {actionsDisabled ? "Запускаю перевод…" : "Слушаю язык"}
+        {actionsDisabled ? (ready ? "Запускаю перевод…" : "Сохраняю образец…")
+          : ready ? "Языки закреплены" : recording ? `Слушаю участника ${side}` : `Очередь участника ${side}`}
       </div>
-
       <div className="bootstrap-copy">
         <h2 id="bootstrap-title" className="bootstrap-title">
-          На каком языке говорит собеседник?
+          {ready ? "Можно начинать" : `Образец речи ${side} · ${side === "A" ? "1" : "2"} из 2`}
         </h2>
         <p className="bootstrap-description">
-          Назовите язык вслух или пропустите этот шаг.
+          {ready ? "Говорите в любом порядке. Переводчик определит сторону по языку."
+            : "Произнесите полное предложение на своём языке. Не называйте язык — просто расскажите что-нибудь."}
         </p>
       </div>
-
+      {languageA !== undefined ? <p>Участник A — {languageName(languageA)}</p> : null}
+      {languageB !== undefined ? <p>Участник B — {languageName(languageB)}</p> : null}
       {transcript.length > 0 ? (
         <div className="bootstrap-hint" aria-live="polite">
           <p className="bootstrap-hint-label">Распознано</p>
           <p className="bootstrap-hint-value">{transcript}</p>
         </div>
-      ) : (
-        <div className="bootstrap-waiting" aria-hidden="true">
-          Жду название языка…
-        </div>
-      )}
-
+      ) : !ready && recording ? <div className="bootstrap-waiting">Жду вашу фразу…</div> : null}
       <div className="bootstrap-actions">
-        {hint.length > 0 ? (
-          <button
-            className="setup-primary-action"
-            type="button"
-            disabled={actionsDisabled}
-            onClick={onAccept}
-          >
-            Продолжить
+        <button className="setup-primary-action" type="button"
+          disabled={actionsDisabled || (!ready && recording && transcript.trim().length === 0)}
+          onClick={ready ? onBegin : recording ? onAccept : onRecord}>
+          {ready ? "Начать разговор" : recording ? "Сохранить образец" : `Записать образец ${side}`}
+        </button>
+        {!ready && recording ? (
+          <button className="setup-secondary-action" type="button" disabled={actionsDisabled} onClick={onRecord}>
+            Записать заново
           </button>
         ) : null}
-        <button
-          className="setup-secondary-action"
-          type="button"
-          disabled={actionsDisabled}
-          onClick={onSkip}
-        >
-          Пропустить
-        </button>
       </div>
     </section>
   );

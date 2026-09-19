@@ -1,3 +1,4 @@
+import { languageName } from "../side/SideResolver";
 import type { Side, Turn } from "../conversation/Turn";
 import { ParticipantStatus, type ParticipantStatusLabel } from "./ParticipantStatus";
 
@@ -19,6 +20,7 @@ export function currentMessageSizeClass(characterLength: number): string {
 
 export function ParticipantPane({
   side,
+  language,
   rotated,
   status,
   isSourceSide,
@@ -29,17 +31,18 @@ export function ParticipantPane({
   alertText,
 }: {
   side: Side;
+  language?: string;
   rotated: boolean;
   status: ParticipantStatusLabel;
-  isSourceSide: boolean;
+  isSourceSide: boolean | undefined;
   originalText: string;
   translatedText: string;
   recentTurns: readonly Turn[];
   onTap: () => void;
   alertText?: string;
 }) {
-  const primaryText = isSourceSide ? originalText : translatedText;
-  const secondaryText = isSourceSide ? translatedText : originalText;
+  const primaryText = isSourceSide !== false ? originalText : translatedText;
+  const secondaryText = isSourceSide !== false ? translatedText : originalText;
 
   return (
     <section
@@ -58,6 +61,7 @@ export function ParticipantPane({
         aria-label={`Исправить: говорил участник ${side}`}
         onClick={onTap}
       />
+      {language !== undefined ? <p className="participant-language">{side} · {languageName(language)}</p> : null}
       <ParticipantStatus side={side} label={status} />
       {alertText !== undefined ? (
         <p className="participant-alert" role="alert" data-testid={`participant-alert-${side}`}>
@@ -95,7 +99,7 @@ export function ParticipantPane({
 }
 
 function paneTextsForTurn(entry: Turn, side: Side): { primary: string; secondary: string } {
-  const isSource = entry.speaker === side;
+  const isSource = entry.speaker === undefined || entry.speaker === side;
   return {
     primary: isSource ? entry.originalText : (entry.translatedText ?? ""),
     secondary: isSource ? (entry.translatedText ?? "") : entry.originalText,

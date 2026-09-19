@@ -123,7 +123,7 @@ export class MockLiveHarness {
   async startListeningConversation(): Promise<void> {
     await this.page.goto("/");
     await this.page.getByRole("button", { name: "Начать перевод" }).click();
-    await this.page.getByRole("button", { name: "Пропустить" }).click();
+    await completeLanguageSetup(this.page, text => this.inputDelta(text));
     await expect(this.page.getByRole("button", { name: "Завершить" })).toBeVisible();
     await expect(this.page.getByTestId("participant-status-A")).toHaveText("ГОВОРИТЕ");
     await this.page.waitForFunction(
@@ -183,7 +183,7 @@ export class MockLiveHarness {
       if (
         event?.type === "session.instructions.append" &&
         typeof event.content === "string" &&
-        event.content.includes("The next expected source speaker is Participant")
+        event.content.includes("Fixed languages:")
       ) {
         return event.content;
       }
@@ -491,4 +491,14 @@ export class MockLiveHarness {
       HTMLMediaElement.prototype.play = async () => {};
     });
   }
+}
+
+export async function completeLanguageSetup(page: Page, input: (text: string) => Promise<void>): Promise<void> {
+  await expect(page.getByRole("heading", { name: "Образец речи A · 1 из 2" })).toBeVisible();
+  await input("I speak English and would like to find the nearest station.");
+  await page.getByRole("button", { name: "Сохранить образец" }).click();
+  await page.getByRole("button", { name: "Записать образец B" }).click();
+  await input("Hablo español y quisiera encontrar la estación de tren.");
+  await page.getByRole("button", { name: "Сохранить образец" }).click();
+  await page.getByRole("button", { name: "Начать разговор" }).click();
 }

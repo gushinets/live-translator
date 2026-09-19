@@ -26,7 +26,7 @@ function participant(side: Side) {
 
 function turn(overrides: Partial<Turn> & Pick<Turn, "id" | "speaker">): Turn {
   return {
-    sideSource: "prior",
+    sideSource: "language",
     sourceFragments: [],
     originalText: "",
     status: "outputting",
@@ -78,7 +78,7 @@ describe("ConversationScreen orientation and status", () => {
     const controller = new FakeConversationController(
       session({
         state: "outputting",
-        expectedSpeaker: "A",
+
         activeTurn: turn({
           id: "t-early",
           speaker: "A",
@@ -118,18 +118,18 @@ describe("ConversationScreen orientation and status", () => {
     });
   });
 
-  it("shows YOUR TURN on the expected idle source and WAITING on the recipient", () => {
+  it("lets either participant speak while idle", () => {
     const controller = new FakeConversationController(
-      session({ state: "listening", expectedSpeaker: "A" }),
+      session({ state: "listening" }),
     );
     render(<ConversationScreen controller={controller} />);
     expect(screen.getByTestId("participant-status-A")).toHaveTextContent("ГОВОРИТЕ");
-    expect(screen.getByTestId("participant-status-B")).toHaveTextContent("ОЖИДАНИЕ");
+    expect(screen.getByTestId("participant-status-B")).toHaveTextContent("ГОВОРИТЕ");
   });
 
   it("does not show YOUR TURN while the expected source input is not ready", () => {
     const controller = new FakeConversationController(
-      session({ state: "listening", expectedSpeaker: "A" }),
+      session({ state: "listening" }),
     );
     controller.inputReady = false;
 
@@ -144,7 +144,7 @@ describe("ConversationScreen orientation and status", () => {
     const controller = new FakeConversationController(
       session({
         state: "error",
-        expectedSpeaker: "A",
+
         activeTurn: turn({
           id: "t-lost",
           speaker: "A",
@@ -176,7 +176,7 @@ describe("ConversationScreen orientation and status", () => {
     const controller = new FakeConversationController(
       session({
         state: "ending",
-        expectedSpeaker: "A",
+
         activeTurn: turn({
           id: "t-end",
           speaker: "A",
