@@ -1654,6 +1654,80 @@ export class SessionController {
     this.captionIdleTimer = null;
   }
 
+  private async restartBootstrapLiveConnection(generation: number): Promise<boolean> {
+    const previousLive = this.live;
+    const replacementLive = this.deps.createLive();
+
+    // Close local capture before swapping Live clients. Once this.live points
+    // at the replacement, bindLive()'s identity guard rejects every event that
+    // can still arrive from the previous data channel.
+    this.capturingBootstrap = false;
+    this.bootstrapBuffer = "";
+    this.notify();
+    this.audio.setCaptureEnabled(false);
+    this.audio.setOutputAudible(false);
+    this.clearMaxSessionTimer();
+    this.resetRemotePlaybackTracking();
+    this.audio.audioElement.srcObject = null;
+
+    this.live = replacementLive;
+    this.hasConnected = false;
+    this.liveConnectStarted = true;
+    this.gateBMuted = false;
+    this.bindLive();
+    previousLive.disconnectImmediately();
+
+    if (this.sessionGeneration !== generation) {
+      replacementLive.disconnectImmediately();
+      return false;
+    }
+
+    const stream = this.audio.getCaptureStream();
+    if (stream === null) {
+      this.failOwnerRequest(
+        "Microphone capture failed while restarting language sample",
+        new Error("Microphone capture stream is missing"),
+      );
+    }
+    try {
+      this.assertCaptureStreamLive(stream);
+    } catch (error) {
+      this.failMicrophoneCapture(error);
+    }
+
+    try {
+      await replacementLive.connect(stream);
+    } catch (error) {
+      if (
+        this.sessionGeneration !== generation ||
+        this.live !== replacementLive
+      ) {
+        return false;
+      }
+      console.error("Live reconnect failed before language sample", {
+        error,
+        state: this.currentSession.state,
+      });
+      this.ownerErrorMessage = STARTUP_ERROR_MESSAGE;
+      this.dispatch({
+        type: "SESSION_ERROR",
+        message: this.ownerErrorMessage,
+      });
+      throw error;
+    }
+
+    if (
+      this.sessionGeneration !== generation ||
+      this.live !== replacementLive
+    ) {
+      replacementLive.disconnectImmediately();
+      return false;
+    }
+
+    this.hasConnected = true;
+    return true;
+  }
+
   private async ensureConnected(): Promise<void> {
     const live = this.live;
     const generation = this.sessionGeneration;
@@ -1797,16 +1871,12 @@ export class SessionController {
       this.finishContextCapture();
       if (this.languagesReady) return;
 
-      // Re-recording must establish a real input boundary. Stop local capture
-      // first, then wait for the Live mute acknowledgement before clearing the
-      // old transcript and reopening input. Late fragments from the previous
-      // sample arrive while capturingBootstrap is false and are ignored.
-      if (this.currentSession.state === "bootstrap" && this.capturingBootstrap) {
-        this.capturingBootstrap = false;
-        this.notify();
-        this.audio.setCaptureEnabled(false);
-        if (!(await this.muteGateB(generation))) return;
-        if (this.sessionGeneration !== generation) return;
+      // Every sample after the first gets a fresh Live/WebRTC transport.
+      // Transcript events do not carry a sample/attempt id, so reconnecting is
+      // the only strict boundary that prevents a delayed event from the old
+      // data channel from contaminating the next sample.
+      if (this.currentSession.state === "bootstrap") {
+        if (!(await this.restartBootstrapLiveConnection(generation))) return;
       }
 
       this.bootstrapBuffer = "";
