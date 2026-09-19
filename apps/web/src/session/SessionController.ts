@@ -969,7 +969,8 @@ export class SessionController {
       endMs: event.end_ms,
     });
     if (this.currentSession.state === "correcting") {
-      if (this.currentSession.activeTurn !== undefined) {
+      const activeTurn = this.currentSession.activeTurn;
+      if (activeTurn !== undefined && activeTurn.turnCompletedAtMs === undefined) {
         this.dispatch({ type: "CORRECTION_SOURCE_FRAGMENT", fragment });
       }
       return;
