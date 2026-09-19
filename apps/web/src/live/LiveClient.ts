@@ -360,6 +360,27 @@ export class LiveClient {
   }
 
   /**
+   * Immediately drops the current transport and releases its backend lease.
+   *
+   * This is intentionally non-graceful: callers use it when they need a hard
+   * event boundary and must guarantee that no later data-channel event from
+   * this Live session can be mistaken for input belonging to a replacement
+   * session. Normal conversation shutdown should continue to use close().
+   */
+  disconnectImmediately(): void {
+    if (this.torndown) return;
+    this.closing = true;
+    this.rejectPendingConnect(new Error(DISCONNECTED_CLOSE_REASON));
+    this.teardownTransportAndRelease();
+    if (this.closeResult === null) {
+      this.closeResult = {
+        finalized: false,
+        reason: DISCONNECTED_CLOSE_REASON,
+      };
+    }
+  }
+
+  /**
    * Idempotent: if the session already ended (a prior local close(), or a
    * server-initiated `session.closed`), returns the already-known result
    * instead of throwing or sending a redundant `session.close`. Concurrent
