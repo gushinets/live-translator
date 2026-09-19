@@ -186,3 +186,18 @@ body,
   letter-spacing: 0.08em;
   text-transform: uppercase;
 }
+
+.participant-language {
+  margin: 0 0 0.25rem;
+  color: #c4b6a1;
+  font-family: Bahnschrift, "Segoe UI", system-ui, sans-serif;
+  font-size: 0.8rem;
+}
+
+.conversation-center > p[role="status"] {
+  flex: 1 1 100%;
+  margin: 0;
+  font-family: Bahnschrift, "Segoe UI", system-ui, sans-serif;
+  font-size: 0.8rem;
+  text-align: center;
+}

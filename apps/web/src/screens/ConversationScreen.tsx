@@ -37,13 +37,16 @@ export function ConversationScreen({
   const hasOutputText = (active?.translatedText ?? "").length > 0;
   const audioOutputStarted = active?.audioOutputStarted === true;
   const recentTurns = session.recentTurns.slice(-MAX_RECENT_TURNS);
+  const unassigned = active ?? recentTurns.at(-1);
+  const canChooseSide = (session.state === "listening" || session.state === "outputting") &&
+    unassigned?.speaker === undefined && (unassigned?.originalText.trim().length ?? 0) > 0 &&
+    unassigned?.status !== "discarded";
   const terminalAlert =
     session.state === "error" || session.state === "ending"
       ? controller.ownerError
       : undefined;
   const statusA = deriveParticipantStatus({
     sessionState: session.state,
-    expectedSpeaker: session.expectedSpeaker,
     inputReady: controller.inputReady,
     side: "A",
     sourceSpeaker,
@@ -53,7 +56,6 @@ export function ConversationScreen({
   });
   const statusB = deriveParticipantStatus({
     sessionState: session.state,
-    expectedSpeaker: session.expectedSpeaker,
     inputReady: controller.inputReady,
     side: "B",
     sourceSpeaker,
@@ -77,9 +79,10 @@ export function ConversationScreen({
       ) : null}
       <ParticipantPane
         side="B"
+        language={session.participantB.language}
         rotated
         status={statusB}
-        isSourceSide={sourceSpeaker === "B"}
+        isSourceSide={sourceSpeaker === undefined ? undefined : sourceSpeaker === "B"}
         originalText={originalText}
         translatedText={translatedText}
         recentTurns={recentTurns}
@@ -95,6 +98,9 @@ export function ConversationScreen({
         }}
       />
       <div className="conversation-center">
+        {canChooseSide ? (
+          <p role="status">Сторона не определена. Для исправления нажмите свою половину экрана.</p>
+        ) : null}
         <button
           type="button"
           onClick={() => {
@@ -130,9 +136,10 @@ export function ConversationScreen({
       </div>
       <ParticipantPane
         side="A"
+        language={session.participantA.language}
         rotated={false}
         status={statusA}
-        isSourceSide={sourceSpeaker === "A"}
+        isSourceSide={sourceSpeaker === undefined ? undefined : sourceSpeaker === "A"}
         originalText={originalText}
         translatedText={translatedText}
         recentTurns={recentTurns}

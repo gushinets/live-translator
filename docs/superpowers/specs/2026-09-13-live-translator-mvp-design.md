@@ -1,3 +1,5 @@
+> Updated 2026-09-19: the language-hint, bootstrap and expected-alternation rules below are superseded by [fixed-language routing](../../testing/language-routing.md). Other lifecycle/audio requirements remain in effect.
+
 # Live Translator MVP — Technical Design Specification
 
 **Revision:** 1.2.2

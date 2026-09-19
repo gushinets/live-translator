@@ -8,9 +8,15 @@ import type { Side, Turn } from "./Turn";
  */
 export const MAX_RECENT_TURNS = 3;
 
+/** Ambiguous source text can be assigned manually even if Live stayed silent. */
+export function canAssignUnresolvedSource(turn: Turn): boolean {
+  return turn.speaker === undefined && turn.originalText.trim().length > 0 &&
+    (turn.status === "streaming" || turn.status === "failed");
+}
+
 export interface StartTurnParams {
   id: string;
-  speaker: Side;
+  speaker: Side | undefined;
   sideSource: Turn["sideSource"];
   nowMs: number;
 }

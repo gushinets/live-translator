@@ -66,3 +66,11 @@ Primary actions are full-width, at least 44px high, and stable while disabled. S
 - **Do:** preserve one obvious primary action per setup step.
 - **Don't:** add slogans, feature descriptions, or decorative badges to the setup flow.
 - **Don't:** let status labels compete with the live translation.
+
+## Language setup and conversation behavior
+
+`BootstrapPrompt` owns the two-sample setup flow: A records a full sentence, saves it, then B explicitly starts their own sample. Both detected languages are shown before starting the conversation and remain fixed until the session ends. Setup cannot be skipped; ambiguous or identical languages require another sample. Cancellation remains available during setup and startup.
+
+`SideResolver` classifies incoming transcript text locally; model playback is never an identity signal. Neither participant has an expected turn. Both panes show ГОВОРИТЕ when input is ready, and display their fixed languages. Unknown source speech is presented without assigning it to a side, with a manual correction hint. Manual assignment only affects that utterance.
+
+Runtime verification: `SessionController.test.ts` covers B-first and repeated turns, fixed languages after suspension, unknown speech and cancellation; `tests/e2e/mocked-conversation.spec.ts` checks the same routing in a browser. Existing warm surfaces, typography, focus behavior and rotated B pane are retained.

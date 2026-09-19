@@ -57,6 +57,9 @@ importers:
 
   apps/web:
     dependencies:
+      eld:
+        specifier: 2.1.0
+        version: 2.1.0
       react:
         specifier: ^19.0.0
         version: 19.3.0
@@ -1609,6 +1612,10 @@ packages:
     resolution: {integrity: sha512-UeJmFfOrAQS8OJWPZ4qtgHyWExa088/MtK5UEyoJGFH67cDEXkZSviOiKRCZ4Xij0zxI3JECgYs3oKx+AizQBA==}
     engines: {node: '>=0.10.0'}
     hasBin: true
+
+  eld@2.1.0:
+    resolution: {integrity: sha512-hDQ9FX17th7NDNMO8/St6m3ADQVqjF0sQoOHI6NUAxC7yDaPmZ9wC9d8zau/9FIqOV7KtNwrPKRt6fkkrzZj0g==}
+    engines: {node: '>=14.17.0'}
 
   electron-to-chromium@1.5.427:
     resolution: {integrity: sha512-n14zb3FdsChZ2BNobqNHAJMcP3ifFv4paox2LvCrfVAQcqGiSURgbJl+PfMpHVCNFkStnNc+RRVtPBTVW5PDgw==}
@@ -4613,6 +4620,8 @@ snapshots:
   ejs@3.1.10:
     dependencies:
       jake: 10.9.4
+
+  eld@2.1.0: {}
 
   electron-to-chromium@1.5.427: {}
 

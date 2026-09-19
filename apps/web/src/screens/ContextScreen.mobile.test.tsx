@@ -18,6 +18,8 @@ class MobileUiController implements ContextScreenController {
   inputReady = true;
   contextText = "";
   bootstrapText = "";
+  bootstrapSide = "A" as const;
+  bootstrapRecording = true;
   ownerError: string | undefined;
   hasEnteredInterpreter = false;
   isConnectInFlight = false;
@@ -41,8 +43,7 @@ class MobileUiController implements ContextScreenController {
     this.contextText = "";
   }
   async startBootstrap(): Promise<void> {}
-  skipBootstrap(): void {}
-  acceptBootstrap(): void {}
+  async acceptBootstrap(): Promise<void> {}
   async beginInterpreter(): Promise<void> {}
   async cancel(): Promise<void> {}
   async correctLastTurn(): Promise<void> {}
@@ -80,11 +81,11 @@ describe("ContextScreen mobile setup UI", () => {
 
     render(<ContextScreen controller={controller} />);
 
-    expect(screen.getByRole("status")).toHaveTextContent("Слушаю язык");
-    expect(screen.getByText("На каком языке говорит собеседник?")).toHaveClass(
+    expect(screen.getByRole("status")).toHaveTextContent("Слушаю участника A");
+    expect(screen.getByText("Образец речи A · 1 из 2")).toHaveClass(
       "bootstrap-title",
     );
-    expect(screen.getByRole("button", { name: "Пропустить" })).toHaveClass(
+    expect(screen.getByRole("button", { name: "Записать заново" })).toHaveClass(
       "setup-secondary-action",
     );
   });
@@ -97,8 +98,8 @@ describe("ContextScreen mobile setup UI", () => {
 
     render(<ContextScreen controller={controller} />);
 
-    expect(screen.getByText("Запускаю перевод…")).toHaveAttribute("role", "status");
-    expect(screen.getByRole("button", { name: "Продолжить" })).toBeDisabled();
-    expect(screen.getByRole("button", { name: "Пропустить" })).toBeDisabled();
+    expect(screen.getByText("Сохраняю образец…")).toHaveAttribute("role", "status");
+    expect(screen.getByRole("button", { name: "Сохранить образец" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Записать заново" })).toBeDisabled();
   });
 });

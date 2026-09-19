@@ -1,17 +1,8 @@
-/**
- * Provenance of an explicit language hint. Binding spec 1.2.1 §5.1.
- */
-export type LanguageHintSource = "device_locale" | "bootstrap";
+import type { Side } from "./Turn";
 
-/**
- * Per-participant profile. Binding spec 1.2.1 §5.1.
- *
- * The client stores only explicit, provenance-tagged hints; there is no
- * client-side language confidence score in MVP v1.2.1.
- */
+/** Languages are detected from separate setup samples and fixed for the session. */
 export interface ParticipantProfile {
-  side: "A" | "B";
-  initialLanguageHint?: string;
-  languageHintSource?: LanguageHintSource;
+  side: Side;
+  language?: string;
   hasAcceptedConversationSpeech: boolean;
 }

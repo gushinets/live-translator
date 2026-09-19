@@ -1,11 +1,6 @@
 import type { TranscriptFragment } from "./TranscriptFragment";
 
-/**
- * Physical, fixed side. `A` is the phone-owner/lower-half side, `B` is the
- * opposite/upper-half side. Binding spec 1.2.1 §7.1. A participant does not
- * become the other side because of language choice, and language is never
- * used as a speaker-identity signal.
- */
+/** Physical side, bound to its setup language for this session. */
 export type Side = "A" | "B";
 
 /**
@@ -26,17 +21,10 @@ export type TurnStatus =
   | "discarded"
   | "failed";
 
-/**
- * A single conversation turn. Binding spec 1.2.1 §12.2.
- *
- * Intentionally excludes `sourceLanguage`, `targetLanguage`, and any
- * confidence score: MVP v1.2.1 has no concrete implemented detector that
- * produces those values.
- */
 export interface Turn {
   id: string;
-  speaker: Side;
-  sideSource: "prior" | "manual" | "acoustic_optional";
+  speaker: Side | undefined;
+  sideSource: "unresolved" | "language" | "manual";
   sourceFragments: TranscriptFragment[];
   originalText: string;
   translatedText?: string;

@@ -7,6 +7,7 @@ import type { SessionState } from "../session/SessionState";
  * even when GPT output begins early.
  */
 export type ParticipantStatusLabel =
+  | "DETECTING"
   | "YOUR TURN"
   | "LISTENING"
   | "WAITING"
@@ -18,7 +19,6 @@ export type ParticipantStatusLabel =
 
 export function deriveParticipantStatus(input: {
   sessionState: SessionState;
-  expectedSpeaker: Side;
   inputReady: boolean;
   side: Side;
   sourceSpeaker?: Side;
@@ -39,6 +39,8 @@ export function deriveParticipantStatus(input: {
     return "WAITING";
   }
 
+  if (input.sourceActive && input.sourceSpeaker === undefined) return "DETECTING";
+
   const outputActive = input.hasOutputText || input.audioOutputStarted;
   const recipientOutputLabel: ParticipantStatusLabel = input.audioOutputStarted
     ? "SPEAKING"
@@ -58,7 +60,7 @@ export function deriveParticipantStatus(input: {
     return recipientOutputLabel;
   }
 
-  if (input.side === input.expectedSpeaker && input.inputReady) {
+  if (input.inputReady) {
     return "YOUR TURN";
   }
   return "WAITING";
@@ -72,6 +74,7 @@ export function ParticipantStatus({
   label: ParticipantStatusLabel;
 }) {
   const visibleLabel: Record<ParticipantStatusLabel, string> = {
+    DETECTING: "ОПРЕДЕЛЯЮ ЯЗЫК",
     "YOUR TURN": "ГОВОРИТЕ",
     LISTENING: "СЛУШАЮ",
     WAITING: "ОЖИДАНИЕ",

@@ -4,6 +4,7 @@ import {
   appendOutputTextToTurn,
   appendSourceFragmentToTurn,
   clearSourceIdle,
+  canAssignUnresolvedSource,
   completeTurn,
   createTurn,
   discardTurn,
@@ -15,7 +16,7 @@ import {
   pushRecentTurn,
   startFreshOutputEpoch,
 } from "../conversation/TurnBuffer";
-import { nextExpectedSpeaker } from "../side/SideResolver";
+import { resolveSide } from "../side/SideResolver";
 import type { SessionState, TranslationSession } from "./SessionState";
 
 export type SessionAction =
@@ -29,7 +30,7 @@ export type SessionAction =
   | {
       type: "SOURCE_ACTIVE";
       turnId: string;
-      speaker: Side;
+      speaker: Side | undefined;
       sideSource: Turn["sideSource"];
       fragment?: TranscriptFragment;
     }
@@ -40,10 +41,12 @@ export type SessionAction =
   | { type: "AUDIO_STARTED"; nowMs: number }
   | { type: "PLAYBACK_ENDED"; nowMs: number }
   | { type: "OUTPUT_IDLE" }
-  | { type: "TURN_CLOSED"; speaker: Side }
+  | { type: "TURN_CLOSED"; speaker: Side | undefined }
   | { type: "TURN_FAILED" }
   // Correction flow (§11.2).
   | { type: "CORRECTION_START" }
+  | { type: "CORRECTION_SOURCE_ACTIVITY"; active: boolean }
+  | { type: "CORRECTION_SOURCE_FRAGMENT"; fragment: TranscriptFragment }
   | { type: "CORRECTION_APPLIED"; speaker: Side }
   // Suspension flow (§11.3).
   | { type: "SUSPEND" }
@@ -115,7 +118,7 @@ function isPreservedCompletedTarget(turn: Turn): boolean {
 }
 
 function isRecentCorrectable(turn: Turn): boolean {
-  return turn.status === "completed" || turn.status === "outputting";
+  return turn.status === "completed" || turn.status === "outputting" || canAssignUnresolvedSource(turn);
 }
 
 function withOutputtingIfListening(session: TranslationSession, activeTurn: Turn): TranslationSession {
@@ -167,7 +170,16 @@ function handleSourceActive(
     nowMs: Date.now(),
   });
   const withFragment = action.fragment ? appendSourceFragmentToTurn(created, action.fragment) : created;
-  return { ...session, activeTurn: withFragment };
+  return { ...session, activeTurn: assignLanguageSide(session, withFragment) };
+}
+
+function assignLanguageSide(session: TranslationSession, turn: Turn): Turn {
+  if (turn.sideSource === "manual") return turn;
+  const A = session.participantA.language;
+  const B = session.participantB.language;
+  if (A === undefined || B === undefined) return turn;
+  const speaker = resolveSide(turn.originalText, { A, B });
+  return { ...turn, speaker, sideSource: speaker === undefined ? "unresolved" : "language" };
 }
 
 function handleSourceFragment(
@@ -175,13 +187,14 @@ function handleSourceFragment(
   action: Extract<SessionAction, { type: "SOURCE_FRAGMENT" }>,
 ): TranslationSession {
   assertSourceAppendAllowed(session);
-  return { ...session, activeTurn: appendSourceFragmentToTurn(requireActiveTurn(session), action.fragment) };
+  return { ...session, activeTurn: assignLanguageSide(session, appendSourceFragmentToTurn(requireActiveTurn(session), action.fragment)) };
 }
 
 function withAcceptedSpeech(
   session: TranslationSession,
-  speaker: Side,
+  speaker: Side | undefined,
 ): TranslationSession {
+  if (speaker === undefined) return session;
   if (speaker === "A") {
     return {
       ...session,
@@ -215,8 +228,6 @@ function handleTurnClosed(
       activeTurn: undefined,
       recentTurns: pushRecentTurn(session.recentTurns, completed),
       lastSpeaker: action.speaker,
-      // Expected-alternation prior (§7.4): only advances once a turn actually closes.
-      expectedSpeaker: nextExpectedSpeaker(action.speaker),
     },
     action.speaker,
   );
@@ -231,8 +242,6 @@ function handleTurnFailed(session: TranslationSession): TranslationSession {
     state: session.state === "ending" ? "ending" : "listening",
     activeTurn: undefined,
     recentTurns: pushRecentTurn(session.recentTurns, failed),
-    // §10.3: keep expectedSpeaker on the same source side so they can repeat.
-    expectedSpeaker: activeTurn.speaker,
   };
 }
 
@@ -245,7 +254,8 @@ function handleCorrectionStart(session: TranslationSession): TranslationSession 
     if (
       session.activeTurn.status === "failed" ||
       session.activeTurn.status === "discarded" ||
-      (session.state === "listening" && session.activeTurn.status === "streaming")
+      (session.state === "listening" && session.activeTurn.status === "streaming" &&
+        !canAssignUnresolvedSource(session.activeTurn))
     ) {
       throw new Error("Cannot start a correction: no correctable turn exists.");
     }
@@ -363,8 +373,7 @@ export function sessionReducer(session: TranslationSession, action: SessionActio
       assertOutputEventAllowed(session);
       return { ...session, activeTurn: markPlaybackEnded(requireActiveTurn(session), action.nowMs) };
     case "OUTPUT_IDLE":
-      // Informational only: never changes `state` or `expectedSpeaker` (only
-      // an explicit TURN_CLOSED does that, per §11.1). No-op with no active turn.
+      // Turn completion is handled separately from output inactivity.
       return session;
     case "TURN_CLOSED":
       return handleTurnClosed(session, action);
@@ -373,6 +382,22 @@ export function sessionReducer(session: TranslationSession, action: SessionActio
 
     case "CORRECTION_START":
       return handleCorrectionStart(session);
+    case "CORRECTION_SOURCE_ACTIVITY":
+      if (session.state !== "correcting" || session.activeTurn === undefined) return session;
+      return {
+        ...session,
+        activeTurn: action.active
+          ? clearSourceIdle(session.activeTurn)
+          : markSourceIdle(session.activeTurn, Date.now()),
+      };
+    case "CORRECTION_SOURCE_FRAGMENT":
+      if (session.state !== "correcting" || session.activeTurn === undefined) return session;
+      return {
+        ...session,
+        // Manual correction owns side assignment for this utterance. Preserve
+        // transcript tail without re-running language routing mid-correction.
+        activeTurn: appendSourceFragmentToTurn(session.activeTurn, action.fragment),
+      };
     case "CORRECTION_APPLIED":
       return handleCorrectionApplied(session, action);
 

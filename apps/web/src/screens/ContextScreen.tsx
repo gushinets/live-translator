@@ -39,8 +39,9 @@ export interface ContextScreenController {
   setContextText(text: string): void;
   clearContext(): void;
   startBootstrap(): Promise<void>;
-  skipBootstrap(): void;
-  acceptBootstrap(text: string): void;
+  readonly bootstrapSide: Side;
+  readonly bootstrapRecording: boolean;
+  acceptBootstrap(text: string): Promise<void>;
   beginInterpreter(): Promise<void>;
   cancel(): Promise<void>;
   correctLastTurn(side: Side): Promise<void>;
@@ -93,50 +94,28 @@ export function ContextScreen({
     }
   }
 
-  async function handleSkip(): Promise<void> {
-    if (controller.isInterpreterStarting === true) {
-      return;
-    }
-    traceBootstrapAction("skip", {
-      state: controller.session.state,
-      isInterpreterStarting: false,
-      enteredInterpreter: controller.hasEnteredInterpreter === true,
-    });
-    controller.skipBootstrap();
-    try {
-      await controller.beginInterpreter();
-    } catch (error) {
-      if (error instanceof ContextTooLongError) {
-        return;
-      }
-      console.error("Failed to begin interpreter after bootstrap skip", {
-        error,
-        state: controller.session.state,
-      });
-    }
-  }
-
-  async function handleAccept(): Promise<void> {
-    if (controller.isInterpreterStarting === true) {
-      return;
-    }
+  async function handleBegin(): Promise<void> {
+    if (controller.isInterpreterStarting === true) return;
     traceBootstrapAction("accept", {
       state: controller.session.state,
       isInterpreterStarting: false,
       enteredInterpreter: controller.hasEnteredInterpreter === true,
     });
-    const hint = controller.bootstrapText.trim();
-    controller.acceptBootstrap(hint);
     try {
       await controller.beginInterpreter();
     } catch (error) {
-      if (error instanceof ContextTooLongError) {
-        return;
+      if (!(error instanceof ContextTooLongError)) {
+        console.error("Failed to begin interpreter", { error });
       }
-      console.error("Failed to begin interpreter after bootstrap accept", {
-        error,
-        state: controller.session.state,
-      });
+    }
+  }
+
+  async function handleAccept(): Promise<void> {
+    if (controller.isInterpreterStarting === true) return;
+    try {
+      await controller.acceptBootstrap(controller.bootstrapText.trim());
+    } catch (error) {
+      console.error("Failed to save language sample", { error });
     }
   }
 
@@ -190,10 +169,13 @@ export function ContextScreen({
             {isBootstrap ? (
               <BootstrapPrompt
                 transcript={controller.bootstrapText}
-                actionsDisabled={controller.isInterpreterStarting === true}
-                onSkip={() => {
-                  void handleSkip();
-                }}
+                side={controller.bootstrapSide}
+                recording={controller.bootstrapRecording}
+                languageA={controller.session.participantA.language}
+                languageB={controller.session.participantB.language}
+                actionsDisabled={controller.isInterpreterStarting === true || isBusy}
+                onRecord={() => { void handleStart(); }}
+                onBegin={() => { void handleBegin(); }}
                 onAccept={() => {
                   void handleAccept();
                 }}

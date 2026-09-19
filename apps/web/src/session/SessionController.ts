@@ -6,7 +6,7 @@ import {
   buildTurnCompletionSnapshot,
   evaluateTurnCompletion,
 } from "../conversation/TurnCompletion";
-import { createTranscriptFragment } from "../conversation/TurnBuffer";
+import { canAssignUnresolvedSource, createTranscriptFragment } from "../conversation/TurnBuffer";
 import type { Side, Turn } from "../conversation/Turn";
 import { AckTimeoutError } from "../live/AckRegistry";
 import { LiveClient, type LiveClientErrorEvent } from "../live/LiveClient";
@@ -42,6 +42,8 @@ import {
   MICROPHONE_DENIED_MESSAGE,
   STARTUP_ERROR_MESSAGE,
 } from "./userFacingErrors";
+
+import { detectLanguage, type ConversationLanguages } from "../side/SideResolver";
 
 export type RecoveryPrompt = "repeat" | "resume-repeat";
 
@@ -84,7 +86,7 @@ export class SessionController {
   private contextBuffer = "";
   private bootstrapBuffer = "";
   private ownerErrorMessage: string | undefined;
-  private degradedBootstrap = false;
+  private bootstrapAccepting = false;
   private capturingContext = false;
   private capturingBootstrap = false;
   private contextFrozenByUser = false;
@@ -136,7 +138,7 @@ export class SessionController {
   private readonly listeners = new Set<() => void>();
 
   constructor(private readonly deps: SessionControllerDeps) {
-    this.currentSession = createSessionFromDeviceLocale();
+    this.currentSession = createEmptySession();
     this.live = deps.createLive();
     this.orientation = deps.orientation ?? new OrientationController();
     this.visibility = deps.visibility ?? new VisibilityController();
@@ -178,8 +180,26 @@ export class SessionController {
     return this.conversationMetrics;
   }
 
-  get bootstrapDegraded(): boolean {
-    return this.degradedBootstrap;
+  get bootstrapSide(): Side {
+    return this.currentSession.participantA.language === undefined ? "A" : "B";
+  }
+
+  get bootstrapRecording(): boolean {
+    return this.capturingBootstrap;
+  }
+
+  get languagesReady(): boolean {
+    return this.currentSession.participantA.language !== undefined &&
+      this.currentSession.participantB.language !== undefined;
+  }
+
+  private get languages(): ConversationLanguages {
+    const A = this.currentSession.participantA.language;
+    const B = this.currentSession.participantB.language;
+    if (A === undefined || B === undefined || A === B) {
+      throw new Error("Сначала запишите образцы речи A и B на разных языках.");
+    }
+    return { A, B };
   }
 
   get recoveryPrompt(): RecoveryPrompt | undefined {
@@ -210,7 +230,7 @@ export class SessionController {
   }
 
   get isInterpreterStarting(): boolean {
-    return this.interpreterInFlight;
+    return this.interpreterInFlight || this.bootstrapAccepting;
   }
 
   get audioElement(): HTMLAudioElement {
@@ -478,40 +498,45 @@ export class SessionController {
     }
   }
 
-  acceptBootstrap(text: string): void {
-    if (this.currentSession.state !== "bootstrap") {
-      throw new Error(`Cannot accept bootstrap from "${this.currentSession.state}"`);
+  async acceptBootstrap(text: string): Promise<void> {
+    if (this.bootstrapAccepting) return;
+    if (this.currentSession.state !== "bootstrap" || !this.capturingBootstrap) {
+      throw new Error("Сначала запишите образец речи.");
     }
-    const hint = text.trim();
-    if (hint.length === 0) {
-      throw new Error("Bootstrap language hint is empty");
+    const language = detectLanguage(text, 20);
+    if (language === undefined || language === this.currentSession.participantA.language) {
+      this.ownerErrorMessage = language === undefined
+        ? "Не удалось уверенно определить язык. Произнесите полное предложение на своём языке."
+        : "Распознан тот же язык, что у A. Участнику B нужно говорить на своём, другом языке.";
+      this.notify();
+      return;
     }
-    this.degradedBootstrap = false;
-    this.currentSession = {
-      ...this.currentSession,
-      participantB: {
-        side: "B",
-        initialLanguageHint: hint,
-        languageHintSource: "bootstrap",
-        hasAcceptedConversationSpeech: false,
-      },
-    };
+    const side = this.bootstrapSide;
+    const generation = this.sessionGeneration;
+    this.bootstrapAccepting = true;
+    this.capturingBootstrap = false;
+    this.ownerErrorMessage = undefined;
     this.notify();
-  }
-
-  skipBootstrap(): void {
-    if (this.currentSession.state !== "bootstrap") {
-      throw new Error(`Cannot skip bootstrap from "${this.currentSession.state}"`);
+    try {
+      this.audio.setCaptureEnabled(false);
+      if (!(await this.muteGateB(generation))) return;
+      const key = side === "A" ? "participantA" : "participantB";
+      this.currentSession = {
+        ...this.currentSession,
+        [key]: { ...this.currentSession[key], language },
+      };
+      this.bootstrapBuffer = "";
+      this.armIdleTimer("bootstrap");
+    } catch (error) {
+      if (this.sessionGeneration !== generation) return;
+      this.ownerErrorMessage = "Не удалось сохранить образец. Запишите его ещё раз.";
+      console.error("Language sample boundary failed", { error });
+    } finally {
+      if (this.sessionGeneration === generation) {
+        this.bootstrapAccepting = false;
+        this.notify();
+      }
     }
-    this.degradedBootstrap = true;
-    this.currentSession = {
-      ...this.currentSession,
-      participantB: {
-        side: "B",
-        hasAcceptedConversationSpeech: false,
-      },
-    };
-    this.notify();
   }
 
   async beginInterpreter(): Promise<void> {
@@ -554,6 +579,7 @@ export class SessionController {
       throw new Error(`Cannot begin interpreter from "${this.currentSession.state}"`);
     }
 
+    const languages = this.languages;
     const live = this.live;
     this.interpreterInFlight = true;
     this.ownerErrorMessage = undefined;
@@ -585,7 +611,7 @@ export class SessionController {
       }
 
       try {
-        await live.appendInstructions(buildInterpreterInstructions(), {
+        await live.appendInstructions(buildInterpreterInstructions(languages), {
           kind: "startup_interpreter",
           startupGeneration: generation,
           startupState: this.currentSession.state,
@@ -603,16 +629,9 @@ export class SessionController {
         return;
       }
 
-      const recipientHint = this.degradedBootstrap
-        ? undefined
-        : this.currentSession.participantB.initialLanguageHint;
       try {
         await live.appendInstructions(
-          buildSteering({
-            expectedSource: "A",
-            recipient: "B",
-            initialRecipientHint: recipientHint,
-          }),
+          buildSteering(languages),
           {
             kind: "first_steering",
             sessionState: this.currentSession.state,
@@ -633,6 +652,14 @@ export class SessionController {
         return;
       }
 
+      try {
+        if (!(await this.unmuteGateB(generation))) return;
+        this.audio.resetVoiceActivityBaseline();
+        this.audio.setCaptureEnabled(true);
+      } catch (error) {
+        if (this.sessionGeneration !== generation) return;
+        this.failStartup("Failed to reopen input after language setup", error);
+      }
       this.clearIdleTimer();
       this.capturingBootstrap = false;
       this.audio.setOutputAudible(true);
@@ -745,6 +772,7 @@ export class SessionController {
       return undefined;
     }
     if (session.activeTurn !== undefined) {
+      if (canAssignUnresolvedSource(session.activeTurn)) return session.activeTurn;
       if (
         session.activeTurn.status === "failed" ||
         session.activeTurn.status === "discarded" ||
@@ -758,6 +786,7 @@ export class SessionController {
     if (latest === undefined) {
       return undefined;
     }
+    if (canAssignUnresolvedSource(latest)) return latest;
     if (latest.status !== "completed" && latest.status !== "outputting") {
       return undefined;
     }
@@ -770,6 +799,7 @@ export class SessionController {
       return;
     }
     this.conversationMetrics.recordWrongSideCorrection();
+    this.recoveryPromptKind = undefined;
     const previousSpeaker = target.speaker;
     const generation = this.sessionGeneration;
     this.clearMaxSourceTimer();
@@ -798,6 +828,7 @@ export class SessionController {
         return;
       }
       this.dispatch({ type: "CORRECTION_APPLIED", speaker: side });
+      if (this.currentSession.activeTurn?.sourceIdleAtMs === undefined) this.armMaxSourceTimer();
       this.conversationMetrics.recordCorrectionSuccess();
       this.correctionEpoch += 1;
       this.gateCHeldForCorrectionEpoch = this.correctionEpoch;
@@ -928,9 +959,6 @@ export class SessionController {
     if (this.turnClosing) {
       return;
     }
-    if (this.currentSession.state !== "listening" && this.currentSession.state !== "outputting") {
-      return;
-    }
     if (event.delta.length === 0) {
       return;
     }
@@ -940,6 +968,16 @@ export class SessionController {
       startMs: event.start_ms,
       endMs: event.end_ms,
     });
+    if (this.currentSession.state === "correcting") {
+      const activeTurn = this.currentSession.activeTurn;
+      if (activeTurn !== undefined && activeTurn.turnCompletedAtMs === undefined) {
+        this.dispatch({ type: "CORRECTION_SOURCE_FRAGMENT", fragment });
+      }
+      return;
+    }
+    if (this.currentSession.state !== "listening" && this.currentSession.state !== "outputting") {
+      return;
+    }
     if (this.currentSession.activeTurn === undefined) {
       if (this.currentSession.state !== "listening") {
         throw new Error(
@@ -950,8 +988,8 @@ export class SessionController {
       this.dispatch({
         type: "SOURCE_ACTIVE",
         turnId: crypto.randomUUID(),
-        speaker: this.currentSession.expectedSpeaker,
-        sideSource: "prior",
+        speaker: undefined,
+        sideSource: "unresolved",
         fragment,
       });
       this.armMaxSourceTimer();
@@ -988,6 +1026,10 @@ export class SessionController {
     if (this.turnClosing) {
       return;
     }
+    if (this.currentSession.state === "correcting") {
+      this.dispatch({ type: "CORRECTION_SOURCE_ACTIVITY", active: event.active });
+      return;
+    }
     if (this.currentSession.state !== "listening" && this.currentSession.state !== "outputting") {
       return;
     }
@@ -1005,8 +1047,8 @@ export class SessionController {
         this.dispatch({
           type: "SOURCE_ACTIVE",
           turnId: crypto.randomUUID(),
-          speaker: this.currentSession.expectedSpeaker,
-          sideSource: "prior",
+          speaker: undefined,
+          sideSource: "unresolved",
         });
         this.armMaxSourceTimer();
         return;
@@ -1184,20 +1226,10 @@ export class SessionController {
     const turnCompletedAtMs = this.currentSession.recentTurns.at(-1)?.turnCompletedAtMs;
     this.beginLeftoverOutputDrain();
     const session = this.currentSession;
-    const expectedSource = session.expectedSpeaker;
-    const recipient = expectedSource === "A" ? "B" : "A";
-    const recipientProfile = recipient === "A" ? session.participantA : session.participantB;
-    const initialRecipientHint = recipientProfile.hasAcceptedConversationSpeech
-      ? undefined
-      : recipientProfile.initialLanguageHint;
     const generation = this.sessionGeneration;
     try {
       const result = await this.live.appendInstructions(
-        buildSteering({
-          expectedSource,
-          recipient,
-          initialRecipientHint,
-        }),
+        buildSteering(this.languages),
         {
           kind: "later_steering",
           sessionState: session.state,
@@ -1622,6 +1654,80 @@ export class SessionController {
     this.captionIdleTimer = null;
   }
 
+  private async restartBootstrapLiveConnection(generation: number): Promise<boolean> {
+    const previousLive = this.live;
+    const replacementLive = this.deps.createLive();
+
+    // Close local capture before swapping Live clients. Once this.live points
+    // at the replacement, bindLive()'s identity guard rejects every event that
+    // can still arrive from the previous data channel.
+    this.capturingBootstrap = false;
+    this.bootstrapBuffer = "";
+    this.notify();
+    this.audio.setCaptureEnabled(false);
+    this.audio.setOutputAudible(false);
+    this.clearMaxSessionTimer();
+    this.resetRemotePlaybackTracking();
+    this.audio.audioElement.srcObject = null;
+
+    this.live = replacementLive;
+    this.hasConnected = false;
+    this.liveConnectStarted = true;
+    this.gateBMuted = false;
+    this.bindLive();
+    await previousLive.disconnectImmediately();
+
+    if (this.sessionGeneration !== generation) {
+      await replacementLive.disconnectImmediately();
+      return false;
+    }
+
+    const stream = this.audio.getCaptureStream();
+    if (stream === null) {
+      this.failOwnerRequest(
+        "Microphone capture failed while restarting language sample",
+        new Error("Microphone capture stream is missing"),
+      );
+    }
+    try {
+      this.assertCaptureStreamLive(stream);
+    } catch (error) {
+      this.failMicrophoneCapture(error);
+    }
+
+    try {
+      await replacementLive.connect(stream);
+    } catch (error) {
+      if (
+        this.sessionGeneration !== generation ||
+        this.live !== replacementLive
+      ) {
+        return false;
+      }
+      console.error("Live reconnect failed before language sample", {
+        error,
+        state: this.currentSession.state,
+      });
+      this.ownerErrorMessage = STARTUP_ERROR_MESSAGE;
+      this.dispatch({
+        type: "SESSION_ERROR",
+        message: this.ownerErrorMessage,
+      });
+      throw error;
+    }
+
+    if (
+      this.sessionGeneration !== generation ||
+      this.live !== replacementLive
+    ) {
+      await replacementLive.disconnectImmediately();
+      return false;
+    }
+
+    this.hasConnected = true;
+    return true;
+  }
+
   private async ensureConnected(): Promise<void> {
     const live = this.live;
     const generation = this.sessionGeneration;
@@ -1763,7 +1869,20 @@ export class SessionController {
         return;
       }
       this.finishContextCapture();
+      if (this.languagesReady) return;
+
+      // Every sample after the first gets a fresh Live/WebRTC transport.
+      // Transcript events do not carry a sample/attempt id, so reconnecting is
+      // the only strict boundary that prevents a delayed event from the old
+      // data channel from contaminating the next sample.
+      if (this.currentSession.state === "bootstrap") {
+        if (!(await this.restartBootstrapLiveConnection(generation))) return;
+      }
+
       this.bootstrapBuffer = "";
+      if (!(await this.unmuteGateB(generation))) return;
+      if (this.sessionGeneration !== generation) return;
+      this.audio.setCaptureEnabled(true);
       this.capturingBootstrap = true;
       this.audio.setOutputAudible(false);
       if (this.currentSession.state === "connecting") {
@@ -2193,20 +2312,10 @@ export class SessionController {
     }
 
     const session = this.currentSession;
-    const expectedSource = session.expectedSpeaker;
-    const recipient = expectedSource === "A" ? "B" : "A";
-    const recipientProfile = recipient === "A" ? session.participantA : session.participantB;
-    const initialRecipientHint = recipientProfile.hasAcceptedConversationSpeech
-      ? undefined
-      : recipientProfile.initialLanguageHint;
     const generation = this.sessionGeneration;
     try {
       await this.live.appendInstructions(
-        buildSteering({
-          expectedSource,
-          recipient,
-          initialRecipientHint,
-        }),
+        buildSteering(this.languages),
         {
           kind: "later_steering",
           sessionState: session.state,
@@ -2330,7 +2439,7 @@ export class SessionController {
     this.contextBuffer = "";
     this.bootstrapBuffer = "";
     this.ownerErrorMessage = preservedError;
-    this.degradedBootstrap = false;
+    this.bootstrapAccepting = false;
     this.contextFrozenByUser = false;
     this.authoritativeContextSent = false;
     this.liveConnectStarted = false;
@@ -2361,7 +2470,7 @@ export class SessionController {
     this.clearMaxSessionTimer();
     this.stopPlatformLifecycle();
     this.sessionGeneration += 1;
-    this.currentSession = createSessionFromDeviceLocale();
+    this.currentSession = createEmptySession();
     this.live = this.deps.createLive();
     this.bindLive();
     this.notify();
@@ -2395,21 +2504,9 @@ export function createDefaultSessionController(): SessionController {
   return controller;
 }
 
-function createSessionFromDeviceLocale(): TranslationSession {
-  const language = navigator.language;
-  if (language.length === 0) {
-    throw new Error("Device locale (navigator.language) is missing");
-  }
+function createEmptySession(): TranslationSession {
   return createInitialSession(
-    {
-      side: "A",
-      initialLanguageHint: language,
-      languageHintSource: "device_locale",
-      hasAcceptedConversationSpeech: false,
-    },
-    {
-      side: "B",
-      hasAcceptedConversationSpeech: false,
-    },
+    { side: "A", hasAcceptedConversationSpeech: false },
+    { side: "B", hasAcceptedConversationSpeech: false },
   );
 }

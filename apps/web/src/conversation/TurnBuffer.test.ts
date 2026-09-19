@@ -37,11 +37,11 @@ describe("createTranscriptFragment", () => {
 describe("TurnBuffer.start", () => {
   it("creates a streaming turn with no output yet", () => {
     const buffer = new TurnBuffer();
-    const turn = buffer.start({ id: "t1", speaker: "A", sideSource: "prior", nowMs: 1000 });
+    const turn = buffer.start({ id: "t1", speaker: "A", sideSource: "language", nowMs: 1000 });
 
     expect(turn.id).toBe("t1");
     expect(turn.speaker).toBe("A");
-    expect(turn.sideSource).toBe("prior");
+    expect(turn.sideSource).toBe("language");
     expect(turn.status).toBe("streaming");
     expect(turn.corrected).toBe(false);
     expect(turn.audioOutputStarted).toBe(false);
@@ -52,10 +52,10 @@ describe("TurnBuffer.start", () => {
 
   it("fails if a second active turn is started before the previous is closed", () => {
     const buffer = new TurnBuffer();
-    buffer.start({ id: "t1", speaker: "A", sideSource: "prior", nowMs: 1000 });
+    buffer.start({ id: "t1", speaker: "A", sideSource: "language", nowMs: 1000 });
 
     expect(() =>
-      buffer.start({ id: "t2", speaker: "B", sideSource: "prior", nowMs: 1100 }),
+      buffer.start({ id: "t2", speaker: "B", sideSource: "language", nowMs: 1100 }),
     ).toThrow(/previous active turn/i);
   });
 });
@@ -63,7 +63,7 @@ describe("TurnBuffer.start", () => {
 describe("TurnBuffer.appendSourceFragment", () => {
   it("accumulates fragments and original text on the active turn", () => {
     const buffer = new TurnBuffer();
-    buffer.start({ id: "t1", speaker: "A", sideSource: "prior", nowMs: 1000 });
+    buffer.start({ id: "t1", speaker: "A", sideSource: "language", nowMs: 1000 });
 
     buffer.appendSourceFragment(fragment("Hello ", 1010));
     const turn = buffer.appendSourceFragment(fragment("world", 1020));
@@ -81,7 +81,7 @@ describe("TurnBuffer.appendSourceFragment", () => {
 describe("TurnBuffer.appendOutputText", () => {
   it("moves the turn to outputting and records first-output timing", () => {
     const buffer = new TurnBuffer();
-    buffer.start({ id: "t1", speaker: "A", sideSource: "prior", nowMs: 1000 });
+    buffer.start({ id: "t1", speaker: "A", sideSource: "language", nowMs: 1000 });
 
     const turn = buffer.appendOutputText("Hola", 1500);
 
@@ -93,7 +93,7 @@ describe("TurnBuffer.appendOutputText", () => {
 
   it("accumulates further output deltas without resetting firstOutputTextAtMs", () => {
     const buffer = new TurnBuffer();
-    buffer.start({ id: "t1", speaker: "A", sideSource: "prior", nowMs: 1000 });
+    buffer.start({ id: "t1", speaker: "A", sideSource: "language", nowMs: 1000 });
     buffer.appendOutputText("Hola", 1500);
     const turn = buffer.appendOutputText(" mundo", 1600);
 
@@ -106,7 +106,7 @@ describe("TurnBuffer.appendOutputText", () => {
 describe("TurnBuffer.complete / fail / discard", () => {
   it("completes the active turn, moves it into recent, and clears active", () => {
     const buffer = new TurnBuffer();
-    buffer.start({ id: "t1", speaker: "A", sideSource: "prior", nowMs: 1000 });
+    buffer.start({ id: "t1", speaker: "A", sideSource: "language", nowMs: 1000 });
 
     const completed = buffer.complete(2000);
 
@@ -121,7 +121,7 @@ describe("TurnBuffer.complete / fail / discard", () => {
     const ids: string[] = [];
     for (let i = 0; i < 4; i += 1) {
       const id = `t${i}`;
-      buffer.start({ id, speaker: i % 2 === 0 ? "A" : "B", sideSource: "prior", nowMs: i * 100 });
+      buffer.start({ id, speaker: i % 2 === 0 ? "A" : "B", sideSource: "language", nowMs: i * 100 });
       buffer.complete(i * 100 + 50);
       ids.push(id);
     }
@@ -132,7 +132,7 @@ describe("TurnBuffer.complete / fail / discard", () => {
 
   it("fails the active turn and moves it into recent as failed", () => {
     const buffer = new TurnBuffer();
-    buffer.start({ id: "t1", speaker: "A", sideSource: "prior", nowMs: 1000 });
+    buffer.start({ id: "t1", speaker: "A", sideSource: "language", nowMs: 1000 });
 
     const failed = buffer.fail(2000);
 
@@ -142,7 +142,7 @@ describe("TurnBuffer.complete / fail / discard", () => {
 
   it("discards the active turn and moves it into recent as discarded", () => {
     const buffer = new TurnBuffer();
-    buffer.start({ id: "t1", speaker: "A", sideSource: "prior", nowMs: 1000 });
+    buffer.start({ id: "t1", speaker: "A", sideSource: "language", nowMs: 1000 });
 
     const discarded = buffer.discard(2000);
 
@@ -152,10 +152,10 @@ describe("TurnBuffer.complete / fail / discard", () => {
 
   it("allows starting a new turn again after the previous one is closed", () => {
     const buffer = new TurnBuffer();
-    buffer.start({ id: "t1", speaker: "A", sideSource: "prior", nowMs: 1000 });
+    buffer.start({ id: "t1", speaker: "A", sideSource: "language", nowMs: 1000 });
     buffer.complete(1100);
 
-    const turn2 = buffer.start({ id: "t2", speaker: "B", sideSource: "prior", nowMs: 1200 });
+    const turn2 = buffer.start({ id: "t2", speaker: "B", sideSource: "language", nowMs: 1200 });
     expect(turn2.id).toBe("t2");
   });
 });
@@ -163,7 +163,7 @@ describe("TurnBuffer.complete / fail / discard", () => {
 describe("clearSourceIdle", () => {
   it("removes sourceIdleAtMs so a continued utterance is not latched idle", () => {
     const turn: Turn = {
-      ...createTurn({ id: "t1", speaker: "A", sideSource: "prior", nowMs: 1000 }),
+      ...createTurn({ id: "t1", speaker: "A", sideSource: "language", nowMs: 1000 }),
       sourceIdleAtMs: 1200,
     };
     expect(clearSourceIdle(turn).sourceIdleAtMs).toBeUndefined();
@@ -173,7 +173,7 @@ describe("clearSourceIdle", () => {
 describe("startFreshOutputEpoch", () => {
   it("clears stale output-epoch fields and marks the turn corrected", () => {
     const turn: Turn = {
-      ...createTurn({ id: "t1", speaker: "B", sideSource: "prior", nowMs: 1000 }),
+      ...createTurn({ id: "t1", speaker: "B", sideSource: "language", nowMs: 1000 }),
       status: "correcting",
       translatedText: "Hola",
       firstOutputTextAtMs: 1500,
@@ -199,7 +199,7 @@ describe("startFreshOutputEpoch", () => {
 
 describe("markAudioOutputStarted / markPlaybackEnded", () => {
   it("records first audible output once", () => {
-    const turn = createTurn({ id: "t1", speaker: "A", sideSource: "prior", nowMs: 1000 });
+    const turn = createTurn({ id: "t1", speaker: "A", sideSource: "language", nowMs: 1000 });
     const started = markAudioOutputStarted(turn, 1600);
     const again = markAudioOutputStarted(started, 1700);
 
@@ -209,7 +209,7 @@ describe("markAudioOutputStarted / markPlaybackEnded", () => {
   });
 
   it("clears playbackEndAtMs when audible output resumes after an early idle", () => {
-    const turn = createTurn({ id: "t1", speaker: "A", sideSource: "prior", nowMs: 1000 });
+    const turn = createTurn({ id: "t1", speaker: "A", sideSource: "language", nowMs: 1000 });
     const ended = markPlaybackEnded(markAudioOutputStarted(turn, 1600), 2100);
     const resumed = markAudioOutputStarted(ended, 2200);
 
@@ -219,7 +219,7 @@ describe("markAudioOutputStarted / markPlaybackEnded", () => {
   });
 
   it("records playbackEndAtMs", () => {
-    const turn = createTurn({ id: "t1", speaker: "A", sideSource: "prior", nowMs: 1000 });
+    const turn = createTurn({ id: "t1", speaker: "A", sideSource: "language", nowMs: 1000 });
     expect(markPlaybackEnded(turn, 2100).playbackEndAtMs).toBe(2100);
   });
 });

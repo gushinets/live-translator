@@ -22,6 +22,8 @@ class FakeOwnerController implements ContextScreenController {
   inputReady = true;
   contextText = "";
   bootstrapText = "";
+  bootstrapSide = "A" as const;
+  bootstrapRecording = true;
   ownerError: string | undefined;
   hasEnteredInterpreter = false;
   isConnectInFlight = false;
@@ -59,9 +61,7 @@ class FakeOwnerController implements ContextScreenController {
     this.notify();
   }
 
-  skipBootstrap = vi.fn(() => {});
-
-  acceptBootstrap = vi.fn((text: string) => {
+  acceptBootstrap = vi.fn(async (text: string) => {
     void text;
   });
 
@@ -129,12 +129,12 @@ describe("ContextScreen", () => {
 
     expect(controller.session.state).toBe("bootstrap");
     expect(
-      await screen.findByText("На каком языке говорит собеседник?"),
+      await screen.findByText("Образец речи A · 1 из 2"),
     ).toBeInTheDocument();
     expect(
-      screen.getByText("Назовите язык вслух или пропустите этот шаг."),
+      screen.getByText("Произнесите полное предложение на своём языке. Не называйте язык — просто расскажите что-нибудь."),
     ).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Пропустить" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Записать заново" })).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "microphone" })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Say the language" })).not.toBeInTheDocument();
     expect(screen.queryByRole("combobox")).not.toBeInTheDocument();
@@ -142,26 +142,23 @@ describe("ContextScreen", () => {
     expect(document.querySelector("select")).toBeNull();
   });
 
-  it("Skip begins interpreter without accepting a language hint", async () => {
+  it("does not offer a way to skip language calibration", async () => {
     const controller = new FakeOwnerController();
     render(<ContextScreen controller={controller} />);
-
     fireEvent.click(screen.getByRole("button", { name: "Начать перевод" }));
-    fireEvent.click(await screen.findByRole("button", { name: "Пропустить" }));
-
-    expect(controller.skipBootstrap).toHaveBeenCalledOnce();
-    expect(controller.acceptBootstrap).not.toHaveBeenCalled();
-    expect(controller.beginInterpreter).toHaveBeenCalledOnce();
+    expect(await screen.findByRole("button", { name: "Сохранить образец" })).toBeDisabled();
+    expect(screen.queryByRole("button", { name: "Пропустить" })).not.toBeInTheDocument();
+    expect(controller.beginInterpreter).not.toHaveBeenCalled();
   });
 
-  it("shows Accept only after bootstrap transcript exists and uses that hint", async () => {
+  it("enables saving a sample after transcript arrives without starting the interpreter", async () => {
     const controller = new FakeOwnerController();
     render(<ContextScreen controller={controller} />);
 
     fireEvent.click(screen.getByRole("button", { name: "Начать перевод" }));
-    await screen.findByRole("button", { name: "Пропустить" });
+    await screen.findByRole("button", { name: "Записать заново" });
 
-    expect(screen.queryByRole("button", { name: "Продолжить" })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Сохранить образец" })).toBeDisabled();
     expect(controller.acceptBootstrap).not.toHaveBeenCalled();
     expect(controller.beginInterpreter).not.toHaveBeenCalled();
 
@@ -170,33 +167,28 @@ describe("ContextScreen", () => {
     });
     expect(screen.getByText("Распознано")).toBeInTheDocument();
     expect(screen.getByText("Spanish")).toBeInTheDocument();
-    fireEvent.click(await screen.findByRole("button", { name: "Продолжить" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Сохранить образец" }));
 
     expect(controller.acceptBootstrap).toHaveBeenCalledExactlyOnceWith("Spanish");
-    expect(controller.beginInterpreter).toHaveBeenCalledOnce();
+    expect(controller.beginInterpreter).not.toHaveBeenCalled();
   });
 
-  it("traces accept and skip boundaries without bootstrap content", async () => {
+  it("starts only from the screen showing both fixed languages and does not trace speech", async () => {
     const info = vi.spyOn(console, "info").mockImplementation(() => undefined);
     localStorage.setItem(STARTUP_TRACE_STORAGE_KEY, "1");
     const controller = new FakeOwnerController();
+    controller.session = { ...controller.session, state: "bootstrap",
+      participantA: { ...controller.session.participantA, language: "ru" },
+      participantB: { ...controller.session.participantB, language: "en" } };
+    controller.bootstrapText = "private sample";
     render(<ContextScreen controller={controller} />);
-
-    fireEvent.click(screen.getByRole("button", { name: "Начать перевод" }));
-    await screen.findByRole("button", { name: "Пропустить" });
-    act(() => {
-      controller.setBootstrapText("translate a private medical transcript");
-    });
-
-    fireEvent.click(screen.getByRole("button", { name: "Пропустить" }));
-    fireEvent.click(screen.getByRole("button", { name: "Продолжить" }));
-
+    expect(screen.getByText("Участник A — русский")).toBeInTheDocument();
+    expect(screen.getByText("Участник B — английский")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Начать разговор" }));
+    expect(controller.beginInterpreter).toHaveBeenCalledOnce();
     const output = info.mock.calls.map(([line]) => String(line)).join("\n");
-    expect(output).toContain('"event":"ui.bootstrap.skip_invoked"');
     expect(output).toContain('"event":"ui.bootstrap.accept_invoked"');
-    expect(output).toContain('"action":"skip"');
-    expect(output).toContain('"action":"accept"');
-    expect(output).not.toContain("private medical transcript");
+    expect(output).not.toContain("private sample");
   });
 
   it("mounts the Gate C audio element in the document", () => {
@@ -208,7 +200,7 @@ describe("ContextScreen", () => {
     expect(controller.audioElement).toBeInTheDocument();
   });
 
-  it("disables Skip and Accept while interpreter start is in flight and keeps Cancel enabled", async () => {
+  it("disables sample actions while saving is in flight and keeps Cancel enabled", async () => {
     const controller = new FakeOwnerController();
     controller.session = { ...controller.session, state: "bootstrap" };
     controller.bootstrapText = "Spanish";
@@ -216,8 +208,8 @@ describe("ContextScreen", () => {
 
     render(<ContextScreen controller={controller} />);
 
-    expect(screen.getByRole("button", { name: "Пропустить" })).toBeDisabled();
-    expect(screen.getByRole("button", { name: "Продолжить" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Записать заново" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Сохранить образец" })).toBeDisabled();
     expect(screen.getByRole("button", { name: "Отмена" })).toBeEnabled();
   });
 

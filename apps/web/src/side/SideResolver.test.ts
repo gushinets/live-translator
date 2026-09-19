@@ -1,29 +1,22 @@
 import { describe, expect, it } from "vitest";
-import { nextExpectedSpeaker, resolveSide } from "./SideResolver";
+import { resolveSide } from "./SideResolver";
 
-describe("resolveSide", () => {
-  it("returns the expected side when there is no manual override", () => {
-    expect(resolveSide("A")).toBe("A");
-    expect(resolveSide("B")).toBe("B");
+describe("language-based side resolution", () => {
+  const languages = { A: "ru", B: "en" };
+  it("allows A-A-A-B-B-A and B to speak first", () => {
+    const russian = "Подскажите, пожалуйста, где находится вокзал?";
+    const english = "Could you tell me where the train station is?";
+    expect([russian, russian, russian, english, english, russian]
+      .map(text => resolveSide(text, languages))).toEqual(["A", "A", "A", "B", "B", "A"]);
+    expect(resolveSide(english, languages)).toBe("B");
   });
-
-  it("returns the manual override when one is provided, regardless of expectation", () => {
-    expect(resolveSide("A", "B")).toBe("B");
-    expect(resolveSide("B", "A")).toBe("A");
+  it("does not guess for ambiguous text or another language", () => {
+    for (const text of ["", "OK", "12345", "Alex", "Où se trouve la gare, s'il vous plaît ?"]) {
+      expect(resolveSide(text, languages)).toBeUndefined();
+    }
   });
-
-  it("does not use language as an identity signal (no language parameter exists)", () => {
-    // Type-level guarantee: resolveSide only accepts Side values.
-    expect(resolveSide("A", undefined)).toBe("A");
-  });
-});
-
-describe("nextExpectedSpeaker", () => {
-  it("alternates from A to B", () => {
-    expect(nextExpectedSpeaker("A")).toBe("B");
-  });
-
-  it("alternates from B to A", () => {
-    expect(nextExpectedSpeaker("B")).toBe("A");
+  it("distinguishes languages sharing a script and respects manual assignment", () => {
+    expect(resolveSide("¿Dónde está la estación de tren, por favor?", { A: "en", B: "es" })).toBe("B");
+    expect(resolveSide("OK", languages, "A")).toBe("A");
   });
 });

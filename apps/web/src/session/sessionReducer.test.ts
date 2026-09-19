@@ -15,18 +15,18 @@ function baseSession(): TranslationSession {
 
 /** A session already in `listening`, optionally with an active source turn. */
 function listeningState(options: {
-  expectedSpeaker: Side;
+  initialSpeaker: Side;
   sourceActive: boolean;
   speaker?: Side;
 }): TranslationSession {
-  const speaker = options.speaker ?? options.expectedSpeaker;
+  const speaker = options.speaker ?? options.initialSpeaker;
   const activeTurn: Turn | undefined = options.sourceActive
-    ? createTurn({ id: "active-turn", speaker, sideSource: "prior", nowMs: 1000 })
+    ? createTurn({ id: "active-turn", speaker, sideSource: "language", nowMs: 1000 })
     : undefined;
   return {
     ...baseSession(),
     state: "listening",
-    expectedSpeaker: options.expectedSpeaker,
+
     activeTurn,
   };
 }
@@ -34,14 +34,13 @@ function listeningState(options: {
 /** A session in `outputting` with an active turn from `speaker`, ready to close. */
 function stateWithCompletedTurn(speaker: Side): TranslationSession {
   const activeTurn: Turn = {
-    ...createTurn({ id: "active-turn", speaker, sideSource: "prior", nowMs: 1000 }),
+    ...createTurn({ id: "active-turn", speaker, sideSource: "language", nowMs: 1000 }),
     status: "outputting",
     sourceIdleAtMs: 1200,
   };
   return {
     ...baseSession(),
     state: "outputting",
-    expectedSpeaker: speaker,
     activeTurn,
   };
 }
@@ -81,27 +80,27 @@ function sessionWithActiveTurnIn(state: (typeof TURN_CLOSE_BLOCKED_STATES)[numbe
   return { ...stateWithCompletedTurn("A"), state };
 }
 
-describe("sessionReducer: OUTPUT_IDLE never changes expectedSpeaker or state", () => {
+describe("sessionReducer: OUTPUT_IDLE never changes initialSpeaker or state", () => {
   it("does not change expected speaker when output ends before source idle", () => {
-    const state = listeningState({ expectedSpeaker: "A", sourceActive: true });
+    const state = listeningState({ initialSpeaker: "A", sourceActive: true });
     const next = sessionReducer(state, { type: "OUTPUT_IDLE" });
-    expect(next.expectedSpeaker).toBe("A");
+    expect(next).not.toHaveProperty("expectedSpeaker");
     expect(next.state).toBe("listening");
   });
 
-  it("does not change expectedSpeaker when OUTPUT_IDLE arrives with no active turn", () => {
-    const state = listeningState({ expectedSpeaker: "A", sourceActive: false });
+  it("does not change initialSpeaker when OUTPUT_IDLE arrives with no active turn", () => {
+    const state = listeningState({ initialSpeaker: "A", sourceActive: false });
     const next = sessionReducer(state, { type: "OUTPUT_IDLE" });
-    expect(next.expectedSpeaker).toBe("A");
+    expect(next).not.toHaveProperty("expectedSpeaker");
     expect(next.state).toBe("listening");
     expect(next).toBe(state);
   });
 });
 
-describe("sessionReducer: expectedSpeaker changes only after TURN_CLOSED", () => {
-  it("changes expected speaker only after a completed source turn", () => {
+describe("sessionReducer: completed turns do not predict the next speaker", () => {
+  it("does not assign an expected speaker after a completed source turn", () => {
     const next = sessionReducer(stateWithCompletedTurn("A"), { type: "TURN_CLOSED", speaker: "A" });
-    expect(next.expectedSpeaker).toBe("B");
+    expect(next).not.toHaveProperty("expectedSpeaker");
   });
 
   it("moves the closed turn into recentTurns as completed and clears activeTurn", () => {
@@ -112,16 +111,16 @@ describe("sessionReducer: expectedSpeaker changes only after TURN_CLOSED", () =>
     expect(next.lastSpeaker).toBe("B");
   });
 
-  it("marks the completed speaker as having accepted conversation speech for hint fade", () => {
+  it("marks the completed speaker as having accepted conversation speech", () => {
     const next = sessionReducer(stateWithCompletedTurn("A"), { type: "TURN_CLOSED", speaker: "A" });
     expect(next.participantA.hasAcceptedConversationSpeech).toBe(true);
     expect(next.participantB.hasAcceptedConversationSpeech).toBe(false);
   });
 
-  it("does not fade the language hint on a failed turn", () => {
+  it("does not mark failed speech as accepted", () => {
     const next = sessionReducer(stateWithCompletedTurn("A"), { type: "TURN_FAILED" });
     expect(next.participantA.hasAcceptedConversationSpeech).toBe(false);
-    expect(next.expectedSpeaker).toBe("A");
+    expect(next).not.toHaveProperty("expectedSpeaker");
   });
 
   it("returns to listening after a turn closes", () => {
@@ -136,7 +135,7 @@ describe("sessionReducer: expectedSpeaker changes only after TURN_CLOSED", () =>
   });
 
   it("throws if TURN_CLOSED arrives with no active turn", () => {
-    const state = listeningState({ expectedSpeaker: "A", sourceActive: false });
+    const state = listeningState({ initialSpeaker: "A", sourceActive: false });
     expect(() => sessionReducer(state, { type: "TURN_CLOSED", speaker: "A" })).toThrow(/no active turn/i);
   });
 
@@ -171,12 +170,12 @@ describe("sessionReducer: expectedSpeaker changes only after TURN_CLOSED", () =>
 
 describe("sessionReducer: main conversation flow", () => {
   it("SOURCE_ACTIVE starts a fresh turn while listening with no active turn", () => {
-    const state = listeningState({ expectedSpeaker: "A", sourceActive: false });
+    const state = listeningState({ initialSpeaker: "A", sourceActive: false });
     const next = sessionReducer(state, {
       type: "SOURCE_ACTIVE",
       turnId: "t1",
       speaker: "A",
-      sideSource: "prior",
+      sideSource: "language",
     });
     expect(next.activeTurn?.id).toBe("t1");
     expect(next.activeTurn?.status).toBe("streaming");
@@ -184,12 +183,12 @@ describe("sessionReducer: main conversation flow", () => {
   });
 
   it("SOURCE_ACTIVE for the same speaker continues the existing active turn", () => {
-    const state = listeningState({ expectedSpeaker: "A", sourceActive: true, speaker: "A" });
+    const state = listeningState({ initialSpeaker: "A", sourceActive: true, speaker: "A" });
     const next = sessionReducer(state, {
       type: "SOURCE_ACTIVE",
       turnId: "active-turn",
       speaker: "A",
-      sideSource: "prior",
+      sideSource: "language",
       fragment: { id: "f1", text: "hola", receivedAtMs: 1050 },
     });
     expect(next.activeTurn?.originalText).toBe("hola");
@@ -197,7 +196,7 @@ describe("sessionReducer: main conversation flow", () => {
 
   it("clears sourceIdleAtMs when the same speaker continues after a premature idle", () => {
     const idle = sessionReducer(
-      listeningState({ expectedSpeaker: "A", sourceActive: true, speaker: "A" }),
+      listeningState({ initialSpeaker: "A", sourceActive: true, speaker: "A" }),
       { type: "SOURCE_IDLE" },
     );
     expect(idle.activeTurn?.sourceIdleAtMs).toBeDefined();
@@ -206,23 +205,23 @@ describe("sessionReducer: main conversation flow", () => {
       type: "SOURCE_ACTIVE",
       turnId: "active-turn",
       speaker: "A",
-      sideSource: "prior",
+      sideSource: "language",
     });
     expect(next.activeTurn?.sourceIdleAtMs).toBeUndefined();
     expect(next.activeTurn?.id).toBe("active-turn");
   });
 
-  it("does not throw or change expectedSpeaker when SOURCE_IDLE arrives with no active turn", () => {
-    const state = listeningState({ expectedSpeaker: "A", sourceActive: false });
+  it("does not throw or change initialSpeaker when SOURCE_IDLE arrives with no active turn", () => {
+    const state = listeningState({ initialSpeaker: "A", sourceActive: false });
     const next = sessionReducer(state, { type: "SOURCE_IDLE" });
-    expect(next.expectedSpeaker).toBe("A");
+    expect(next).not.toHaveProperty("expectedSpeaker");
     expect(next.state).toBe("listening");
     expect(next).toBe(state);
   });
 
   it.each(SOURCE_APPEND_BLOCKED_STATES)("rejects SOURCE_ACTIVE while session state is %s", (blockedState) => {
     const state: TranslationSession = {
-      ...listeningState({ expectedSpeaker: "A", sourceActive: true, speaker: "A" }),
+      ...listeningState({ initialSpeaker: "A", sourceActive: true, speaker: "A" }),
       state: blockedState,
     };
     expect(() =>
@@ -230,14 +229,14 @@ describe("sessionReducer: main conversation flow", () => {
         type: "SOURCE_ACTIVE",
         turnId: "active-turn",
         speaker: "A",
-        sideSource: "prior",
+        sideSource: "language",
       }),
     ).toThrow(new RegExp(blockedState));
   });
 
   it.each(SOURCE_APPEND_BLOCKED_STATES)("rejects SOURCE_FRAGMENT while session state is %s", (blockedState) => {
     const state: TranslationSession = {
-      ...listeningState({ expectedSpeaker: "A", sourceActive: true, speaker: "A" }),
+      ...listeningState({ initialSpeaker: "A", sourceActive: true, speaker: "A" }),
       state: blockedState,
     };
     expect(() =>
@@ -249,31 +248,31 @@ describe("sessionReducer: main conversation flow", () => {
   });
 
   it("fails fast (overlap guard) if a second active turn starts for a different speaker", () => {
-    const state = listeningState({ expectedSpeaker: "A", sourceActive: true, speaker: "A" });
+    const state = listeningState({ initialSpeaker: "A", sourceActive: true, speaker: "A" });
     expect(() =>
-      sessionReducer(state, { type: "SOURCE_ACTIVE", turnId: "t2", speaker: "B", sideSource: "prior" }),
+      sessionReducer(state, { type: "SOURCE_ACTIVE", turnId: "t2", speaker: "B", sideSource: "language" }),
     ).toThrow(/has not been closed/i);
   });
 
   it("OUTPUT_ACTIVE moves listening to outputting and marks the turn outputting", () => {
-    const state = listeningState({ expectedSpeaker: "A", sourceActive: true, speaker: "A" });
+    const state = listeningState({ initialSpeaker: "A", sourceActive: true, speaker: "A" });
     const next = sessionReducer(state, { type: "OUTPUT_ACTIVE" });
     expect(next.state).toBe("outputting");
     expect(next.activeTurn?.status).toBe("outputting");
   });
 
-  it("SOURCE_IDLE records sourceIdleAtMs without changing state or expectedSpeaker", () => {
+  it("SOURCE_IDLE records sourceIdleAtMs without changing state or initialSpeaker", () => {
     const state = stateWithCompletedTurn("A");
     const next = sessionReducer(state, { type: "SOURCE_IDLE" });
     expect(next.activeTurn?.sourceIdleAtMs).toBeDefined();
     expect(next.state).toBe("outputting");
-    expect(next.expectedSpeaker).toBe("A");
+    expect(next).not.toHaveProperty("expectedSpeaker");
   });
 
-  it("TURN_FAILED keeps expectedSpeaker on the same source side (§10.3)", () => {
+  it("TURN_FAILED keeps initialSpeaker on the same source side (§10.3)", () => {
     const state = stateWithCompletedTurn("A");
     const next = sessionReducer(state, { type: "TURN_FAILED" });
-    expect(next.expectedSpeaker).toBe("A");
+    expect(next).not.toHaveProperty("expectedSpeaker");
     expect(next.state).toBe("listening");
     expect(next.recentTurns[0]?.status).toBe("failed");
     expect(next.activeTurn).toBeUndefined();
@@ -289,12 +288,12 @@ describe("sessionReducer: correction flow (§11.2)", () => {
   });
 
   it("throws if there is no correctable turn", () => {
-    const state = listeningState({ expectedSpeaker: "A", sourceActive: false });
+    const state = listeningState({ initialSpeaker: "A", sourceActive: false });
     expect(() => sessionReducer(state, { type: "CORRECTION_START" })).toThrow(/no correctable turn/i);
   });
 
   it("throws if CORRECTION_START arrives while listening to a streaming active turn", () => {
-    const state = listeningState({ expectedSpeaker: "A", sourceActive: true, speaker: "A" });
+    const state = listeningState({ initialSpeaker: "A", sourceActive: true, speaker: "A" });
     expect(state.state).toBe("listening");
     expect(state.activeTurn?.status).toBe("streaming");
     expect(() => sessionReducer(state, { type: "CORRECTION_START" })).toThrow();
@@ -320,7 +319,7 @@ describe("sessionReducer: correction flow (§11.2)", () => {
 
   it("does not rehydrate a discarded latest turn from recentTurns", () => {
     const suspended = sessionReducer(
-      listeningState({ expectedSpeaker: "A", sourceActive: true, speaker: "A" }),
+      listeningState({ initialSpeaker: "A", sourceActive: true, speaker: "A" }),
       { type: "SUSPEND" },
     );
     const resumed = sessionReducer(suspended, { type: "RESUME" });
@@ -364,7 +363,7 @@ describe("sessionReducer: correction flow (§11.2)", () => {
 
 describe("sessionReducer: output epoch actions", () => {
   it("OUTPUT_DELTA appends text through the turn helper and moves listening to outputting", () => {
-    const state = listeningState({ expectedSpeaker: "A", sourceActive: true, speaker: "A" });
+    const state = listeningState({ initialSpeaker: "A", sourceActive: true, speaker: "A" });
     const next = sessionReducer(state, { type: "OUTPUT_DELTA", text: "Hola", nowMs: 1500 });
 
     expect(next.state).toBe("outputting");
@@ -375,25 +374,25 @@ describe("sessionReducer: output epoch actions", () => {
   });
 
   it("AUDIO_STARTED records the first audible output through the turn helper", () => {
-    const state = listeningState({ expectedSpeaker: "A", sourceActive: true, speaker: "A" });
+    const state = listeningState({ initialSpeaker: "A", sourceActive: true, speaker: "A" });
     const next = sessionReducer(state, { type: "AUDIO_STARTED", nowMs: 1600 });
 
     expect(next.activeTurn?.audioOutputStarted).toBe(true);
     expect(next.activeTurn?.firstAudibleOutputAtMs).toBe(1600);
-    expect(next.expectedSpeaker).toBe("A");
+    expect(next).not.toHaveProperty("expectedSpeaker");
   });
 
-  it("PLAYBACK_ENDED records playbackEndAtMs without changing expectedSpeaker", () => {
+  it("PLAYBACK_ENDED records playbackEndAtMs without changing initialSpeaker", () => {
     const state = stateWithCompletedTurn("A");
     const next = sessionReducer(state, { type: "PLAYBACK_ENDED", nowMs: 2100 });
 
     expect(next.activeTurn?.playbackEndAtMs).toBe(2100);
-    expect(next.expectedSpeaker).toBe("A");
+    expect(next).not.toHaveProperty("expectedSpeaker");
     expect(next.state).toBe("outputting");
   });
 
   it("fails fast when OUTPUT_DELTA arrives with no active turn", () => {
-    const state = listeningState({ expectedSpeaker: "A", sourceActive: false });
+    const state = listeningState({ initialSpeaker: "A", sourceActive: false });
     expect(() => sessionReducer(state, { type: "OUTPUT_DELTA", text: "Hola", nowMs: 1500 })).toThrow(
       /no active turn/i,
     );
@@ -458,7 +457,7 @@ describe("sessionReducer: output epoch actions", () => {
 
 describe("sessionReducer: suspension flow (§11.3)", () => {
   it("discards an unfinished active turn and does not resume it", () => {
-    const state = listeningState({ expectedSpeaker: "A", sourceActive: true, speaker: "A" });
+    const state = listeningState({ initialSpeaker: "A", sourceActive: true, speaker: "A" });
     const next = sessionReducer(state, { type: "SUSPEND" });
 
     expect(next.state).toBe("suspended");
@@ -494,40 +493,40 @@ describe("sessionReducer: suspension flow (§11.3)", () => {
     expect(next.recentTurns[0]?.corrected).toBe(true);
   });
 
-  it("keeps expectedSpeaker unchanged across suspend/resume so the same speaker can repeat", () => {
+  it("keeps initialSpeaker unchanged across suspend/resume so the same speaker can repeat", () => {
     const suspended = sessionReducer(
-      listeningState({ expectedSpeaker: "A", sourceActive: true, speaker: "A" }),
+      listeningState({ initialSpeaker: "A", sourceActive: true, speaker: "A" }),
       { type: "SUSPEND" },
     );
     const resumed = sessionReducer(suspended, { type: "RESUME" });
 
-    expect(resumed.expectedSpeaker).toBe("A");
+    expect(resumed).not.toHaveProperty("expectedSpeaker");
     expect(resumed.state).toBe("listening");
   });
 
   it("rejects SUSPEND from error", () => {
     const errored = sessionReducer(
-      listeningState({ expectedSpeaker: "A", sourceActive: false }),
+      listeningState({ initialSpeaker: "A", sourceActive: false }),
       { type: "SESSION_ERROR", message: "boom" },
     );
     expect(() => sessionReducer(errored, { type: "SUSPEND" })).toThrow(/error/);
   });
 
   it("rejects SUSPEND from ending", () => {
-    const ending = sessionReducer(listeningState({ expectedSpeaker: "A", sourceActive: false }), { type: "END" });
+    const ending = sessionReducer(listeningState({ initialSpeaker: "A", sourceActive: false }), { type: "END" });
     expect(() => sessionReducer(ending, { type: "SUSPEND" })).toThrow(/ending/);
   });
 
   it("does not resume an error session into listening", () => {
     const errored = sessionReducer(
-      listeningState({ expectedSpeaker: "A", sourceActive: false }),
+      listeningState({ initialSpeaker: "A", sourceActive: false }),
       { type: "SESSION_ERROR", message: "boom" },
     );
     expect(() => sessionReducer(errored, { type: "RESUME" })).toThrow();
   });
 
   it("does not resume an ending session into listening", () => {
-    const ending = sessionReducer(listeningState({ expectedSpeaker: "A", sourceActive: false }), { type: "END" });
+    const ending = sessionReducer(listeningState({ initialSpeaker: "A", sourceActive: false }), { type: "END" });
     expect(() => sessionReducer(ending, { type: "RESUME" })).toThrow();
   });
 });
@@ -565,7 +564,7 @@ describe("sessionReducer: lifecycle", () => {
   });
 
   it("END then ENDED terminates the session", () => {
-    const listening = listeningState({ expectedSpeaker: "A", sourceActive: false });
+    const listening = listeningState({ initialSpeaker: "A", sourceActive: false });
     const ending = sessionReducer(listening, { type: "END" });
     expect(ending.state).toBe("ending");
     const ended = sessionReducer(ending, { type: "ENDED" });
