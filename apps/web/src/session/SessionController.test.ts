@@ -56,7 +56,7 @@ class FakeLive {
     this.callOrder.push("close");
     return { finalized: true };
   });
-  readonly disconnectImmediately = vi.fn(() => {
+  readonly disconnectImmediately = vi.fn(async () => {
     this.callOrder.push("disconnectImmediately");
   });
   readonly appendThinking = vi.fn(async (text: string) => {
@@ -455,7 +455,27 @@ describe("SessionController", () => {
     });
     expect(controller.bootstrapText).toBe("This is the old sample that will be discarded.");
 
-    await controller.startBootstrap();
+    let releaseDisconnect!: () => void;
+    firstLive.disconnectImmediately.mockImplementationOnce(async () => {
+      await new Promise<void>((resolve) => {
+        releaseDisconnect = resolve;
+      });
+    });
+
+    const restarting = controller.startBootstrap();
+    await flushMicrotasks();
+
+    // The controller has already switched identity, so even events arriving
+    // while the old backend lease is still being released are rejected.
+    firstLive.emit({
+      type: "session.input_transcript.delta",
+      delta: " stale tail while old transport is releasing",
+    });
+    expect(controller.bootstrapText).toBe("");
+    expect(secondLive.connect).not.toHaveBeenCalled();
+
+    releaseDisconnect();
+    await restarting;
 
     expect(firstLive.disconnectImmediately).toHaveBeenCalledOnce();
     expect(secondLive.connect).toHaveBeenCalledExactlyOnceWith(audio.captureStream);
@@ -465,7 +485,7 @@ describe("SessionController", () => {
 
     // Simulate the exact race the prior mute-only fix could not exclude:
     // a very late event from the previous data channel after new capture is
-    // already active. The Live identity guard must reject it.
+    // already active. The Live identity guard must still reject it.
     firstLive.emit({
       type: "session.input_transcript.delta",
       delta: " stale tail arriving after replacement capture started",
