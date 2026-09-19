@@ -1326,7 +1326,7 @@ describe("LiveClient.close", () => {
   it("disconnectImmediately tears down without waiting for session.closed and releases the lease", async () => {
     const { client, peer, channel, releaseCalls } = await connectedClient();
 
-    client.disconnectImmediately();
+    await client.disconnectImmediately();
 
     expect(channel.sendCalls).not.toContain(
       JSON.stringify({ type: "session.close" }),
