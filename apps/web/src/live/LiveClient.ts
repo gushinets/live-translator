@@ -367,17 +367,19 @@ export class LiveClient {
    * this Live session can be mistaken for input belonging to a replacement
    * session. Normal conversation shutdown should continue to use close().
    */
-  disconnectImmediately(): void {
-    if (this.torndown) return;
-    this.closing = true;
-    this.rejectPendingConnect(new Error(DISCONNECTED_CLOSE_REASON));
-    this.teardownTransportAndRelease();
-    if (this.closeResult === null) {
-      this.closeResult = {
-        finalized: false,
-        reason: DISCONNECTED_CLOSE_REASON,
-      };
+  async disconnectImmediately(): Promise<void> {
+    if (!this.torndown) {
+      this.closing = true;
+      this.rejectPendingConnect(new Error(DISCONNECTED_CLOSE_REASON));
+      this.teardownTransport();
+      if (this.closeResult === null) {
+        this.closeResult = {
+          finalized: false,
+          reason: DISCONNECTED_CLOSE_REASON,
+        };
+      }
     }
+    await this.releaseSessionLeaseAndWait();
   }
 
   /**
@@ -463,13 +465,29 @@ export class LiveClient {
     this.releaseSessionLease();
   }
 
-  private releaseSessionLease(): void {
+  private takeSessionLeaseForRelease(): string | null {
     const sessionId = this.sessionId;
-    if (sessionId === null || this.leaseReleased) return;
+    if (sessionId === null || this.leaseReleased) return null;
     this.leaseReleased = true;
+    return sessionId;
+  }
+
+  private releaseSessionLease(): void {
+    const sessionId = this.takeSessionLeaseForRelease();
+    if (sessionId === null) return;
     void this.deps.backend.releaseLiveSession(sessionId).catch(() => {
       console.error("Live session lease release failed");
     });
+  }
+
+  private async releaseSessionLeaseAndWait(): Promise<void> {
+    const sessionId = this.takeSessionLeaseForRelease();
+    if (sessionId === null) return;
+    try {
+      await this.deps.backend.releaseLiveSession(sessionId);
+    } catch {
+      console.error("Live session lease release failed");
+    }
   }
 
   private watchAbandonedSessionCreation(
