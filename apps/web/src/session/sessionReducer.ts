@@ -46,6 +46,7 @@ export type SessionAction =
   // Correction flow (§11.2).
   | { type: "CORRECTION_START" }
   | { type: "CORRECTION_SOURCE_ACTIVITY"; active: boolean }
+  | { type: "CORRECTION_SOURCE_FRAGMENT"; fragment: TranscriptFragment }
   | { type: "CORRECTION_APPLIED"; speaker: Side }
   // Suspension flow (§11.3).
   | { type: "SUSPEND" }
@@ -388,6 +389,14 @@ export function sessionReducer(session: TranslationSession, action: SessionActio
         activeTurn: action.active
           ? clearSourceIdle(session.activeTurn)
           : markSourceIdle(session.activeTurn, Date.now()),
+      };
+    case "CORRECTION_SOURCE_FRAGMENT":
+      if (session.state !== "correcting" || session.activeTurn === undefined) return session;
+      return {
+        ...session,
+        // Manual correction owns side assignment for this utterance. Preserve
+        // transcript tail without re-running language routing mid-correction.
+        activeTurn: appendSourceFragmentToTurn(session.activeTurn, action.fragment),
       };
     case "CORRECTION_APPLIED":
       return handleCorrectionApplied(session, action);
