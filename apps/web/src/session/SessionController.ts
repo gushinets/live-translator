@@ -959,9 +959,6 @@ export class SessionController {
     if (this.turnClosing) {
       return;
     }
-    if (this.currentSession.state !== "listening" && this.currentSession.state !== "outputting") {
-      return;
-    }
     if (event.delta.length === 0) {
       return;
     }
@@ -971,6 +968,15 @@ export class SessionController {
       startMs: event.start_ms,
       endMs: event.end_ms,
     });
+    if (this.currentSession.state === "correcting") {
+      if (this.currentSession.activeTurn !== undefined) {
+        this.dispatch({ type: "CORRECTION_SOURCE_FRAGMENT", fragment });
+      }
+      return;
+    }
+    if (this.currentSession.state !== "listening" && this.currentSession.state !== "outputting") {
+      return;
+    }
     if (this.currentSession.activeTurn === undefined) {
       if (this.currentSession.state !== "listening") {
         throw new Error(
@@ -1789,9 +1795,23 @@ export class SessionController {
       }
       this.finishContextCapture();
       if (this.languagesReady) return;
-      if (!(await this.unmuteGateB(generation))) return;
-      this.audio.setCaptureEnabled(true);
+
+      // Re-recording must establish a real input boundary. Stop local capture
+      // first, then wait for the Live mute acknowledgement before clearing the
+      // old transcript and reopening input. Late fragments from the previous
+      // sample arrive while capturingBootstrap is false and are ignored.
+      if (this.currentSession.state === "bootstrap" && this.capturingBootstrap) {
+        this.capturingBootstrap = false;
+        this.notify();
+        this.audio.setCaptureEnabled(false);
+        if (!(await this.muteGateB(generation))) return;
+        if (this.sessionGeneration !== generation) return;
+      }
+
       this.bootstrapBuffer = "";
+      if (!(await this.unmuteGateB(generation))) return;
+      if (this.sessionGeneration !== generation) return;
+      this.audio.setCaptureEnabled(true);
       this.capturingBootstrap = true;
       this.audio.setOutputAudible(false);
       if (this.currentSession.state === "connecting") {
