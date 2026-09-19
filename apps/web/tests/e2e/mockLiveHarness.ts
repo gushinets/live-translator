@@ -498,6 +498,7 @@ export async function completeLanguageSetup(page: Page, input: (text: string) =>
   await input("I speak English and would like to find the nearest station.");
   await page.getByRole("button", { name: "Сохранить образец" }).click();
   await page.getByRole("button", { name: "Записать образец B" }).click();
+  await expect(page.getByText("Слушаю участника B")).toBeVisible();
   await input("Hablo español y quisiera encontrar la estación de tren.");
   await page.getByRole("button", { name: "Сохранить образец" }).click();
   await page.getByRole("button", { name: "Начать разговор" }).click();
