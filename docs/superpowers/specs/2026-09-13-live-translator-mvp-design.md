@@ -43,7 +43,7 @@ Revision 1.2.2 includes all Revision 1.2 runtime fixes and adds these final impl
 9. Revision 1.2.2 is the design freeze for the first prototype. Further runtime changes should be driven by real-device/audio spike evidence or upstream Live API changes rather than another speculative architecture cycle.
 10. Tested OpenAI compatibility requires omitting `session.delegation` from the create-time session payload. Required append events retain `delegation_id: null` for session-wide scope; these are different protocol locations.
 11. `MAX_CONCURRENT_SESSIONS = 5` counts active sessions: a successful creation holds its lease until the client releases the returned session id or the 15-minute TTL expires. Failed creation releases immediately.
-12. Tailscale Serve is the preferred private device-testing path. Funnel is public exposure and is unsupported without a separately protected reverse proxy/access gate; `Origin` validation is not authentication.
+12. Local desktop development and automated tests run directly against localhost and require no VPN or tunnel. Physical-device testing may use any HTTPS endpoint under the developer's control; `Origin` validation is not authentication.
 13. Vite preview additional hosts are configured through the local `VITE_ADDITIONAL_ALLOWED_HOST` environment variable and are never hardcoded in committed config.
 
 ## 1. Product goal

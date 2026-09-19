@@ -4,7 +4,7 @@
 
 **Goal:** Harden the existing Live Translator runtime so active GPT-Live sessions are capped and released correctly, local device testing is safe/configurable, and the tested upstream API behavior is documented as Revision 1.2.2.
 
-**Architecture:** Keep the existing Express API, React/Vite PWA, and direct browser-to-OpenAI WebRTC media path. An in-memory lease registry binds each successful OpenAI session id to one TTL-backed lease; the browser explicitly releases that id after local Live cleanup, while TTL handles abandoned clients. Tailscale Serve is the documented default; raw Funnel is documented only behind an external access gate.
+**Architecture:** Keep the existing Express API, React/Vite PWA, and direct browser-to-OpenAI WebRTC media path. An in-memory lease registry binds each successful OpenAI session id to one TTL-backed lease; the browser explicitly releases that id after local Live cleanup, while TTL handles abandoned clients. Local development remains tunnel-independent; physical-device testing uses a configurable HTTPS endpoint without hardcoded machine-specific hosts.
 
 **Tech Stack:** TypeScript, Express, Zod, OpenAI TypeScript SDK, React, Vite, Vitest, Playwright, pnpm workspaces.
 
@@ -17,7 +17,7 @@
 - `session.delegation` is omitted at create time; required event-level `delegation_id: null` remains unchanged.
 - No database, Redis, user accounts, React authentication, media proxy, model change, or unrelated turn/PWA redesign.
 - No API key, SDP, transcript, prompt, context, raw upstream response, or default upstream error message in logs or committed files.
-- Tailscale Serve is the preferred private physical-device path; raw Funnel is not presented as safe without a separate access gate.
+- Local desktop development and automated tests require no VPN or tunnel; any externally reachable physical-device endpoint must be HTTPS and protected appropriately.
 
 ---
 
@@ -63,7 +63,7 @@
 - [x] **Step 6: Implement best-effort release** after `session.close` finalization/timeout and after terminal server/network cleanup, guarded by the known session id and an idempotent local flag; log only a fixed non-content diagnostic on release failure.
 - [x] **Step 7: Run the focused web tests** and verify all lifecycle paths pass.
 
-### Task 3: Secure and configure local Tailscale testing
+### Task 3: Secure and configure local device testing
 
 **Files:**
 - Modify: `apps/web/vite.config.ts`
@@ -72,8 +72,8 @@
 
 - [x] **Step 1: Write/configure tests or a deterministic config check** showing localhost remains allowed and an environment-provided additional host is accepted without `allowedHosts: true`.
 - [x] **Step 2: Replace the committed personal hostname** with an environment-driven value such as `VITE_ADDITIONAL_ALLOWED_HOST`, filtering out an empty value.
-- [x] **Step 3: Add only a blank placeholder** for that variable to `.env.example`; never add the real tailnet hostname.
-- [x] **Step 4: Document Tailscale Serve as the preferred private path** and Funnel as public/unsupported unless placed behind an external protected reverse proxy; state explicitly that Origin validation is not authentication and that the OpenAI-backed API must not be exposed raw.
+- [x] **Step 3: Add only a blank placeholder** for that variable to `.env.example`; never add a machine-specific hostname.
+- [x] **Step 4: Document tunnel-independent localhost development** and require HTTPS plus an appropriate access gate for externally reachable physical-device testing; state explicitly that Origin validation is not authentication and that the OpenAI-backed API must not be exposed raw.
 - [x] **Step 5: Run the web typecheck/build and inspect the generated bundle** to ensure no access secret is embedded.
 
 ### Task 4: Reduce OpenAI error logging to structured metadata
@@ -93,9 +93,9 @@
 - Modify: `docs/superpowers/specs/2026-09-13-live-translator-mvp-design.md`
 - Modify: `docs/superpowers/plans/2026-09-13-live-translator-mvp-implementation.md`
 
-- [x] **Step 1: Update the spec revision header and summary** to Revision 1.2.2 with the tested create-time delegation correction, preserved event-level `delegation_id: null`, active-session lease lifecycle, Serve/Funnel security distinction, Origin-not-authentication warning, and environment-only Vite host configuration.
+- [x] **Step 1: Update the spec revision header and summary** to Revision 1.2.2 with the tested create-time delegation correction, preserved event-level `delegation_id: null`, active-session lease lifecycle, local/HTTPS device-testing distinction, Origin-not-authentication warning, and environment-only Vite host configuration.
 - [x] **Step 2: Make only targeted amendments to the historical implementation plan**: remove its create-time `delegation: null` example, state that Revision 1.2.2 supersedes the affected assumption, and change lease wording from failed-creation cleanup to active-session lifetime plus explicit release/TTL fallback.
-- [x] **Step 3: Search the repository** for obsolete create-time `delegation: null` and machine-specific Tailscale host references, distinguishing them from required event-level `delegation_id: null`.
+- [x] **Step 3: Search the repository** for obsolete create-time `delegation: null` and machine-specific host references, distinguishing them from required event-level `delegation_id: null`.
 
 ### Task 6: Verify, commit, push, and update PR #2
 
