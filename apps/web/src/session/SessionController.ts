@@ -1675,10 +1675,10 @@ export class SessionController {
     this.liveConnectStarted = true;
     this.gateBMuted = false;
     this.bindLive();
-    previousLive.disconnectImmediately();
+    await previousLive.disconnectImmediately();
 
     if (this.sessionGeneration !== generation) {
-      replacementLive.disconnectImmediately();
+      await replacementLive.disconnectImmediately();
       return false;
     }
 
