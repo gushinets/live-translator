@@ -427,6 +427,51 @@ describe("SessionController", () => {
     expect(controller.ownerError).toBeUndefined();
   });
 
+  it("creates a hard input boundary before re-recording and ignores a late old transcript tail", async () => {
+    const { controller, live, audio } = createController();
+    await controller.startBootstrap();
+    live.emit({
+      type: "session.input_transcript.delta",
+      delta: "This is the old sample that will be discarded.",
+    });
+    expect(controller.bootstrapText).toBe("This is the old sample that will be discarded.");
+
+    let releaseMute!: () => void;
+    live.setInputMuted.mockImplementationOnce(async (muted: boolean) => {
+      expect(muted).toBe(true);
+      await new Promise<void>((resolve) => {
+        releaseMute = resolve;
+      });
+    });
+
+    const restarting = controller.startBootstrap();
+    await flushMicrotasks();
+
+    expect(controller.bootstrapRecording).toBe(false);
+    expect(audio.setCaptureEnabled).toHaveBeenLastCalledWith(false);
+
+    live.emit({
+      type: "session.input_transcript.delta",
+      delta: " stale tail from the old sample",
+    });
+    expect(controller.bootstrapText).toBe("This is the old sample that will be discarded.");
+
+    releaseMute();
+    await restarting;
+
+    expect(controller.bootstrapRecording).toBe(true);
+    expect(controller.bootstrapText).toBe("");
+    expect(audio.setCaptureEnabled).toHaveBeenLastCalledWith(true);
+
+    live.emit({
+      type: "session.input_transcript.delta",
+      delta: "I speak English and would like to find the nearest station.",
+    });
+    expect(controller.bootstrapText).toBe(
+      "I speak English and would like to find the nearest station.",
+    );
+  });
+
   it("sends authoritative context, interpreter contract, then fixed-language steering before listening", async () => {
     const { controller, live, audio } = createController();
     await controller.startContextCapture();
@@ -4529,6 +4574,40 @@ describe("manual assignment without model output", () => {
     live.emit({ type: "session.output_transcript.delta", delta: "All right" });
     await vi.advanceTimersByTimeAsync(runtime.audioStartGraceMs);
     expect(controller.session.recentTurns.at(-1)?.status).toBe("completed");
+  });
+
+  it("preserves transcript tail that arrives while an early manual assignment awaits acknowledgement", async () => {
+    const { controller, live, audio } = createController();
+    await enterListening(controller);
+    emitVoice(audio, true);
+    live.emit({ type: "session.input_transcript.delta", delta: "OK" });
+
+    let acknowledge!: () => void;
+    live.appendInstructions.mockImplementationOnce(() => new Promise<{ eventId: string }>(resolve => {
+      acknowledge = () => resolve({ eventId: "correction-ack" });
+    }));
+
+    const correcting = controller.correctLastTurn("B");
+    await flushMicrotasks();
+    expect(controller.session.state).toBe("correcting");
+
+    live.emit({
+      type: "session.input_transcript.delta",
+      delta: ", please keep the rest of this sentence",
+    });
+    expect(controller.session.activeTurn?.originalText).toBe(
+      "OK, please keep the rest of this sentence",
+    );
+
+    emitVoice(audio, false);
+    acknowledge();
+    await correcting;
+
+    expect(controller.session.activeTurn?.originalText).toBe(
+      "OK, please keep the rest of this sentence",
+    );
+    expect(controller.session.activeTurn?.speaker).toBe("B");
+    expect(controller.session.activeTurn?.sideSource).toBe("manual");
   });
   it.each([false, true])("assigns unknown source even after no-output timeout: %s", async (timeout) => {
     const { controller, live, audio } = createController();
