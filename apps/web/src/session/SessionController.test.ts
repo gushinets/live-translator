@@ -1098,18 +1098,20 @@ describe("SessionController", () => {
       },
       audio: audio as unknown as AudioController,
     });
-    const first = created[0];
-    if (first === undefined) {
-      throw new Error("LiveClient was not created");
-    }
+
     await controller.startBootstrap();
     await calibrate(controller);
 
-    let releaseFirstAppend: (() => void) | undefined;
-    first.appendInstructions.mockImplementation(
+    const interpreterLive = created[1];
+    if (interpreterLive === undefined) {
+      throw new Error("Bootstrap replacement LiveClient was not created");
+    }
+
+    let releaseInterpreterAppend: (() => void) | undefined;
+    interpreterLive.appendInstructions.mockImplementation(
       () =>
         new Promise<{ eventId: string }>((resolve) => {
-          releaseFirstAppend = () => {
+          releaseInterpreterAppend = () => {
             resolve({ eventId: "evt-late" });
           };
         }),
@@ -1117,28 +1119,28 @@ describe("SessionController", () => {
 
     const starting = controller.beginInterpreter();
     await vi.waitFor(() => {
-      expect(first.appendInstructions).toHaveBeenCalledOnce();
+      expect(interpreterLive.appendInstructions).toHaveBeenCalledOnce();
       expect(controller.isInterpreterStarting).toBe(true);
     });
 
     await controller.cancel();
 
-    expect(first.close).toHaveBeenCalledOnce();
+    expect(interpreterLive.close).toHaveBeenCalledOnce();
     expect(controller.session.state).toBe("idle");
     expect(controller.ownerError).toBeUndefined();
-    expect(created).toHaveLength(2);
+    expect(created).toHaveLength(3);
 
-    if (releaseFirstAppend === undefined) {
-      throw new Error("first interpreter append was not started");
+    if (releaseInterpreterAppend === undefined) {
+      throw new Error("interpreter append was not started");
     }
-    releaseFirstAppend();
+    releaseInterpreterAppend();
     await starting;
 
     expect(controller.session.state).toBe("idle");
     expect(controller.ownerError).toBeUndefined();
     expect(controller.isInterpreterStarting).toBe(false);
     expect(audio.setOutputAudible).toHaveBeenLastCalledWith(false);
-    expect(created[1]?.appendInstructions).not.toHaveBeenCalled();
+    expect(created[2]?.appendInstructions).not.toHaveBeenCalled();
   });
 
   it("cancels during microphone wait and stops a capture that lands after reset", async () => {
@@ -3469,11 +3471,13 @@ describe("SessionController max session duration", () => {
   it("ignores stale session.started callbacks after reset swaps the Live client", async () => {
     const audio = createFakeAudio();
     const firstLive = new FakeLive();
-    const replacementLive = new FakeLive();
+    const bootstrapReplacementLive = new FakeLive();
+    const afterResetLive = new FakeLive();
     const createLive = vi
       .fn<() => LiveClient>()
       .mockReturnValueOnce(firstLive as unknown as LiveClient)
-      .mockReturnValue(replacementLive as unknown as LiveClient);
+      .mockReturnValueOnce(bootstrapReplacementLive as unknown as LiveClient)
+      .mockReturnValue(afterResetLive as unknown as LiveClient);
     const controller = new SessionController({
       createLive,
       audio: audio as unknown as AudioController,
@@ -3484,13 +3488,15 @@ describe("SessionController max session duration", () => {
     await enterListening(controller);
     await controller.cancel();
     expect(controller.session.state).toBe("idle");
+    expect(bootstrapReplacementLive.close).toHaveBeenCalledOnce();
+    expect(afterResetLive.close).not.toHaveBeenCalled();
     expect(vi.getTimerCount()).toBe(0);
 
     staleSessionStarted?.({ type: "session.started", session: { id: "late" } });
 
     expect(vi.getTimerCount()).toBe(0);
     await vi.advanceTimersByTimeAsync(runtime.maxSessionMs);
-    expect(replacementLive.close).not.toHaveBeenCalled();
+    expect(afterResetLive.close).not.toHaveBeenCalled();
     expect(controller.session.state).toBe("idle");
   });
 });
