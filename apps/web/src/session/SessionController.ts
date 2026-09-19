@@ -1720,7 +1720,7 @@ export class SessionController {
       this.sessionGeneration !== generation ||
       this.live !== replacementLive
     ) {
-      replacementLive.disconnectImmediately();
+      await replacementLive.disconnectImmediately();
       return false;
     }
 
