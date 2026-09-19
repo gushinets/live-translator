@@ -26,6 +26,10 @@ test.describe("mocked conversation runtime", () => {
       "style",
       /rotate\(180deg\)/,
     );
+    const liveSessionCreatesAfterSetup = harness.liveSessionCreateCount();
+    const peerCreatesAfterSetup = await harness.peerCreateCount();
+    expect(liveSessionCreatesAfterSetup).toBe(2);
+    expect(peerCreatesAfterSetup).toBe(2);
 
     for (const [index, turn] of COURIER_TURNS.entries()) {
       const speaker = index % 2 === 0 ? "A" : "B";
@@ -40,8 +44,8 @@ test.describe("mocked conversation runtime", () => {
         "style",
         /rotate\(180deg\)/,
       );
-      expect(harness.liveSessionCreateCount()).toBe(1);
-      expect(await harness.peerCreateCount()).toBe(1);
+      expect(harness.liveSessionCreateCount()).toBe(liveSessionCreatesAfterSetup);
+      expect(await harness.peerCreateCount()).toBe(peerCreatesAfterSetup);
     }
 
     await expect(page.getByTestId("participant-status-A")).toHaveText("ГОВОРИТЕ");
