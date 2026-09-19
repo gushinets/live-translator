@@ -230,6 +230,7 @@ test("calibration validates samples and is usable with the keyboard on a phone v
   await save.click();
   await expect(page.getByRole("alert")).toContainText("полное предложение");
   await page.getByRole("button", { name: "Записать заново" }).click();
+  await expect(page.getByText("Слушаю участника A")).toBeVisible();
   await harness.inputDelta("Я говорю по-русски и хочу узнать дорогу к вокзалу.");
   await expect(save).toBeEnabled();
   await save.focus();
@@ -238,10 +239,12 @@ test("calibration validates samples and is usable with the keyboard on a phone v
   await harness.advance(50);
   await expect(page.getByText("Участник A — русский")).toBeVisible();
   await page.getByRole("button", { name: "Записать образец B" }).click();
+  await expect(page.getByText("Слушаю участника B")).toBeVisible();
   await harness.inputDelta("Я снова говорю по-русски и хочу узнать дорогу к вокзалу.");
   await save.click();
   await expect(page.getByRole("alert")).toContainText("тот же язык");
   await page.getByRole("button", { name: "Записать заново" }).click();
+  await expect(page.getByText("Слушаю участника B")).toBeVisible();
   await harness.inputDelta("I speak English and would like to find the nearest station.");
   await save.click();
   await expect(page.getByText("Участник B — английский")).toBeVisible();
