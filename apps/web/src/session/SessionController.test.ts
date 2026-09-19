@@ -56,6 +56,9 @@ class FakeLive {
     this.callOrder.push("close");
     return { finalized: true };
   });
+  readonly disconnectImmediately = vi.fn(() => {
+    this.callOrder.push("disconnectImmediately");
+  });
   readonly appendThinking = vi.fn(async (text: string) => {
     this.callOrder.push(`thinking:${text}`);
     return { eventId: "evt-thinking" };
@@ -284,18 +287,31 @@ function createController<
   >,
 >(options: {
   live?: FakeLive;
+  lives?: FakeLive[];
   audio?: TAudio;
   orientation?: FakeOrientation;
   visibility?: FakeVisibility;
   wakeLock?: FakeWakeLock;
 } = {}) {
-  const live = options.live ?? new FakeLive();
+  const live = options.lives?.[0] ?? options.live ?? new FakeLive();
+  let liveIndex = 0;
+  const createLive = (): LiveClient => {
+    if (options.lives === undefined) {
+      return live as unknown as LiveClient;
+    }
+    const next = options.lives[liveIndex];
+    if (next === undefined) {
+      throw new Error("No FakeLive remains for createLive()");
+    }
+    liveIndex += 1;
+    return next as unknown as LiveClient;
+  };
   const audio = (options.audio ?? createFakeAudio()) as TAudio;
   const orientation = options.orientation ?? new FakeOrientation();
   const visibility = options.visibility ?? new FakeVisibility();
   const wakeLock = options.wakeLock ?? new FakeWakeLock();
   const controller = new SessionController({
-    createLive: () => live as unknown as LiveClient,
+    createLive,
     audio: audio as unknown as AudioController,
     orientation: orientation as unknown as OrientationController,
     visibility: visibility as unknown as VisibilityController,
@@ -427,43 +443,36 @@ describe("SessionController", () => {
     expect(controller.ownerError).toBeUndefined();
   });
 
-  it("creates a hard input boundary before re-recording and ignores a late old transcript tail", async () => {
-    const { controller, live, audio } = createController();
+  it("uses a fresh Live transport so old transcript events stay ignored even after new capture starts", async () => {
+    const firstLive = new FakeLive();
+    const secondLive = new FakeLive();
+    const { controller, audio } = createController({ lives: [firstLive, secondLive] });
+
     await controller.startBootstrap();
-    live.emit({
+    firstLive.emit({
       type: "session.input_transcript.delta",
       delta: "This is the old sample that will be discarded.",
     });
     expect(controller.bootstrapText).toBe("This is the old sample that will be discarded.");
 
-    let releaseMute!: () => void;
-    live.setInputMuted.mockImplementationOnce(async (muted: boolean) => {
-      expect(muted).toBe(true);
-      await new Promise<void>((resolve) => {
-        releaseMute = resolve;
-      });
-    });
+    await controller.startBootstrap();
 
-    const restarting = controller.startBootstrap();
-    await flushMicrotasks();
-
-    expect(controller.bootstrapRecording).toBe(false);
-    expect(audio.setCaptureEnabled).toHaveBeenLastCalledWith(false);
-
-    live.emit({
-      type: "session.input_transcript.delta",
-      delta: " stale tail from the old sample",
-    });
-    expect(controller.bootstrapText).toBe("This is the old sample that will be discarded.");
-
-    releaseMute();
-    await restarting;
-
+    expect(firstLive.disconnectImmediately).toHaveBeenCalledOnce();
+    expect(secondLive.connect).toHaveBeenCalledExactlyOnceWith(audio.captureStream);
     expect(controller.bootstrapRecording).toBe(true);
     expect(controller.bootstrapText).toBe("");
     expect(audio.setCaptureEnabled).toHaveBeenLastCalledWith(true);
 
-    live.emit({
+    // Simulate the exact race the prior mute-only fix could not exclude:
+    // a very late event from the previous data channel after new capture is
+    // already active. The Live identity guard must reject it.
+    firstLive.emit({
+      type: "session.input_transcript.delta",
+      delta: " stale tail arriving after replacement capture started",
+    });
+    expect(controller.bootstrapText).toBe("");
+
+    secondLive.emit({
       type: "session.input_transcript.delta",
       delta: "I speak English and would like to find the nearest station.",
     });
