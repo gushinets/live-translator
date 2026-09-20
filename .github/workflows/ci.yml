@@ -95,7 +95,7 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Validate Compose configuration
-        run: docker compose -f infra/docker-compose.yml config
+        run: docker compose -f infra/docker-compose.yml config --quiet
 
       - name: Build deployment images
         run: docker compose -f infra/docker-compose.yml build
