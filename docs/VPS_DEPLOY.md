@@ -11,7 +11,7 @@ Internet
   |
   | https://livetranslator.agent-studio.ru
   v
-host Nginx :80/:443
+host Nginx :80/:443 + required Basic Auth
   |-- /      -> 127.0.0.1:18081 -> web container (Caddy static server :8080)
   `-- /api/ -> 127.0.0.1:13001 -> API container (Express :3001)
 
@@ -27,6 +27,8 @@ creation API are hosted on the VPS.
 - Do not bind Docker services to host ports 80, 443, or 8000.
 - Do not expose the API or web container on a public interface.
 - Do not open 13001 or 18081 in the firewall.
+- Keep host-Nginx Basic Auth enabled for this internal MVP. The API creates paid
+  OpenAI Live sessions; the Origin check is not authentication.
 - Do not install Certbot until the existing TLS/certificate setup has been
   inspected.
 - Do not change Fail2ban settings for this deployment.
@@ -126,26 +128,29 @@ Important:
 - `WEB_ORIGIN` must be the exact HTTPS origin.
 - Do not add a trailing slash.
 - The OpenAI API key is passed only to the API container.
+- Every Compose command below explicitly uses `--env-file .env`. This avoids
+  depending on Compose's working-directory/project-directory env-file lookup.
 
 ## 5. Validate and start the containers
 
-Validate Compose interpolation before changing Nginx:
+Validate Compose interpolation without printing the resolved environment (and
+therefore without echoing `OPENAI_API_KEY`):
 
 ```bash
-docker compose -f infra/docker-compose.yml config
+docker compose --env-file .env -f infra/docker-compose.yml config --quiet
 ```
 
 Build and start:
 
 ```bash
-docker compose -f infra/docker-compose.yml build
-docker compose -f infra/docker-compose.yml up -d
+docker compose --env-file .env -f infra/docker-compose.yml build
+docker compose --env-file .env -f infra/docker-compose.yml up -d
 ```
 
 Check container status:
 
 ```bash
-docker compose -f infra/docker-compose.yml ps
+docker compose --env-file .env -f infra/docker-compose.yml ps
 ```
 
 Check the API health endpoint through loopback:
@@ -174,7 +179,34 @@ sudo ss -ltnp | grep -E ':13001 |:18081 '
 
 Expected bind addresses begin with `127.0.0.1`, not `0.0.0.0`.
 
-## 6. Add a dedicated Nginx site
+## 6. Create the required Basic Auth credential
+
+The internal MVP must not expose `/api/live/session` anonymously because that
+endpoint can create paid OpenAI Live sessions with the server API key.
+
+Create a dedicated password file before enabling the Nginx site. This example
+uses OpenSSL already present on a typical Ubuntu server and does not put the
+plaintext password in shell history:
+
+```bash
+read -rsp "Live Translator Basic Auth password: " AUTH_PASSWORD
+echo
+AUTH_HASH="$(printf '%s' "$AUTH_PASSWORD" | openssl passwd -6 -stdin)"
+unset AUTH_PASSWORD
+printf 'livetranslator:%s\n' "$AUTH_HASH" | sudo tee /etc/nginx/.htpasswd-livetranslator >/dev/null
+unset AUTH_HASH
+sudo chmod 640 /etc/nginx/.htpasswd-livetranslator
+```
+
+If the host Nginx worker uses a group that cannot read this file under the
+server's existing convention, adjust ownership/group to match the existing
+Nginx credential files rather than loosening permissions globally.
+
+Because this VPS bans after a small number of failures for a long period,
+inspect the relevant Fail2ban jail before deliberately testing bad credentials.
+Do not repeatedly enter an incorrect Basic Auth password during setup.
+
+## 7. Add a dedicated Nginx site
 
 Use:
 
@@ -186,7 +218,7 @@ as a starting point.
 
 Create a separate site file rather than editing existing application server
 blocks. Adapt only the TLS include/certificate lines to the convention already
-present on the VPS.
+present on the VPS. Keep the two `auth_basic` directives enabled.
 
 Example layout:
 
@@ -195,14 +227,14 @@ Example layout:
 /etc/nginx/sites-enabled/livetranslator.agent-studio.ru
 ```
 
-If the internal prototype should be password-protected, put Basic Auth on the
-host Nginx server block so both the PWA and `/api/` are protected.
+Before continuing, verify the password file exists and is readable according to
+the host Nginx convention:
 
-Because the VPS Fail2ban policy bans after a small number of failures for a
-long period, verify the relevant jail before deliberately testing bad
-credentials. Do not repeatedly enter a wrong Basic Auth password during setup.
+```bash
+sudo test -r /etc/nginx/.htpasswd-livetranslator
+```
 
-## 7. Validate before reloading Nginx
+## 8. Validate before reloading Nginx
 
 Always run:
 
@@ -221,46 +253,77 @@ sudo systemctl reload nginx
 
 Do not use `restart` for a normal configuration rollout.
 
-## 8. Verify through the public hostname
+## 9. Verify through the public hostname
 
-First verify HTTPS and the application shell:
+First verify that unauthenticated access is rejected:
 
 ```bash
 curl -I https://livetranslator.agent-studio.ru/
 ```
 
-Then check that the API is reachable through Nginx. The session endpoint itself
-requires a browser Origin and a valid SDP, so use the application's normal
-browser flow for the real OpenAI Live test.
+Expected result: `401 Unauthorized`.
+
+Then verify authenticated HTTPS with the configured username:
+
+```bash
+curl -I -u livetranslator https://livetranslator.agent-studio.ru/
+```
+
+Enter the password interactively when prompted. Do not place it directly in the
+command line.
+
+The session endpoint itself also requires a browser Origin and a valid SDP, so
+use the application's normal browser flow for the real OpenAI Live test.
 
 On a phone:
 
 1. Open `https://livetranslator.agent-studio.ru`.
-2. Confirm the page is served over HTTPS without a certificate warning.
-3. Grant microphone access.
-4. Start the setup flow.
-5. Complete one real two-way translated turn.
-6. Repeat on iPhone Safari and Android Chrome when available.
+2. Authenticate with the dedicated Live Translator Basic Auth credentials.
+3. Confirm the page is served over HTTPS without a certificate warning.
+4. Grant microphone access.
+5. Start the setup flow.
+6. Complete one real two-way translated turn.
+7. Repeat on iPhone Safari and Android Chrome when available.
 
-## 9. Logs and rollback
+## 10. Logs and rollback
 
 Application logs:
 
 ```bash
-docker compose -f infra/docker-compose.yml logs --tail=200 api
-docker compose -f infra/docker-compose.yml logs --tail=200 web
+docker compose --env-file .env -f infra/docker-compose.yml logs --tail=200 api
+docker compose --env-file .env -f infra/docker-compose.yml logs --tail=200 web
 ```
 
 Host Nginx logs remain under the server's existing logging convention.
 
-To roll back only the Live Translator application, check out the previous known
-good commit and rebuild/recreate these two containers. Do not roll back or
-restart unrelated Nginx-hosted services.
+### First rollout rollback
 
-If the new Nginx site itself causes a problem:
+Do **not** check out the pre-PR base revision on this VPS: that old deployment
+binds the web container to host port 80 and can collide with the existing host
+Nginx.
 
-1. restore/remove only the Live Translator site file/symlink;
+For the first rollout, rollback means:
+
+1. disable/remove only the Live Translator Nginx site/symlink;
 2. run `sudo nginx -t`;
-3. run `sudo systemctl reload nginx`.
+3. run `sudo systemctl reload nginx`;
+4. stop only the Live Translator containers:
 
-Existing sites should not require any changes.
+```bash
+docker compose --env-file .env -f infra/docker-compose.yml down
+```
+
+This leaves all unrelated Nginx-hosted services untouched.
+
+### Later application-version rollback
+
+Only roll back to a commit/tag that is already compatible with this host-Nginx
+topology (loopback-only application ports and no container ownership of
+80/443). After selecting that known-good compatible revision:
+
+```bash
+docker compose --env-file .env -f infra/docker-compose.yml build
+docker compose --env-file .env -f infra/docker-compose.yml up -d
+```
+
+Do not roll back or restart unrelated Nginx-hosted services.
