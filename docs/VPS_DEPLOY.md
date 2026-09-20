@@ -184,23 +184,56 @@ Expected bind addresses begin with `127.0.0.1`, not `0.0.0.0`.
 The internal MVP must not expose `/api/live/session` anonymously because that
 endpoint can create paid OpenAI Live sessions with the server API key.
 
+First determine the actual Nginx worker identity on this VPS instead of assuming
+the Ubuntu default:
+
+```bash
+NGINX_USER="$(sudo nginx -T 2>/dev/null \
+  | awk '$1 == "user" { gsub(/;/, "", $2); print $2; exit }')"
+
+if [ -z "$NGINX_USER" ]; then
+  NGINX_USER="$(ps -eo user=,comm= \
+    | awk '$2 == "nginx" && $1 != "root" { print $1; exit }')"
+fi
+
+if [ -z "$NGINX_USER" ]; then
+  echo "Could not determine the Nginx worker user; inspect the active Nginx configuration before continuing." >&2
+  exit 1
+fi
+
+NGINX_GROUP="$(id -gn "$NGINX_USER")"
+printf 'Nginx worker identity: %s:%s\n' "$NGINX_USER" "$NGINX_GROUP"
+```
+
 Create a dedicated password file before enabling the Nginx site. This example
-uses OpenSSL already present on a typical Ubuntu server and does not put the
-plaintext password in shell history:
+uses OpenSSL and does not put the plaintext password in shell history:
 
 ```bash
 read -rsp "Live Translator Basic Auth password: " AUTH_PASSWORD
 echo
 AUTH_HASH="$(printf '%s' "$AUTH_PASSWORD" | openssl passwd -6 -stdin)"
 unset AUTH_PASSWORD
-printf 'livetranslator:%s\n' "$AUTH_HASH" | sudo tee /etc/nginx/.htpasswd-livetranslator >/dev/null
+
+printf 'livetranslator:%s\n' "$AUTH_HASH" \
+  | sudo tee /etc/nginx/.htpasswd-livetranslator >/dev/null
 unset AUTH_HASH
+
+sudo chown "root:$NGINX_GROUP" /etc/nginx/.htpasswd-livetranslator
 sudo chmod 640 /etc/nginx/.htpasswd-livetranslator
 ```
 
-If the host Nginx worker uses a group that cannot read this file under the
-server's existing convention, adjust ownership/group to match the existing
-Nginx credential files rather than loosening permissions globally.
+If this VPS already uses another ownership convention for Nginx credential
+files, mirror that convention instead. Do not make the password file
+world-readable merely to make the check pass.
+
+Verify access using the **worker identity**, not root:
+
+```bash
+sudo -u "$NGINX_USER" test -r /etc/nginx/.htpasswd-livetranslator
+```
+
+If that command fails, stop and fix the file ownership/group before enabling
+the site.
 
 Because this VPS bans after a small number of failures for a long period,
 inspect the relevant Fail2ban jail before deliberately testing bad credentials.
@@ -227,11 +260,11 @@ Example layout:
 /etc/nginx/sites-enabled/livetranslator.agent-studio.ru
 ```
 
-Before continuing, verify the password file exists and is readable according to
-the host Nginx convention:
+Before continuing, verify again that the Nginx worker can read the password
+file:
 
 ```bash
-sudo test -r /etc/nginx/.htpasswd-livetranslator
+sudo -u "$NGINX_USER" test -r /etc/nginx/.htpasswd-livetranslator
 ```
 
 ## 8. Validate before reloading Nginx
