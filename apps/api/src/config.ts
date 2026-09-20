@@ -1,3 +1,10 @@
+/**
+ * Resolve the browser origin accepted by the API.
+ *
+ * Development defaults to the local Vite origin. Production requires an exact
+ * HTTPS origin so deployment mistakes fail at process startup instead of
+ * surfacing later as 403 responses from the Live-session route.
+ */
 function resolveWebOrigin(): string {
   const configuredOrigin = process.env.WEB_ORIGIN?.trim();
 
