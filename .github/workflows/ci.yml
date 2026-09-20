@@ -33,7 +33,7 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: 22
+          node-version: 24
           cache: pnpm
 
       - name: Install dependencies
@@ -55,7 +55,7 @@ jobs:
         env:
           NODE_ENV: production
           OPENAI_API_KEY: ci-smoke-placeholder
-          WEB_ORIGIN: http://127.0.0.1:4173
+          WEB_ORIGIN: https://livetranslator.example.test
         run: |
           pnpm --filter @live-translator/api exec node dist/server.js > /tmp/live-translator-api.log 2>&1 &
           api_pid=$!
@@ -79,6 +79,26 @@ jobs:
           cat /tmp/live-translator-api.log
           echo "API health check did not become ready"
           exit 1
+
+  deployment:
+    name: Validate deployment images
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      OPENAI_API_KEY: ci-deployment-placeholder
+      WEB_ORIGIN: https://livetranslator.example.test
+      API_BIND_PORT: 13001
+      WEB_BIND_PORT: 18081
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Validate Compose configuration
+        run: docker compose -f infra/docker-compose.yml config --quiet
+
+      - name: Build deployment images
+        run: docker compose -f infra/docker-compose.yml build
 
   e2e:
     name: Browser E2E (${{ matrix.browser }})
@@ -104,7 +124,7 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: 22
+          node-version: 24
           cache: pnpm
 
       - name: Install dependencies

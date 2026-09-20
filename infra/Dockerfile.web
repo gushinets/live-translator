@@ -14,4 +14,4 @@ RUN pnpm --filter @live-translator/web build
 FROM caddy:2-alpine
 COPY infra/Caddyfile /etc/caddy/Caddyfile
 COPY --from=build /src/apps/web/dist /srv/web
-CMD ["sh", "-c", "test -n \"$APP_HOST\" && test -n \"$BASIC_AUTH_USER\" && test -n \"$BASIC_AUTH_HASH\" && exec caddy run --config /etc/caddy/Caddyfile --adapter caddyfile"]
+CMD ["caddy", "run", "--config", "/etc/caddy/Caddyfile", "--adapter", "caddyfile"]
