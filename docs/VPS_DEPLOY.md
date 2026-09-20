@@ -185,23 +185,38 @@ The internal MVP must not expose `/api/live/session` anonymously because that
 endpoint can create paid OpenAI Live sessions with the server API key.
 
 First determine the actual Nginx worker identity on this VPS instead of assuming
-the Ubuntu default:
+the Ubuntu default. Nginx supports both `user <user>;` and
+`user <user> <group>;`. If the group is omitted, Nginx uses a group whose
+name equals the user name.
 
 ```bash
-NGINX_USER="$(sudo nginx -T 2>/dev/null \
-  | awk '$1 == "user" { gsub(/;/, "", $2); print $2; exit }')"
+NGINX_IDENTITY="$(sudo nginx -T 2>/dev/null \
+  | awk '$1 == "user" {
+      gsub(/;/, "", $2);
+      gsub(/;/, "", $3);
+      print $2, $3;
+      exit
+    }')"
 
-if [ -z "$NGINX_USER" ]; then
-  NGINX_USER="$(ps -eo user=,comm= \
-    | awk '$2 == "nginx" && $1 != "root" { print $1; exit }')"
+NGINX_USER="$(printf '%s\n' "$NGINX_IDENTITY" | awk '{ print $1 }')"
+NGINX_GROUP="$(printf '%s\n' "$NGINX_IDENTITY" | awk '{ print $2 }')"
+
+if [ -n "$NGINX_USER" ] && [ -z "$NGINX_GROUP" ]; then
+  NGINX_GROUP="$NGINX_USER"
 fi
 
-if [ -z "$NGINX_USER" ]; then
-  echo "Could not determine the Nginx worker user; inspect the active Nginx configuration before continuing." >&2
+if [ -z "$NGINX_USER" ] || [ -z "$NGINX_GROUP" ]; then
+  NGINX_IDENTITY="$(ps -eo user=,group=,comm= \
+    | awk '$3 == "nginx" && $1 != "root" { print $1, $2; exit }')"
+  NGINX_USER="$(printf '%s\n' "$NGINX_IDENTITY" | awk '{ print $1 }')"
+  NGINX_GROUP="$(printf '%s\n' "$NGINX_IDENTITY" | awk '{ print $2 }')"
+fi
+
+if [ -z "$NGINX_USER" ] || [ -z "$NGINX_GROUP" ]; then
+  echo "Could not determine the Nginx worker user/group; inspect the active Nginx configuration before continuing." >&2
   exit 1
 fi
 
-NGINX_GROUP="$(id -gn "$NGINX_USER")"
 printf 'Nginx worker identity: %s:%s\n' "$NGINX_USER" "$NGINX_GROUP"
 ```
 
@@ -229,7 +244,7 @@ world-readable merely to make the check pass.
 Verify access using the **worker identity**, not root:
 
 ```bash
-sudo -u "$NGINX_USER" test -r /etc/nginx/.htpasswd-livetranslator
+sudo -u "$NGINX_USER" -g "$NGINX_GROUP" test -r /etc/nginx/.htpasswd-livetranslator
 ```
 
 If that command fails, stop and fix the file ownership/group before enabling
@@ -264,7 +279,7 @@ Before continuing, verify again that the Nginx worker can read the password
 file:
 
 ```bash
-sudo -u "$NGINX_USER" test -r /etc/nginx/.htpasswd-livetranslator
+sudo -u "$NGINX_USER" -g "$NGINX_GROUP" test -r /etc/nginx/.htpasswd-livetranslator
 ```
 
 ## 8. Validate before reloading Nginx
