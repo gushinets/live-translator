@@ -1,5 +1,38 @@
+function resolveWebOrigin(): string {
+  const configuredOrigin = process.env.WEB_ORIGIN?.trim();
+
+  if (configuredOrigin === undefined || configuredOrigin.length === 0) {
+    if (process.env.NODE_ENV === "production") {
+      throw new Error("WEB_ORIGIN is required in production");
+    }
+    return "http://localhost:5173";
+  }
+
+  let parsedOrigin: URL;
+  try {
+    parsedOrigin = new URL(configuredOrigin);
+  } catch {
+    throw new Error("WEB_ORIGIN must be a valid URL origin");
+  }
+
+  if (parsedOrigin.origin !== configuredOrigin) {
+    throw new Error(
+      "WEB_ORIGIN must contain only the origin (scheme, host, and optional port) with no trailing slash or path",
+    );
+  }
+
+  if (
+    process.env.NODE_ENV === "production" &&
+    parsedOrigin.protocol !== "https:"
+  ) {
+    throw new Error("WEB_ORIGIN must use https in production");
+  }
+
+  return configuredOrigin;
+}
+
 export const apiConfig = {
-  webOrigin: process.env.WEB_ORIGIN ?? "http://localhost:5173",
+  webOrigin: resolveWebOrigin(),
   maxConcurrentSessions: 5,
   leaseMs: 15 * 60 * 1000,
 };
