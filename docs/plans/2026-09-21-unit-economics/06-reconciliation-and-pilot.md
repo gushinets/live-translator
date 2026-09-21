@@ -2,7 +2,7 @@
 
 **Статус:** `planned`, реализация не начата этим документом.  
 **Зависимости:** Зависит от PR 5. Не превращает клиентский учёт в trusted commercial billing.  
-**Спецификация:** [v1.0](../../specs/2026-09-21-unit-economics-and-session-lifecycle.md).  
+**Спецификация:** [v1.1](../../specs/2026-09-21-unit-economics-and-session-lifecycle.md).\
 **Общие ограничения и проверки:** [README плана](README.md).
 
 ## Карта файлов и ответственности
@@ -16,9 +16,9 @@
 ## Входной и выходной контракт
 
 
-Periodic reconciliation — локальная maintenance задача одного API, не browser heartbeat и не sideband. Истёкшая pause заканчивает product conversation; stale/unconfirmed provider records остаются unknown. Startup hydration из PR 2 не заменяется сбросом всех reservations.
+Periodic reconciliation — локальная maintenance задача одного API, не browser heartbeat и не sideband. Pending resuming claims обрабатываются тем же abort/expiry контрактом §10.3, что startup/request-time PR 2; новые provider calls не выполняются. Истёкшая pause заканчивает product conversation; stale/unconfirmed provider records остаются unknown. Startup hydration из PR 2 не заменяется сбросом всех reservations.
 
-Cross-conversation report показывает sample definition, качество, app/policy/model versions, measured vs estimated, zero-denominator handling. Pricing policy version сохраняет исторические правила; uncalibrated monetary results не публикуются как invoice totals. Экспериментальные runs имеют отдельную среду/когорту и не смешиваются с продуктовой экономикой.
+Cross-conversation report показывает sample definition, качество, app/policy/model/speech-measurement versions, measured vs estimated, zero-denominator handling. Active, accepted-source и completed-source minute ratios раздельны; numerator/denominator из одной cohort, её исключённая доля явна. Полный ratio требует final provider и завершённого полного app measurement; unknown/partial остаются в breakdown, не исчезают из общей выборки. Pricing policy version сохраняет исторические правила; uncalibrated monetary results не публикуются как invoice totals. Экспериментальные runs имеют отдельную среду/когорту и не смешиваются с продуктовой экономикой.
 
 Backup использует coherent SQLite procedure и проверяется восстановлением. Raw events для доказательств проходят redaction; нет audio/transcript archive и никаких production secrets в docs/logs.
 
@@ -35,11 +35,18 @@ Backup использует coherent SQLite procedure и проверяется 
 | A6.6 | Недоступная БД / full disk / испорченные metadata | Новые billable creates fail closed; browser cleanup не блокируется; ошибки и неполные отчёты видимы, секреты/контент в логах отсутствуют. |
 | A6.7 | Device pilot и факт отсутствия старого raw-log | Есть отчёты фактически выполненных E1–E4 или явный outstanding статус; тесты/платежи не объявлены проверенными без evidence. Решение включить flag ссылается на результат. |
 
+Дополнительные acceptance cases:
+
+| ID | Условие/сценарий | Ожидаемый результат |
+|---|---|---|
+| A6.8 | Pending resuming без клиентских сообщений, maintenance и restart | По claim deadline — paused/ended с исходным retention; no-dispatch failed или dispatched unknown; нет auto-create/release как доказанного provider close. Late final обогащает прежний record, late complete не меняет продукт. |
+| A6.9 | Synthetic final=120 s, active=60000 ms, accepted=30000 ms, completed=20000 ms; затем missing/zero/partial samples | Ratios 120/240/360 provider seconds на соответствующую минуту; provider seconds/accepted seconds=4. Missing/zero дают NULL, partial показывается отдельно; denominator method/version, app-finalization и cohort coverage видны. Completed-source proxy не назван доказанной semantic quality. |
+
 ## Последовательность работ
 
 
 - [ ] Добавить time-controlled reconciliation tests A6.1/A6.2 и mixed-data report fixtures A6.3/A6.4, не обнуляя неизвестные значения.
-- [ ] Реализовать maintenance hook и report с явным sample/quality contract; диагностические записи не содержат текста разговора.
+- [ ] Реализовать maintenance hook, используя общий claim-expiry из PR 2; проверить A6.8. Report с тремя denominators и явным sample/quality contract закрепить A6.9; диагностические записи не содержат текста разговора.
 - [ ] Выполнить backup/restore в отдельной временной среде; сохранить команды и результаты A6.5, а не только наличие backup файла.
 - [ ] Проверить failure injection A6.6 с fake provider; при настоящей API credential production эксперимент не запускать из CI.
 - [ ] Выполнить/получить первичные материалы E1–E4 в рамках отдельно разрешённых измерений; redaction до commit результатов.

@@ -2,7 +2,7 @@
 
 **Статус:** proposed. **Дата:** 2026-09-21. **Реализация:** planned.  
 **Основание:** [handoff](../../sources/2026-09-21-unit-economics-handoff.md), [code review](../../reviews/2026-09-21-lifecycle-code-review.md).  
-**Нормативный контракт:** [spec v1.0](../../specs/2026-09-21-unit-economics-and-session-lifecycle.md).
+**Нормативный контракт:** [spec v1.1](../../specs/2026-09-21-unit-economics-and-session-lifecycle.md).
 
 ## Контекст
 

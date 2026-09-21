@@ -17,7 +17,7 @@
 
 ## Текущий пакет
 
-- [Спецификация: unit economics и lifecycle](specs/2026-09-21-unit-economics-and-session-lifecycle.md), v1.0, `review-ready`.
+- [Спецификация: unit economics и lifecycle](specs/2026-09-21-unit-economics-and-session-lifecycle.md), v1.1, `review-ready`.
 - [План: шесть PR](plans/2026-09-21-unit-economics/README.md), все PR `planned`.
 - [ADR-0001–0004](architecture/decisions/README.md), `proposed`.
 - [Ревью baseline](reviews/2026-09-21-lifecycle-code-review.md).
@@ -36,9 +36,9 @@
 
 ## Приоритет и изменение документов
 
-Принятая новая спецификация изменяет старую **только** в явно перечисленной области: identity/usage accounting, admission, background/resume и связанные лимиты. Она не отменяет правила fixed-language routing, source-tail/audio gates, коррекции текущей реплики и бюджетов append.
+Предлагаемая спецификация **после отдельного утверждения** изменит предыдущий контракт только в явно перечисленной области: identity/usage accounting, admission, background/resume и связанные лимиты. До статуса `accepted` она остаётся `review-ready` и не заменяет действующие требования. Даже после принятия она не отменит правила fixed-language routing, source-tail/audio gates, коррекции текущей реплики и бюджетов append.
 
-ADR сохраняет историю мотивации. Текущий контракт находится в спецификации; план не может молча изменить её. Противоречие между принятыми документами устраняется явным amendment, а не правилом «самый новый файл всегда прав».
+ADR сохраняет историю мотивации. Действующий контракт определяется явно принятой спецификацией; новый review-ready документ станет им только после отдельного принятия. План не может молча изменить этот контракт. Противоречие между принятыми документами устраняется явным amendment, а не правилом «самый новый файл всегда прав».
 
 Новый ADR: последовательный номер и краткое имя, например `0005-server-side-session-control.md`. Статусы: `proposed`, `accepted`, `rejected`, `superseded`. Для `accepted` указываются дата и ссылка на принятие; для `superseded` — преемник. Существенное изменение решения оформляется новым ADR, а не переписыванием истории.
 

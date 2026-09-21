@@ -38,9 +38,9 @@
 
 Целевая матрица: desktop Chromium, настоящий iPhone Safari/PWA, Android Chrome/PWA. Playwright WebKit полезен для автоматических regressions, но не считается полной проверкой системного lifecycle физического iPhone.
 
-Проверить user End; hidden во время setup/creating/interpreter; lock screen; app switch; hidden после orientation/audio/source timeout; быстрые переключения; потерю/возврат сети; reload; OS kill; возврат до/после retention; permission/autoplay blocking; несколько вкладок.
+Проверить user End; hidden во время setup/creating/interpreter; lock screen; app switch; hidden после orientation/audio/source timeout; быстрые переключения; потерю/возврат сети; reload; OS kill; возврат до/после retention; permission/autoplay blocking; несколько вкладок; media/provider/ACK failure после успешного claim, потерянный abort/complete ACK и истечение resuming без живой вкладки.
 
-Фиксировать: close dispatch → final delay, final coverage и missing usage, resume request → actual interpreter-ready delay, failed resume, duplicate attempts, сохранность пары языков/контекста, необходимость повторения, wrong-side/correction и text-only outcome. По каждому результату указать версии устройства/ОС/browser/app/policy, не хранить разговорный контент.
+Фиксировать: close dispatch → final delay, final coverage и missing usage, resume request → actual interpreter-ready delay, failed resume, duplicate attempts, сохранность пары языков/контекста, необходимость повторения, wrong-side/correction и text-only outcome. Отдельно фиксировать active, accepted-source и completed-source durations, pre-tail method/version, sample-gap coverage и app-finalization; сравнение экономии не подменяет speech denominator временем доступности. Это протокол будущей проверки, не полученные результаты. По каждому результату указать версии устройства/ОС/browser/app/policy, не хранить разговорный контент.
 
 **Выход E3:** source-linked device report с успешными и неуспешными случаями и решением по feature flag. Threshold UX/экономии принимается по результатам; не сочинять достигнутые проценты или SLA. Если 15-second close budget заметно ухудшает resume, изменение бюджета идёт вместе с данными final-loss tradeoff.
 
@@ -48,7 +48,7 @@
 
 **Статус:** не выполнялось в этом ревью; deterministic часть входит в PR 2/6.
 
-Проверить: restart API при живом browser WebRTC, restart во время provider creation, SQLite unavailable/full disk, задержку final report, duplicate reports, coherent backup и restore в отдельный каталог. Разрешать reporter retry без создания новой OpenAI session.
+Проверить: restart API при живом browser WebRTC, restart во время provider creation и pending resume claim, восстановление paused/ended без продления retention, SQLite unavailable/full disk, задержку final report, duplicate reports, coherent backup и restore в отдельный каталог. Разрешать reporter retry без создания новой OpenAI session.
 
 **Выход E4:** команды, результаты, integrity/foreign-key checks, сравнение representative totals до/после restore, описание outstanding unknown records. Expired lease/отсутствие heartbeat не называются доказательством provider termination.
 

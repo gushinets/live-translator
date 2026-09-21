@@ -1,16 +1,16 @@
-# PR 3 — usage, active time и отчёт по разговору
+# PR 3 — usage, active/speech time и отчёт по разговору
 
 **Статус:** `planned`, реализация не начата этим документом.  
 **Зависимости:** Зависит от PR 2. Это первая измеримая контрольная точка G1; новый background lifecycle ещё выключен.  
-**Спецификация:** [v1.0](../../specs/2026-09-21-unit-economics-and-session-lifecycle.md).  
+**Спецификация:** [v1.1](../../specs/2026-09-21-unit-economics-and-session-lifecycle.md).\
 **Общие ограничения и проверки:** [README плана](README.md).
 
 ## Карта файлов и ответственности
 
 
-**Изменить:** `apps/web/src/live/LiveEvents.ts`, `apps/web/src/live/LiveClient.ts`, `apps/web/src/session/SessionController.ts`, `apps/web/src/metrics/ConversationMetrics.ts`, `apps/web/src/api/BackendClient.ts`, `apps/api/src/accounting/UsageLedger.ts`, `apps/api/src/app.ts`.  
-**Создать:** `apps/web/src/metrics/UsageReporter.ts`, `apps/web/src/metrics/UsageOutbox.ts`, `apps/web/src/metrics/ActiveTimeMetrics.ts`, `apps/api/src/accounting/mergeUsage.ts`, `apps/api/src/routes/usage.ts`, `apps/api/src/reports/conversationSummary.ts`.  
-**Тесты:** новые `apps/web/src/metrics/UsageReporter.test.ts`, `UsageOutbox.test.ts`, `ActiveTimeMetrics.test.ts`, `apps/api/test/usage.test.ts`; дополнить LiveClient/SessionController tests.
+**Изменить:** `apps/web/src/live/LiveEvents.ts`, `apps/web/src/live/LiveClient.ts`, `apps/web/src/session/SessionController.ts`, `apps/web/src/metrics/ConversationMetrics.ts`, `apps/web/src/audio/VoiceActivityEstimator.ts`, `apps/web/src/audio/VoiceActivityMonitor.ts`, `apps/web/src/audio/AudioController.ts` только для metadata observation до tail grace, `apps/web/src/api/BackendClient.ts`, `apps/api/src/accounting/UsageLedger.ts`, `apps/api/src/app.ts`.\
+**Создать:** `apps/web/src/metrics/UsageReporter.ts`, `apps/web/src/metrics/UsageOutbox.ts`, `apps/web/src/metrics/ActiveTimeMetrics.ts`, `apps/web/src/metrics/SourceSpeechMetrics.ts`, `apps/api/src/accounting/mergeUsage.ts`, `apps/api/src/routes/usage.ts`, `apps/api/src/reports/conversationSummary.ts`.\
+**Тесты:** новые `apps/web/src/metrics/UsageReporter.test.ts`, `UsageOutbox.test.ts`, `ActiveTimeMetrics.test.ts`, `SourceSpeechMetrics.test.ts`, `apps/api/test/usage.test.ts`; дополнить LiveClient/SessionController tests.
 
 Не создавать второй ConversationMetrics engine. Новые модули отвечают за transport-independent доставку и временные интервалы, а существующий — за прежние UX counters.
 
@@ -24,6 +24,8 @@ Wire `PUT .../:localId/usage` хранит checkpoint и final раздельн�
 
 Outbox coalesces ожидающие metadata одной сессии, но не теряет final и не пытается создавать OpenAI заново. Клиентский snapshot сохраняет per-provider totals, не повторённые conversation totals. Read endpoint conversation показывает summary §8, без SQL dashboard/полноценной analytics UI.
 
+
+Добавить per-provider `accepted_source_speech_ms` и `completed_source_speech_ms` по §8.1 (vam-pre-tail-v1), speech version/status и `app_metrics_finalized`. SourceSpeechMetrics интегрирует bounded интервалы existing estimator до дополнительного tail grace, не меняя product thresholds/gates. Completed subset учитывает один logical turn один раз; text-only/failure/discard и correction различимы. Пустое наблюдение не равно нулевой речи. Wire/report сохраняют totals вместе с seq и coverage; полный comparable ratio не строится из missing app data.
 
 ## Критерии приёмки
 
@@ -40,13 +42,21 @@ Outbox coalesces ожидающие metadata одной сессии, но не 
 | A3.9 | Text-only/correction/ошибка последующего steering | Caption-only не считается audible completion; correction одного turn не дублирует completed turn; уже завершённый audible output различим от ошибки восстановления listening. |
 | A3.10 | Allowlist и нулевой denominator | Reporter не отправляет context/transcript/SDP/audio; отчёт выдаёт NULL ratio при active=0 и явно показывает unknown/conflict records. |
 
+Дополнительные acceptance cases:
+
+| ID | Условие/сценарий | Ожидаемый результат |
+|---|---|---|
+| A3.11 | Synthetic eligible pre-tail active интервалы 2000 и 3000 ms, затем дополнительный source-tail grace | Accepted=5000 ms, delayed tail не добавляется; active wall duration считается отдельно. Hysteresis estimator явно относится к vam-pre-tail-v1; изменение метрик не меняет product mute timing. |
+| A3.12 | Setup/hidden/mute/reset/track ended, sample gap > 100 ms, нет instrumentation | Непригодные интервалы не считаются; большой gap не заполняется последним active, coverage partial. Измеренная тишина=0, unavailable=NULL; до финального app-report полная duration не заявляется. |
+| A3.13 | Turn source 5000 ms, audio completion/correction/duplicates, другие 2000 ms discarded | Accepted=7000, completed=5000 после одного qualifying audio completion; correction и повтор report не дают 10000 completed. Text-only до audio completion не попадает в completed; seq/version и late result не размножают per-provider totals. |
+
 ## Последовательность работ
 
 
 - [ ] Зафиксировать merge contract A3.1–A3.5 в pure/unit и HTTP tests с конкретными числами из таблицы.
 - [ ] Расширить parser/event contract и accounting binding; сохранить teardown-before-untrusted-callback safety, не привязывая sink к current product generation.
 - [ ] Реализовать outbox/reporter и API commit acknowledgement; проверить network outage и callback exception A3.3/A3.6.
-- [ ] Встроить active-time hooks в реальные переходы и media-ready сигналы, не в значение inputReady; проверить A3.7–A3.9.
+- [ ] Встроить active-time hooks в реальные переходы и media-ready сигналы, не в значение inputReady; проверить A3.7–A3.9. Добавить pre-tail metadata samples, bounded monotonic integration и per-turn completed subset A3.11–A3.13; сравнить старые VAD/gating regression results.
 - [ ] Добавить metadata-only conversation summary с quality breakdown и versioned measurement semantics; выполнить A3.10.
 - [ ] Прогнать root regression commands, затем зафиксировать контрольный отчёт старого lifecycle на mocks. Live provider run не запускать автоматически.
 - [ ] После разрешённого внутреннего запуска сохранить baseline для сравнения с PR 5; monetary calibration остаётся отдельным evidence gate.

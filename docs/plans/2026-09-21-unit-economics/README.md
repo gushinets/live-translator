@@ -5,7 +5,7 @@
 **Цель:** получить прослеживаемый metadata-only consumption ledger до смены background lifecycle, затем включить safe retained-conversation resume.  
 **Архитектура:** один API, SQLite, прямой WebRTC. Existing SessionController остаётся владельцем product state; usage delivery живёт независимо от product generation.  
 **Стек:** текущие React/TypeScript/Express, Node 24, pnpm/Vitest/Playwright; SQLite через тонкий адаптер.  
-**Spec:** [консолидированная v1.0](../../specs/2026-09-21-unit-economics-and-session-lifecycle.md).  
+**Spec:** [консолидированная v1.1](../../specs/2026-09-21-unit-economics-and-session-lifecycle.md).\
 **Baseline:** `5a32ee2a1c3fe81e12b00be404214f0887c27e82`. **Статус:** planned, никакой из шести PR пока не создан этим пакетом.
 
 ## Global constraints
@@ -27,7 +27,8 @@
 | Visibility во время setup или уже suspended, скрытый callback за очередью | A5.1–A5.3 |
 | Поздний media track старого peer воспринимается как stream нового | A4.4 |
 | Lost create response / restart провоцирует повторный платный запуск | A2.4–A2.6, A4.6 |
-| Mixed phase / text-only / zero denominator искажают unit economics | A3.7–A3.10, A6.3 |
+| Mixed phase / text-only / нулевая или ненаблюдаемая речь искажают unit economics | A3.7–A3.13, A6.3, A6.9 |
+| После resume claim нет usable provider; browser исчез до abort | A2.10–A2.11, A5.13–A5.15, A6.8 |
 
 ## Порядок
 
@@ -44,11 +45,13 @@ PR 1 → PR 2 → PR 3 → G1: измеряем текущий lifecycle
 | Этап | Содержание | Статус | Критериев |
 |---|---|---|---:|
 | 1 | [конфигурация и границы admission](01-config-and-admission.md) | planned | 5 |
-| 2 | [anonymous identity, conversation и журнал попыток](02-identity-and-ledger.md) | planned | 9 |
-| 3 | [usage, active time и отчёт по разговору](03-usage-and-product-metrics.md) | planned | 10 |
+| 2 | [anonymous identity, conversation и журнал попыток](02-identity-and-ledger.md) | planned | 11 |
+| 3 | [usage, active/speech time и отчёт по разговору](03-usage-and-product-metrics.md) | planned | 13 |
 | 4 | [безопасное закрытие и границы replacement](04-graceful-session-boundaries.md) | planned | 7 |
-| 5 | [immediate background close и retained conversation](05-background-and-resume.md) | planned | 12 |
-| 6 | [сверка, эксплуатационная устойчивость и пилот](06-reconciliation-and-pilot.md) | planned | 7 |
+| 5 | [immediate background close и retained conversation](05-background-and-resume.md) | planned | 15 |
+| 6 | [сверка, эксплуатационная устойчивость и пилот](06-reconciliation-and-pilot.md) | planned | 9 |
+
+**Всего: 60 критериев приёмки.** Исходные A1.1–A6.7 не перенумерованы; добавлены A2.10–A2.11, A3.11–A3.13, A5.13–A5.15, A6.8–A6.9 после review PR #13.
 
 **PR 1–3 не должны зависеть от готовности нового resume.** Это даёт baseline расхода старого поведения. E1/E2 не блокируют raw ledger, но блокируют заявление о проверенной точной стоимости коротких сессий. E3 — device check перед широким включением нового flag; E4 — эксплуатационная проверка.
 
@@ -56,11 +59,11 @@ PR 1 → PR 2 → PR 3 → G1: измеряем текущий lifecycle
 
 | Область спецификации | PR |
 |---|---|
-| §4 identity, ownership, state, multiple tabs | 2; lifecycle CAS 5 |
+| §4 identity, ownership, state, multiple tabs | 2: durable CAS/recovery; 5: client lifecycle |
 | §5 database/model/persistence | 2, эксплуатация 6 |
-| §6 API, attempt idempotency, versioned policy | 2; usage 3; lifecycle 5 |
+| §6 API, attempt/claim idempotency, versioned policy | 2; usage 3; client lifecycle 5 |
 | §7 usage, missing final, outbox | 3, release 4 |
-| §8 active/technical outcome metrics и reports | 3, cross-conversation/pricing 6 |
+| §8 active/speech/technical outcome metrics и reports | 3, cross-conversation/pricing 6 |
 | §9 graceful boundaries | 4 |
 | §10 background/resume/snapshot/deadlines | 5 |
 | §11 limiter/config/reservations | 1–2, cleanup 4/6 |
@@ -85,15 +88,15 @@ Provider создания в unit/integration tests — fake/mock. `pnpm test:re
 
 ## Gate G1: первый полезный результат
 
-После PR 3 один report содержит все attempts conversation, known/partial/unknown breakdown, active/setup durations и технические исходы без контента. Дубли и поздние finals безопасны. UX ещё прежний. Это конец первого вертикального среза, а не ожидание всех шести PR.
+После PR 3 один report содержит все attempts conversation, known/partial/unknown breakdown, active/setup и accepted/completed-source durations с методом/покрытием, технические исходы без контента. Дубли и поздние finals безопасны. UX ещё прежний. Это конец первого вертикального среза, а не ожидание всех шести PR.
 
 ## Gate G2: безопасная смена lifecycle
 
-После PR 5 normal hidden/resume проходит automated cases A5.1–A5.12 и разрешённый device smoke. Existing routing, source timeout, correction и ACK safety не сломаны. Feature flag позволяет сравнение и rollback без выключения ledger.
+После PR 5 normal hidden/resume проходит automated cases A5.1–A5.15 и разрешённый device smoke. Existing routing, source timeout, correction и ACK safety не сломаны. Feature flag позволяет сравнение и rollback без выключения ledger.
 
 ## Gate G3: пригодность для пилота и экономических выводов
 
-После PR 6 есть результаты reconciliation/backup и source-linked pilot report. Полнота final, расхождения и quality segments показаны явно. Без calibration денежные выводы остаются предварительными; это не повод выкидывать неизвестные записи.
+После PR 6 есть результаты reconciliation/backup и source-linked pilot report. Полнота provider/app measurements, три раздельных duration denominators, расхождения и quality segments показаны явно. Completed-source minute — технический proxy, не semantic quality. Pending resuming без живой вкладки не остаётся вечным claim. Без calibration денежные выводы остаются предварительными; это не повод выкидывать неизвестные записи.
 
 ## Объём документационного PR
 

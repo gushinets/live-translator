@@ -2,7 +2,7 @@
 
 **Статус:** `planned`, реализация не начата этим документом.  
 **Зависимости:** Зависит от PR 3: до изменения lifecycle уже должен работать independent accounting sink.  
-**Спецификация:** [v1.0](../../specs/2026-09-21-unit-economics-and-session-lifecycle.md).  
+**Спецификация:** [v1.1](../../specs/2026-09-21-unit-economics-and-session-lifecycle.md).\
 **Общие ограничения и проверки:** [README плана](README.md).
 
 ## Карта файлов и ответственности
