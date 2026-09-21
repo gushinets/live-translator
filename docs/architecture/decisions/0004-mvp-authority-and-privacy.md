@@ -10,7 +10,7 @@ Backend хранит API key, но после signaling не принимает 
 
 ## Решение в предлагаемой редакции
 
-Для внутреннего MVP оставить browser-forwarded usage, без persistent Sideband. PR-2 transient CleanupWorker хранит normalized outcomes: observed `session.closed`, evidence-backed terminal-not-live, retryable error, blocked auth/config. Простое закрытие Sideband transport/unrecognized error не считается provider finalization; terminal mapping не угадывается.
+Для внутреннего MVP оставить browser-forwarded usage, без persistent Sideband. PR-2 CleanupWorker различает observed close и evidence-backed terminal-not-live: оба могут terminally release admission, но только первый ставит `close_confirmed=true` и может нести provider final/reason. Auth/config failures parked и исключены из ordinary due drain до explicit startup/config/auth/operator re-arm либо expiry.
 
 Anonymous cookie — случайный backend ID, first-party HttpOnly/Secure/SameSite=Lax в production, persistent `Max-Age=90 дней` со sliding renewal той же UUID на успешных owner-authenticated запросах; session-only identity для MVP не используется. Ledger и outbox — allowlist metadata без аудио/transcript/context/SDP. Runtime resume context хранится отдельно локально, tab-scoped и ограничен TTL. `store:false` сохраняется, но не объявляется универсальной гарантией всех режимов хранения у провайдера.
 

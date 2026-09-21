@@ -16,7 +16,7 @@
 ## Входной и выходной контракт
 
 
-Periodic reconciliation — не владеет CleanupWorker. PR 6 report/reconcile-ит `cleanup_retry_exhausted`, `blocked_auth_config`, `terminal_not_live` без final и другие unknown/partial outcomes; не переинтерпретирует их как provider billing final.
+Periodic reconciliation — не владеет CleanupWorker. PR 6 report/reconcile-ит `cleanup_retry_exhausted`, parked `blocked_auth_config`, `terminal_not_live` (`state=closed`, `close_confirmed=false`, no final/reason) и другие partial/unknown outcomes; не переинтерпретирует terminal-not-live как observed `session.closed` или billing final.
 
 Cross-conversation report показывает sample definition, качество, app/policy/model/speech-measurement versions, measured vs estimated, zero-denominator handling. Active, accepted-source и completed-source minute ratios раздельны; numerator/denominator из одной cohort, её исключённая доля явна. Полный ratio требует final provider и завершённого полного app measurement; unknown/partial остаются в breakdown, не исчезают из общей выборки. Pricing policy version сохраняет исторические правила; uncalibrated monetary results не публикуются как invoice totals. Экспериментальные runs имеют отдельную среду/когорту и не смешиваются с продуктовой экономикой.
 

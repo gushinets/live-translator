@@ -10,7 +10,7 @@
 
 ## Решение в предлагаемой редакции
 
-Сохранять anonymous user → conversation → local provider attempt. First cleanup marker transaction фиксирует activation fence и immutable 7-day cleanup retry expiry. PR-2 CleanupWorker использует normalized outcome taxonomy; `terminal_not_live` допустим только по доказанному provider-specific mapping и закрывает retry без выдуманного final/reason, а неизвестные ошибки retryable.
+Сохранять anonymous user → conversation → local provider attempt. CleanupWorker terminal taxonomy различает observed `session.closed` и evidence-backed terminal-not-live. `recordProviderTerminalNotLive()` atomically делает provider row terminal `closed`, durable release admission, но сохраняет `close_confirmed=false` и NULL final/reason; memory slot снимается только после commit. Auth/config failure parks cleanup row и ordinary drains её не запускают до explicit re-arm/expiry.
 
 Разделять `initial_mode`, `start_reason` и наблюдаемые phase durations. Состояние admission/lease не является состоянием provider billing. Product generation guards сохраняются; ledger generation/local ID не подменяют их. Ownership проверяется по cookie и FK, lifecycle защищается version CAS.
 
