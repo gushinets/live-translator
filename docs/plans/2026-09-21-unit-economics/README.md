@@ -26,7 +26,7 @@
 | End инкрементирует generation до final; callback бросает исключение | A3.3, A4.7 |
 | Visibility во время setup или уже suspended, скрытый callback за очередью | A5.1–A5.3 |
 | Поздний media track старого peer воспринимается как stream нового | A4.4 |
-| Lost/in-flight create, cross-tab budget race, dispatch-marker crash, API shutdown и Sideband cleanup recovery | A2.3–A2.7; PR-2 transactional MetadataDeliveryBudget + CleanupWorker shutdown; A3.6; A4.3/A4.6; A5.1/A5.14–A5.15 |
+| Lost/in-flight create, dispatch-gate shutdown race, cross-tab budget/marker races и Sideband recovery | A2.3–A2.7; PR-2 transactional MetadataDeliveryBudget + create-dispatch gate + in-flight handler drain + CleanupWorker; A3.6; A4.3/A4.6; A5.1/A5.14–A5.15 |
 | Mixed phase / text-only / нулевая или ненаблюдаемая речь искажают unit economics | A3.7–A3.13, A6.3, A6.9 |
 | После resume claim нет usable provider; browser исчез до abort | A2.10–A2.11, A5.13–A5.15, A6.8 |
 
@@ -66,7 +66,7 @@ PR 1 → PR 2 → PR 3 → G1: измеряем текущий lifecycle
 | §8 active/speech/technical outcome metrics и reports | 3, cross-conversation/pricing 6 |
 | §9 graceful boundaries | 4 |
 | §10 background/resume/snapshot/deadlines | 2: durable claim/cleanup fences; 5: client lifecycle/snapshot |
-| §11 limiter/config/reservations/process lifecycle | 1: create/admission config; 2: worker config, fail-closed metadata reserve, coordinated SIGTERM/SIGINT, durable startup/orphan recovery; 4: normal release; 6: reconciliation/report only |
+| §11 limiter/config/reservations/process lifecycle | 1: create/admission config; 2: worker config, fail-closed metadata reserve, dispatch gate, bounded in-flight create drain before worker stop, coordinated SIGTERM/SIGINT/startup recovery; 4: normal release; 6: reconciliation/report only |
 | §12 privacy, retention, backup | 2–3/5 для содержания; 6 для maintenance |
 | §13 rollout и gate evidence | Каждый PR; итог 6 |
 
