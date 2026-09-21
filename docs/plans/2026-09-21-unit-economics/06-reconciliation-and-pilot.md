@@ -16,7 +16,7 @@
 ## Входной и выходной контракт
 
 
-Periodic reconciliation — локальная maintenance задача одного API, не browser heartbeat и не sideband. Pending resuming claims обрабатываются тем же abort/expiry контрактом §10.3, что startup/request-time PR 2; новые provider calls не выполняются. Истёкшая pause заканчивает product conversation; stale/unconfirmed provider records остаются unknown. Startup hydration из PR 2 не заменяется сбросом всех reservations.
+Periodic reconciliation — локальная maintenance задача одного API, не browser heartbeat и не sideband. **Она не заменяет и не откладывает PR-2 CleanupWorker**: orphan-cleanup transient Sideband retries идут уже после PR 2, независимо от browser/product deadline. PR 6 только репортит/reconciles exhausted/unknown cleanup rows и maintenance других deadlines; новые provider creates не выполняются.
 
 Cross-conversation report показывает sample definition, качество, app/policy/model/speech-measurement versions, measured vs estimated, zero-denominator handling. Active, accepted-source и completed-source minute ratios раздельны; numerator/denominator из одной cohort, её исключённая доля явна. Полный ratio требует final provider и завершённого полного app measurement; unknown/partial остаются в breakdown, не исчезают из общей выборки. Pricing policy version сохраняет исторические правила; uncalibrated monetary results не публикуются как invoice totals. Экспериментальные runs имеют отдельную среду/когорту и не смешиваются с продуктовой экономикой.
 
@@ -46,7 +46,7 @@ Backup использует coherent SQLite procedure и проверяется 
 
 
 - [ ] Добавить time-controlled reconciliation tests A6.1/A6.2 и mixed-data report fixtures A6.3/A6.4, не обнуляя неизвестные значения.
-- [ ] Реализовать maintenance hook, используя общий claim-expiry из PR 2; проверить A6.8. Report с тремя denominators и явным sample/quality contract закрепить A6.9; диагностические записи не содержат текста разговора.
+- [ ] Реализовать maintenance hook для claim expiry/reporting, используя PR-2 primitives; не переносить сюда CleanupWorker. Проверить отображение `cleanup_retry_exhausted`/unknown rows в reconciliation и A6.8.
 - [ ] Выполнить backup/restore в отдельной временной среде; сохранить команды и результаты A6.5, а не только наличие backup файла.
 - [ ] Проверить failure injection A6.6 с fake provider; при настоящей API credential production эксперимент не запускать из CI.
 - [ ] Выполнить/получить первичные материалы E1–E4 в рамках отдельно разрешённых измерений; redaction до commit результатов.

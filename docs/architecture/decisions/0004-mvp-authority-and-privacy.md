@@ -10,7 +10,7 @@ Backend хранит API key, но после signaling не принимает 
 
 ## Решение в предлагаемой редакции
 
-Для внутреннего MVP оставить browser-forwarded usage, без mandatory heartbeat и без постоянного Sideband в normal runtime. Исключение — transient authenticated Sideband attach к уже известному `openai_session_id` для orphan recovery любой cleanup-requested known-provider попытки без usable primary close path (result-commit ambiguity, lost 201, lifecycle abandonment, post-201 primary startup failure): client сначала сохраняет metadata-only cleanup intent в IndexedDB outbox и retry-ит до backend commit ACK; server marker сохраняется durable ещё до появления provider ID; после появления ID backend отправляет `session.close`, bounded ждёт closed/final metadata и закрывает sideband. Он не проксирует обычное аудио и не превращает этот путь в постоянный control plane. Cleanup существующего provider не зависит от creation limiter/current product generation. Сервер хранит metadata ledger, проверяет ownership, восстанавливает reservations и выполняет reconciliation/retention. Он не обозначает stale или locally released session как доказанно остановленную.
+Для внутреннего MVP оставить browser-forwarded usage, без mandatory heartbeat и без постоянного Sideband в normal runtime. Исключение — PR-2 transient Sideband `CleanupWorker`: client marker ACK передаёт backend durable responsibility, worker retry-ит attach/`session.close` с persistent schedule и restart recovery до provider terminal proof либо cleanup retry expiry, независимо от product deadlines. Это серия краткоживущих attach, не persistent control plane. Shared metadata capacity считается по unique `localId`; cleanup existing attempt priority-admitted и не evict-ится usage metadata.
 
 Anonymous cookie — случайный backend ID, first-party HttpOnly/Secure/SameSite=Lax в production, persistent `Max-Age=90 дней` со sliding renewal той же UUID на успешных owner-authenticated запросах; session-only identity для MVP не используется. Ledger и outbox — allowlist metadata без аудио/transcript/context/SDP. Runtime resume context хранится отдельно локально, tab-scoped и ограничен TTL. `store:false` сохраняется, но не объявляется универсальной гарантией всех режимов хранения у провайдера.
 
@@ -22,7 +22,7 @@ Heartbeat сейчас отложен: обнаружение клиента с�
 
 ## Последствия и ограничения
 
-При crash остаётся unknown расход и возможный аварийный хвост, если даже transient Sideband cleanup не подтвердился. Расширение Sideband за пределы orphan recovery обсуждается при существенных расхождениях пилота либо обязательном принудительном stop/paid limits. Metadata retention и snapshot TTL явно заданы policy и могут меняться отдельно с версией.
+При crash/cleanup retry exhaustion остаётся unknown расход и возможный аварийный хвост; exhaustion не объявляется provider close. Cleanup worker уже часть PR 2, а PR 6 только reconciles/report-ит такие anomalies. Расширение Sideband за пределы orphan recovery обсуждается отдельно.
 
 ## Проверка и внедрение
 

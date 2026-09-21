@@ -48,7 +48,7 @@ Resume: atomic server version claim (`paused → resuming`, durable local row/ID
 |---|---|---|
 | A5.13 | Успешный claim, затем media-not-ready/admission failure до dispatch | Сервер возвращён в paused через abort без новых пяти минут; нет provider call/slot, row failed без fabricated final. До старого deadline явный retry с новым ID успешен. Повтор старого claim лишь читает terminal outcome. |
 | A5.14 | Любая post-dispatch attempt больше не должна активироваться: failure, hidden, End/cancel/replacement | Cleanup outbox coalesce by `localId`, first reason wins; local durable write precedes lifecycle mutation/new create. Cleanup 404/409 registration race retry-ится; DELETE/lease release не очищает entry. HTTP failure gates не открывает. New same-conversation create ждёт cleanup marker/terminal provider outcome. |
-| A5.15 | Kill/restart; outbox-first crash; cleanup delivery loss; cleanup-vs-complete; late callbacks | Crash после outbox commit, но до End/Pause восстанавливается: cleanup flush first, затем conversation read и только version-safe lifecycle retry. Different later cleanup reason ACK-ится без 409. Identity-loss drop требует подтверждения, bare registration-race 404 retry-ится. Cleanup failure никогда не открывает gates. |
+| A5.15 | Kill/restart; cleanup delivery/Sideband retry loss; cleanup-vs-complete; product deadline | До marker client outbox retry продолжается независимо от product deadline до marker/terminal proof/identity loss/7-day TTL. После marker ACK browser может исчезнуть: PR-2 server worker продолжает retry до provider terminal proof/cleanup retry expiry. Product deadline только блокирует product activity/new create и не останавливает cleanup. |
 
 ## Последовательность работ
 
