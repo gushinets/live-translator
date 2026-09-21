@@ -10,7 +10,7 @@ Backend хранит API key, но после signaling не принимает 
 
 ## Решение в предлагаемой редакции
 
-Для внутреннего MVP оставить browser-forwarded usage, без mandatory heartbeat и без постоянного Sideband в normal runtime. Исключение — PR-2 transient Sideband `CleanupWorker`: marker ACK передаёт backend durable responsibility; все wake sources сериализованы single-flight по `localId`, а worker pass сначала expiry-scan-ит cleanup-marked rows независимо от provider ID, затем retry-ит known-ID Sideband close. Concurrent triggers не создают параллельные attach/close. Expiry без ID фиксирует exhausted/unknown, не close. Shared metadata capacity keyed by `localId`; cleanup priority-admitted.
+Для внутреннего MVP оставить browser-forwarded usage, без mandatory heartbeat и без постоянного Sideband. Исключение — PR-2 transient Sideband `CleanupWorker`: first attempt durable-scheduled (`next=now`) вместе с marker/late-ID commit, per-localId single-flight сериализует wake/expiry, а global semaphore (default 2) и bounded due batch (default 20) предотвращают restart burst. Expiry не может одновременно переписать running attempt; unknown-ID rows всё равно expire отдельным scan. Это серия краткоживущих attach, не persistent control plane.
 
 Anonymous cookie — случайный backend ID, first-party HttpOnly/Secure/SameSite=Lax в production, persistent `Max-Age=90 дней` со sliding renewal той же UUID на успешных owner-authenticated запросах; session-only identity для MVP не используется. Ledger и outbox — allowlist metadata без аудио/transcript/context/SDP. Runtime resume context хранится отдельно локально, tab-scoped и ограничен TTL. `store:false` сохраняется, но не объявляется универсальной гарантией всех режимов хранения у провайдера.
 

@@ -10,7 +10,7 @@
 
 ## Решение в предлагаемой редакции
 
-Сохранять anonymous user → conversation → local provider attempt. Cleanup marker — durable transfer termination responsibility PR-2 worker-у. В single-process MVP worker сериализует все wake sources по `localId`; одновременно существует максимум одна Sideband attempt на row, retry metadata обновляется один раз. Каждый pass сначала expiry-scan-ит все cleanup-marked non-terminal rows независимо от `openai_session_id`; marker-without-ID по 7-day deadline становится exhausted/unknown без fake close/release. Затем due scan обрабатывает known provider IDs. Product deadlines cleanup не прекращают; PR 6 только reports/reconciles exhausted rows.
+Сохранять anonymous user → conversation → local provider attempt. Cleanup marker при known provider ID в той же SQL transaction ставит first `cleanup_next_attempt_at=now`; late-ID commit делает то же, поэтому marker ACK не зависит от in-memory wake. PR-2 worker сериализует Sideband и expiry decisions per `localId`; running attempt выигрывает гонку с expiry и коммитит success/failure до exhaustion decision. Global transient Sideband concurrency bounded default 2, due batch default 20; overflow остаётся due и постепенно drain-ится. Product deadlines cleanup не прекращают; unknown-ID expiry остаётся отдельной фазой.
 
 Разделять `initial_mode`, `start_reason` и наблюдаемые phase durations. Состояние admission/lease не является состоянием provider billing. Product generation guards сохраняются; ledger generation/local ID не подменяют их. Ownership проверяется по cookie и FK, lifecycle защищается version CAS.
 
