@@ -24,13 +24,14 @@
 |---|---|---|
 | Успешный start и close через 1/5/14/16/30 секунд | Attempt ID, provider ID, observed durations, все numeric checkpoints, final, aggregated charges | Отражение initial charge и short lifetime |
 | Provider create successful, WebRTC не установлен | Response/outcome, available usage, project consumption после отчётной задержки | Может ли failed setup стоить денег и как это отражается |
+| **Transient Sideband orphan cleanup до primary readiness**: создать WebRTC session, получить `session.id`, намеренно не довести primary transport до usable `session.started` (или оборвать сразу после 201), затем attach Sideband по ID → `session.close` | Время create/attach/close, удалось ли attach до primary readiness, `session.closed`/reason/final либо timeout, отсутствие второго create, project consumption/charge после задержки | Проверяет реальный provider-specific cost-safety primitive, на котором основаны A2.5/A5.14; mocks/API docs недостаточны |
 | Response timeout / client отменил создание | Был ли dispatch, late result, повторов нет | Цена ambiguous attempt; нельзя принимать за zero |
 | Серия быстрых hidden/resume | Число sessions, время ready и known/final usage, charges | Реальная цена reconnect overhead |
 | Контрольная длинная сессия | Usage и project totals | Нет ли двойного прибавления initial duration |
 
 Сверять отдельно sessions и денежный aggregate одного project/time window, учитывая задержку provider reporting, другие workloads и округления. Если provider не даёт доступного per-session invoice, не изображать aggregate reconciliation как точную индивидуальную атрибуцию каждой строки.
 
-**Выход E2:** dataset без контента, правило применения initial charges/округления или явный unresolved статус, immutable pricing/allocation method version и объяснение расхождения. До него не зашивать `max(15, usage)` и не объявлять short unsuccessful attempts бесплатными.
+**Выход E2:** dataset без контента, правило применения initial charges/округления или явный unresolved статус, immutable pricing/allocation method version и объяснение расхождения. Отдельно зафиксировать, поддержан ли transient Sideband attach/`session.close` до usable primary readiness на pinned SDK/API и какой final/timeout/charge получается; до положительного evidence этот путь считается документированным best-effort recovery, но не production-proven provider guarantee. До E2 не зашивать `max(15, usage)` и не объявлять short unsuccessful attempts бесплатными.
 
 ## E3 — device lifecycle и resume
 
