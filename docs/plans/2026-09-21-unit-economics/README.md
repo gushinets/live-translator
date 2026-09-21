@@ -26,7 +26,7 @@
 | End инкрементирует generation до final; callback бросает исключение | A3.3, A4.7 |
 | Visibility во время setup или уже suspended, скрытый callback за очередью | A5.1–A5.3 |
 | Поздний media track старого peer воспринимается как stream нового | A4.4 |
-| Lost/in-flight create, metadata storage unavailable, API shutdown и Sideband cleanup recovery | A2.3–A2.7; PR-2 fail-closed MetadataDeliveryBudget + CleanupWorker shutdown; A3.6; A4.3/A4.6; A5.1/A5.14–A5.15 |
+| Lost/in-flight create, cross-tab budget race, dispatch-marker crash, API shutdown и Sideband cleanup recovery | A2.3–A2.7; PR-2 transactional MetadataDeliveryBudget + CleanupWorker shutdown; A3.6; A4.3/A4.6; A5.1/A5.14–A5.15 |
 | Mixed phase / text-only / нулевая или ненаблюдаемая речь искажают unit economics | A3.7–A3.13, A6.3, A6.9 |
 | После resume claim нет usable provider; browser исчез до abort | A2.10–A2.11, A5.13–A5.15, A6.8 |
 
