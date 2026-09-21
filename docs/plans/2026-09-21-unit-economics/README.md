@@ -16,7 +16,7 @@
 - Product callbacks старого live изолированы; его accounting callbacks продолжают приниматься.
 - Fixed languages A/B и определение стороны по речи сохраняются; `expectedSpeaker` не вводится.
 - Нормальный hidden инициирует close сразу; complete finalization и SQL delivery не гарантируются при kill браузера.
-- Нет mandatory heartbeat/Sideband, Redis/PostgreSQL/распределённой coordination или бесконечного rollover.
+- Нет mandatory heartbeat и нет **постоянного/normal-runtime Sideband**. PR 2 обязан реализовать transient authenticated Sideband только для orphan cleanup известных WebRTC attempts без usable primary close path; Redis/PostgreSQL/распределённая coordination и бесконечный rollover не вводятся.
 - Все новые policy defaults и границы reload описаны в спецификации; план не меняет их молча.
 
 ## Review focus
@@ -26,7 +26,7 @@
 | End инкрементирует generation до final; callback бросает исключение | A3.3, A4.7 |
 | Visibility во время setup или уже suspended, скрытый callback за очередью | A5.1–A5.3 |
 | Поздний media track старого peer воспринимается как stream нового | A4.4 |
-| Lost create response / restart провоцирует повторный платный запуск | A2.4–A2.6, A4.6 |
+| Lost/in-flight create, cleanup-before-ID и restart провоцируют orphan или повторный платный запуск | A2.4–A2.6; PR-2 cleanup intent/Sideband; A5.14–A5.15 |
 | Mixed phase / text-only / нулевая или ненаблюдаемая речь искажают unit economics | A3.7–A3.13, A6.3, A6.9 |
 | После resume claim нет usable provider; browser исчез до abort | A2.10–A2.11, A5.13–A5.15, A6.8 |
 
@@ -61,12 +61,12 @@ PR 1 → PR 2 → PR 3 → G1: измеряем текущий lifecycle
 |---|---|
 | §4 identity, ownership, state, multiple tabs | 2: durable CAS/recovery; 5: client lifecycle |
 | §5 database/model/persistence | 2, эксплуатация 6 |
-| §6 API, attempt/claim idempotency, versioned policy | 2; usage 3; client lifecycle 5 |
-| §7 usage, missing final, outbox | 3, release 4 |
+| §6 API, attempt/claim idempotency, cleanup intent/route, transient Sideband orphan recovery, versioned policy | 2; usage 3; client lifecycle 5 |
+| §7 provider-close primitive/provenance, usage, missing final, outbox | 2: `recordProviderClosed`/durable release; 3: checkpoint/final/outbox; 4: normal graceful boundary |
 | §8 active/speech/technical outcome metrics и reports | 3, cross-conversation/pricing 6 |
 | §9 graceful boundaries | 4 |
-| §10 background/resume/snapshot/deadlines | 5 |
-| §11 limiter/config/reservations | 1–2, cleanup 4/6 |
+| §10 background/resume/snapshot/deadlines | 2: durable claim/cleanup fences; 5: client lifecycle/snapshot |
+| §11 limiter/config/reservations | 1: config; 2: durable admission/startup recovery/orphan cleanup; 4: normal release boundary; 6: periodic maintenance |
 | §12 privacy, retention, backup | 2–3/5 для содержания; 6 для maintenance |
 | §13 rollout и gate evidence | Каждый PR; итог 6 |
 

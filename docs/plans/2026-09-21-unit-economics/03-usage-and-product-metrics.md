@@ -20,7 +20,7 @@
 
 Расширить existing `onUsage` в различимое наблюдение: `checkpoint`, `provider_closed`, `local_close_unconfirmed`; seconds/reason optional в соответствии с источником. Callback должен быть привязан к immutable local ID до подключения. Closed без seconds также поступает в reporter; product generation не фильтрует бухгалтерию.
 
-Wire `PUT .../:localId/usage` хранит checkpoint и final раздельно, app totals с `activityReportSeq`, close metadata/source и measurement version. Browser-forwarded `provider_closed` переиспользует уже существующий из PR 2 `UsageLedger.recordProviderClosed(...)`; PR 3 не вводит второй close/release primitive. Backend подтверждает merge после commit. Raw provider seconds — не суммируемый поток дельт. Один consumer exception не прерывает cleanup или фиксацию metadata.
+Wire `PUT .../:localId/usage` хранит checkpoint и final раздельно вместе с server-assigned numeric provenance (`provider_checkpoint_source`, `provider_final_source`), app totals с `activityReportSeq`, close metadata/reason provenance и measurement version. Browser route всегда тегируется `browser`; клиент не может прислать `sideband`. Browser-forwarded `provider_closed` переиспользует уже существующий из PR 2 `UsageLedger.recordProviderClosed(...)`; PR 3 не вводит второй close/release primitive. Backend подтверждает merge после commit. Raw provider seconds — не суммируемый поток дельт. Один consumer exception не прерывает cleanup или фиксацию metadata.
 
 Outbox coalesces ожидающие metadata одной сессии, но не теряет final и не пытается создавать OpenAI заново. Клиентский snapshot сохраняет per-provider totals, не повторённые conversation totals. Read endpoint conversation показывает summary §8, без SQL dashboard/полноценной analytics UI.
 
@@ -31,16 +31,16 @@ Outbox coalesces ожидающие metadata одной сессии, но не 
 
 | ID | Условие/сценарий | Ожидаемый результат |
 |---|---|---|
-| A3.1 | Snapshots 15→28→15→43→final46 | Checkpoint=43, final=46, один record; итог не 147 и не 193. |
-| A3.2 | Estimate90 → final74, затем duplicate final74 | Итог provider value74; raw estimate отдельно; число финализаций и сумма не удваиваются. |
+| A3.1 | Snapshots 15→28→15→43→final46 с browser/sideband источниками | Checkpoint=43, final=46, один record; итог не 147 и не 193. Checkpoint source следует observation, установившему max; equal Sideband checkpoint может усилить source, меньший не меняет source. Final имеет независимый source. |
+| A3.2 | Estimate90 → browser final74 → Sideband closed без usage → duplicate/equal или conflicting Sideband final | Итог provider value74; Sideband close без seconds не меняет `provider_final_source=browser`. Equal Sideband final может усилить final source; differing final ставит conflict и сохраняет обе value/source в conflict metadata. Raw estimate отдельно; число финализаций/сумма не удваиваются. |
 | A3.3 | Local End/cancel увеличил generation; либо remote close меняет её | Final старой сессии всё равно сохраняется. Product callback может игнорироваться/бросить исключение, accounting и teardown не теряются. |
-| A3.4 | Browser/Sideband close приходят в любом порядке; closed без usage / invalid seconds | Source merge монотонный `NULL < browser < sideband`: browser→sideband усиливает source и может заполнить missing final/reason; sideband→browser не понижает source и не переписывает stronger reason. Missing final можно заполнить, duplicate final идемпотентен, differing finals сохраняют conflict по существующим правилам. Browser observation не выдаётся за независимую provider authority и не превращается в final0. `recordProviderClosed` сохраняет cooperative durable release; security-sensitive quota из browser source не выводится. |
+| A3.4 | Browser/Sideband close приходят в любом порядке; closed без usage / invalid seconds | `close_confirmation_source` усиливается `NULL < browser < sideband`, reason имеет отдельный source, numeric final — отдельный source. Browser→Sideband close без usage усиливает только close provenance, но **не** authority прежнего browser final/reason без соответствующего Sideband значения. Sideband→browser ничего не понижает. Missing/equal/conflicting final следуют source-aware rules A3.2. Browser observation не выдаётся за независимую provider authority и не превращается в final0. |
 | A3.5 | Out-of-order seq и противоречащие финалы | App totals не откатываются; поздний final не фильтруется старым app seq; конфликт сохраняется и не скрывается max(). |
 | A3.6 | Сеть/БД отключены во время final | Outbox сохраняет metadata до commit ACK; повторная доставка after foreground не дублирует usage; shutdown аудио не ждёт HTTP. |
 | A3.7 | Active time в listening/source/output | 10 секунд listening и 20 секунд output дают 30 секунд; inputReady=false во время реплики не исключает её. Setup, hidden, error, correcting, suspended не включаются. |
 | A3.8 | Одна session: setup+interpreter; несколько sessions | Отдельные фазовые wall metrics и итог usage сохраняются; totals не умножаются на число sessions; точная phase provider cost не выдумывается. |
 | A3.9 | Text-only/correction/ошибка последующего steering | Caption-only не считается audible completion; correction одного turn не дублирует completed turn; уже завершённый audible output различим от ошибки восстановления listening. |
-| A3.10 | Allowlist и нулевой denominator | Reporter не отправляет context/transcript/SDP/audio; отчёт выдаёт NULL ratio при active=0 и явно показывает unknown/conflict records. |
+| A3.10 | Allowlist, provenance и нулевой denominator | Reporter не отправляет context/transcript/SDP/audio и не принимает client-selected `sideband` source; отчёт отдельно показывает close source и checkpoint/final source, unknown/conflict records. Sideband close без usage не маркирует browser final server-observed. Ratio при active=0 — NULL. |
 
 Дополнительные acceptance cases:
 
@@ -54,7 +54,7 @@ Outbox coalesces ожидающие metadata одной сессии, но не 
 
 
 - [ ] Зафиксировать merge contract A3.1–A3.5 в pure/unit и HTTP tests с конкретными числами из таблицы.
-- [ ] Расширить parser/event contract и accounting binding; browser close передавать в PR-2 `recordProviderClosed(source=browser, ...)`, не дублировать durable release логику. Проверить browser→sideband и sideband→browser order, source non-downgrade, missing-final fill и final conflict в A3.4. Сохранить teardown-before-untrusted-callback safety, не привязывая sink к current product generation.
+- [ ] Расширить parser/event contract и accounting binding; browser checkpoint/final/close передавать с server-assigned source=browser, Sideband observer — source=sideband; не дублировать PR-2 durable release. Проверить independent close/reason/final provenance, browser→sideband и sideband→browser order, equal-source upgrade, missing-final fill и final conflict в A3.1–A3.4. Сохранить teardown-before-untrusted-callback safety, не привязывая sink к current product generation.
 - [ ] Реализовать outbox/reporter и API commit acknowledgement; проверить network outage и callback exception A3.3/A3.6.
 - [ ] Встроить active-time hooks в реальные переходы и media-ready сигналы, не в значение inputReady; проверить A3.7–A3.9. Добавить pre-tail metadata samples, bounded monotonic integration и per-turn completed subset A3.11–A3.13; сравнить старые VAD/gating regression results.
 - [ ] Добавить metadata-only conversation summary с quality breakdown и versioned measurement semantics; выполнить A3.10.
