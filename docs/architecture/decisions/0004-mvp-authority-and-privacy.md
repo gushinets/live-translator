@@ -1,0 +1,33 @@
+# ADR-0004 — Граница серверной authority и metadata-only privacy
+
+**Статус:** proposed. **Дата:** 2026-09-21. **Реализация:** planned.  
+**Основание:** [handoff](../../sources/2026-09-21-unit-economics-handoff.md), [code review](../../reviews/2026-09-21-lifecycle-code-review.md).  
+**Нормативный контракт:** [spec v1.0](../../specs/2026-09-21-unit-economics-and-session-lifecycle.md).
+
+## Контекст
+
+Backend хранит API key, но после signaling не принимает аудио и provider events. Lease TTL очищает admission, не завершает OpenAI. Клиентская пересылка usage теряется при kill и теоретически подделывается клиентом; это не authenticated provider billing feed.
+
+## Решение в предлагаемой редакции
+
+Для внутреннего MVP оставить browser-forwarded usage, без mandatory heartbeat/Sideband. Сервер хранит metadata ledger, проверяет ownership, восстанавливает reservations и выполняет reconciliation/retention. Он не обозначает stale или locally released session как доказанно остановленную.
+
+Anonymous cookie — случайный backend ID, first-party HttpOnly/Secure в production. Ledger и outbox — allowlist metadata без аудио/transcript/context/SDP. Runtime resume context хранится отдельно локально и ограничен TTL. `store:false` сохраняется, но не объявляется универсальной гарантией всех режимов хранения у провайдера.
+
+Historical pricing воспроизводится версией policy и raw usage; missing provider outcome виден в отчётах. Доверенный коммерческий баланс/квота потребует нового решения о независимом наблюдении/контроле, а не расширения смысла текущей cookie.
+
+## Рассмотренные альтернативы
+
+Heartbeat сейчас отложен: обнаружение клиента само по себе не выключает провайдера. Sideband отложен: добавляет отдельное соединение и lifecycle, не требуется для первого внутреннего ledger. Считать lease expiry provider close отклонено как ложная гарантия. Полный transcript/raw-event архив отклонён как ненужный privacy risk.
+
+## Последствия и ограничения
+
+При crash остаётся unknown расход и возможный аварийный хвост. Новая область ответственности Sideband обсуждается при существенных расхождениях пилота либо обязательном принудительном stop/paid limits. Metadata retention и snapshot TTL явно заданы policy и могут меняться отдельно с версией.
+
+## Проверка и внедрение
+
+PR 1–6 по ownership/privacy/reconciliation; A2.2, A3.6/A3.10, A6.1–A6.7.
+
+## Принятие
+
+В handoff часть общего направления уже обозначена согласованной; данный ADR дополнительно фиксирует уточнения ревью. Наличие файла не является подтверждением принятия всех новых деталей. После фактического утверждения добавить дату и ссылку на решение и изменить status на accepted. Accepted и implemented отслеживаются отдельно.
