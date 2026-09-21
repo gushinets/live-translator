@@ -20,7 +20,7 @@ Database adapter владеет соединением/миграциями; led
 
 Нормативные поля и HTTP-контракты — §4–6 спецификации. Conversation создаётся до первого billable POST. Каждый отправляемый provider request имеет `liveSessionId`, persisted row, conversation FK, start reason и durable reservation. Ответ старого POST сохраняет `session`/`transport`, добавляя local ID/generation/policy metadata.
 
-`createLiveSession` сохраняет `maxRetries:0`. Повтор local attempt ID не вызывает OpenAI заново; потерянный ответ даёт existing/unknown state, а не бесплатную повторную попытку. Известный provider ID записывается даже при потере клиентского ответа. DB failure до регистрации запрещает внешнее создание.
+`createLiveSession` сохраняет `maxRetries:0`. Повтор local attempt ID не вызывает OpenAI заново; потерянный ответ даёт existing/unknown state, а не бесплатную повторную попытку. Известный provider ID записывается даже при потере клиентского ответа. DB failure до регистрации запрещает внешнее создание. Если provider success уже получен, но commit `openai_session_id`/`creation_completed_at` падает, обычный 201 не возвращается: row остаётся dispatched/unknown, backend best-effort закрывает известную provider session, reservation не маскируется как free/no-dispatch и внешний create автоматически не повторяется.
 
 Первичное восстановление reservations при startup входит уже в этот PR, а не оставляет regression до PR 6. Полная операционная сверка и backup runbook — PR 6.
 
@@ -31,11 +31,11 @@ Database adapter владеет соединением/миграциями; led
 
 | ID | Условие/сценарий | Ожидаемый результат |
 |---|---|---|
-| A2.1 | Первый и повторный запрос identity | Backend ставит production HttpOnly/Secure/SameSite cookie; frontend не получает anonymous ID в JSON; повтор createRequestId создаёт одну conversation. |
+| A2.1 | Первый и повторный запрос identity; browser restart | Backend ставит production HttpOnly/Secure/SameSite=Lax persistent cookie с Path=/, без Domain и `Max-Age=7776000` s; успешный owner-authenticated запрос продлевает тот же UUID, frontend не получает anonymous ID в JSON. Browser restart сохраняет identity; clearing/expiry создаёт новую. Повтор createRequestId создаёт одну conversation. |
 | A2.2 | Чужая conversation/session | Cookie другого пользователя не может создать дочернюю сессию, прочитать summary или освободить lease; UUID сам по себе не авторизует запрос. |
 | A2.3 | Вызов внешнего creator | Fake creator при входе уже видит committed attempt row; если insert/commit завершается ошибкой, fake creator не вызывается. |
 | A2.4 | Двойной POST того же attempt ID | Provider вызывается ровно один раз, в том числе при одновременных запросах. Повтор после restart не отправляет внешнее создание снова. |
-| A2.5 | Timeout после dispatch / поздний ответ | Сохраняется unknown, а не нулевой usage. Поздний provider ID дополняет исходную запись; paused/ended conversation не возвращается к active. |
+| A2.5 | Timeout после dispatch / поздний ответ / provider success + DB failure при result commit | Сохраняется unknown, а не нулевой usage. Поздний provider ID дополняет исходную запись; paused/ended conversation не возвращается к active. Если provider уже вернул ID/SDP, но durable result commit падает, клиент не получает обычный 201; fake cleanup вызывается для известного ID, reservation не освобождается как no-dispatch без подтверждённого cleanup, и retry не создаёт второго provider. |
 | A2.6 | Перезапуск API с живыми reservations | До допуска новых созданий прежние reservations восстановлены; dispatched creating умершего процесса становится unknown; no-dispatch resume помечается failed; нет выдачи всех слотов как свободных. |
 | A2.7 | Docker volume и миграции | DB и служебные файлы доступны USER node; данные сохраняются после пересоздания API container; повторный startup не применяет миграцию второй раз. |
 | A2.8 | Два bootstrap образца и interpreter | Один conversation связан с несколькими attempts; последняя сессия может продолжиться в interpreter без фиктивного нового record. |
@@ -54,7 +54,7 @@ Database adapter владеет соединением/миграциями; led
 - [ ] Создать migration/ownership/creation tests A2.1–A2.11 на временном SQLite файле и fake provider; не использовать рабочую БД.
 - [ ] Ввести две таблицы и repository/ledger интерфейс из спецификации; включить FK/WAL и операции без сетевого await внутри transaction.
 - [ ] Добавить conversation routes, cookie и передачу local attempt context через BackendClient/LiveClient; не менять language routing и background поведение.
-- [ ] Обернуть создание durable registration и idempotency; добавить startup hydration registry, не включая automatic external retry.
+- [ ] Обернуть создание durable registration и idempotency; отдельно закрепить provider-success → result-commit-failure из A2.5 с best-effort cleanup и conservative reservation; добавить startup hydration registry, не включая automatic external retry.
 - [ ] Проверить pending create → pause/end → late result и cookie ownership на обоих HTTP путях; закрепить CAS claim/complete/abort и startup/request-time expiry A2.10/A2.11 без включения frontend resume.
 - [ ] Собрать именно API Docker image, проверить права persistent volume и миграции после restart; затем общий regression suite.
 - [ ] Включать ledger только согласованно для новых clients/conversations; добавить schema и feature-policy version в результат PR.

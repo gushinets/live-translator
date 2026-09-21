@@ -8,7 +8,7 @@
 
 Слова **должен / нельзя** ниже задают предлагаемый контракт v1.1. Они станут принятыми требованиями после утверждения документа. Весь документ относится к этому MVP; он не объявляет клиентские отчёты достаточными для списаний денег.
 
-**Редакция v1.1:** исправления замечаний PR #13: durable resume claim/complete/abort, два знаменателя длительности речи, явные defaults и единая граница утверждения. Это согласованное уточнение предлагаемого текста, не принятие всей архитектуры или новых продуктовых лимитов. Исходный handoff и историческое ревью не изменены.
+**Редакция v1.1:** исправления замечаний PR #13: durable resume claim/complete/abort, два знаменателя длительности речи, явные defaults и единая граница утверждения; последующий review pass уточняет post-dispatch DB failure, tab-scoped ownership resume snapshot, освобождение admission по подтверждённому provider close и persistent lifetime anonymous cookie. Это согласованное уточнение предлагаемого текста, не принятие всей архитектуры или новых продуктовых лимитов. Исходный handoff и историческое ревью не изменены.
 
 ## 1. Цель и границы
 
@@ -75,7 +75,7 @@ Persistent status: `active | paused | resuming | ended`. `active` означае
 
 Каждая lifecycle-операция проверяет cookie → conversation → session. Оптимистическая `conversation.version` увеличивается при каждом переходе pause/resume-claim/complete/abort/expiry/end. Запрос со старой версией не меняет состояние. Идемпотентный повтор уже выполненной resume-операции возвращает сохранённый outcome и текущее состояние без повторного перехода (§6, §10.3).
 
-Обычный новый запуск во второй вкладке создаёт другой conversation. Нельзя автоматически открывать «последний активный разговор пользователя» из общего local storage. Новый resume claim возможен только для `paused` и валидной версии; два разных одновременных claim дают один успех и один конфликт. Один и тот же `resumeAttemptId` — повтор одной операции, не новый claim. Поздний End старой вкладки не завершает возобновлённый conversation.
+Обычный новый запуск во второй вкладке создаёт другой conversation. Нельзя автоматически открывать «последний активный разговор пользователя» из общего local storage. Runtime resume snapshot не является origin-wide singleton: каждая top-level вкладка имеет собственный `clientInstanceId`, сохраняемый в `sessionStorage`, а IndexedDB snapshot адресуется как минимум парой `(clientInstanceId, conversationId)`. Reload сохраняет pointer своей вкладки; независимая новая вкладка не сканирует и не выбирает «последний» snapshot другой вкладки. Новый resume claim возможен только для `paused` и валидной версии; два разных одновременных claim дают один успех и один конфликт. Один и тот же `resumeAttemptId` — повтор одной операции, не новый claim. Поздний End старой вкладки не завершает возобновлённый conversation.
 
 Usage старых сессий принимается по владению записью, **не** по актуальности product generation/version: иначе потеряются финалы после resume.
 
@@ -172,6 +172,8 @@ Resume claim использует те же две таблицы: атомар�
 
 Если провайдерский запрос уже отправлен, но результат неизвестен из-за timeout/сети/рестарта, запись `unknown`, не `failed_zero_cost`. При позднем ответе ID дописывается в ту же запись. Перед активацией ответа клиент перепроверяет generation, visibility и состояние conversation. Backend не выдаёт `active` разговору, который уже ended/paused, только потому что пришёл поздний SDP.
 
+Успешный ответ OpenAI ещё не завершает local creation: HTTP 201 с SDP разрешён только после durable commit `openai_session_id` и `creation_completed_at` в исходную row. Если OpenAI уже вернул provider ID/SDP, но этот commit не удался, попытка остаётся externally dispatched/ambiguous и не может быть переписана как `not_dispatched`, `failed_zero_cost` или безопасно повторена с новым UUID. Клиент не получает обычный успешный SDP-ответ; backend выполняет best-effort server-side cleanup известной provider session, если её ID доступен. Если cleanup или его фиксация не подтверждены durable, reservation сохраняется консервативно до подтверждённого close/release либо lease expiry, а reconciliation оставляет usage/outcome `unknown`, не нулевым. После восстановления DB автоматический повтор external create запрещён.
+
 ### 6.2. Policy и совместимость deployment
 
 Policy возвращается при create/read/resume conversation: `conversationRetentionMs`, `maxProviderSessionMs`, `maxConversationElapsedMs`, `sessionCloseTimeoutMs`, `resumeClaimTimeoutMs`, `backgroundSessionCloseEnabled`, `policyVersion`. Это серверные operational settings, а не ожидание, что Vite прочитает новые Docker env после сборки.
@@ -184,7 +186,7 @@ PR 2–3 включаются согласованно для backend/frontend. 
 
 Accounting observer привязан к local session record, а не к `this.live` на момент callback. Он получает различимый `checkpoint`, `provider_closed` или `local_close_unconfirmed`. При closed снимается metadata snapshot независимо от продуктового callback и его исключений. Внутренний teardown транспорта также не зависит от callback.
 
-`provider_closed` без seconds устанавливает `close_confirmed=true`, но сохраняет `provider_final_seconds=NULL`. Старый checkpoint не выдаётся за final. Невалидные seconds отбрасываются/помечаются как metric anomaly; валидная metadata закрытия не должна теряться из-за них.
+`provider_closed` без seconds устанавливает `close_confirmed=true`, но сохраняет `provider_final_seconds=NULL`. Старый checkpoint не выдаётся за final. Невалидные seconds отбрасываются/помечаются как metric anomaly; валидная metadata закрытия не должна теряться из-за них. Committed `provider_closed` является сигналом liveness для admission: локальную reservation можно освободить независимо от наличия final seconds, сохраняя usage quality `partial/unknown`.
 
 | Наблюдение | Правило merge |
 |---|---|
@@ -273,7 +275,7 @@ Visibility tracking регистрируется до первого provider re
 
 ### 10.2. Snapshot
 
-Runtime snapshot хранится локально в IndexedDB отдельно от outbox. В нём: schema/prompt versions, conversation ID и last known version, подтверждённые A/B languages, `hasAcceptedConversationSpeech`, отредактированный authoritative context, setup stage, `enteredInterpreter`, признак прерванной реплики, pause expiry. Не сохраняются аудио, полный transcript, bootstrap speech samples или произвольные provider events.
+Runtime snapshot хранится локально в IndexedDB отдельно от outbox и адресуется tab-scoped `clientInstanceId` из `sessionStorage` вместе с `conversationId`; origin-wide «последний snapshot» не существует. В нём: schema/prompt versions, conversation ID и last known version, подтверждённые A/B languages, `hasAcceptedConversationSpeech`, отредактированный authoritative context, setup stage, `enteredInterpreter`, признак прерванной реплики, pause expiry. Не сохраняются аудио, полный transcript, bootstrap speech samples или произвольные provider events.
 
 Подтверждённые изменения snapshot сохраняются при изменении состояния, а не только в последнем hidden callback. Содержимое ограничено существующим append budget; нельзя молча обрезать текст или обходить validation. Локальный срок snapshot начинается при hidden и не продлевается поздним pause ACK. При задержке доставки server pause deadline может быть позднее локального: resume требует выполнения обоих ограничений. После TTL, End или несовместимости schema snapshot не используется и удаляется при первой возможности выполнения JS. Это логический TTL, не обещание физического удаления ровно через пять минут из выключенного браузера.
 
@@ -331,11 +333,11 @@ End выключает local capture/output сразу, делает terminal pr
 
 Admission остаётся memory registry, но durable reservation metadata хранится в ledger. При старте процесса незавершённые reservations восстанавливаются до разрешения новых созданий; создававшиеся в умершем процессе dispatched попытки становятся unknown, не повторяются автоматически. Для ещё не отправленного resume claim сохраняется failed/no-dispatch; pending claims откатываются по §10.3. Эта startup/request-time защита входит в PR 2, периодическая maintenance — в PR 6. Expired reservation может освободить локальный слот; row сохраняет неизвестный provider outcome. Из ledger не выводится гарантированное число реально живых OpenAI-сессий.
 
-Если DB недоступна до registration, новый provider request запрещён. Если DB недоступна при shutdown, browser всё равно закрывает аудио/provider и хранит metadata outbox. Если final известен, но release HTTP потерян, повторный release безопасен; confirmed final может освобождать slot на сервере независимо от потерянного DELETE.
+Если DB недоступна до registration, новый provider request запрещён. Если DB недоступна при shutdown, browser всё равно закрывает аудио/provider и хранит metadata outbox. Если release HTTP потерян, повторный release безопасен. Committed `provider_closed` / `close_confirmed=true` освобождает local admission slot независимо от того, пришли ли `provider_final_seconds`; отсутствие final seconds оставляет metering `partial/unknown`, но не делает уже закрытую provider session локально «живой».
 
 ## 12. Privacy и эксплуатация
 
-Cookie в production: first-party, HttpOnly, Secure, SameSite=Lax, Path=/, без Domain; random ID не показывается UI. Локальная HTTP-разработка использует отдельную dev-cookie policy. Basic Auth Nginx — perimeter access, не user identity. Cookie не является механизмом защиты paid quota от смены браузера.
+Cookie в production: first-party, HttpOnly, Secure, SameSite=Lax, Path=/, без Domain; random ID не показывается UI. Это persistent identity, не session cookie: предлагаемый default `Max-Age=7776000` секунд (90 дней). На успешных same-origin owner-authenticated API запросах backend продлевает lifetime той же UUID (sliding renewal), не меняя identity только ради renewal; missing/invalid/expired cookie создаёт новую identity. Такой срок существенно длиннее 7-дневного outbox TTL; clearing cookie по-прежнему явно прекращает возможность авторизовать старый outbox. Локальная HTTP-разработка использует отдельную dev-cookie policy. Basic Auth Nginx — perimeter access, не user identity. Cookie не является механизмом защиты paid quota от смены браузера.
 
 Ledger/report schemas используют allowlist. Не сохранять полный `session.closed`, error payload, prompts, context, SDP, transcript или IP-history. `store:false` не называется универсальной гарантией всех режимов data retention провайдера.
 

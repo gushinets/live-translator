@@ -34,7 +34,7 @@ Outbox coalesces ожидающие metadata одной сессии, но не 
 | A3.1 | Snapshots 15→28→15→43→final46 | Checkpoint=43, final=46, один record; итог не 147 и не 193. |
 | A3.2 | Estimate90 → final74, затем duplicate final74 | Итог provider value74; raw estimate отдельно; число финализаций и сумма не удваиваются. |
 | A3.3 | Local End/cancel увеличил generation; либо remote close меняет её | Final старой сессии всё равно сохраняется. Product callback может игнорироваться/бросить исключение, accounting и teardown не теряются. |
-| A3.4 | Closed без usage / отрицательные или бесконечные seconds | Close confirmation не превращается в final0; metric anomaly не удерживает transport открытым и не теряет валидную причину close. |
+| A3.4 | Closed без usage / отрицательные или бесконечные seconds | Close confirmation не превращается в final0; metric anomaly не удерживает transport открытым и не теряет валидную причину close. Committed `provider_closed` освобождает local admission reservation даже при `provider_final_seconds=NULL`; usage остаётся partial/unknown. |
 | A3.5 | Out-of-order seq и противоречащие финалы | App totals не откатываются; поздний final не фильтруется старым app seq; конфликт сохраняется и не скрывается max(). |
 | A3.6 | Сеть/БД отключены во время final | Outbox сохраняет metadata до commit ACK; повторная доставка after foreground не дублирует usage; shutdown аудио не ждёт HTTP. |
 | A3.7 | Active time в listening/source/output | 10 секунд listening и 20 секунд output дают 30 секунд; inputReady=false во время реплики не исключает её. Setup, hidden, error, correcting, suspended не включаются. |

@@ -12,7 +12,7 @@ Backend хранит API key, но после signaling не принимает 
 
 Для внутреннего MVP оставить browser-forwarded usage, без mandatory heartbeat/Sideband. Сервер хранит metadata ledger, проверяет ownership, восстанавливает reservations и выполняет reconciliation/retention. Он не обозначает stale или locally released session как доказанно остановленную.
 
-Anonymous cookie — случайный backend ID, first-party HttpOnly/Secure в production. Ledger и outbox — allowlist metadata без аудио/transcript/context/SDP. Runtime resume context хранится отдельно локально и ограничен TTL. `store:false` сохраняется, но не объявляется универсальной гарантией всех режимов хранения у провайдера.
+Anonymous cookie — случайный backend ID, first-party HttpOnly/Secure/SameSite=Lax в production, persistent `Max-Age=90 дней` со sliding renewal той же UUID на успешных owner-authenticated запросах; session-only identity для MVP не используется. Ledger и outbox — allowlist metadata без аудио/transcript/context/SDP. Runtime resume context хранится отдельно локально, tab-scoped и ограничен TTL. `store:false` сохраняется, но не объявляется универсальной гарантией всех режимов хранения у провайдера.
 
 Historical pricing воспроизводится версией policy и raw usage; missing provider outcome виден в отчётах. Доверенный коммерческий баланс/квота потребует нового решения о независимом наблюдении/контроле, а не расширения смысла текущей cookie.
 

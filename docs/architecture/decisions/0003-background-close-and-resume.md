@@ -16,7 +16,7 @@ Handoff сообщает почти wall-time usage muted-сессии и при
 
 Возврат проходит через durable `paused → resuming → active`; client/provider/media failure даёт abort, а исчезновение клиента — server expiry/startup recovery. Claim ID равен local attempt ID, claim lease не является provider admission lease. До complete active/gates-on запрещены. Abort и повтор не сдвигают исходный retention; dispatched outcome не обнуляется. По умолчанию claim ограничен 60000 ms и исходными deadlines; детали idempotency/late complete в §10.3 спецификации.
 
-В этой редакции предлагаются defaults: conversation retention 5 минут; close wait 15 секунд, как сейчас; отдельный product deadline 15 минут от первого external provider dispatch без сброса на resume. Последний — новое консервативное продуктовое ограничение, не ранее принятый факт. Reload same-ID ограничен подтверждённым paused на backend.
+В этой редакции предлагаются defaults: conversation retention 5 минут; close wait 15 секунд, как сейчас; отдельный product deadline 15 минут от первого external provider dispatch без сброса на resume. Последний — новое консервативное продуктовое ограничение, не ранее принятый факт. Reload same-ID ограничен подтверждённым paused на backend и собственным tab-scoped snapshot; origin-wide «последний conversation» не используется.
 
 ## Рассмотренные альтернативы
 
