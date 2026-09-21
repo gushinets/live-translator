@@ -16,7 +16,7 @@
 ## Входной и выходной контракт
 
 
-Periodic reconciliation — локальная maintenance задача одного API, не browser heartbeat и не sideband. **Она не заменяет и не откладывает PR-2 CleanupWorker**: orphan-cleanup transient Sideband retries идут уже после PR 2, независимо от browser/product deadline. PR 6 только репортит/reconciles exhausted/unknown cleanup rows и maintenance других deadlines; новые provider creates не выполняются.
+Periodic reconciliation — локальная maintenance задача одного API, не browser heartbeat и не sideband. **Она не заменяет PR-2 CleanupWorker и его expiry scan**: concurrent cleanup serialization, Sideband retries и marker-without-ID expiry уже реализуются в PR 2. PR 6 только report/reconcile-ит `cleanup_retry_exhausted`/unknown rows и другие deadlines; новые provider creates/cleanup attempts не выполняются.
 
 Cross-conversation report показывает sample definition, качество, app/policy/model/speech-measurement versions, measured vs estimated, zero-denominator handling. Active, accepted-source и completed-source minute ratios раздельны; numerator/denominator из одной cohort, её исключённая доля явна. Полный ratio требует final provider и завершённого полного app measurement; unknown/partial остаются в breakdown, не исчезают из общей выборки. Pricing policy version сохраняет исторические правила; uncalibrated monetary results не публикуются как invoice totals. Экспериментальные runs имеют отдельную среду/когорту и не смешиваются с продуктовой экономикой.
 
@@ -27,7 +27,7 @@ Backup использует coherent SQLite procedure и проверяется 
 
 | ID | Условие/сценарий | Ожидаемый результат |
 |---|---|---|
-| A6.1 | Server restart / expired paused / неизвестная provider запись | Reservations восстановлены; pause истекает без трафика браузера; TTL/pruning не выставляет provider_final и не подставляет время конца потребления. |
+| A6.1 | Server restart / expired paused / cleanup-exhausted unknown provider row | Reservations восстановлены; pause истекает без browser traffic. PR-2 worker уже durable-зафиксировал cleanup expiry даже если provider ID никогда не появился; reconciliation показывает exhausted/unknown без provider_final, fake close или inferred provider end time. |
 | A6.2 | Late final после reconciliation | Usage уточняется в прежней записи без reopening conversation; ended_at/end_reason не переписываются метрикой. |
 | A6.3 | Смешанная когорта final/partial/unknown/conflict | Count coverage и known-seconds coverage различимы; unknown не теряется из знаменателей выборки; phase cost и historical cost не выдаются за проверенные без метода/version. |
 | A6.4 | Два price/policy versions | Старые исходные seconds не меняются; historical estimate использует старую policy; отдельный current-price scenario не замещает исторический результат. |
@@ -46,7 +46,7 @@ Backup использует coherent SQLite procedure и проверяется 
 
 
 - [ ] Добавить time-controlled reconciliation tests A6.1/A6.2 и mixed-data report fixtures A6.3/A6.4, не обнуляя неизвестные значения.
-- [ ] Реализовать maintenance hook для claim expiry/reporting, используя PR-2 primitives; не переносить сюда CleanupWorker. Проверить отображение `cleanup_retry_exhausted`/unknown rows в reconciliation и A6.8.
+- [ ] Реализовать maintenance hook для claim expiry/reporting, используя PR-2 primitives; не переносить сюда CleanupWorker/single-flight/expiry scan. Проверить отображение marker-without-ID `cleanup_retry_exhausted`/unknown rows в reconciliation и A6.1/A6.8.
 - [ ] Выполнить backup/restore в отдельной временной среде; сохранить команды и результаты A6.5, а не только наличие backup файла.
 - [ ] Проверить failure injection A6.6 с fake provider; при настоящей API credential production эксперимент не запускать из CI.
 - [ ] Выполнить/получить первичные материалы E1–E4 в рамках отдельно разрешённых измерений; redaction до commit результатов.

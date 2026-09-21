@@ -16,7 +16,7 @@
 - Product callbacks старого live изолированы; его accounting callbacks продолжают приниматься.
 - Fixed languages A/B и определение стороны по речи сохраняются; `expectedSpeaker` не вводится.
 - Нормальный hidden инициирует close сразу; complete finalization и SQL delivery не гарантируются при kill браузера.
-- Нет mandatory heartbeat и нет **постоянного/normal-runtime Sideband**. PR 2 реализует transient Sideband cleanup worker с durable retry schedule; marker ACK передаёт cleanup responsibility backend до provider terminal proof/cleanup TTL. PR 6 не является владельцем этого retry loop.
+- Нет mandatory heartbeat и нет **постоянного/normal-runtime Sideband**. PR 2 реализует transient Sideband `CleanupWorker` с per-`localId` single-flight: marker/late-ID/timer/startup triggers не запускают параллельные cleanup одной row. Каждый worker pass expiry-scan-ит cleanup markers независимо от provider ID, затем запускает due Sideband work для known IDs. PR 6 не владеет retry/expiry loop.
 - Все новые policy defaults и границы reload описаны в спецификации; план не меняет их молча.
 
 ## Review focus
@@ -26,7 +26,7 @@
 | End инкрементирует generation до final; callback бросает исключение | A3.3, A4.7 |
 | Visibility во время setup или уже suspended, скрытый callback за очередью | A5.1–A5.3 |
 | Поздний media track старого peer воспринимается как stream нового | A4.4 |
-| Lost/in-flight create, lifecycle abandonment, cleanup HTTP/Sideband failure и restart провоцируют orphan | A2.4–A2.6; PR-2 client outbox + server CleanupWorker; A4.3/A4.6; A5.1/A5.14–A5.15 |
+| Lost/in-flight create, lifecycle abandonment, cleanup HTTP/Sideband failure, concurrent worker wakes и unknown-ID expiry | A2.4–A2.6; PR-2 client outbox + single-flight CleanupWorker; A4.3/A4.6; A5.1/A5.14–A5.15 |
 | Mixed phase / text-only / нулевая или ненаблюдаемая речь искажают unit economics | A3.7–A3.13, A6.3, A6.9 |
 | После resume claim нет usable provider; browser исчез до abort | A2.10–A2.11, A5.13–A5.15, A6.8 |
 
@@ -61,12 +61,12 @@ PR 1 → PR 2 → PR 3 → G1: измеряем текущий lifecycle
 |---|---|
 | §4 identity, ownership, state, multiple tabs | 2: durable CAS/recovery; 5: client lifecycle |
 | §5 database/model/persistence | 2, эксплуатация 6 |
-| §6 API, idempotency, client cleanup outbox + PR-2 server cleanup worker/Sideband retry, versioned policy | 2; lifecycle callers 4–5; usage 3 |
+| §6 API, idempotency, client cleanup outbox + PR-2 single-flight cleanup worker/Sideband retry/expiry scan, versioned policy | 2; lifecycle callers 4–5; usage 3 |
 | §7 provider-close primitive/provenance, usage, shared unique-localId outbox budget | 2: close/cleanup worker/budget reservation; 3: usage outbox/metrics; 4: normal graceful boundary |
 | §8 active/speech/technical outcome metrics и reports | 3, cross-conversation/pricing 6 |
 | §9 graceful boundaries | 4 |
 | §10 background/resume/snapshot/deadlines | 2: durable claim/cleanup fences; 5: client lifecycle/snapshot |
-| §11 limiter/config/reservations | 1: config; 2: durable admission/startup recovery/orphan cleanup worker; 4: normal release boundary; 6: reconciliation/report maintenance only |
+| §11 limiter/config/reservations | 1: config; 2: durable admission/startup recovery, single-flight orphan cleanup worker и expiry scan; 4: normal release boundary; 6: reconciliation/report maintenance only |
 | §12 privacy, retention, backup | 2–3/5 для содержания; 6 для maintenance |
 | §13 rollout и gate evidence | Каждый PR; итог 6 |
 

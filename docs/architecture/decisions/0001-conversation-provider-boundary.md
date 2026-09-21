@@ -10,7 +10,7 @@
 
 ## Решение в предлагаемой редакции
 
-Сохранять anonymous user → conversation → local provider attempt; cleanup marker — durable transfer of termination responsibility. До marker client `CleanupIntentOutbox` retry-ит независимо от product deadline; после marker ACK backend PR-2 `CleanupWorker` durable-retry-ит transient Sideband close до provider terminal proof либо 7-day cleanup retry expiry, включая restart recovery. Product/max-conversation deadlines не прекращают cleanup. Capacity budget логически keyed by `localId`, slot резервируется до dispatch, поэтому cleanup existing attempt всегда admissible и приоритетнее usage.
+Сохранять anonymous user → conversation → local provider attempt. Cleanup marker — durable transfer termination responsibility PR-2 worker-у. В single-process MVP worker сериализует все wake sources по `localId`; одновременно существует максимум одна Sideband attempt на row, retry metadata обновляется один раз. Каждый pass сначала expiry-scan-ит все cleanup-marked non-terminal rows независимо от `openai_session_id`; marker-without-ID по 7-day deadline становится exhausted/unknown без fake close/release. Затем due scan обрабатывает known provider IDs. Product deadlines cleanup не прекращают; PR 6 только reports/reconciles exhausted rows.
 
 Разделять `initial_mode`, `start_reason` и наблюдаемые phase durations. Состояние admission/lease не является состоянием provider billing. Product generation guards сохраняются; ledger generation/local ID не подменяют их. Ownership проверяется по cookie и FK, lifecycle защищается version CAS.
 
@@ -26,7 +26,7 @@
 
 ## Проверка и внедрение
 
-PR 2: модель, CAS, startup/request-time recovery; PR 5: client restore; PR 6: periodic cleanup. Проверки A2.2–A2.8, A2.10–A2.11, A5.6, A5.13–A5.15, A6.8.
+PR 2: модель, CAS, client outbox, single-flight cleanup worker, retry/expiry/startup recovery; PR 5: client restore/lifecycle callers; PR 6: reconciliation/reporting exhausted/unknown cleanup outcomes.
 
 ## Принятие
 

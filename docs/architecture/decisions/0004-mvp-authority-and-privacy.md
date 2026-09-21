@@ -10,7 +10,7 @@ Backend хранит API key, но после signaling не принимает 
 
 ## Решение в предлагаемой редакции
 
-Для внутреннего MVP оставить browser-forwarded usage, без mandatory heartbeat и без постоянного Sideband в normal runtime. Исключение — PR-2 transient Sideband `CleanupWorker`: client marker ACK передаёт backend durable responsibility, worker retry-ит attach/`session.close` с persistent schedule и restart recovery до provider terminal proof либо cleanup retry expiry, независимо от product deadlines. Это серия краткоживущих attach, не persistent control plane. Shared metadata capacity считается по unique `localId`; cleanup existing attempt priority-admitted и не evict-ится usage metadata.
+Для внутреннего MVP оставить browser-forwarded usage, без mandatory heartbeat и без постоянного Sideband в normal runtime. Исключение — PR-2 transient Sideband `CleanupWorker`: marker ACK передаёт backend durable responsibility; все wake sources сериализованы single-flight по `localId`, а worker pass сначала expiry-scan-ит cleanup-marked rows независимо от provider ID, затем retry-ит known-ID Sideband close. Concurrent triggers не создают параллельные attach/close. Expiry без ID фиксирует exhausted/unknown, не close. Shared metadata capacity keyed by `localId`; cleanup priority-admitted.
 
 Anonymous cookie — случайный backend ID, first-party HttpOnly/Secure/SameSite=Lax в production, persistent `Max-Age=90 дней` со sliding renewal той же UUID на успешных owner-authenticated запросах; session-only identity для MVP не используется. Ledger и outbox — allowlist metadata без аудио/transcript/context/SDP. Runtime resume context хранится отдельно локально, tab-scoped и ограничен TTL. `store:false` сохраняется, но не объявляется универсальной гарантией всех режимов хранения у провайдера.
 
@@ -22,7 +22,7 @@ Heartbeat сейчас отложен: обнаружение клиента с�
 
 ## Последствия и ограничения
 
-При crash/cleanup retry exhaustion остаётся unknown расход и возможный аварийный хвост; exhaustion не объявляется provider close. Cleanup worker уже часть PR 2, а PR 6 только reconciles/report-ит такие anomalies. Расширение Sideband за пределы orphan recovery обсуждается отдельно.
+При crash/cleanup retry exhaustion остаётся unknown расход и возможный аварийный хвост; exhaustion не объявляется provider close. Marker-without-ID также получает expiry/anomaly через PR-2 expiry scan. Cleanup worker уже часть PR 2, а PR 6 только reconciles/report-ит такие outcomes.
 
 ## Проверка и внедрение
 
