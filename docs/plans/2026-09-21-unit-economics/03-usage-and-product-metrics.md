@@ -34,7 +34,7 @@ Outbox coalesces ожидающие metadata одной сессии, но не 
 | A3.1 | Snapshots 15→28→15→43→final46 | Checkpoint=43, final=46, один record; итог не 147 и не 193. |
 | A3.2 | Estimate90 → final74, затем duplicate final74 | Итог provider value74; raw estimate отдельно; число финализаций и сумма не удваиваются. |
 | A3.3 | Local End/cancel увеличил generation; либо remote close меняет её | Final старой сессии всё равно сохраняется. Product callback может игнорироваться/бросить исключение, accounting и teardown не теряются. |
-| A3.4 | Closed без usage / отрицательные или бесконечные seconds | Close confirmation не превращается в final0; metric anomaly не удерживает transport открытым и не теряет валидную причину close. Committed `provider_closed` освобождает local admission reservation даже при `provider_final_seconds=NULL`; usage остаётся partial/unknown. |
+| A3.4 | Closed без usage / отрицательные или бесконечные seconds / crash сразу после close commit | Close confirmation не превращается в final0; metric anomaly не удерживает transport открытым и не теряет валидную причину close. Одна SQL transaction фиксирует `close_confirmed=true`, `state=closed` и `lease_released_at` даже при `provider_final_seconds=NULL`; только после commit снимается memory lease. Crash до memory cleanup + restart не rehydrate-ит эту reservation; usage остаётся partial/unknown. |
 | A3.5 | Out-of-order seq и противоречащие финалы | App totals не откатываются; поздний final не фильтруется старым app seq; конфликт сохраняется и не скрывается max(). |
 | A3.6 | Сеть/БД отключены во время final | Outbox сохраняет metadata до commit ACK; повторная доставка after foreground не дублирует usage; shutdown аудио не ждёт HTTP. |
 | A3.7 | Active time в listening/source/output | 10 секунд listening и 20 секунд output дают 30 секунд; inputReady=false во время реплики не исключает её. Setup, hidden, error, correcting, suspended не включаются. |
@@ -54,7 +54,7 @@ Outbox coalesces ожидающие metadata одной сессии, но не 
 
 
 - [ ] Зафиксировать merge contract A3.1–A3.5 в pure/unit и HTTP tests с конкретными числами из таблицы.
-- [ ] Расширить parser/event contract и accounting binding; сохранить teardown-before-untrusted-callback safety, не привязывая sink к current product generation.
+- [ ] Расширить parser/event contract и accounting binding; close observation и durable lease release объединить в одну transaction, затем снимать memory lease; проверить close-commit → crash/restart A3.4. Сохранить teardown-before-untrusted-callback safety, не привязывая sink к current product generation.
 - [ ] Реализовать outbox/reporter и API commit acknowledgement; проверить network outage и callback exception A3.3/A3.6.
 - [ ] Встроить active-time hooks в реальные переходы и media-ready сигналы, не в значение inputReady; проверить A3.7–A3.9. Добавить pre-tail metadata samples, bounded monotonic integration и per-turn completed subset A3.11–A3.13; сравнить старые VAD/gating regression results.
 - [ ] Добавить metadata-only conversation summary с quality breakdown и versioned measurement semantics; выполнить A3.10.

@@ -10,7 +10,7 @@ Backend хранит API key, но после signaling не принимает 
 
 ## Решение в предлагаемой редакции
 
-Для внутреннего MVP оставить browser-forwarded usage, без mandatory heartbeat/Sideband. Сервер хранит metadata ledger, проверяет ownership, восстанавливает reservations и выполняет reconciliation/retention. Он не обозначает stale или locally released session как доказанно остановленную.
+Для внутреннего MVP оставить browser-forwarded usage, без mandatory heartbeat и без постоянного Sideband в normal runtime. Исключение — transient authenticated Sideband attach к уже известному `openai_session_id` только для orphan recovery после provider-success/result-commit ambiguity или явного lost-201 retry: backend отправляет `session.close`, bounded ждёт closed/final metadata и закрывает sideband. Он не проксирует обычное аудио и не превращает этот путь в постоянный control plane. Сервер хранит metadata ledger, проверяет ownership, восстанавливает reservations и выполняет reconciliation/retention. Он не обозначает stale или locally released session как доказанно остановленную.
 
 Anonymous cookie — случайный backend ID, first-party HttpOnly/Secure/SameSite=Lax в production, persistent `Max-Age=90 дней` со sliding renewal той же UUID на успешных owner-authenticated запросах; session-only identity для MVP не используется. Ledger и outbox — allowlist metadata без аудио/transcript/context/SDP. Runtime resume context хранится отдельно локально, tab-scoped и ограничен TTL. `store:false` сохраняется, но не объявляется универсальной гарантией всех режимов хранения у провайдера.
 
@@ -18,11 +18,11 @@ Historical pricing воспроизводится версией policy и raw u
 
 ## Рассмотренные альтернативы
 
-Heartbeat сейчас отложен: обнаружение клиента само по себе не выключает провайдера. Sideband отложен: добавляет отдельное соединение и lifecycle, не требуется для первого внутреннего ledger. Считать lease expiry provider close отклонено как ложная гарантия. Полный transcript/raw-event архив отклонён как ненужный privacy risk.
+Heartbeat сейчас отложен: обнаружение клиента само по себе не выключает провайдера. Постоянный Sideband/control plane отложен: он добавляет отдельное соединение и lifecycle и не требуется для normal path первого внутреннего ledger. Узкий transient orphan-cleanup Sideband не считается таким control plane и используется только для известной осиротевшей WebRTC session; SIP `hangup` как замена отклонён. Считать lease expiry provider close отклонено как ложная гарантия. Полный transcript/raw-event архив отклонён как ненужный privacy risk.
 
 ## Последствия и ограничения
 
-При crash остаётся unknown расход и возможный аварийный хвост. Новая область ответственности Sideband обсуждается при существенных расхождениях пилота либо обязательном принудительном stop/paid limits. Metadata retention и snapshot TTL явно заданы policy и могут меняться отдельно с версией.
+При crash остаётся unknown расход и возможный аварийный хвост, если даже transient Sideband cleanup не подтвердился. Расширение Sideband за пределы orphan recovery обсуждается при существенных расхождениях пилота либо обязательном принудительном stop/paid limits. Metadata retention и snapshot TTL явно заданы policy и могут меняться отдельно с версией.
 
 ## Проверка и внедрение
 

@@ -10,7 +10,7 @@
 
 ## Решение в предлагаемой редакции
 
-Сохранять anonymous user → conversation → local provider attempt; returned OpenAI ID является внешним атрибутом попытки. Каждая внешняя попытка регистрируется до отправки запроса, а успешный provider response считается завершённым local creation только после durable записи returned ID/result. Ошибка этого post-response commit остаётся dispatched/unknown и запускает best-effort cleanup известного provider ID вместо повторного create. Conversation identity и policy deadline переживают replacement/resume.
+Сохранять anonymous user → conversation → local provider attempt; returned OpenAI ID является внешним атрибутом попытки. Каждая внешняя попытка регистрируется до отправки запроса, а успешный provider response считается завершённым local creation только после durable записи returned ID/result. Ошибка этого post-response commit или явный same-ID retry после lost 201 не разрешают второй create/SDP replay: известная WebRTC session проходит transient Sideband attach → `session.close` orphan cleanup; SIP-only `live.sessions.hangup` не используется. Conversation identity и policy deadline переживают replacement/resume.
 
 Разделять `initial_mode`, `start_reason` и наблюдаемые phase durations. Состояние admission/lease не является состоянием provider billing. Product generation guards сохраняются; ledger generation/local ID не подменяют их. Ownership проверяется по cookie и FK, lifecycle защищается version CAS.
 
@@ -22,7 +22,7 @@
 
 ## Последствия и ограничения
 
-Появляется локальный ID ещё до известного OpenAI ID и явный `unknown` outcome. Нельзя незаметно повторять ambiguous POST или считать provider-success/result-commit-failure бесплатным. Две вкладки не используют глобальный «текущий conversation»: локальный resume pointer/snapshot tab-scoped, а завершение устаревшей версии не затрагивает возобновлённую.
+Появляется локальный ID ещё до известного OpenAI ID и явный `unknown` outcome. Нельзя незаметно повторять ambiguous POST, считать provider-success/result-commit-failure бесплатным или оставлять lost-201 provider progressing без cleanup. Две вкладки не используют глобальный «текущий conversation»: локальный resume pointer/snapshot tab-scoped, а clone/opener collision должен быть обнаружен до snapshot access; завершение устаревшей версии не затрагивает возобновлённую.
 
 ## Проверка и внедрение
 
