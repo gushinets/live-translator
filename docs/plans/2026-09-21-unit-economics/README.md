@@ -26,7 +26,7 @@
 | End инкрементирует generation до final; callback бросает исключение | A3.3, A4.7 |
 | Visibility во время setup или уже suspended, скрытый callback за очередью | A5.1–A5.3 |
 | Поздний media track старого peer воспринимается как stream нового | A4.4 |
-| Lost/in-flight create, lifecycle abandonment, cleanup taxonomy/state-machine и admission release | A2.4–A2.6; PR-2 outbox + CleanupWorker/terminal primitives; A4.3/A4.6; A5.1/A5.14–A5.15 |
+| Lost/in-flight create, lifecycle abandonment, Sideband optional peer и metadata-envelope leak | A2.4–A2.6; PR-2 explicit `ws` + CleanupWorker + MetadataDeliveryBudget; A3.6; A4.3/A4.6; A5.1/A5.14–A5.15 |
 | Mixed phase / text-only / нулевая или ненаблюдаемая речь искажают unit economics | A3.7–A3.13, A6.3, A6.9 |
 | После resume claim нет usable provider; browser исчез до abort | A2.10–A2.11, A5.13–A5.15, A6.8 |
 
@@ -62,7 +62,7 @@ PR 1 → PR 2 → PR 3 → G1: измеряем текущий lifecycle
 | §4 identity, ownership, state, multiple tabs | 2: durable CAS/recovery; 5: client lifecycle |
 | §5 database/model/persistence | 2, эксплуатация 6 |
 | §6 API, idempotency, client cleanup outbox + PR-2 durable-scheduled/single-flight/bounded cleanup worker, versioned policy | 2; lifecycle callers 4–5; usage 3 |
-| §7 provider-close primitive/provenance, usage, shared unique-localId outbox budget | 2: close/cleanup worker/budget reservation; 3: usage outbox/metrics; 4: normal graceful boundary |
+| §7 provider-close primitive/provenance, usage, shared unique-localId envelope budget/reclamation | 2: close/cleanup worker/budget reserve+release; 3: usage outbox/metrics using shared budget; 4: normal graceful boundary |
 | §8 active/speech/technical outcome metrics и reports | 3, cross-conversation/pricing 6 |
 | §9 graceful boundaries | 4 |
 | §10 background/resume/snapshot/deadlines | 2: durable claim/cleanup fences; 5: client lifecycle/snapshot |
