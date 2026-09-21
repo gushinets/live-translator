@@ -29,7 +29,7 @@ Resume: atomic server version claim (`paused → resuming`, durable local row/ID
 
 | ID | Условие/сценарий | Ожидаемый результат |
 |---|---|---|
-| A5.1 | Hidden в context/bootstrap/creating или initial document hidden | Нет автоматического старта/активации провайдера в фоне. Если create уже dispatched, cleanup intent `hidden` enqueue-ится даже при provider ID NULL и fencing не даёт late success активироваться; known usable session закрывается normal close. Поздние mic/SDP/started события gates не открывают. |
+| A5.1 | Hidden в context/bootstrap/creating или initial document hidden | Gates выключаются сразу. Для dispatched creating attempt сначала durable cleanup outbox `hidden`, затем server pause; early 404 retry-ится, late success fenced. Если storage degraded, direct cleanup SQL-ACK должен предшествовать durable pause. Usable provider закрывается normal close. |
 | A5.2 | Hidden после orientation/audio/source-timeout suspension | Provider закрывается, несмотря на уже suspended product state; нет early-return, оставляющего его жить в фоне. |
 | A5.3 | Hidden во время зависшего resume/mute/steering | Local safety и close dispatch не ждут освобождения lifecycleQueue. После завершения старого promise не происходит unmute. |
 | A5.4 | Возврат до retention deadline | Тот же conversation ID, новый local/OpenAI session ID, один create. Пара языков и edited context сохранены; после interpreter ready не повторяется запись A/B. |
@@ -47,17 +47,17 @@ Resume: atomic server version claim (`paused → resuming`, durable local row/ID
 | ID | Условие/сценарий | Ожидаемый результат |
 |---|---|---|
 | A5.13 | Успешный claim, затем media-not-ready/admission failure до dispatch | Сервер возвращён в paused через abort без новых пяти минут; нет provider call/slot, row failed без fabricated final. До старого deadline явный retry с новым ID успешен. Повтор старого claim лишь читает terminal outcome. |
-| A5.14 | Любая post-dispatch attempt больше не должна активироваться: create/WebRTC/startup failure, hidden, End/cancel/replacement; provider ID может быть NULL | Local gates off/generation invalidated. Owner **всегда** enqueue-ит cleanup intent; outbox retry продолжается до commit ACK, а Sideband close только после известного ID. Definitive create failure без ID завершает row failed/released без final0. Cleanup HTTP failure gates не открывает; новый claim/create того же conversation ждёт flush/terminal state. |
-| A5.15 | Kill/restart/claim timeout; cleanup delivery loss; cleanup-vs-complete; late complete/SDP; End race | Cleanup commit first fences complete. Если cleanup HTTP/DB недоступен, local gates остаются off, persistent intent retry-ится на foreground/reconnect и same-conversation new create не идёт первым. Complete-first + последующий failure/abandonment всё равно cleanup-ит provider. TTL/identity-loss drop виден как anomaly, не как success; server recovery сохраняет deadlines и stale operations не оживляют claim. |
+| A5.14 | Любая post-dispatch attempt больше не должна активироваться: failure, hidden, End/cancel/replacement | Cleanup outbox coalesce by `localId`, first reason wins; local durable write precedes lifecycle mutation/new create. Cleanup 404/409 registration race retry-ится; DELETE/lease release не очищает entry. HTTP failure gates не открывает. New same-conversation create ждёт cleanup marker/terminal provider outcome. |
+| A5.15 | Kill/restart; outbox-first crash; cleanup delivery loss; cleanup-vs-complete; late callbacks | Crash после outbox commit, но до End/Pause восстанавливается: cleanup flush first, затем conversation read и только version-safe lifecycle retry. Different later cleanup reason ACK-ится без 409. Identity-loss drop требует подтверждения, bare registration-race 404 retry-ится. Cleanup failure никогда не открывает gates. |
 
 ## Последовательность работ
 
 
 - [ ] Разделить существующие visibility tests и orientation/audio tests: последние сохранить; visibility переписать под сознательно новый контракт A5.1–A5.15.
 - [ ] Использовать реальный VisibilityController/EventTarget в тесте ранней регистрации: fake, вызывающий callback без start(), недостаточен.
-- [ ] Добавить synchronous hidden safety и настройку listener lifecycle; если hidden застал dispatched creating attempt, enqueue cleanup `hidden` до/вместе с serialized pause transition; затем serialized state changes через существующую очередь.
+- [ ] Добавить synchronous hidden safety; для dispatched creating attempt durable cleanup outbox commit должен завершиться до отправки pause (или direct cleanup SQL-ACK при storage degradation). Проверить crash/reload intermediate state и отсутствие late activation.
 - [ ] Реализовать versioned snapshot с tab-scoped `clientInstanceId` в sessionStorage, `navigator.locks.request(..., {mode:'exclusive', ifAvailable:true}, ...)` или эквивалентным non-blocking document-lifetime lock и IndexedDB key `(clientInstanceId, conversationId)`; duplicate/opener clone, включая hidden/frozen owner, обязан немедленно ротировать скопированный ID, а не ждать lock. Отсутствие Web Locks отключает automatic same-ID restore. Затем resumeAttemptId, pause/claim/complete/abort, restore transition и startup ACK sequence. Подключить PR-2 cleanup route; проверить duplicate does-not-block A5.6 и post-201 pre-primary-ready cleanup A5.14.
-- [ ] Проверить deadlines, cleanup-outbox retry/foreground flush, cleanup-vs-complete transaction order, definitive create failure после cleanup, explicit interrupted-turn UX, no-expectedSpeaker, перезапрос media и stale callbacks под fake timers; после локальной инициации cleanup никакой late callback не открывает gates.
+- [ ] Проверить deadlines, outbox-first End/Pause/replacement ordering, cleanup-overtakes-create 404 retry, strict outbox delete predicate, different-reason duplicates, cleanup-vs-complete и stale callbacks; после локального cleanup gates не открываются.
 - [ ] Прогнать full suite с flag off/on; описать scoped amendment прежней спецификации, не переписывая routing целиком.
 - [ ] Провести разрешённый device pilot по E3, сохранив baseline от PR 3. Сами реальные API calls этот документационный план не выполняет.
 

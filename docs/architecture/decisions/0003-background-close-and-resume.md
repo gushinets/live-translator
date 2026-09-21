@@ -10,7 +10,7 @@ Handoff сообщает почти wall-time usage muted-сессии и при
 
 ## Решение в предлагаемой редакции
 
-При hidden немедленно закрывать local gates и инициировать provider shutdown. Для usable primary это graceful close; если hidden застал уже-dispatched creating attempt без usable primary, client enqueue-ит durable cleanup intent `hidden`, не дожидаясь provider ID. Событие охватывает setup/creating и уже suspended состояния; waiting lifecycleQueue/ACK не блокирует safety prelude. Product conversation становится paused независимо от cleanup HTTP ACK, а fenced late result не активируется.
+При hidden local gates выключаются немедленно. Если provider уже usable — normal graceful close. Если hidden застал dispatched creating attempt, client **сначала** durable-коммитит cleanup outbox `hidden`, затем отправляет server pause; при crash reload flush-ит cleanup до восстановления product lifecycle. Early cleanup 404 при concurrent registration retry-ится. Product UI может стать paused локально сразу, но late provider result не активируется.
 
 При возврате в retention окно создавать новую provider session с тем же conversation ID, фиксированными языками и подтверждённым authoritative context. Старые transcript/media events не влияют на новый продукт, но final старого сохраняется. Не вводить expectedSpeaker, не replay незавершённые реплики и не переносить old correction targets как исполняемые.
 
