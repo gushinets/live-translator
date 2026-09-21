@@ -16,7 +16,7 @@
 ## Входной и выходной контракт
 
 
-Periodic reconciliation — локальная maintenance задача одного API, не browser heartbeat и не sideband. **Она не заменяет PR-2 CleanupWorker и его expiry scan**: concurrent cleanup serialization, Sideband retries и marker-without-ID expiry уже реализуются в PR 2. PR 6 только report/reconcile-ит `cleanup_retry_exhausted`/unknown rows и другие deadlines; новые provider creates/cleanup attempts не выполняются.
+Periodic reconciliation — не владеет CleanupWorker. PR 6 report/reconcile-ит `cleanup_retry_exhausted`, `blocked_auth_config`, `terminal_not_live` без final и другие unknown/partial outcomes; не переинтерпретирует их как provider billing final.
 
 Cross-conversation report показывает sample definition, качество, app/policy/model/speech-measurement versions, measured vs estimated, zero-denominator handling. Active, accepted-source и completed-source minute ratios раздельны; numerator/denominator из одной cohort, её исключённая доля явна. Полный ratio требует final provider и завершённого полного app measurement; unknown/partial остаются в breakdown, не исчезают из общей выборки. Pricing policy version сохраняет исторические правила; uncalibrated monetary results не публикуются как invoice totals. Экспериментальные runs имеют отдельную среду/когорту и не смешиваются с продуктовой экономикой.
 

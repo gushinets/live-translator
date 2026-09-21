@@ -26,7 +26,7 @@
 | End инкрементирует generation до final; callback бросает исключение | A3.3, A4.7 |
 | Visibility во время setup или уже suspended, скрытый callback за очередью | A5.1–A5.3 |
 | Поздний media track старого peer воспринимается как stream нового | A4.4 |
-| Lost/in-flight create, lifecycle abandonment, crash-before-wake, cleanup expiry race и worker backlog | A2.4–A2.6; PR-2 outbox + durable-scheduled/single-flight/bounded CleanupWorker; A4.3/A4.6; A5.1/A5.14–A5.15 |
+| Lost/in-flight create, lifecycle abandonment, cleanup worker retries/classification и restart | A2.4–A2.6; PR-2 outbox + durable CleanupWorker taxonomy; A4.3/A4.6; A5.1/A5.14–A5.15 |
 | Mixed phase / text-only / нулевая или ненаблюдаемая речь искажают unit economics | A3.7–A3.13, A6.3, A6.9 |
 | После resume claim нет usable provider; browser исчез до abort | A2.10–A2.11, A5.13–A5.15, A6.8 |
 

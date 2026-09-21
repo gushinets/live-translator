@@ -10,7 +10,7 @@
 
 ## Решение в предлагаемой редакции
 
-Сохранять anonymous user → conversation → local provider attempt. Cleanup marker при known provider ID в той же SQL transaction ставит first `cleanup_next_attempt_at=now`; late-ID commit делает то же, поэтому marker ACK не зависит от in-memory wake. PR-2 worker сериализует Sideband и expiry decisions per `localId`; running attempt выигрывает гонку с expiry и коммитит success/failure до exhaustion decision. Global transient Sideband concurrency bounded default 2, due batch default 20; overflow остаётся due и постепенно drain-ится. Product deadlines cleanup не прекращают; unknown-ID expiry остаётся отдельной фазой.
+Сохранять anonymous user → conversation → local provider attempt. First cleanup marker transaction фиксирует activation fence и immutable 7-day cleanup retry expiry. PR-2 CleanupWorker использует normalized outcome taxonomy; `terminal_not_live` допустим только по доказанному provider-specific mapping и закрывает retry без выдуманного final/reason, а неизвестные ошибки retryable.
 
 Разделять `initial_mode`, `start_reason` и наблюдаемые phase durations. Состояние admission/lease не является состоянием provider billing. Product generation guards сохраняются; ledger generation/local ID не подменяют их. Ownership проверяется по cookie и FK, lifecycle защищается version CAS.
 
