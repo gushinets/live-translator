@@ -29,10 +29,10 @@ Guard распространяется на remote track и завершение
 |---|---|---|
 | A4.1 | Replacement работающей bootstrap session | Product guard переключён до ожидания; старый transcript не попадает в следующий sample, final старого сохраняется, connect нового происходит один раз после retire. |
 | A4.2 | Нет closed до configured deadline | Close завершается bounded fallback с close_confirmed=false; replacement не зависает; отсутствие final не превращается в подтверждённую остановку провайдера. |
-| A4.3 | End/cancel/close повторяются одновременно | Один close command и однократный local teardown; ожидающие ACK не приводят к последующему unmute; local capture/output выключаются сразу. |
+| A4.3 | End/cancel/close повторяются одновременно, в том числе во время dispatched create | Local capture/output выключаются сразу. Если primary уже usable — один graceful close. Если create dispatched, но ещё не activatable — cleanup intent `user_end`/`cancelled` enqueue-ится один раз и fenced attempt не активируется; повторные операции не дублируют provider create/cleanup. |
 | A4.4 | Старый peer присылает track или завершается старый play promise | Новый srcObject/readiness не изменяются. Проверка source identity выполняется до attach stream, не по поколению, захваченному после callback. |
 | A4.5 | Release первый раз завершился сетевой ошибкой | Повтор подтверждает освобождение; duplicate204 безвреден; reporter/final не зависит от успешности первого DELETE. |
-| A4.6 | Cancel во время create, поздний SDP / unused replacement | Поздняя попытка учитывается и не активируется; unused transport уничтожается без фиктивного billable session. Микрофон нового live не останавливается старым cleanup. |
+| A4.6 | Cancel/End/bootstrap replacement во время create; late SDP/provider result | До dispatch unused attempt уничтожается abrupt без billable fiction. После dispatch owner enqueue-ит cleanup (`cancelled`, `user_end`, `replacement`) даже при неизвестном provider ID; late success закрывается, definitive failure даёт failed/release без final0. Новый live/mic не затрагиваются старым cleanup. |
 | A4.7 | Graceful close ожидает final при сбое продуктового callback | Внутренняя cleanup и independent usage observation выполняются независимо; DB timeout не удерживает WebRTC. |
 
 ## Последовательность работ
@@ -41,7 +41,7 @@ Guard распространяется на remote track и завершение
 - [ ] Сохранить existing stale-event и pending-ACK regression tests; добавить A4.1–A4.7 с управляемыми promises/timeouts и минимум двумя LiveClient instances.
 - [ ] Изменить normal bootstrap replacement с abrupt на graceful, сохраняя смену product identity до await; перечислить оставшиеся abrupt call sites и причину каждого.
 - [ ] Добавить source-aware remote-media binding и убрать потерю release retry; не внедрять второй epoch authority.
-- [ ] В End/cancel выполнить local safety до сетевых ожиданий; проверить no-unmute после закрытия.
+- [ ] В End/cancel/replacement выполнить local safety до сетевых ожиданий; для dispatched-not-usable attempt enqueue cleanup intent до/вместе с product transition и проверить late success/definitive failure, cleanup HTTP retry и no-unmute.
 - [ ] Прогнать targeted + full tests; показать результаты каждого timeout/late-track сценария в PR.
 - [ ] Оставить close wait default 15000 ms; иное значение оформлять по измерениям, не как неподтверждённое ускорение.
 

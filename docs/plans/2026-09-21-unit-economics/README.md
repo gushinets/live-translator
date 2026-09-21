@@ -26,7 +26,7 @@
 | End инкрементирует generation до final; callback бросает исключение | A3.3, A4.7 |
 | Visibility во время setup или уже suspended, скрытый callback за очередью | A5.1–A5.3 |
 | Поздний media track старого peer воспринимается как stream нового | A4.4 |
-| Lost/in-flight create, cleanup-before-ID и restart провоцируют orphan или повторный платный запуск | A2.4–A2.6; PR-2 cleanup intent/Sideband; A5.14–A5.15 |
+| Lost/in-flight create, lifecycle abandonment, потеря cleanup HTTP и restart провоцируют orphan или повторный платный запуск | A2.4–A2.6; PR-2 cleanup intent/outbox/Sideband; A4.3/A4.6; A5.1/A5.14–A5.15 |
 | Mixed phase / text-only / нулевая или ненаблюдаемая речь искажают unit economics | A3.7–A3.13, A6.3, A6.9 |
 | После resume claim нет usable provider; browser исчез до abort | A2.10–A2.11, A5.13–A5.15, A6.8 |
 
@@ -61,7 +61,7 @@ PR 1 → PR 2 → PR 3 → G1: измеряем текущий lifecycle
 |---|---|
 | §4 identity, ownership, state, multiple tabs | 2: durable CAS/recovery; 5: client lifecycle |
 | §5 database/model/persistence | 2, эксплуатация 6 |
-| §6 API, attempt/claim idempotency, cleanup intent/route, transient Sideband orphan recovery, versioned policy | 2; usage 3; client lifecycle 5 |
+| §6 API, attempt/claim idempotency, cleanup intent/route + client retry outbox, transient Sideband orphan recovery, versioned policy | 2; lifecycle callers 4–5; usage 3 |
 | §7 provider-close primitive/provenance, usage, missing final, outbox | 2: `recordProviderClosed`/durable release; 3: checkpoint/final/outbox; 4: normal graceful boundary |
 | §8 active/speech/technical outcome metrics и reports | 3, cross-conversation/pricing 6 |
 | §9 graceful boundaries | 4 |
