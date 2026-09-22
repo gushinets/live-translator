@@ -26,7 +26,7 @@
 | End инкрементирует generation до final; callback бросает исключение | A3.3, A4.7 |
 | Visibility во время setup или уже suspended, скрытый callback за очередью | A5.1–A5.3 |
 | Поздний media track старого peer воспринимается как stream нового | A4.4 |
-| Lost/in-flight create, shutdown AbortSignal/cleanup-fence/deadline races, cross-tab budget/marker races и Sideband recovery | A2.3–A2.7; PR-2 abortable LiveSessionCreator + dispatch tracker/fence + CleanupWorker; A3.6; A4.3/A4.6; A5.1/A5.14–A5.15 |
+| Lost/in-flight create, dispatch-vs-cleanup CAS, HTTP disconnect fence, shutdown AbortSignal/deadline и Sideband recovery | A2.3–A2.7; PR-2 ledger CAS + route disconnect tracker + abortable LiveSessionCreator + CleanupWorker; A3.6; A4.3/A4.6; A5.1/A5.14–A5.15 |
 | Mixed phase / text-only / нулевая или ненаблюдаемая речь искажают unit economics | A3.7–A3.13, A6.3, A6.9 |
 | После resume claim нет usable provider; browser исчез до abort | A2.10–A2.11, A5.13–A5.15, A6.8 |
 
@@ -61,7 +61,7 @@ PR 1 → PR 2 → PR 3 → G1: измеряем текущий lifecycle
 |---|---|
 | §4 identity, ownership, state, multiple tabs | 2: durable CAS/recovery; 5: client lifecycle |
 | §5 database/model/persistence | 2, эксплуатация 6 |
-| §6 API, idempotency, client cleanup outbox + PR-2 durable-scheduled/single-flight/bounded cleanup worker, versioned policy | 2; lifecycle callers 4–5; usage 3 |
+| §6 API, idempotency, dispatch-vs-cleanup CAS, route-owned HTTP-disconnect fence, cleanup outbox + PR-2 worker, versioned policy | 2; lifecycle callers 4–5; usage 3 |
 | §7 provider-close primitive/provenance, usage, shared unique-localId envelope budget/reclamation | 2: close/cleanup worker/budget reserve+release; 3: usage outbox/metrics using shared budget; 4: normal graceful boundary |
 | §8 active/speech/technical outcome metrics и reports | 3, cross-conversation/pricing 6 |
 | §9 graceful boundaries | 4 |
