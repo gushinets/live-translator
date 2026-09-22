@@ -296,7 +296,7 @@ describe("LiveClient.connect", () => {
         transport: { type: "webrtc" as const, sdp: "v=0 managed-answer" },
       })),
       handoff: vi.fn(() => handoff.promise),
-      finish: vi.fn(async (_result: LiveCloseResult) => {}),
+      finish: vi.fn<(result: LiveCloseResult) => Promise<void>>(async () => {}),
       abandon: vi.fn(async () => {}),
     };
     const client = new LiveClient({
@@ -330,7 +330,7 @@ describe("LiveClient.connect", () => {
         transport: { type: "webrtc" as const, sdp: "v=0 managed-answer" },
       })),
       handoff: vi.fn(async () => {}),
-      finish: vi.fn(async (_result: LiveCloseResult) => {}),
+      finish: vi.fn<(result: LiveCloseResult) => Promise<void>>(async () => {}),
       abandon: vi.fn(async () => {}),
     };
     const client = new LiveClient({
