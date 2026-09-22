@@ -131,6 +131,53 @@ Important:
 - Every Compose command below explicitly uses `--env-file .env`. This avoids
   depending on Compose's working-directory/project-directory env-file lookup.
 
+### Live-session admission settings
+
+These optional variables are read at API startup, not by the browser or the web
+build. Existing deployments that omit them retain the previous safe defaults.
+The example `.env.example` explicitly opts into the internal-test profile:
+
+| Variable | Default when absent | Internal-test profile |
+|---|---:|---:|
+| `MAX_CONCURRENT_SESSIONS` | 5 | 15 |
+| `LIVE_SESSION_LEASE_MS` | 900000 | 900000 |
+| `LIVE_SESSION_RATE_LIMIT` | 20 | 60 |
+| `LIVE_SESSION_RATE_WINDOW_MS` | 600000 | 600000 |
+
+`LIVE_SESSION_RATE_LIMIT` counts creation attempts per client IP within the
+configured window. People behind one NAT share that budget. Only
+`POST /api/live/session` (including its trailing-slash form) consumes it;
+`DELETE /api/live/session/:sessionId` remains available after creation returns
+429 and remains subject to the existing Origin check. These are local admission
+controls, not a guarantee of provider concurrency or a billing limit.
+
+All values must contain decimal digits representing a positive safe integer.
+Blank values, whitespace, zero, negative/fractional values, exponent/hex syntax,
+NaN and Infinity fail API startup rather than silently falling back. The rate
+window also cannot exceed **2147483647 ms** because the built-in rate-limit store
+uses Node's interval timer. Compose deliberately uses the unset-only `-` default
+operator, so an explicitly empty variable reaches the API and is rejected.
+`docker compose config --quiet` checks Compose syntax, not API numeric validation.
+
+The lease TTL still only expires a local reservation; it does not close an
+OpenAI WebRTC session. It does not replace the existing frontend duration limit.
+Do not shorten it to try to stop provider charges. The registry and limiter
+remain in memory, so their state is reset by an API restart; durable accounting
+and recovery are later implementation stages.
+
+To apply changed values after building the updated API, use
+`docker compose --env-file .env -f infra/docker-compose.yml up -d api` during a
+suitable maintenance window. A plain container restart does not load a changed
+Compose environment. Do not edit host Nginx or restart unrelated services just
+to change these settings. To revert the internal profile, explicitly set
+`MAX_CONCURRENT_SESSIONS=5` and `LIVE_SESSION_RATE_LIMIT=20` and recreate only the
+API; keep the creation-only limiter fix.
+
+The isolated interpolation checks can be run from the repository root with
+`python3 infra/tests/test_admission_config.py`. They use dummy credentials and an
+empty env file, check defaults/overrides/explicit empty values and backend-only
+scope, and do not create containers or call OpenAI.
+
 ## 5. Validate and start the containers
 
 Validate Compose interpolation without printing the resolved environment (and
