@@ -26,7 +26,7 @@
 | End инкрементирует generation до final; callback бросает исключение | A3.3, A4.7 |
 | Visibility во время setup или уже suspended, скрытый callback за очередью | A5.1–A5.3 |
 | Поздний media track старого peer воспринимается как stream нового | A4.4 |
-| Lost/in-flight create, graceful SIGTERM-preserved provisional handoff, handoff-vs-claim-expiry CAS, disconnect/shutdown fences и Sideband recovery | A2.3–A2.7/A2.10–A2.11; PR-2 startup classifier + handoff/expiry serialization + CleanupWorker; A5.14–A5.15 |
+| Lost/in-flight create, all-start handoff product/terminal CAS, graceful SIGTERM-preserved provisional handoff, resume expiry CAS, disconnect/shutdown fences | A2.3–A2.7/A2.10–A2.11; A4.6; PR-2 handoff/expiry serialization + CleanupWorker |
 | Mixed phase / text-only / нулевая или ненаблюдаемая речь искажают unit economics | A3.7–A3.13, A6.3, A6.9 |
 | После resume claim browser исчез: preserve-valid restart, claim-expiry cleanup fence, complete ordering | A2.6/A2.10–A2.11, A5.13–A5.15, A6.8 |
 
