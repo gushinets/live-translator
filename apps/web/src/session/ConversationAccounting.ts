@@ -54,13 +54,17 @@ export class ConversationAccounting {
   isCurrent(epoch: number) { return epoch === this.epoch; }
   private async holdProducerLock(): Promise<void> {
     if (this.producerLock || !globalThis.navigator?.locks) return this.producerLock;
-    this.producerLock = new Promise((resolve, reject) => {
+    const lock = this.producerLock = new Promise((resolve, reject) => {
       void navigator.locks.request(`live-metadata-producer:${this.producerId}`, { ifAvailable: true }, lock => {
         if (!lock) { reject(new Error("Metadata producer ownership unavailable")); return; }
         resolve(); return new Promise<void>(() => {});
       }).catch(reject);
     });
-    await this.producerLock;
+    try { await lock; }
+    catch (error) {
+      if (this.producerLock === lock) this.producerLock = undefined;
+      throw error;
+    }
     const producers = new Set((await this.budget.entries()).map(e => e.producerId));
     for (const id of producers) {
       if (id === this.producerId) continue;

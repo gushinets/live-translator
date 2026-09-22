@@ -250,6 +250,24 @@ describe("controller-owned conversation accounting", () => {
     await retry.abandon("cancelled"); await f.scope.outbox.flush(); await f.budget.close();
   });
 
+  it("does not cache an unavailable producer lock", async () => {
+    const f = fixture(); let available = false;
+    const locks = { request: vi.fn((_name: string, _options: { ifAvailable: boolean }, callback: (lock: object | null) => unknown) =>
+      Promise.resolve(callback(available ? {} : null))) };
+    Object.defineProperty(navigator, "locks", { configurable: true, value: locks });
+    try {
+      await expect(f.scope.newAttempt().create("blocked")).rejects.toThrow("ownership unavailable");
+      available = true;
+      const retry = f.scope.newAttempt();
+      await expect(retry.create("retry")).resolves.toBeDefined();
+      expect(locks.request).toHaveBeenCalledTimes(2);
+      await retry.abandon("cancelled"); await f.scope.outbox.flush();
+    } finally {
+      Reflect.deleteProperty(navigator, "locks");
+      await f.budget.close();
+    }
+  });
+
   it("keeps the same conversation across bootstrap replacements without duplicate rows for interpreter phase", async () => {
     const f = fixture(); const first = f.scope.newAttempt(); await first.create("first"); await first.finish({ finalized: true, usageSeconds: 15 }); await f.scope.outbox.flush();
     const second = f.scope.newAttempt(); await second.create("next");

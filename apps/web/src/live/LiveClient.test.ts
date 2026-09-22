@@ -384,6 +384,28 @@ describe("LiveClient.connect", () => {
     expect(accounting.finish).not.toHaveBeenCalled();
   });
 
+  it("releases a legacy lease when signaling fails after backend creation", async () => {
+    peer.setRemoteDescription = async () => {
+      throw new Error("signaling failed");
+    };
+    const { backend, releaseCalls } = makeFakeBackend();
+    const accounting = {
+      managed: false,
+      create: vi.fn(async () => ({
+        session: { id: "legacy-session" },
+        transport: { type: "webrtc" as const, sdp: "v=0 legacy-answer" },
+      })),
+      handoff: vi.fn(async () => {}),
+      finish: vi.fn(async () => {}),
+      abandon: vi.fn(async () => {}),
+    };
+    const client = new LiveClient({ backend, accounting, peerFactory: () => peer as unknown as RTCPeerConnection, onRemoteStream });
+
+    await expect(client.connect(makeFakeStream())).rejects.toThrow("signaling failed");
+    expect(accounting.abandon).toHaveBeenCalledWith("abandoned_connect");
+    expect(releaseCalls).toEqual(["legacy-session"]);
+  });
+
   it("passes a confirmed managed close to accounting before transport release", async () => {
     const accounting = {
       managed: true,

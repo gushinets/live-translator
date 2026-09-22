@@ -45,6 +45,7 @@ describe("managed session failure boundaries", () => {
       req.on("error", () => {}); // The test deliberately destroys the socket.
       req.end(body);
       await vi.waitFor(() => expect(finish).toBeDefined());
+      vi.spyOn(ledger, "getAttempt").mockImplementationOnce(() => { throw new Error("ledger read unavailable"); });
       req.destroy();
       await vi.waitFor(() => expect(signal!.aborted).toBe(true));
       expect(markerAtAbort).toBe("client_disconnected");

@@ -372,6 +372,7 @@ export class LiveClient {
       this.closing = true;
       this.teardownTransport();
       await this.deps.accounting?.abandon("abandoned_connect");
+      if (!this.deps.accounting?.managed) await this.releaseSessionLeaseAndWait();
       throw error;
     }
   }

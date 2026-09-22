@@ -29,8 +29,8 @@ export function createManagedSessionRouter(runtime: LedgerRuntime, identity: Ano
     const onDisconnect = () => {
       if (finished || res.writableFinished || waiterReleased) return; disconnected = true;
       if (!waiterRegistered || releaseWaiter() > 0) return;
-      try { ledger.getAttempt(owner, body.liveSessionId); runtime.cleanup(body.liveSessionId, "client_disconnected"); }
-      catch { /* The runtime retains a failed post-dispatch fence; pre-dispatch flag is rechecked. */ }
+      try { runtime.cleanup(body.liveSessionId, "client_disconnected"); }
+      catch { /* Keep the runtime's volatile fence until ledger storage recovers. */ }
     };
     const onFinish = () => { finished = true; releaseWaiter(); };
     req.once("aborted", onDisconnect); res.once("close", onDisconnect); res.once("finish", onFinish);
