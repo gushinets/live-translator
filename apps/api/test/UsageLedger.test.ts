@@ -145,7 +145,8 @@ describe("persistent provider ledger", () => {
   it("terminal-not-live is not an observed session.closed", () => {
     const { row } = created(); ledger.requestCleanup(row.id, "cancelled"); const s = ledger.recordProviderTerminalNotLive(row.id);
     expect(s.state).toBe("closed"); expect(s.close_confirmed).toBe(0); expect(s.closed_observed_at).toBeNull(); expect(s.provider_final_seconds).toBeNull();
-    expect(ledger.reservations()).toHaveLength(0);
+    expect(s.cleanup_attempt_count).toBe(1); expect(s.cleanup_last_attempt_at).toBe(now);
+    expect(s.cleanup_last_error_code).toBeNull(); expect(ledger.reservations()).toHaveLength(0);
   });
   it.each([true, false])("distinguishes definitive failure=%s from an ambiguous abort", definitive => {
     const { row } = dispatched(); ledger.requestCleanup(row.id, "client_disconnected"); const s = ledger.recordCreateFailure(row.id, definitive);
@@ -185,8 +186,15 @@ describe("persistent provider ledger", () => {
     const { c, id, v } = resumed(); expect(() => ledger.completeResume(owner, c.id, v, id, now, "setup")).toThrow();
     ledger.acknowledgeHandoff(owner, id); const done = ledger.completeResume(owner, c.id, v, id, now, "setup");
     expect(ledger.completeResume(owner, c.id, v, id, now, "setup").version).toBe(done.version);
+    expect(() => ledger.completeResume(owner, c.id, v, id, now + 1, "setup")).toThrow("resume_claim_conflict");
     expect(ledger.acknowledgeHandoff(owner, id).state).toBe("active");
     expect(() => ledger.abortResume(owner, c.id, v, id, "hidden")).toThrow();
+  });
+  it("accepts only the original reason for duplicate resume abort receipts", () => {
+    const { c, id, v } = resumed();
+    expect(ledger.abortResume(owner, c.id, v, id, "media_not_ready").status).toBe("paused");
+    expect(ledger.abortResume(owner, c.id, v, id, "media_not_ready").status).toBe("paused");
+    expect(() => ledger.abortResume(owner, c.id, v, id, "user_end")).toThrow("resume_claim_conflict");
   });
   it("expires acknowledged pending resume atomically with provider cleanup", () => {
     const { c, id } = resumed(); ledger.acknowledgeHandoff(owner, id); now += 60000; ledger.watchdog();

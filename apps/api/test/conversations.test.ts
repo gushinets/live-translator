@@ -80,6 +80,15 @@ describe("conversation HTTP ownership and handoff", () => {
     expect(res.body.code).toBe("provider_result_unpersisted"); expect(f.ledger.getAttemptInternal(p.liveSessionId).cleanup_requested_at).not.toBeNull();
     await f.app.locals.ledgerRuntime.worker.drain(); expect(f.closeOrphan).toHaveBeenCalledTimes(1);
   });
+  it("marks pre-registration storage failures as no-provider", async () => {
+    const f = fixture(), c = await f.conversation(), p = payload(c);
+    vi.spyOn(f.ledger, "getConversation").mockImplementationOnce(() => { throw new Error("disk unavailable"); });
+    const failed = await f.agent.post("/api/live/session").set("Origin", origin).send(p).expect(503);
+    expect(failed.body.code).toBe("attempt_registration_unavailable"); expect(f.provider).not.toHaveBeenCalled();
+
+    await f.agent.post("/api/live/session").set("Origin", origin).send({ ...p, liveSessionId: randomUUID() }).expect(201);
+    expect(f.provider).toHaveBeenCalledOnce();
+  });
   it("keeps first cleanup reason, refuses backend-only reason, and cannot ACK after cleanup", async () => {
     const f = fixture(), c = await f.conversation(), p = payload(c);
     await f.agent.post("/api/live/session").set("Origin", origin).send(p).expect(201);

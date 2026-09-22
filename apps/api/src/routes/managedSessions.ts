@@ -18,7 +18,8 @@ export function createManagedSessionRouter(runtime: LedgerRuntime, identity: Ano
     if (!allowCreate) throw new LedgerError("new_creations_paused", 503);
     if (typeof req.body === "object" && req.body !== null && !("conversationId" in req.body)) throw new LedgerError("client_upgrade_required", 400);
     const body = parseBody(creationSchema, req.body), owner = identity.require(req);
-    ledger.getConversation(owner, body.conversationId);
+    try { ledger.getConversation(owner, body.conversationId); }
+    catch (error) { if (error instanceof LedgerError) throw error; throw new LedgerError("attempt_registration_unavailable", 503); }
     if (!process.env.OPENAI_API_KEY?.trim()) throw new LedgerError("provider_key_missing", 503);
     let disconnected = req.aborted || res.destroyed, finished = false, waiterRegistered = false, waiterReleased = false;
     const releaseWaiter = () => {

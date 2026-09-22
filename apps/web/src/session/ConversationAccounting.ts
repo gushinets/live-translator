@@ -7,6 +7,7 @@ import type { LiveCloseResult } from "../live/LiveClient";
 const DEFINITIVE_NO_PROVIDER_CODES = new Set([
   "new_creations_paused", "client_upgrade_required", "invalid_request", "unexpected_origin",
   "identity_required", "not_found", "provider_key_missing", "server_shutting_down_before_dispatch",
+  "attempt_registration_unavailable",
   "concurrent_session_limit", "conversation_expired", "conversation_version_conflict",
   "attempt_in_progress", "attempt_conflict", "invalid_start_reason",
   "attempt_not_dispatchable", "conversation_not_activatable", "attempt_cancelled",
@@ -39,6 +40,7 @@ export class ConversationAccounting {
   private producerLock: Promise<void> | undefined;
   private readonly pendingDirectEnds = new Map<number, PendingDirectEnd>();
   private readonly pendingDirectCleanupAcks = new Set<string>();
+  private readonly pendingDirectCloseAcks = new Set<string>();
   constructor(options: { api?: LedgerApi; budget?: MetadataDeliveryBudget; autoDelivery?: boolean } = {}) {
     this.api = options.api ?? new AccountingBackend();
     this.budget = options.budget ?? new MetadataDeliveryBudget({ producerId: this.producerId });
@@ -82,6 +84,7 @@ export class ConversationAccounting {
     if (!await this.enabled) return null;
     await this.flushPendingDirectEnds();
     await this.flushPendingDirectCleanupAcks();
+    await this.flushPendingDirectCloseAcks();
     attempt.managed = true; attempt.assertCurrent();
     await this.holdProducerLock();
     this.creating ??= this.api.createConversation(this.requestId).catch(error => { this.creating = undefined; throw error; });
@@ -139,6 +142,20 @@ export class ConversationAccounting {
       this.pendingDirectCleanupAcks.delete(localId);
     }
   }
+  async acknowledgeDirectClose(localId: string): Promise<void> {
+    try {
+      await this.budget.finishProducerAndRelease(localId, "provider_closed");
+      this.pendingDirectCloseAcks.delete(localId);
+    } catch {
+      this.pendingDirectCloseAcks.add(localId);
+    }
+  }
+  private async flushPendingDirectCloseAcks(): Promise<void> {
+    for (const localId of [...this.pendingDirectCloseAcks]) {
+      await this.budget.finishProducerAndRelease(localId, "provider_closed");
+      this.pendingDirectCloseAcks.delete(localId);
+    }
+  }
   async end(reason: "user_end" | "setup_cancel", expectedEpoch = this.epoch): Promise<void> {
     if (expectedEpoch !== this.epoch) {
       const pending = this.pendingDirectEnds.get(expectedEpoch);
@@ -148,7 +165,8 @@ export class ConversationAccounting {
     const ending = [...this.attempts], current = this.current, creating = this.creating;
     this.epoch++; this.current = undefined; this.creating = undefined; this.last = undefined;
     this.dispatchCount = 0; this.requestId = crypto.randomUUID(); this.attempts = new Set();
-    await Promise.all(ending.map(a => a.finished ? Promise.resolve() : a.abandon(reason === "setup_cancel" ? "cancelled" : "user_end")));
+    const abandonResults = await Promise.allSettled(ending.map(a => a.finished ? Promise.resolve() : a.abandon(reason === "setup_cancel" ? "cancelled" : "user_end")));
+    const abandonFailure = abandonResults.find(result => result.status === "rejected");
     const c = current ?? await creating?.catch(() => undefined);
     if (c) {
       try {
@@ -164,6 +182,7 @@ export class ConversationAccounting {
         await this.deliverDirectEnd(intent);
       }
     }
+    if (abandonFailure?.status === "rejected") throw abandonFailure.reason;
   }
 }
 export class ProviderAccounting {
@@ -252,8 +271,7 @@ export class ProviderAccounting {
       } catch {
         console.error("Provider close metadata storage degraded", { localId: this.localId });
         await this.scope.api.closed(this.localId, observation);
-        try { await this.scope.budget.finishProducerAndRelease(this.localId, "provider_closed"); }
-        catch { console.error("Provider close envelope release degraded", { localId: this.localId }); }
+        await this.scope.acknowledgeDirectClose(this.localId);
       }
       this.finished = true;
     })();

@@ -242,8 +242,10 @@ export class UsageLedger {
   recordProviderTerminalNotLive(id: string): SessionRow {
     return this.atomic(() => {
       const s = this.attempt(id); if (terminal(s)) return s;
-      this.updateAttempt(id, { state: "closed", cleanup_last_result: "terminal_not_live", cleanup_next_attempt_at: null,
-        cleanup_blocked_at: null, lease_released_at: s.lease_released_at ?? this.now() }); return this.attempt(id);
+      const now = this.now();
+      this.updateAttempt(id, { state: "closed", cleanup_attempt_count: s.cleanup_attempt_count + 1, cleanup_last_attempt_at: now,
+        cleanup_last_result: "terminal_not_live", cleanup_last_error_code: null, cleanup_next_attempt_at: null,
+        cleanup_blocked_at: null, lease_released_at: s.lease_released_at ?? now }); return this.attempt(id);
     });
   }
   releaseAdmission(owner: string, providerId: string): SessionRow {
@@ -343,7 +345,10 @@ export class UsageLedger {
       this.owned(owner, id); const s = this.ownedAttempt(owner, attemptId);
       if (s.conversation_id !== id || s.resume_claim_version !== version || s.initial_mode !== stage) return new LedgerError("resume_claim_conflict");
       this.expireConversationInternal(id, this.now()); const c = this.conversation(id), current = this.attempt(attemptId);
-      if (current.resume_outcome === "committed") return c;
+      if (current.resume_outcome === "committed") {
+        if (current.provider_started_observed_at !== startedAt || (stage === "interpreter" && current.interpreter_ready_observed_at !== startedAt)) return new LedgerError("resume_claim_conflict");
+        return c;
+      }
       if (!this.validClaim(c, current, this.now()) || current.state !== "active" || current.handoff_acknowledged_at === null) return new LedgerError("resume_not_activatable");
       this.updateAttempt(attemptId, { resume_outcome: "committed", provider_started_observed_at: startedAt, interpreter_ready_observed_at: stage === "interpreter" ? startedAt : null });
       this.updateConversation(id, { status: "active", resume_attempt_id: null, version: c.version + 1, paused_at: null, resume_expires_at: null }); return this.conversation(id);
@@ -363,7 +368,7 @@ export class UsageLedger {
     return this.atomic(() => {
       const c = this.owned(owner, id), s = this.ownedAttempt(owner, attemptId);
       if (s.conversation_id !== id || s.resume_claim_version !== version) return new LedgerError("resume_claim_conflict");
-      if (s.resume_outcome === "aborted") return c;
+      if (s.resume_outcome === "aborted") return s.app_end_reason === reason ? c : new LedgerError("resume_claim_conflict");
       if (s.resume_outcome !== "pending" || c.resume_attempt_id !== s.id) return new LedgerError("resume_claim_conflict");
       this.rollbackResume(c, s, this.now(), "aborted", reason); return this.conversation(id);
     });

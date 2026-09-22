@@ -425,7 +425,8 @@ export class LiveClient {
    */
   async close(): Promise<LiveCloseResult> {
     const result = await this.closeTransport();
-    await this.deps.accounting?.finish(result);
+    try { await this.deps.accounting?.finish(result); }
+    catch { console.error("Session metadata delivery incomplete"); }
     return result;
   }
 

@@ -216,6 +216,39 @@ describe("controller-owned conversation accounting", () => {
     expect(f.api.closed).toHaveBeenCalledTimes(2);
     await f.budget.close();
   });
+  it("retains End delivery when undispatched cleanup release fails", async () => {
+    const f = fixture(), attempt = f.scope.newAttempt();
+    vi.spyOn(f.budget, "markDispatchStarted").mockRejectedValueOnce(new Error("marker unavailable"));
+    vi.spyOn(f.budget, "finishProducerAndRelease").mockRejectedValue(new Error("release unavailable"));
+    await expect(attempt.create("offer")).rejects.toThrow("release unavailable");
+
+    await expect(f.scope.end("user_end", f.scope.revision)).rejects.toThrow("release unavailable");
+    expect(await f.budget.ends()).toHaveLength(1);
+    await f.budget.close();
+  });
+  it("retries a direct close envelope release before the next create", async () => {
+    const f = fixture(), attempt = f.scope.newAttempt(); await attempt.create("offer");
+    vi.spyOn(f.scope.outbox, "observeClosed").mockRejectedValue(new Error("storage unavailable"));
+    const release = vi.spyOn(f.budget, "finishProducerAndRelease").mockRejectedValueOnce(new Error("release unavailable"));
+
+    await attempt.finish({ finalized: true, usageSeconds: 9 });
+    expect(await f.budget.get(attempt.localId)).not.toBeNull();
+    const next = f.scope.newAttempt(); await next.create("next-offer");
+    expect(release).toHaveBeenCalledTimes(2);
+    expect(await f.budget.get(attempt.localId)).toBeNull();
+    await next.abandon("cancelled"); await f.scope.outbox.flush(); await f.budget.close();
+  });
+  it("releases a pre-dispatch registration failure and preserves initial semantics", async () => {
+    const f = fixture(), attempt = f.scope.newAttempt();
+    f.api.createSession.mockRejectedValueOnce(new AccountingRequestError(503, "attempt_registration_unavailable"));
+    await expect(attempt.create("offer")).rejects.toThrow("attempt_registration_unavailable");
+    expect(await f.budget.entries()).toHaveLength(0);
+
+    f.api.createSession.mockResolvedValueOnce({ session: { id: "provider-retry" }, transport: { type: "webrtc", sdp: "answer" } });
+    const retry = f.scope.newAttempt(); await retry.create("retry-offer");
+    expect(f.api.createSession.mock.calls[1]![0].startReason).toBe("initial");
+    await retry.abandon("cancelled"); await f.scope.outbox.flush(); await f.budget.close();
+  });
 
   it("keeps the same conversation across bootstrap replacements without duplicate rows for interpreter phase", async () => {
     const f = fixture(); const first = f.scope.newAttempt(); await first.create("first"); await first.finish({ finalized: true, usageSeconds: 15 }); await f.scope.outbox.flush();

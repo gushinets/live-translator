@@ -76,7 +76,9 @@ export class LedgerRuntime {
   }
   create(owner: string, input: AttemptInput, sdp: string, disconnected: () => boolean): Promise<LiveSessionResponse> {
     if (!this.accepting) throw new LedgerError("server_shutting_down_before_dispatch", 503);
-    const row = this.ledger.registerAttempt(owner, input);
+    let row;
+    try { row = this.ledger.registerAttempt(owner, input); }
+    catch (error) { if (error instanceof LedgerError) throw error; throw new LedgerError("attempt_registration_unavailable", 503); }
     const existing = this.network.get(row.id); if (existing) return existing.promise;
     if (row.provider_request_dispatched_at !== null) throw new LedgerError("attempt_already_exists");
     const entry: Creation = { controller: new AbortController(), safe: false, settled: false, promise: Promise.resolve(null as unknown as LiveSessionResponse) };

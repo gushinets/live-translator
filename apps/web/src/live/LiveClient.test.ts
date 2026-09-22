@@ -397,6 +397,29 @@ describe("LiveClient.connect", () => {
       usageSeconds: 12,
     });
   });
+  it("does not reject local close when accounting delivery fails", async () => {
+    const accounting = {
+      managed: true,
+      create: vi.fn(async () => ({
+        session: { id: "managed-session" },
+        transport: { type: "webrtc" as const, sdp: "v=0 managed-answer" },
+      })),
+      handoff: vi.fn(async () => {}),
+      finish: vi.fn<(result: LiveCloseResult) => Promise<void>>(async () => { throw new Error("metadata offline"); }),
+      abandon: vi.fn(async () => {}),
+    };
+    const client = new LiveClient({ backend: makeFakeBackend().backend, accounting,
+      peerFactory: () => peer as unknown as RTCPeerConnection, onRemoteStream });
+    const connectPromise = client.connect(makeFakeStream());
+    await vi.waitFor(() => expect(peer.calls).toContain("setRemoteDescription"));
+    peer.dataChannel?.emitMessage({ type: "session.started", session: { id: "managed-session" } });
+    await connectPromise;
+
+    const closePromise = client.close();
+    peer.dataChannel?.emitMessage({ type: "session.closed", reason: "user_requested", usage: { seconds: 12 } });
+    await expect(closePromise).resolves.toMatchObject({ finalized: true, usageSeconds: 12 });
+    expect(accounting.finish).toHaveBeenCalled();
+  });
 
   it("rejects when ICE gathering never completes within the timeout, and tears down the peer and data channel", async () => {
     vi.useFakeTimers();
