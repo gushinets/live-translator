@@ -1,0 +1,70 @@
+# One-use publisher for an already locally verified patch. Removed through the GitHub API after publication.
+name: PR15 verified snapshot publisher
+on:
+  pull_request:
+    paths:
+      - .github/pr2-snapshot/**
+      - .github/workflows/pr2-publish-snapshot.yml
+permissions:
+  contents: read
+concurrency:
+  group: pr15-verified-snapshot-publisher
+  cancel-in-progress: false
+jobs:
+  publish:
+    if: github.repository == 'gushinets/live-translator' && github.event.pull_request.number == 15 && github.head_ref == 'feat/identity-and-session-ledger' && github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0
+      - name: Verify byte-identical patch and publish only the PR branch
+        env:
+          EXPECTED_HEAD: ${{ github.event.pull_request.head.sha }}
+        run: |
+          python3 - <<'PY'
+          import base64, hashlib, json, lzma, os, pathlib, re, shutil, subprocess, tempfile
+          root = pathlib.Path.cwd()
+          folder = root / '.github/pr2-snapshot'
+          meta = json.loads((folder / 'manifest.json').read_text())
+          base = '96929d27b530d8ce1f297d5a7ed202b2601d2d6e'
+          branch = 'refs/heads/feat/identity-and-session-ledger'
+          assert meta['base_commit'] == base
+          changed = subprocess.check_output(['git','diff','--name-only',base,'HEAD'], text=True).splitlines()
+          assert all(p.startswith('.github/pr2-snapshot/') or p in ('.github/workflows/pr2-publish-snapshot.yml','.github/workflows/pr2-verification-bootstrap.yml') for p in changed), 'Concurrent source changes: refuse to overwrite'
+          assert all(re.fullmatch(r'part-[0-9]{2}\.b64', p) for p in meta['parts'])
+          encoded = ''.join((folder / p).read_text() for p in meta['parts'])
+          decoder = lzma.LZMADecompressor()
+          patch = decoder.decompress(base64.b64decode(encoded, validate=True), max_length=1000000)
+          assert decoder.eof and not decoder.unused_data
+          assert len(patch) == meta['patch_size']
+          assert hashlib.sha256(patch).hexdigest() == meta['patch_sha256'], 'Patch checksum mismatch'
+          with tempfile.TemporaryDirectory() as directory:
+              patchfile = pathlib.Path(directory) / 'snapshot.patch'
+              patchfile.write_bytes(patch)
+              entries = subprocess.check_output(['git','apply','--numstat',str(patchfile)], text=True).splitlines()
+              for entry in entries:
+                  path = entry.split('\t',2)[2]
+                  assert '..' not in pathlib.PurePosixPath(path).parts and '.git' not in pathlib.PurePosixPath(path).parts
+                  assert path in ('.env.example','.gitignore','pnpm-lock.yaml') or path.startswith(('apps/api/','apps/web/','infra/','docs/')), path
+              subprocess.run(['git','apply','--check','--index',str(patchfile)],check=True)
+              subprocess.run(['git','apply','--index',str(patchfile)],check=True)
+              indexfile = pathlib.Path(directory) / 'verification-index'
+              source_index = subprocess.check_output(['git','rev-parse','--git-path','index'], text=True).strip()
+              shutil.copyfile(source_index,indexfile)
+              env = {**os.environ,'GIT_INDEX_FILE':str(indexfile)}
+              subprocess.run(['git','rm','-r','--cached','--ignore-unmatch','.github/pr2-snapshot','.github/workflows/pr2-publish-snapshot.yml'],env=env,check=True,stdout=subprocess.DEVNULL)
+              tree = subprocess.check_output(['git','write-tree'],env=env,text=True).strip()
+              assert tree == meta['expected_tree'], f'Tree mismatch: {tree}'
+              print('Verified source tree:',tree)
+              if os.environ.get('DRY_RUN') != 'true':
+                  actual = subprocess.check_output(['git','ls-remote','origin',branch],text=True).split()[0]
+                  assert actual == os.environ['EXPECTED_HEAD'], 'PR branch moved; refuse to overwrite'
+                  subprocess.run(['git','-c','user.name=github-actions[bot]','-c','user.email=41898282+github-actions[bot]@users.noreply.github.com','-c','core.hooksPath=/dev/null','commit','-m','feat: implement owner-bound session ledger and failure recovery'],check=True)
+                  subprocess.run(['git','push','origin','HEAD:'+branch],check=True)
+                  print('Published feature-branch commit:',subprocess.check_output(['git','rev-parse','HEAD'],text=True).strip())
+          PY
