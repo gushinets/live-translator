@@ -1,4 +1,5 @@
 import type { ProviderAccounting } from "../session/ConversationAccounting";
+import type { CleanupReason } from "../session/MetadataDeliveryBudget";
 import type {
   BackendClient,
   CreateLiveSessionResponse,
@@ -161,7 +162,7 @@ export class LiveClient {
   private pendingRemoteStream: MediaStream | null = null;
   private readonly onEarlyHidden = () => {
     if (this.deps.accounting?.managed && (!this.started || !this.accountingReady) && document.visibilityState === "hidden") {
-      void this.disconnectImmediately().catch(() => console.error("Abandoned startup cleanup incomplete"));
+      void this.disconnectImmediately("hidden").catch(() => console.error("Abandoned startup cleanup incomplete"));
     }
   };
   private closing = false;
@@ -400,7 +401,7 @@ export class LiveClient {
    * this Live session can be mistaken for input belonging to a replacement
    * session. Normal conversation shutdown should continue to use close().
    */
-  async disconnectImmediately(): Promise<void> {
+  async disconnectImmediately(reason: CleanupReason = "replacement"): Promise<void> {
     if (!this.torndown) {
       this.closing = true;
       this.rejectPendingConnect(new Error(DISCONNECTED_CLOSE_REASON));
@@ -412,7 +413,7 @@ export class LiveClient {
         };
       }
     }
-    await this.deps.accounting?.abandon("replacement");
+    await this.deps.accounting?.abandon(reason);
     await this.releaseSessionLeaseAndWait();
   }
 

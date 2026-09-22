@@ -16,6 +16,10 @@ function isDefinitiveNoProviderError(error: unknown): boolean {
   return [400, 401, 403, 404, 410, 429].includes(error.status) || DEFINITIVE_NO_PROVIDER_CODES.has(error.code);
 }
 
+interface PendingDirectEnd {
+  conversationId: string; version: number; reason: "user_end" | "setup_cancel"; epoch: number; inFlight?: Promise<void>;
+}
+
 /** One product controller owns this scope; provider attempts keep immutable local IDs. */
 export class ConversationAccounting {
   readonly api: LedgerApi;
@@ -33,6 +37,7 @@ export class ConversationAccounting {
   private readonly autoDelivery: boolean;
   private readonly producerId = crypto.randomUUID();
   private producerLock: Promise<void> | undefined;
+  private readonly pendingDirectEnds = new Map<number, PendingDirectEnd>();
   constructor(options: { api?: LedgerApi; budget?: MetadataDeliveryBudget; autoDelivery?: boolean } = {}) {
     this.api = options.api ?? new AccountingBackend();
     this.budget = options.budget ?? new MetadataDeliveryBudget({ producerId: this.producerId });
@@ -103,8 +108,23 @@ export class ConversationAccounting {
     this.dispatchCount = Math.max(0, this.dispatchCount - 1);
     if (this.last === attempt) this.last = previous;
   }
+  private async deliverDirectEnd(intent: PendingDirectEnd): Promise<void> {
+    if (intent.inFlight) return intent.inFlight;
+    const operation = (async () => {
+      const result = await this.api.end(intent.conversationId, intent.version, intent.reason);
+      if (result.status !== "ended") throw new Error("Conversation End was not confirmed");
+      if (this.pendingDirectEnds.get(intent.epoch) === intent) this.pendingDirectEnds.delete(intent.epoch);
+    })();
+    intent.inFlight = operation;
+    try { await operation; }
+    catch (error) { if (intent.inFlight === operation) intent.inFlight = undefined; throw error; }
+  }
   async end(reason: "user_end" | "setup_cancel", expectedEpoch = this.epoch): Promise<void> {
-    if (expectedEpoch !== this.epoch) return; // A late duplicate End must not terminate a newer product scope.
+    if (expectedEpoch !== this.epoch) {
+      const pending = this.pendingDirectEnds.get(expectedEpoch);
+      if (pending?.reason === reason) await this.deliverDirectEnd(pending);
+      return;
+    }
     const ending = [...this.attempts], current = this.current, creating = this.creating;
     this.epoch++; this.current = undefined; this.creating = undefined; this.last = undefined;
     this.dispatchCount = 0; this.requestId = crypto.randomUUID(); this.attempts = new Set();
@@ -117,7 +137,11 @@ export class ConversationAccounting {
         void this.outbox.flush().catch(() => console.error("Conversation end delivery pending"));
       } catch {
         console.error("Conversation end storage degraded", { conversationId: c.conversationId });
-        void this.api.end(c.conversationId, c.version, reason).catch(() => undefined);
+        const intent = this.pendingDirectEnds.get(expectedEpoch) ?? {
+          conversationId: c.conversationId, version: c.version, reason, epoch: expectedEpoch,
+        };
+        this.pendingDirectEnds.set(expectedEpoch, intent);
+        await this.deliverDirectEnd(intent);
       }
     }
   }

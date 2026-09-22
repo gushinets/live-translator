@@ -55,6 +55,9 @@ export class LedgerRuntime {
   }
   createWaiterCount(id: string): number { return this.createWaiters.get(id) ?? 0; }
   hasCreateWaiters(id: string): boolean { return this.createWaiterCount(id) > 0; }
+  waitForCreates(): Promise<void> {
+    return Promise.allSettled([...this.network.values()].map(entry => entry.promise)).then(() => undefined);
+  }
   syncAdmission(): void {
     this.registry.restoreReservations(this.ledger.reservations().map(s => ({ leaseId: s.lease_id!, expiresAt: s.lease_expires_at!, sessionId: s.openai_session_id })), this.ledger.now());
   }

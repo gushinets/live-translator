@@ -76,6 +76,21 @@ describe("cleanup and End delivery", () => {
     f.api.end.mockResolvedValue({ ...f.c, status: "ended" }); await f.scope.outbox.flush();
     expect(f.api.end).toHaveBeenLastCalledWith("c", 2, "user_end"); expect(await f.budget.ends()).toHaveLength(0); await f.budget.close();
   });
+  it("retries degraded direct End delivery after local storage and HTTP failure", async () => {
+    const f = fixture(); const attempt = f.scope.newAttempt(); await attempt.create("offer");
+    const revision = f.scope.revision;
+    vi.spyOn(f.scope.outbox, "enqueueEnd").mockRejectedValue(new Error("storage unavailable"));
+    f.api.end.mockRejectedValueOnce(new Error("offline"));
+
+    await expect(f.scope.end("user_end", revision)).rejects.toThrow("offline");
+    expect(f.api.end).toHaveBeenCalledTimes(1);
+
+    f.api.end.mockResolvedValueOnce({ ...f.c, status: "ended" });
+    await expect(f.scope.end("user_end", revision)).resolves.toBeUndefined();
+    expect(f.api.end).toHaveBeenCalledTimes(2);
+    expect(f.api.end).toHaveBeenLastCalledWith(f.c.conversationId, f.c.version, "user_end");
+    await f.budget.close();
+  });
   it("drops stale End after conflict instead of taking over a newer conversation version", async () => {
     const f = fixture(); f.api.end.mockRejectedValue({ status: 409 }); f.api.readConversation.mockResolvedValue({ ...f.c, version: 3 });
     await f.scope.outbox.enqueueEnd("c", 2, "user_end"); await f.scope.outbox.flush(); expect(await f.budget.ends()).toHaveLength(0);

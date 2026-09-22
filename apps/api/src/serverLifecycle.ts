@@ -22,13 +22,23 @@ export function startApiServer(app: Express, options: { port: number; host?: str
     // Never keep a disconnected client socket alive after the bounded provider handoff/drain.
     server.closeAllConnections();
     const remaining = deadline - performance.now();
-    if (remaining <= 0) throw new Error("API shutdown deadline reached");
-    let timer: ReturnType<typeof setTimeout> | undefined;
-    try {
-      await Promise.race([httpClosed, new Promise<never>((_resolve, reject) => { timer = setTimeout(() => reject(new Error("HTTP shutdown deadline reached")), remaining); })]);
-    } finally { if (timer) clearTimeout(timer); }
+    let tailFailure: unknown;
+    if (remaining <= 0) {
+      tailFailure = new Error("API shutdown deadline reached");
+      void httpClosed.catch(() => undefined);
+    } else {
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      try {
+        const tail = Promise.all([httpClosed, runtime?.waitForCreates() ?? Promise.resolve()]);
+        await Promise.race([tail, new Promise<never>((_resolve, reject) => {
+          timer = setTimeout(() => reject(new Error("API shutdown deadline reached")), remaining);
+        })]);
+      } catch (error) { tailFailure = error; }
+      finally { if (timer) clearTimeout(timer); }
+    }
     if (runtime?.ledger.db.isOpen) runtime.ledger.db.close();
     if (failure) throw failure;
+    if (tailFailure) throw tailFailure;
   };
   return { server, shutdown: () => { shutdown ??= stop(); return shutdown; } };
 }

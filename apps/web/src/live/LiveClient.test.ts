@@ -9,6 +9,7 @@ import {
   type SessionClosedEvent,
 } from "./LiveEvents";
 import { STARTUP_TRACE_STORAGE_KEY } from "./StartupTrace";
+import type { CleanupReason } from "../session/MetadataDeliveryBudget";
 
 class FakeDataChannel extends EventTarget {
   readyState: RTCDataChannelState = "open";
@@ -320,6 +321,39 @@ describe("LiveClient.connect", () => {
     await connectPromise;
 
     expect(onRemoteStream).toHaveBeenCalledExactlyOnceWith(remoteStream);
+  });
+
+  it("records early managed backgrounding with hidden cleanup provenance", async () => {
+    const handoff = createDeferred<void>();
+    const accounting = {
+      managed: true,
+      create: vi.fn(async () => ({
+        session: { id: "managed-session" },
+        transport: { type: "webrtc" as const, sdp: "v=0 managed-answer" },
+      })),
+      handoff: vi.fn(() => handoff.promise),
+      finish: vi.fn<(result: LiveCloseResult) => Promise<void>>(async () => {}),
+      abandon: vi.fn<(reason: CleanupReason) => Promise<void>>(async () => {}),
+    };
+    const client = new LiveClient({
+      backend: makeFakeBackend().backend,
+      accounting,
+      peerFactory: () => peer as unknown as RTCPeerConnection,
+      onRemoteStream,
+    });
+    const visibility = vi.spyOn(document, "visibilityState", "get").mockReturnValue("visible");
+    try {
+      const connectPromise = client.connect(makeFakeStream());
+      await vi.waitFor(() => expect(accounting.handoff).toHaveBeenCalledOnce());
+      visibility.mockReturnValue("hidden");
+      document.dispatchEvent(new Event("visibilitychange"));
+
+      await expect(connectPromise).rejects.toThrow("Live session is no longer connected");
+      await vi.waitFor(() => expect(accounting.abandon).toHaveBeenCalled());
+      expect(accounting.abandon.mock.calls[0]?.[0]).toBe("hidden");
+    } finally {
+      visibility.mockRestore();
+    }
   });
 
   it("passes a confirmed managed close to accounting before transport release", async () => {

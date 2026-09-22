@@ -1,8 +1,11 @@
 import { randomUUID } from "node:crypto";
+import { once } from "node:events";
+import express from "express";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { openUsageDatabase } from "../src/persistence/database.js";
 import { UsageLedger } from "../src/accounting/UsageLedger.js";
 import { LedgerRuntime } from "../src/accounting/LedgerRuntime.js";
+import { startApiServer } from "../src/serverLifecycle.js";
 
 const databases: ReturnType<typeof openUsageDatabase>[] = [];
 afterEach(() => { for (const db of databases.splice(0)) if (db.isOpen) db.close(); });
@@ -39,6 +42,38 @@ describe("bounded API shutdown ownership", () => {
     expect(f.ledger.getAttemptInternal(f.input.liveSessionId).cleanup_requested_at).toBeNull();
     expect(f.ledger.acknowledgeHandoff(f.owner, f.input.liveSessionId).state).toBe("active");
   });
+  it("keeps SQLite open until a late create result is durably classified", async () => {
+    const f = fixture(); let finish!: (value: { session: { id: string }; transport: { type: "webrtc"; sdp: string } }) => void;
+    const runtime = new LedgerRuntime(f.ledger, { startWorker: false,
+      creator: () => new Promise(resolve => { finish = resolve; }) });
+    const app = express(); app.locals.ledgerRuntime = runtime;
+    const lifecycle = startApiServer(app, { port: 0, host: "127.0.0.1", drainMs: 0, timeoutMs: 1000 });
+    await once(lifecycle.server, "listening");
+
+    let persistedProviderId: string | null = null;
+    const recordProviderCreated = f.ledger.recordProviderCreated.bind(f.ledger);
+    vi.spyOn(f.ledger, "recordProviderCreated").mockImplementation((id, providerId, expiresAt) => {
+      const row = recordProviderCreated(id, providerId, expiresAt); persistedProviderId = row.openai_session_id; return row;
+    });
+    const creation = runtime.create(f.owner, f.input, "offer", () => false).catch(error => error);
+    await vi.waitFor(() => expect(runtime.inflightCount).toBe(1));
+
+    let runtimeStopped!: () => void;
+    const runtimeStoppedPromise = new Promise<void>(resolve => { runtimeStopped = resolve; });
+    const shutdownRuntime = runtime.shutdown.bind(runtime);
+    vi.spyOn(runtime, "shutdown").mockImplementation(async options => {
+      await shutdownRuntime(options); runtimeStopped();
+    });
+    const stopping = lifecycle.shutdown();
+    await runtimeStoppedPromise;
+    expect(f.ledger.db.isOpen).toBe(true);
+
+    finish({ session: { id: "late-provider" }, transport: { type: "webrtc", sdp: "answer" } });
+    await creation; await stopping;
+    expect(persistedProviderId).toBe("late-provider");
+    expect(f.ledger.db.isOpen).toBe(false);
+  });
+
   it("shares one global Sideband budget between worker and emergency paths", async () => {
     const modulePath = "../src/accounting/BoundedOrphanCloser.js";
     const module = await import(modulePath).catch(() => undefined); expect(module, "shared network budget").toBeDefined();
