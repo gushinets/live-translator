@@ -144,9 +144,12 @@ The example `.env.example` explicitly opts into the internal-test profile:
 | `LIVE_SESSION_RATE_LIMIT` | 20 | 60 |
 | `LIVE_SESSION_RATE_WINDOW_MS` | 600000 | 600000 |
 
-`LIVE_SESSION_RATE_LIMIT` counts creation attempts per client IP within the
-configured window. People behind one NAT share that budget. Only
-`POST /api/live/session` (including its trailing-slash form) consumes it;
+`LIVE_SESSION_RATE_LIMIT` counts creation attempts per rate-limit key within the
+configured window: the full IPv4 address, or an explicitly configured IPv6 `/56`
+prefix (`ipv6Subnet: 56`). People behind one IPv4 NAT share that budget, and IPv6
+addresses inside the same `/56` share one budget so rotating interface addresses
+does not reset quota. Only `POST /api/live/session` (including its trailing-slash
+form) consumes it;
 `DELETE /api/live/session/:sessionId` remains available after creation returns
 429 and remains subject to the existing Origin check. These are local admission
 controls, not a guarantee of provider concurrency or a billing limit.

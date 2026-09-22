@@ -128,6 +128,17 @@ describe("session admission configuration and creation-only rate limit", () => {
     expect(createLiveSession).toHaveBeenCalledTimes(3);
   });
 
+  it("groups IPv6 clients by the explicit /56 rate-limit key", async () => {
+    const { app, createLiveSession } = await configuredApp({ LIVE_SESSION_RATE_LIMIT: "1" });
+    await request(app).post("/api/live/session").set("Origin", origin)
+      .set("X-Forwarded-For", "2001:db8:abcd:1201::1").send({ sdp: "first-prefix-address" }).expect(201);
+    await request(app).post("/api/live/session").set("Origin", origin)
+      .set("X-Forwarded-For", "2001:db8:abcd:12fe::2").send({ sdp: "same-prefix-address" }).expect(429);
+    await request(app).post("/api/live/session").set("Origin", origin)
+      .set("X-Forwarded-For", "2001:db8:abcd:1300::3").send({ sdp: "different-prefix" }).expect(201);
+    expect(createLiveSession).toHaveBeenCalledTimes(2);
+  });
+
   it("still rejects missing or wrong release origins after creation quota is exhausted", async () => {
     const { app } = await configuredApp({ LIVE_SESSION_RATE_LIMIT: "1" });
     await request(app).post("/api/live/session").set("Origin", origin).send({ sdp: "one" }).expect(201);

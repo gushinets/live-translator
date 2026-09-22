@@ -25,6 +25,8 @@ export function createApp(dependencies: AppDependencies = {}) {
   const sessionCreationLimiter = rateLimit({
     windowMs: apiConfig.creationWindowMs,
     limit: apiConfig.creationLimit,
+    // Keep IPv6 clients on a stable prefix key so rotating interface addresses cannot reset quota.
+    ipv6Subnet: 56,
     standardHeaders: "draft-8",
     legacyHeaders: false,
     message: { error: "Too many session creation attempts" },
