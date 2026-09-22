@@ -74,6 +74,36 @@ describe("bounded API shutdown ownership", () => {
     expect(f.ledger.db.isOpen).toBe(false);
   });
 
+  it("retries emergency provider-result persistence during the shutdown tail", async () => {
+    const f = fixture(); let storageAvailable = false, persistAttempts = 0, persistedProviderId: string | null = null;
+    const realRecord = f.ledger.recordProviderCreated.bind(f.ledger);
+    vi.spyOn(f.ledger, "recordProviderCreated").mockImplementation((id, providerId, expiresAt) => {
+      persistAttempts++;
+      if (!storageAvailable) throw new Error("simulated transient storage failure");
+      const row = realRecord(id, providerId, expiresAt); persistedProviderId = row.openai_session_id; return row;
+    });
+    const runtime = new LedgerRuntime(f.ledger, {
+      startWorker: false,
+      creator: async () => ({ session: { id: "emergency-provider" }, transport: { type: "webrtc", sdp: "answer" } }),
+      closeOrphan: async () => ({ kind: "retryable_error", code: "test_retry" }),
+    });
+    const app = express(); app.locals.ledgerRuntime = runtime;
+    const lifecycle = startApiServer(app, { port: 0, host: "127.0.0.1", drainMs: 0, timeoutMs: 1000 });
+    await once(lifecycle.server, "listening");
+
+    const creation = runtime.create(f.owner, f.input, "offer", () => false).catch(error => error);
+    await creation;
+    expect(persistAttempts).toBeGreaterThanOrEqual(2);
+    expect(f.ledger.getAttemptInternal(f.input.liveSessionId).openai_session_id).toBeNull();
+
+    storageAvailable = true;
+    await lifecycle.shutdown();
+
+    expect(persistedProviderId).toBe("emergency-provider");
+    expect(persistAttempts).toBeGreaterThanOrEqual(3);
+    expect(f.ledger.db.isOpen).toBe(false);
+  });
+
   it("shares one global Sideband budget between worker and emergency paths", async () => {
     const modulePath = "../src/accounting/BoundedOrphanCloser.js";
     const module = await import(modulePath).catch(() => undefined); expect(module, "shared network budget").toBeDefined();

@@ -38,6 +38,7 @@ export class ConversationAccounting {
   private readonly producerId = crypto.randomUUID();
   private producerLock: Promise<void> | undefined;
   private readonly pendingDirectEnds = new Map<number, PendingDirectEnd>();
+  private readonly pendingDirectCleanupAcks = new Set<string>();
   constructor(options: { api?: LedgerApi; budget?: MetadataDeliveryBudget; autoDelivery?: boolean } = {}) {
     this.api = options.api ?? new AccountingBackend();
     this.budget = options.budget ?? new MetadataDeliveryBudget({ producerId: this.producerId });
@@ -79,6 +80,8 @@ export class ConversationAccounting {
       return p.usageLedgerEnabled;
     }).catch(error => { this.enabled = undefined; throw error; });
     if (!await this.enabled) return null;
+    await this.flushPendingDirectEnds();
+    await this.flushPendingDirectCleanupAcks();
     attempt.managed = true; attempt.assertCurrent();
     await this.holdProducerLock();
     this.creating ??= this.api.createConversation(this.requestId).catch(error => { this.creating = undefined; throw error; });
@@ -118,6 +121,23 @@ export class ConversationAccounting {
     intent.inFlight = operation;
     try { await operation; }
     catch (error) { if (intent.inFlight === operation) intent.inFlight = undefined; throw error; }
+  }
+  private async flushPendingDirectEnds(): Promise<void> {
+    for (const intent of [...this.pendingDirectEnds.values()]) await this.deliverDirectEnd(intent);
+  }
+  async acknowledgeDirectCleanup(localId: string): Promise<void> {
+    try {
+      await this.budget.acknowledgeDirectCleanupAndRelease(localId);
+      this.pendingDirectCleanupAcks.delete(localId);
+    } catch {
+      this.pendingDirectCleanupAcks.add(localId);
+    }
+  }
+  private async flushPendingDirectCleanupAcks(): Promise<void> {
+    for (const localId of [...this.pendingDirectCleanupAcks]) {
+      await this.budget.acknowledgeDirectCleanupAndRelease(localId);
+      this.pendingDirectCleanupAcks.delete(localId);
+    }
   }
   async end(reason: "user_end" | "setup_cancel", expectedEpoch = this.epoch): Promise<void> {
     if (expectedEpoch !== this.epoch) {
@@ -209,6 +229,7 @@ export class ProviderAccounting {
         console.error("Existing session cleanup storage degraded", { localId: this.localId }); this.controller?.abort();
         if (!this.dispatched) throw error;
         await this.scope.api.cleanup(this.localId, reason);
+        await this.scope.acknowledgeDirectCleanup(this.localId);
         this.finished = true;
       }
     })();

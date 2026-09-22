@@ -104,6 +104,20 @@ export class MetadataDeliveryBudget {
       return this.releasable(next) ? null : next;
     });
   }
+  acknowledgeDirectCleanupAndRelease(localId: string): Promise<void> {
+    return this.transaction("readwrite", (store, result) => {
+      const get = store.get(localId);
+      get.onsuccess = () => {
+        const row = get.result as MetadataEnvelope | undefined;
+        if (!row) { result(undefined); return; }
+        const next: MetadataEnvelope = {
+          ...row, cleanup: null, producerFinalized: true, producerOutcome: "lost",
+        };
+        if (this.releasable(next)) store.delete(localId); else store.put(next);
+        result(undefined);
+      };
+    });
+  }
   acknowledgeCloseAndRelease(localId: string): Promise<void> {
     return this.change(localId, row => {
       const next = { ...row, cleanup: null, closeObservation: null };
