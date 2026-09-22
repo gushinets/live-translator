@@ -25,3 +25,9 @@ secrets/
 *.log
 .DS_Store
 Thumbs.db
+
+# Local usage ledger and SQLite journal companions
+.data/
+*.sqlite
+*.sqlite-wal
+*.sqlite-shm

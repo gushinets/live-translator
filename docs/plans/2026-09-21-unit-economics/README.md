@@ -45,7 +45,7 @@ PR 1 → PR 2 → PR 3 → G1: измеряем текущий lifecycle
 | Этап | Содержание | Статус | Критериев |
 |---|---|---|---:|
 | 1 | [конфигурация и границы admission](01-config-and-admission.md) | in-progress ([#14](https://github.com/gushinets/live-translator/pull/14)) | 5 |
-| 2 | [anonymous identity, conversation и журнал попыток](02-identity-and-ledger.md) | planned | 11 |
+| 2 | [anonymous identity, conversation и журнал попыток](02-identity-and-ledger.md) | [in-progress, PR #15](https://github.com/gushinets/live-translator/pull/15) | 11 |
 | 3 | [usage, active/speech time и отчёт по разговору](03-usage-and-product-metrics.md) | planned | 13 |
 | 4 | [безопасное закрытие и границы replacement](04-graceful-session-boundaries.md) | planned | 7 |
 | 5 | [immediate background close и retained conversation](05-background-and-resume.md) | planned | 15 |

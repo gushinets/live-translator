@@ -85,7 +85,7 @@ export const apiConfig = {
   cleanupWorkerConcurrency: positiveIntegerEnv("CLEANUP_WORKER_CONCURRENCY", 2, 100),
   cleanupWorkerBatchSize: positiveIntegerEnv("CLEANUP_WORKER_BATCH_SIZE", 20, 1000),
   serverShutdownDrainMs: positiveIntegerEnv("SERVER_SHUTDOWN_DRAIN_MS", 18000, 2147483647),
-  serverShutdownTimeoutMs: positiveIntegerEnv("SERVER_SHUTDOWN_TIMEOUT_MS", 40000, 2147483647),
+  serverShutdownTimeoutMs: positiveIntegerEnv("SERVER_SHUTDOWN_TIMEOUT_MS", 40000, 40000),
   maxConcurrentSessions: positiveIntegerEnv("MAX_CONCURRENT_SESSIONS", 5),
   leaseMs: positiveIntegerEnv("LIVE_SESSION_LEASE_MS", 900_000),
   creationLimit: positiveIntegerEnv("LIVE_SESSION_RATE_LIMIT", 20),
