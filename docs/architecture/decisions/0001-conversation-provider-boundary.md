@@ -10,7 +10,7 @@
 
 ## Решение в предлагаемой редакции
 
-Сохранять anonymous user → conversation → local provider attempt. CleanupWorker terminal taxonomy различает observed `session.closed` и evidence-backed terminal-not-live. `recordProviderTerminalNotLive()` atomically делает provider row terminal `closed`, durable release admission, но сохраняет `close_confirmed=false` и NULL final/reason; memory slot снимается только после commit. Auth/config failure parks cleanup row и ordinary drains её не запускают до explicit re-arm/expiry.
+Сохранять anonymous user → conversation → local provider attempt. Provider result/HTTP 201 остаётся provisional: `creation_completed_at` не означает browser handoff. PR 2 хранит durable handoff ACK deadline; после consumed 201 + successful `setRemoteDescription` browser подтверждает handoff отдельным idempotent ACK. До ACK provider row остаётся `creating`; missing ACK/restart scan ставит cleanup fence, а late ACK его не снимает. Dispatch-vs-cleanup CAS и route-owned disconnect fence закрывают соседние create races.
 
 Разделять `initial_mode`, `start_reason` и наблюдаемые phase durations. Состояние admission/lease не является состоянием provider billing. Product generation guards сохраняются; ledger generation/local ID не подменяют их. Ownership проверяется по cookie и FK, lifecycle защищается version CAS.
 
