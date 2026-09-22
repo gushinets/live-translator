@@ -1,6 +1,9 @@
 # Temporary verification workspace for the PR-2 implementation. Removed before review.
 name: PR2 verification workspace
-on: pull_request
+on:
+  pull_request:
+    paths:
+      - .github/workflows/pr2-verification-bootstrap.yml
 permissions:
   contents: read
 jobs:
@@ -21,16 +24,24 @@ jobs:
           node-version: 24
           cache: pnpm
       - run: pnpm install --frozen-lockfile
+      - name: Resolve planned PR2 dependencies for local verification
+        run: |
+          pnpm --filter @live-translator/api add 'ws@^8.21.0'
+          pnpm --filter @live-translator/api add -D '@types/ws@^8.5.13'
+          pnpm --filter @live-translator/web add -D 'fake-indexeddb@^6.2.4'
       - name: Export source and public dependencies only
         shell: bash
         run: |
           mkdir -p /tmp/pr2-workspace/repo /tmp/pr2-workspace/tools
           git archive HEAD | tar -x -C /tmp/pr2-workspace/repo
+          cp pnpm-lock.yaml /tmp/pr2-workspace/repo/
+          cp apps/api/package.json /tmp/pr2-workspace/repo/apps/api/
+          cp apps/web/package.json /tmp/pr2-workspace/repo/apps/web/
           cp -a node_modules /tmp/pr2-workspace/repo/
           cp -a apps/api/node_modules /tmp/pr2-workspace/repo/apps/api/
           cp -a apps/web/node_modules /tmp/pr2-workspace/repo/apps/web/
           cp "$(command -v node)" /tmp/pr2-workspace/tools/node
-          cp -a /home/runner/setup-pnpm/node_modules/pnpm /tmp/pr2-workspace/tools/pnpm
+          cp -aL /home/runner/setup-pnpm/node_modules/pnpm /tmp/pr2-workspace/tools/pnpm
           tar -czf /tmp/pr2-workspace.tar.gz -C /tmp/pr2-workspace .
       - uses: actions/upload-artifact@v4
         with:
