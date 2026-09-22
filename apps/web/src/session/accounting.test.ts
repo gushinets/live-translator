@@ -92,13 +92,20 @@ describe("controller-owned conversation accounting", () => {
     await attempt.create("offer"); expect(f.api.createSession).toHaveBeenCalledTimes(1);
     await attempt.abandon("cancelled"); await f.scope.outbox.flush(); await f.budget.close();
   });
-  it("releases a local envelope after a definitive pre-provider create rejection", async () => {
+  it("releases a local envelope and preserves initial semantics after a definitive pre-provider rejection", async () => {
     const f = fixture(); const attempt = f.scope.newAttempt();
-    f.api.createSession.mockRejectedValue(new AccountingRequestError(429, "accounting_request_failed"));
+    f.api.createSession.mockRejectedValueOnce(new AccountingRequestError(429, "accounting_request_failed"));
     await expect(attempt.create("offer")).rejects.toThrow("accounting_request_failed");
     expect(f.api.cleanup).not.toHaveBeenCalled();
     expect(await f.budget.entries()).toHaveLength(0);
-    await f.budget.close();
+
+    f.api.createSession.mockResolvedValueOnce({ session: { id: "provider-retry" }, transport: { type: "webrtc", sdp: "answer" } });
+    const retry = f.scope.newAttempt();
+    await expect(retry.create("retry-offer")).resolves.toBeDefined();
+    expect(f.api.readAttempt).not.toHaveBeenCalled();
+    expect(f.api.createSession.mock.calls[1]![0].startReason).toBe("initial");
+
+    await retry.abandon("cancelled"); await f.scope.outbox.flush(); await f.budget.close();
   });
 
   it("does not create any paid session when local storage is unavailable", async () => {

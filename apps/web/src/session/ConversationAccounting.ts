@@ -25,6 +25,7 @@ export class ConversationAccounting {
   private creating: Promise<ConversationMetadata> | undefined;
   private current: ConversationMetadata | undefined;
   private last: ProviderAccounting | undefined;
+  private readonly previousDispatch = new WeakMap<ProviderAccounting, ProviderAccounting | undefined>();
   private attempts = new Set<ProviderAccounting>();
   private epoch = 0;
   private dispatchCount = 0;
@@ -91,7 +92,17 @@ export class ConversationAccounting {
     }
     return c;
   }
-  noteDispatch(attempt: ProviderAccounting): "initial" | "bootstrap_replacement" { this.last = attempt; return this.dispatchCount++ === 0 ? "initial" : "bootstrap_replacement"; }
+  noteDispatch(attempt: ProviderAccounting): "initial" | "bootstrap_replacement" {
+    this.previousDispatch.set(attempt, this.last);
+    this.last = attempt;
+    return this.dispatchCount++ === 0 ? "initial" : "bootstrap_replacement";
+  }
+  noteNoProvider(attempt: ProviderAccounting): void {
+    const previous = this.previousDispatch.get(attempt);
+    if (!this.previousDispatch.delete(attempt)) return;
+    this.dispatchCount = Math.max(0, this.dispatchCount - 1);
+    if (this.last === attempt) this.last = previous;
+  }
   async end(reason: "user_end" | "setup_cancel", expectedEpoch = this.epoch): Promise<void> {
     if (expectedEpoch !== this.epoch) return; // A late duplicate End must not terminate a newer product scope.
     const ending = [...this.attempts], current = this.current, creating = this.creating;
@@ -141,6 +152,7 @@ export class ProviderAccounting {
       if (isDefinitiveNoProviderError(error)) {
         this.cancelled = true;
         await this.scope.budget.finishProducerAndRelease(this.localId, "no_provider");
+        this.scope.noteNoProvider(this);
         this.finished = true;
       } else {
         await this.abandon("response_not_received");
