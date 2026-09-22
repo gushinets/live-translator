@@ -1836,6 +1836,7 @@ export class SessionController {
       if (this.currentSession.state === "idle") {
         return;
       }
+      this.audio.setCaptureEnabled(true);
       if (this.currentSession.state === "connecting") {
         this.dispatch({ type: "CONTEXT_READY" });
       } else if (this.currentSession.state !== "context") {
