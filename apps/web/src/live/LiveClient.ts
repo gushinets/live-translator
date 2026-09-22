@@ -370,7 +370,7 @@ export class LiveClient {
       // tearing down after a failed connect, for the same reason a local
       // close() or a remote session.closed suppress them (§23).
       this.closing = true;
-      this.teardownTransportAndRelease();
+      this.teardownTransport();
       await this.deps.accounting?.abandon("abandoned_connect");
       throw error;
     }

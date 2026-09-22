@@ -356,6 +356,34 @@ describe("LiveClient.connect", () => {
     }
   });
 
+  it("preserves abandoned_connect provenance when managed startup fails", async () => {
+    const handoff = createDeferred<void>();
+    const accounting = {
+      managed: true,
+      create: vi.fn(async () => ({
+        session: { id: "managed-session" },
+        transport: { type: "webrtc" as const, sdp: "v=0 managed-answer" },
+      })),
+      handoff: vi.fn(() => handoff.promise),
+      finish: vi.fn<(result: LiveCloseResult) => Promise<void>>(async () => {}),
+      abandon: vi.fn<(reason: CleanupReason) => Promise<void>>(async () => {}),
+    };
+    const client = new LiveClient({
+      backend: makeFakeBackend().backend,
+      accounting,
+      peerFactory: () => peer as unknown as RTCPeerConnection,
+      onRemoteStream,
+    });
+
+    const connectPromise = client.connect(makeFakeStream());
+    await vi.waitFor(() => expect(peer.calls).toContain("setRemoteDescription"));
+
+    handoff.reject(new Error("handoff failed"));
+    await expect(connectPromise).rejects.toThrow("handoff failed");
+    expect(accounting.abandon).toHaveBeenCalledWith("abandoned_connect");
+    expect(accounting.finish).not.toHaveBeenCalled();
+  });
+
   it("passes a confirmed managed close to accounting before transport release", async () => {
     const accounting = {
       managed: true,
