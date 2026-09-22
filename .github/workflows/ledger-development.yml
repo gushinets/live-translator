@@ -1,0 +1,36 @@
+name: Ledger development workspace
+on:
+  push:
+    branches: [feat/identity-session-ledger]
+permissions:
+  contents: read
+jobs:
+  workspace:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.34.1
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - run: pnpm install --frozen-lockfile
+      - name: Package isolated, secret-free development inputs
+        run: |
+          mkdir -p /tmp/ledger-dev/tools
+          git archive HEAD | tar -x -C /tmp/ledger-dev
+          cp -a node_modules /tmp/ledger-dev/
+          cp -a apps/api/node_modules /tmp/ledger-dev/apps/api/
+          cp -a apps/web/node_modules /tmp/ledger-dev/apps/web/
+          cp "$(command -v node)" /tmp/ledger-dev/tools/node
+          cp -a "$(dirname "$(dirname "$(command -v pnpm)")")/pnpm" /tmp/ledger-dev/tools/pnpm-package 2>/dev/null || true
+          tar -C /tmp/ledger-dev -czf /tmp/ledger-dev.tar.gz .
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ledger-dev-workspace
+          path: /tmp/ledger-dev.tar.gz
+          retention-days: 1
