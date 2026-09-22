@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { BackendClient } from "../api/BackendClient";
 import { runtime } from "../config/runtime";
 import { AckTimeoutError } from "./AckRegistry";
-import { LiveClient } from "./LiveClient";
+import { LiveClient, type LiveCloseResult } from "./LiveClient";
 import {
   APPEND_CHAR_BUDGET,
   ContextTooLongError,
@@ -296,7 +296,7 @@ describe("LiveClient.connect", () => {
         transport: { type: "webrtc" as const, sdp: "v=0 managed-answer" },
       })),
       handoff: vi.fn(() => handoff.promise),
-      finish: vi.fn(async () => {}),
+      finish: vi.fn(async (_result: LiveCloseResult) => {}),
       abandon: vi.fn(async () => {}),
     };
     const client = new LiveClient({
@@ -330,7 +330,7 @@ describe("LiveClient.connect", () => {
         transport: { type: "webrtc" as const, sdp: "v=0 managed-answer" },
       })),
       handoff: vi.fn(async () => {}),
-      finish: vi.fn(async () => {}),
+      finish: vi.fn(async (_result: LiveCloseResult) => {}),
       abandon: vi.fn(async () => {}),
     };
     const client = new LiveClient({
