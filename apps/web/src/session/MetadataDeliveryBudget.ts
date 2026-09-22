@@ -100,7 +100,7 @@ export class MetadataDeliveryBudget {
   }
   acknowledgeCleanupAndRelease(localId: string): Promise<void> {
     return this.change(localId, row => {
-      const next = { ...row, cleanup: null };
+      const next = { ...row, cleanup: null, producerFinalized: true, producerOutcome: row.producerOutcome ?? "lost" as const };
       return this.releasable(next) ? null : next;
     });
   }

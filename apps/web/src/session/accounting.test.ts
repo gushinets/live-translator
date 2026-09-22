@@ -63,6 +63,15 @@ describe("cleanup and End delivery", () => {
     expect(await f.budget.entries()).toHaveLength(0);
     await f.budget.close();
   });
+  it("releases a cleanup-only envelope when producer finalization was lost", async () => {
+    const f = fixture(); await f.budget.reserve("id", "c"); await f.budget.markDispatchStarted("id");
+    await f.budget.enqueueCleanup("id", "hidden");
+    f.api.cleanup.mockResolvedValue({ cleanupRequestedAt: 123 });
+
+    await f.scope.outbox.flush();
+
+    expect(await f.budget.entries()).toHaveLength(0); await f.budget.close();
+  });
 
   it("keeps registration-race 404 retryable while owner conversation still exists", async () => {
     const f = fixture(); await f.budget.reserve("id", "c"); await f.budget.markDispatchStarted("id");
