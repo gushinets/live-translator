@@ -425,3 +425,44 @@ docker compose --env-file .env -f infra/docker-compose.yml up -d
 ```
 
 Do not roll back or restart unrelated Nginx-hosted services.
+
+## Stage 2: anonymous conversation ledger (PR #15)
+
+Rollout remains disabled by default: `USAGE_LEDGER_ENABLED=false`. Enable it only
+with the matching API and web image after review and the ledger smoke tests.
+It does not enable the new background/resume UX or the stage-3 usage reporter.
+The persistent volume `usage-data` is mounted at `/data`; the Node user owns the
+initial directory. The API uses `/data/live-translator.sqlite`, WAL, foreign keys,
+and synchronous FULL. Do not delete the volume during an image update.
+For `pnpm dev`, `.env.example` uses the local `./.data` directory instead.
+
+The anonymous production cookie is `__Host-live-translator`, HttpOnly, Secure,
+SameSite=Lax, Path=/, without Domain, with a sliding 90-day lifetime. A cleared
+cookie starts a new identity. Provider attempts are recorded before dispatch,
+and a browser must confirm handoff after applying the SDP answer. Old clients
+are rejected with `client_upgrade_required` when ledger creation is enabled.
+
+Creation results and usage do not imply a confirmed provider close. Cleanup is
+best-effort, bounded and metadata-only. A transient authenticated Sideband is
+used only for orphan recovery, never as a regular media route. Undocumented
+404/transport-close outcomes do not establish that a provider session is closed.
+The concurrency limit remains a cooperative guard, not a paid quota.
+
+Operational defaults, all API-only: handoff ACK timeout 30000 ms, resume claim
+60000 ms, cleanup concurrency 2 and due batch 20, close wait 15000 ms. Cleanup
+retry TTL is immutable seven days, independent of conversation retention.
+Resume endpoints prepare the later client feature; the background feature flag
+remains false. A logical conversation retains its policy version and deadlines.
+
+API shutdown closes the create-dispatch gate first, drains in-flight creation
+for up to `SERVER_SHUTDOWN_DRAIN_MS=18000`, then stops cleanup using the remaining
+`SERVER_SHUTDOWN_TIMEOUT_MS=40000` budget. The configured absolute timeout is
+capped at 40000 ms, below Compose's `stop_grace_period: 45s`. A future-deadline,
+result-committed handoff and an acknowledged active provider survive API restart;
+network-in-flight creation is fenced and never automatically re-created.
+
+**Rollback:** once a database exists, turning the flag off retains recovery,
+read/End/cleanup routes but pauses new creations. This avoids mixing an old
+untracked client with outstanding ledger responsibility. Coordinate API/web
+rollback; never delete the ledger or retry an unknown attempt using a new ID.
+Full aggregate reconciliation, backups and tariff calibration remain stage 6.

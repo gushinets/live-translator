@@ -61,8 +61,31 @@ function positiveIntegerEnv(
   return value;
 }
 
+function booleanEnv(name: string, defaultValue: boolean): boolean {
+  const raw = process.env[name];
+  if (raw === undefined) return defaultValue;
+  if (raw !== "true" && raw !== "false") throw new Error(`${name} must be true or false`);
+  return raw === "true";
+}
+function dbPath(): string {
+  const path = process.env.USAGE_DB_PATH ?? "/data/live-translator.sqlite";
+  if (!path.trim()) throw new Error("USAGE_DB_PATH must not be empty");
+  return path;
+}
 export const apiConfig = {
   webOrigin: resolveWebOrigin(),
+  usageLedgerEnabled: booleanEnv("USAGE_LEDGER_ENABLED", false),
+  usageDbPath: dbPath(),
+  conversationRetentionMs: positiveIntegerEnv("CONVERSATION_RETENTION_MS", 300000, 2147483647),
+  maxProviderSessionMs: positiveIntegerEnv("MAX_PROVIDER_SESSION_MS", 900000, 2147483647),
+  maxConversationElapsedMs: positiveIntegerEnv("MAX_CONVERSATION_ELAPSED_MS", 900000, 2147483647),
+  sessionCloseTimeoutMs: positiveIntegerEnv("SESSION_CLOSE_TIMEOUT_MS", 15000, 2147483647),
+  sessionHandoffAckTimeoutMs: positiveIntegerEnv("SESSION_HANDOFF_ACK_TIMEOUT_MS", 30000, 2147483647),
+  resumeClaimTimeoutMs: positiveIntegerEnv("RESUME_CLAIM_TIMEOUT_MS", 60000, 2147483647),
+  cleanupWorkerConcurrency: positiveIntegerEnv("CLEANUP_WORKER_CONCURRENCY", 2, 100),
+  cleanupWorkerBatchSize: positiveIntegerEnv("CLEANUP_WORKER_BATCH_SIZE", 20, 1000),
+  serverShutdownDrainMs: positiveIntegerEnv("SERVER_SHUTDOWN_DRAIN_MS", 18000, 2147483647),
+  serverShutdownTimeoutMs: positiveIntegerEnv("SERVER_SHUTDOWN_TIMEOUT_MS", 40000, 40000),
   maxConcurrentSessions: positiveIntegerEnv("MAX_CONCURRENT_SESSIONS", 5),
   leaseMs: positiveIntegerEnv("LIVE_SESSION_LEASE_MS", 900_000),
   creationLimit: positiveIntegerEnv("LIVE_SESSION_RATE_LIMIT", 20),

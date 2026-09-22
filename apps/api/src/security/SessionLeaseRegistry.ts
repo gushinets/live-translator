@@ -57,6 +57,16 @@ export class SessionLeaseRegistry implements LeaseRegistry {
     return this.releaseLease(leaseId);
   }
 
+  /** Hydrate only committed reservations. Never reset or extend persisted TTL. */
+  restoreReservations(rows: ReadonlyArray<{ leaseId: string; expiresAt: number; sessionId: string | null }>, now = Date.now()): void {
+    this.leases.clear(); this.sessionLeases.clear();
+    for (const row of rows) {
+      if (row.expiresAt <= now) continue;
+      this.leases.set(row.leaseId, { expiresAt: row.expiresAt, ...(row.sessionId ? { sessionId: row.sessionId } : {}) });
+      if (row.sessionId) this.sessionLeases.set(row.sessionId, row.leaseId);
+    }
+  }
+
   get activeLeases() {
     return this.leases.size;
   }

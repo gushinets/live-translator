@@ -14,5 +14,8 @@ FROM node:24-bookworm-slim AS runtime
 WORKDIR /opt/api
 ENV NODE_ENV=production
 COPY --from=build /opt/api ./
+RUN mkdir -p /data && chown node:node /data
 USER node
+# Assert the deployed production artifact contains the explicit optional SDK dependency and SQL.
+RUN node --input-type=module -e "await import('ws'); await import('openai/resources/live/sideband/ws'); const {openUsageDatabase}=await import('./dist/persistence/database.js'); const db=openUsageDatabase(':memory:'); db.close()"
 CMD ["node", "dist/server.js"]

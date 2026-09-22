@@ -1,9 +1,9 @@
+import { createAccountedSessionController } from "../session/createAccountedSessionController";
 import { useEffect, useReducer, useRef, useState } from "react";
 import { ErrorOverlay } from "../components/ErrorOverlay";
 import { BootstrapPrompt } from "../components/BootstrapPrompt";
 import { ContextTooLongError } from "../live/LiveEvents";
 import {
-  createDefaultSessionController,
   type LifecycleSuspendReason,
   type RecoveryPrompt,
   type SessionController,
@@ -55,7 +55,7 @@ export function ContextScreen({
   controller?: ContextScreenController;
 } = {}) {
   const [ownedController] = useState<SessionController | null>(() =>
-    injectedController === undefined ? createDefaultSessionController() : null,
+    injectedController === undefined ? createAccountedSessionController() : null,
   );
   const resolvedController = injectedController ?? ownedController;
   if (resolvedController === null) {

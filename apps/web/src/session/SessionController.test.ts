@@ -342,12 +342,18 @@ describe("SessionController", () => {
 
   it("connects on first context capture, enters context, primes output, and keeps Gate C closed", async () => {
     const { controller, live, audio } = createController();
+    live.connect.mockImplementation(async () => {
+      audio.captureTrack.enabled = false;
+      return { sessionId: "sess_1" };
+    });
 
     await controller.startContextCapture();
 
     expect(audio.primeOutput).toHaveBeenCalledOnce();
     expect(audio.startCapture).toHaveBeenCalledOnce();
     expect(live.connect).toHaveBeenCalledExactlyOnceWith(audio.captureStream);
+    expect(audio.setCaptureEnabled).toHaveBeenLastCalledWith(true);
+    expect(audio.captureTrack.enabled).toBe(true);
     expect(controller.session.state).toBe("context");
     expect(audio.setOutputAudible).toHaveBeenCalledWith(false);
     expect(controller.session.activeTurn).toBeUndefined();

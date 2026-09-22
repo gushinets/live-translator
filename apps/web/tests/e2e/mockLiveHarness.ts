@@ -248,6 +248,7 @@ export class MockLiveHarness {
   }
 
   private async installBackendStub(): Promise<void> {
+    await this.page.route("**/api/policy", route => route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ usageLedgerEnabled: false }) }));
     await this.page.route("**/api/live/session", async (route) => {
       this.liveSessionCreates += 1;
       await route.fulfill({

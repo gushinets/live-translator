@@ -2,13 +2,14 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { BackendClient } from "../api/BackendClient";
 import { runtime } from "../config/runtime";
 import { AckTimeoutError } from "./AckRegistry";
-import { LiveClient } from "./LiveClient";
+import { LiveClient, type LiveCloseResult } from "./LiveClient";
 import {
   APPEND_CHAR_BUDGET,
   ContextTooLongError,
   type SessionClosedEvent,
 } from "./LiveEvents";
 import { STARTUP_TRACE_STORAGE_KEY } from "./StartupTrace";
+import type { CleanupReason } from "../session/MetadataDeliveryBudget";
 
 class FakeDataChannel extends EventTarget {
   readyState: RTCDataChannelState = "open";
@@ -285,6 +286,189 @@ describe("LiveClient.connect", () => {
       session: { id: "sess_123" },
     });
     await connectPromise;
+  });
+
+  it("buffers managed remote audio until accounting handoff succeeds", async () => {
+    const handoff = createDeferred<void>();
+    const accounting = {
+      managed: true,
+      create: vi.fn(async () => ({
+        session: { id: "managed-session" },
+        transport: { type: "webrtc" as const, sdp: "v=0 managed-answer" },
+      })),
+      handoff: vi.fn(() => handoff.promise),
+      finish: vi.fn<(result: LiveCloseResult) => Promise<void>>(async () => {}),
+      abandon: vi.fn(async () => {}),
+    };
+    const client = new LiveClient({
+      backend: makeFakeBackend().backend,
+      accounting,
+      peerFactory: () => peer as unknown as RTCPeerConnection,
+      onRemoteStream,
+    });
+    const connectPromise = client.connect(makeFakeStream());
+
+    await vi.waitFor(() => expect(accounting.handoff).toHaveBeenCalledOnce());
+    const remoteStream = makeFakeStream();
+    peer.emitTrack([remoteStream]);
+    expect(onRemoteStream).not.toHaveBeenCalled();
+
+    peer.dataChannel?.emitMessage({
+      type: "session.started",
+      session: { id: "managed-session" },
+    });
+    handoff.resolve(undefined);
+    await connectPromise;
+
+    expect(onRemoteStream).toHaveBeenCalledExactlyOnceWith(remoteStream);
+  });
+
+  it("records early managed backgrounding with hidden cleanup provenance", async () => {
+    const handoff = createDeferred<void>();
+    const accounting = {
+      managed: true,
+      create: vi.fn(async () => ({
+        session: { id: "managed-session" },
+        transport: { type: "webrtc" as const, sdp: "v=0 managed-answer" },
+      })),
+      handoff: vi.fn(() => handoff.promise),
+      finish: vi.fn<(result: LiveCloseResult) => Promise<void>>(async () => {}),
+      abandon: vi.fn<(reason: CleanupReason) => Promise<void>>(async () => {}),
+    };
+    const client = new LiveClient({
+      backend: makeFakeBackend().backend,
+      accounting,
+      peerFactory: () => peer as unknown as RTCPeerConnection,
+      onRemoteStream,
+    });
+    const visibility = vi.spyOn(document, "visibilityState", "get").mockReturnValue("visible");
+    try {
+      const connectPromise = client.connect(makeFakeStream());
+      await vi.waitFor(() => expect(accounting.handoff).toHaveBeenCalledOnce());
+      visibility.mockReturnValue("hidden");
+      document.dispatchEvent(new Event("visibilitychange"));
+
+      await expect(connectPromise).rejects.toThrow("Live session is no longer connected");
+      await vi.waitFor(() => expect(accounting.abandon).toHaveBeenCalled());
+      expect(accounting.abandon.mock.calls[0]?.[0]).toBe("hidden");
+    } finally {
+      visibility.mockRestore();
+    }
+  });
+
+  it("preserves abandoned_connect provenance when managed startup fails", async () => {
+    const handoff = createDeferred<void>();
+    const accounting = {
+      managed: true,
+      create: vi.fn(async () => ({
+        session: { id: "managed-session" },
+        transport: { type: "webrtc" as const, sdp: "v=0 managed-answer" },
+      })),
+      handoff: vi.fn(() => handoff.promise),
+      finish: vi.fn<(result: LiveCloseResult) => Promise<void>>(async () => {}),
+      abandon: vi.fn<(reason: CleanupReason) => Promise<void>>(async () => {}),
+    };
+    const client = new LiveClient({
+      backend: makeFakeBackend().backend,
+      accounting,
+      peerFactory: () => peer as unknown as RTCPeerConnection,
+      onRemoteStream,
+    });
+
+    const connectPromise = client.connect(makeFakeStream());
+    await vi.waitFor(() => expect(peer.calls).toContain("setRemoteDescription"));
+
+    handoff.reject(new Error("handoff failed"));
+    await expect(connectPromise).rejects.toThrow("handoff failed");
+    expect(accounting.abandon).toHaveBeenCalledWith("abandoned_connect");
+    expect(accounting.finish).not.toHaveBeenCalled();
+  });
+
+  it("releases a legacy lease when signaling fails after backend creation", async () => {
+    peer.setRemoteDescription = async () => {
+      throw new Error("signaling failed");
+    };
+    const { backend, releaseCalls } = makeFakeBackend();
+    const accounting = {
+      managed: false,
+      create: vi.fn(async () => ({
+        session: { id: "legacy-session" },
+        transport: { type: "webrtc" as const, sdp: "v=0 legacy-answer" },
+      })),
+      handoff: vi.fn(async () => {}),
+      finish: vi.fn(async () => {}),
+      abandon: vi.fn(async () => {}),
+    };
+    const client = new LiveClient({ backend, accounting, peerFactory: () => peer as unknown as RTCPeerConnection, onRemoteStream });
+
+    await expect(client.connect(makeFakeStream())).rejects.toThrow("signaling failed");
+    expect(accounting.abandon).toHaveBeenCalledWith("abandoned_connect");
+    expect(releaseCalls).toEqual(["legacy-session"]);
+  });
+
+  it("passes a confirmed managed close to accounting before transport release", async () => {
+    const accounting = {
+      managed: true,
+      create: vi.fn(async () => ({
+        session: { id: "managed-session" },
+        transport: { type: "webrtc" as const, sdp: "v=0 managed-answer" },
+      })),
+      handoff: vi.fn(async () => {}),
+      finish: vi.fn<(result: LiveCloseResult) => Promise<void>>(async () => {}),
+      abandon: vi.fn(async () => {}),
+    };
+    const client = new LiveClient({
+      backend: makeFakeBackend().backend,
+      accounting,
+      peerFactory: () => peer as unknown as RTCPeerConnection,
+      onRemoteStream,
+    });
+    const connectPromise = client.connect(makeFakeStream());
+    await vi.waitFor(() => expect(peer.calls).toContain("setRemoteDescription"));
+    peer.dataChannel?.emitMessage({
+      type: "session.started",
+      session: { id: "managed-session" },
+    });
+    await connectPromise;
+
+    const closePromise = client.close();
+    peer.dataChannel?.emitMessage({
+      type: "session.closed",
+      reason: "user_requested",
+      usage: { seconds: 12 },
+    });
+    await closePromise;
+
+    expect(accounting.finish).toHaveBeenCalled();
+    expect(accounting.finish.mock.calls.every(([result]) => result.finalized === true)).toBe(true);
+    expect(accounting.finish.mock.calls[0]?.[0]).toMatchObject({
+      finalized: true,
+      reason: "user_requested",
+      usageSeconds: 12,
+    });
+  });
+  it("does not reject local close when accounting delivery fails", async () => {
+    const accounting = {
+      managed: true,
+      create: vi.fn(async () => ({
+        session: { id: "managed-session" },
+        transport: { type: "webrtc" as const, sdp: "v=0 managed-answer" },
+      })),
+      handoff: vi.fn(async () => {}),
+      finish: vi.fn<(result: LiveCloseResult) => Promise<void>>(async () => { throw new Error("metadata offline"); }),
+      abandon: vi.fn(async () => {}),
+    };
+    const client = new LiveClient({ backend: makeFakeBackend().backend, accounting,
+      peerFactory: () => peer as unknown as RTCPeerConnection, onRemoteStream });
+    const connectPromise = client.connect(makeFakeStream());
+    await vi.waitFor(() => expect(peer.calls).toContain("setRemoteDescription"));
+    peer.dataChannel?.emitMessage({ type: "session.started", session: { id: "managed-session" } });
+    await connectPromise;
+
+    const closePromise = client.close();
+    peer.dataChannel?.emitMessage({ type: "session.closed", reason: "user_requested", usage: { seconds: 12 } });
+    await expect(closePromise).resolves.toMatchObject({ finalized: true, usageSeconds: 12 });
+    expect(accounting.finish).toHaveBeenCalled();
   });
 
   it("rejects when ICE gathering never completes within the timeout, and tears down the peer and data channel", async () => {

@@ -1,6 +1,6 @@
 # PR 2 — anonymous identity, conversation и журнал попыток
 
-**Статус:** `planned`, реализация не начата этим документом.  
+**Статус:** `in-progress` — реализация и проверки в [PR #15](https://github.com/gushinets/live-translator/pull/15); не слито.
 **Зависимости:** Зависит от PR 1. Внешние создания регистрируются, UX background пока прежний.  
 **Спецификация:** [v1.1](../../specs/2026-09-21-unit-economics-and-session-lifecycle.md).\
 **Общие ограничения и проверки:** [README плана](README.md).
@@ -106,3 +106,22 @@ PR 2 также владеет origin-wide shared `MetadataDeliveryBudget` keyed
 ## Что приложить к PR
 
 Baseline SHA, связанные ADR/spec, список реально изменённых файлов, команды и вывод проверок, отмеченные критерии, новые известные ограничения и rollout/rollback policy. Не писать «все тесты прошли», если запускалась только часть. GitHub PR number появляется здесь только после фактического создания PR.
+
+
+## Текущий результат PR #15
+
+Реализованы схема/транзакционный ledger, owner-bound HTTP API, durable handoff,
+cleanup worker, graceful API lifecycle и browser metadata budget/outbox.
+Реализация учёта подключена через `createAccountedSessionController.ts`, не через
+переписывание основной state machine. Вспомогательный
+`POST /api/live/session/:localId/closed` принимает только минимальное наблюдение
+закрытия; полноценный cumulative usage reporter остаётся PR 3.
+
+Backend сохраняет SHA-256 технического SDP fingerprint для проверки повторного
+creation payload, но не SDP, аудио, текст разговоров или ключ. Browser End intent
+хранится отдельно от provider envelope, с ожидаемой версией и TTL: сетевой сбой
+не делает запрос End одноразовым. Старый End не получает новую версию автоматически.
+
+Перед включением нужны финальная сверка критериев и CI/browser/container checks.
+Локальные unit-проверки не заменяют E2 с реальным провайдером и device tests;
+платные вызовы и VPS deploy не выполняются в этом PR.

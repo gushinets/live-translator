@@ -1,3 +1,5 @@
+import type { ProviderAccounting } from "../session/ConversationAccounting";
+import type { CleanupReason } from "../session/MetadataDeliveryBudget";
 import type {
   BackendClient,
   CreateLiveSessionResponse,
@@ -41,6 +43,7 @@ const DISCONNECTED_CLOSE_REASON = "Live session is no longer connected";
 
 export interface LiveClientDeps {
   backend: BackendClient;
+  accounting?: Pick<ProviderAccounting, "managed" | "create" | "handoff" | "finish" | "abandon">;
   peerFactory: () => RTCPeerConnection;
   onRemoteStream: (stream: MediaStream) => void;
 }
@@ -154,6 +157,14 @@ export class LiveClient {
   private pendingConnectReject: ((error: Error) => void) | null = null;
   /** True only once a `session.started` message has actually been received. */
   private started = false;
+  private accountingReady = false;
+  private pendingProductStarted: SessionStartedEvent | null = null;
+  private pendingRemoteStream: MediaStream | null = null;
+  private readonly onEarlyHidden = () => {
+    if (this.deps.accounting?.managed && (!this.started || !this.accountingReady) && document.visibilityState === "hidden") {
+      void this.disconnectImmediately("hidden").catch(() => console.error("Abandoned startup cleanup incomplete"));
+    }
+  };
   private closing = false;
   /** Set once a final close result is known, so close() becomes idempotent. */
   private closeResult: LiveCloseResult | null = null;
@@ -258,6 +269,7 @@ export class LiveClient {
       throw new Error("connect() has already been called on this LiveClient");
     }
     this.connectCalled = true;
+    if (this.deps.accounting) document.addEventListener("visibilitychange", this.onEarlyHidden);
 
     let createPromise: Promise<CreateLiveSessionResponse> | null = null;
     try {
@@ -279,7 +291,12 @@ export class LiveClient {
       peer.addEventListener("track", (event) => {
         const trackEvent = event as RTCTrackEvent;
         const [remoteStream] = trackEvent.streams;
-        if (remoteStream !== undefined) this.deps.onRemoteStream(remoteStream);
+        if (remoteStream === undefined || this.torndown || this.closing) return;
+        if (this.deps.accounting?.managed && !this.accountingReady) {
+          this.pendingRemoteStream = remoteStream;
+          return;
+        }
+        this.deps.onRemoteStream(remoteStream);
       });
       peer.addEventListener("connectionstatechange", () => {
         this.handleConnectionStateChange();
@@ -317,7 +334,9 @@ export class LiveClient {
         throw new Error("Missing local SDP after ICE gathering completed");
       }
 
-      createPromise = this.deps.backend.createLiveSession(localSdp);
+      createPromise = this.deps.accounting
+        ? this.deps.accounting.create(localSdp, () => { for (const track of stream.getTracks()) track.enabled = false; })
+        : this.deps.backend.createLiveSession(localSdp);
       const session = await raceAgainstAbort(createPromise, abortIfFailed);
       this.sessionId = session.session.id;
       await raceAgainstAbort(
@@ -328,7 +347,20 @@ export class LiveClient {
         abortIfFailed,
       );
 
+      if (this.deps.accounting) {
+        await raceAgainstAbort(this.deps.accounting.handoff(), abortIfFailed);
+        if (this.closing || this.torndown) throw new Error("Provider closed before handoff completed");
+        this.accountingReady = true;
+        const pendingRemoteStream = this.pendingRemoteStream;
+        this.pendingRemoteStream = null;
+        if (pendingRemoteStream !== null) this.deps.onRemoteStream(pendingRemoteStream);
+        if (this.pendingProductStarted) {
+          const pending = this.pendingProductStarted; this.pendingProductStarted = null;
+          this.onSessionStarted?.(pending);
+        }
+      }
       const startedEvent = await sessionStartedPromise;
+      if (this.deps.accounting?.managed && (this.closing || this.torndown || document.visibilityState === "hidden")) throw new Error("Managed startup no longer activatable");
       return { sessionId: startedEvent.session.id };
     } catch (error) {
       if (createPromise !== null && this.sessionId === null) {
@@ -338,7 +370,9 @@ export class LiveClient {
       // tearing down after a failed connect, for the same reason a local
       // close() or a remote session.closed suppress them (§23).
       this.closing = true;
-      this.teardownTransportAndRelease();
+      this.teardownTransport();
+      await this.deps.accounting?.abandon("abandoned_connect");
+      if (!this.deps.accounting?.managed) await this.releaseSessionLeaseAndWait();
       throw error;
     }
   }
@@ -353,6 +387,7 @@ export class LiveClient {
     if (!this.started) {
       throw new Error("Cannot send a Live event before session.started");
     }
+    if (this.deps.accounting?.managed && !this.accountingReady) throw new Error("Cannot send a Live event before handoff ACK");
     if (this.closing) {
       throw new Error("Cannot send a Live event while the session is closing");
     }
@@ -367,7 +402,7 @@ export class LiveClient {
    * this Live session can be mistaken for input belonging to a replacement
    * session. Normal conversation shutdown should continue to use close().
    */
-  async disconnectImmediately(): Promise<void> {
+  async disconnectImmediately(reason: CleanupReason = "replacement"): Promise<void> {
     if (!this.torndown) {
       this.closing = true;
       this.rejectPendingConnect(new Error(DISCONNECTED_CLOSE_REASON));
@@ -379,6 +414,7 @@ export class LiveClient {
         };
       }
     }
+    await this.deps.accounting?.abandon(reason);
     await this.releaseSessionLeaseAndWait();
   }
 
@@ -389,6 +425,13 @@ export class LiveClient {
    * calls share the same in-flight close operation.
    */
   async close(): Promise<LiveCloseResult> {
+    const result = await this.closeTransport();
+    try { await this.deps.accounting?.finish(result); }
+    catch { console.error("Session metadata delivery incomplete"); }
+    return result;
+  }
+
+  private async closeTransport(): Promise<LiveCloseResult> {
     if (this.closeResult !== null) {
       return this.closeResult;
     }
@@ -437,16 +480,16 @@ export class LiveClient {
         SESSION_CLOSE_TIMEOUT_MS,
       );
 
-      this.teardownTransportAndRelease();
       this.closeResult = result;
+      this.teardownTransportAndRelease();
       return result;
     } catch (error) {
-      this.teardownTransportAndRelease();
       const result: LiveCloseResult = {
         finalized: false,
         reason: error instanceof Error ? error.message : String(error),
       };
       this.closeResult = result;
+      this.teardownTransportAndRelease();
       return result;
     }
   }
@@ -455,6 +498,9 @@ export class LiveClient {
   private teardownTransport(): void {
     if (this.torndown) return;
     this.torndown = true;
+    document.removeEventListener("visibilitychange", this.onEarlyHidden);
+    this.pendingProductStarted = null;
+    this.pendingRemoteStream = null;
     this.ackRegistry.rejectAll(new Error("Live session is no longer connected"));
     this.channel?.close();
     this.peer?.close();
@@ -473,6 +519,10 @@ export class LiveClient {
   }
 
   private releaseSessionLease(): void {
+    if (this.deps.accounting?.managed) {
+      void this.deps.accounting.finish(this.closeResult ?? { finalized: false }).catch(() => console.error("Session metadata delivery incomplete"));
+      return;
+    }
     const sessionId = this.takeSessionLeaseForRelease();
     if (sessionId === null) return;
     void this.deps.backend.releaseLiveSession(sessionId).catch(() => {
@@ -481,6 +531,10 @@ export class LiveClient {
   }
 
   private async releaseSessionLeaseAndWait(): Promise<void> {
+    if (this.deps.accounting?.managed) {
+      await this.deps.accounting.finish(this.closeResult ?? { finalized: false });
+      return;
+    }
     const sessionId = this.takeSessionLeaseForRelease();
     if (sessionId === null) return;
     try {
@@ -644,11 +698,12 @@ export class LiveClient {
         this.pendingSessionStarted?.(serverEvent);
         this.pendingSessionStarted = null;
         this.pendingConnectReject = null;
-        this.onSessionStarted?.(serverEvent);
+        if (this.deps.accounting?.managed && !this.accountingReady) this.pendingProductStarted = serverEvent;
+        else this.onSessionStarted?.(serverEvent);
         return;
       case "session.input_transcript.delta":
       case "session.output_transcript.delta":
-        this.onTranscriptDelta?.(serverEvent);
+        if (!this.deps.accounting?.managed || this.accountingReady) this.onTranscriptDelta?.(serverEvent);
         return;
       case "session.instructions.appended":
       case "session.thinking.appended":

@@ -224,7 +224,8 @@ async function installLiveStubs(page: Page): Promise<void> {
     HTMLMediaElement.prototype.play = async () => {};
   });
 
-  await page.route("**/api/live/session", async (route) => {
+  await page.route("**/api/policy", route => route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ usageLedgerEnabled: false }) }));
+    await page.route("**/api/live/session", async (route) => {
     await route.fulfill({
       status: 200,
       contentType: "application/json",
