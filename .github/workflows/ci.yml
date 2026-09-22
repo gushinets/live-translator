@@ -97,6 +97,9 @@ jobs:
       - name: Validate Compose configuration
         run: docker compose -f infra/docker-compose.yml config --quiet
 
+      - name: Test admission environment interpolation
+        run: python3 infra/tests/test_admission_config.py
+
       - name: Build deployment images
         run: docker compose -f infra/docker-compose.yml build
 

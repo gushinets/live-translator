@@ -38,8 +38,38 @@ function resolveWebOrigin(): string {
   return configuredOrigin;
 }
 
+/** Only a missing variable uses the default; a malformed value fails startup. */
+function positiveIntegerEnv(
+  name: string,
+  defaultValue: number,
+  maximum = Number.MAX_SAFE_INTEGER,
+): number {
+  const raw = process.env[name];
+  if (raw === undefined) return defaultValue;
+
+  const value = Number(raw);
+  if (
+    !/^[0-9]+$/.test(raw) ||
+    !Number.isSafeInteger(value) ||
+    value <= 0 ||
+    value > maximum
+  ) {
+    throw new Error(
+      `${name} must be a positive base-10 integer no greater than ${maximum}`,
+    );
+  }
+  return value;
+}
+
 export const apiConfig = {
   webOrigin: resolveWebOrigin(),
-  maxConcurrentSessions: 5,
-  leaseMs: 15 * 60 * 1000,
+  maxConcurrentSessions: positiveIntegerEnv("MAX_CONCURRENT_SESSIONS", 5),
+  leaseMs: positiveIntegerEnv("LIVE_SESSION_LEASE_MS", 900_000),
+  creationLimit: positiveIntegerEnv("LIVE_SESSION_RATE_LIMIT", 20),
+  // express-rate-limit's MemoryStore uses Node's signed 32-bit interval timer.
+  creationWindowMs: positiveIntegerEnv(
+    "LIVE_SESSION_RATE_WINDOW_MS",
+    600_000,
+    2_147_483_647,
+  ),
 };
