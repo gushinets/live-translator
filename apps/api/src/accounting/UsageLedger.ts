@@ -232,7 +232,13 @@ export class UsageLedger {
     fields.usage_quality = fields.usage_conflict === 1 || s.usage_conflict === 1 ? "conflict" : final !== null ? "final" : s.provider_checkpoint_seconds !== null ? "partial" : "unknown";
     this.updateAttempt(id, fields); return this.attempt(id);
   }
-  recordProviderClosed(id: string, observation: CloseObservation, source: ObservationSource): SessionRow { return this.atomic(() => this.closeInternal(id, observation, source)); }
+  recordProviderClosed(id: string, observation: CloseObservation, source: ObservationSource): SessionRow {
+    return this.atomic(() => {
+      const s = this.attempt(id);
+      if (s.state === "failed" || s.provider_request_dispatched_at === null) return s;
+      return this.closeInternal(id, observation, source);
+    });
+  }
   recordProviderTerminalNotLive(id: string): SessionRow {
     return this.atomic(() => {
       const s = this.attempt(id); if (terminal(s)) return s;
@@ -369,10 +375,20 @@ export class UsageLedger {
     if (elapsed(c.product_deadline_at, now)) this.endInternal(c, "max_duration", now);
     else if (c.status === "paused" && elapsed(c.resume_expires_at, now)) this.endInternal(c, "background_timeout", now);
   }
+  private expireProviderSessionInternal(id: string, now: number): void {
+    const s = this.attempt(id);
+    if (terminal(s) || s.provider_request_dispatched_at === null || s.cleanup_requested_at !== null) return;
+    const c = this.conversation(s.conversation_id);
+    const providerDeadline = s.provider_request_dispatched_at + this.policyFor(c).maxProviderSessionMs;
+    if (now < providerDeadline) return;
+    if (c.status !== "ended") this.endInternal(c, "max_duration", now);
+    else this.cleanupInternal(s, "handoff_not_activatable", now);
+  }
   watchdog(): void {
     this.atomic(() => {
       const now = this.now();
-      for (const c of this.db.prepare("SELECT id FROM conversations WHERE status='resuming' OR (status='paused' AND resume_expires_at<=?)").all(now)) this.expireConversationInternal(String(c.id), now);
+      for (const c of this.db.prepare("SELECT id FROM conversations WHERE status='resuming' OR (status<>'ended' AND product_deadline_at IS NOT NULL AND product_deadline_at<=?) OR (status='paused' AND resume_expires_at<=?)").all(now, now)) this.expireConversationInternal(String(c.id), now);
+      for (const s of this.db.prepare("SELECT id FROM live_sessions WHERE provider_request_dispatched_at IS NOT NULL AND state NOT IN ('closed','failed') AND cleanup_requested_at IS NULL").all()) this.expireProviderSessionInternal(String(s.id), now);
       for (const s of this.db.prepare("SELECT id FROM live_sessions WHERE creation_completed_at IS NOT NULL AND handoff_acknowledged_at IS NULL AND state NOT IN ('closed','failed') AND cleanup_requested_at IS NULL").all()) this.guardHandoffInternal(String(s.id), now);
     });
   }

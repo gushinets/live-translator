@@ -59,8 +59,8 @@ export class CleanupIntentOutbox {
       try {
         const proof = row.closeObservation ? await this.transport.closed(row.localId, row.closeObservation) : await this.transport.cleanup(row.localId, row.cleanup!.reason);
         if (!proofReceived(proof)) { pending = true; continue; }
-        if (row.closeObservation) await this.budget.acknowledgeClose(row.localId); else await this.budget.acknowledgeCleanup(row.localId);
-        await this.budget.releaseIfSafe(row.localId);
+        if (row.closeObservation) await this.budget.acknowledgeCloseAndRelease(row.localId);
+        else await this.budget.acknowledgeCleanupAndRelease(row.localId);
       } catch (error) {
         // A registration race 404 is retried unless a separate owner/conversation read proves identity loss.
         if ([401, 403, 404].includes(Number(statusOf(error)))) {
@@ -97,6 +97,6 @@ export class CleanupIntentOutbox {
     this.retries = pending ? this.retries + 1 : 0; if (pending) this.schedule();
   }
   private async discard(localId: string) {
-    await this.budget.acknowledgeClose(localId); await this.budget.finishProducer(localId, "lost"); await this.budget.releaseIfSafe(localId);
+    await this.budget.discardDelivery(localId);
   }
 }

@@ -3,7 +3,7 @@ import { describe, expect, it, vi } from "vitest";
 import { MetadataDeliveryBudget } from "./MetadataDeliveryBudget";
 import type { CleanupTransport } from "./CleanupIntentOutbox";
 import { ConversationAccounting } from "./ConversationAccounting";
-import type { LedgerApi, ConversationMetadata } from "../api/AccountingBackend";
+import { AccountingRequestError, type LedgerApi, type ConversationMetadata } from "../api/AccountingBackend";
 
 function budget(capacity = 1000) { return new MetadataDeliveryBudget({ indexedDB: new IDBFactory(), name: crypto.randomUUID(), capacity }); }
 function fixture(store = budget()) {
@@ -53,6 +53,17 @@ describe("cleanup and End delivery", () => {
     await f.scope.outbox.enqueue("id", "hidden"); await f.scope.outbox.flush(); expect(await f.budget.entries()).toHaveLength(1);
     f.api.cleanup.mockResolvedValue({ cleanupRequestedAt: 123 }); await f.scope.outbox.flush(); expect(await f.budget.entries()).toHaveLength(0); await f.budget.close();
   });
+  it("commits cleanup ACK and safe release atomically", async () => {
+    const f = fixture(); await f.budget.reserve("id", "c"); await f.budget.markDispatchStarted("id");
+    await f.scope.outbox.enqueue("id", "hidden");
+    const legacyRelease = vi.spyOn(f.budget, "releaseIfSafe").mockRejectedValue(new Error("simulated crash boundary"));
+    f.api.cleanup.mockResolvedValue({ cleanupRequestedAt: 123 });
+    await f.scope.outbox.flush();
+    expect(legacyRelease).not.toHaveBeenCalled();
+    expect(await f.budget.entries()).toHaveLength(0);
+    await f.budget.close();
+  });
+
   it("keeps registration-race 404 retryable while owner conversation still exists", async () => {
     const f = fixture(); await f.budget.reserve("id", "c"); await f.budget.markDispatchStarted("id");
     f.api.cleanup.mockRejectedValue({ status: 404 }); await f.scope.outbox.enqueue("id", "abandoned_connect"); await f.scope.outbox.flush();
@@ -81,6 +92,15 @@ describe("controller-owned conversation accounting", () => {
     await attempt.create("offer"); expect(f.api.createSession).toHaveBeenCalledTimes(1);
     await attempt.abandon("cancelled"); await f.scope.outbox.flush(); await f.budget.close();
   });
+  it("releases a local envelope after a definitive pre-provider create rejection", async () => {
+    const f = fixture(); const attempt = f.scope.newAttempt();
+    f.api.createSession.mockRejectedValue(new AccountingRequestError(429, "accounting_request_failed"));
+    await expect(attempt.create("offer")).rejects.toThrow("accounting_request_failed");
+    expect(f.api.cleanup).not.toHaveBeenCalled();
+    expect(await f.budget.entries()).toHaveLength(0);
+    await f.budget.close();
+  });
+
   it("does not create any paid session when local storage is unavailable", async () => {
     const f = fixture(new MetadataDeliveryBudget({ indexedDB: null })); await expect(f.scope.newAttempt().create("offer")).rejects.toThrow("storage");
     expect(f.api.createSession).not.toHaveBeenCalled();
@@ -92,6 +112,25 @@ describe("controller-owned conversation accounting", () => {
     await vi.waitFor(() => expect(reject).toBeDefined()); expect(f.api.createSession).not.toHaveBeenCalled();
     reject(new Error("QuotaExceeded")); await creation; expect(f.api.createSession).not.toHaveBeenCalled(); expect(await f.budget.entries()).toHaveLength(0); await f.budget.close();
   });
+  it("falls back to direct close delivery when durable close storage is unavailable", async () => {
+    const f = fixture(); const attempt = f.scope.newAttempt(); await attempt.create("offer");
+    vi.spyOn(f.scope.outbox, "observeClosed").mockRejectedValue(new Error("storage unavailable"));
+    await attempt.finish({ finalized: true, reason: "user_requested", usageSeconds: 7 });
+    expect(f.api.closed).toHaveBeenCalledWith(attempt.localId, { seconds: 7, reason: "user_requested" });
+    expect(await f.budget.entries()).toHaveLength(0);
+    await f.budget.close();
+  });
+  it("retries direct close delivery after a degraded-path HTTP failure", async () => {
+    const f = fixture(); const attempt = f.scope.newAttempt(); await attempt.create("offer");
+    vi.spyOn(f.scope.outbox, "observeClosed").mockRejectedValue(new Error("storage unavailable"));
+    f.api.closed.mockRejectedValueOnce(new Error("offline"));
+    await expect(attempt.finish({ finalized: true, usageSeconds: 9 })).rejects.toThrow("offline");
+    f.api.closed.mockResolvedValue({ state: "closed", closeConfirmed: true });
+    await expect(attempt.finish({ finalized: true, usageSeconds: 9 })).resolves.toBeUndefined();
+    expect(f.api.closed).toHaveBeenCalledTimes(2);
+    await f.budget.close();
+  });
+
   it("keeps the same conversation across bootstrap replacements without duplicate rows for interpreter phase", async () => {
     const f = fixture(); const first = f.scope.newAttempt(); await first.create("first"); await first.finish({ finalized: true, usageSeconds: 15 }); await f.scope.outbox.flush();
     const second = f.scope.newAttempt(); await second.create("next");

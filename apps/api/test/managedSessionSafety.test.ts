@@ -66,6 +66,93 @@ describe("managed session failure boundaries", () => {
     }
   });
 
+  it("keeps a shared provider create alive while another duplicate request is still connected", async () => {
+    vi.stubEnv("OPENAI_API_KEY", "fake-key");
+    const db = openUsageDatabase(":memory:"), ledger = new UsageLedger(db);
+    let finish!: (value: LiveSessionResponse) => void;
+    let providerSignal: AbortSignal | undefined;
+    const provider = vi.fn((_offer: string, context?: { signal: AbortSignal }) => {
+      providerSignal = context!.signal;
+      return new Promise<LiveSessionResponse>(resolve => { finish = resolve; });
+    });
+    const app = createApp({ ledger, startWorker: false, createLiveSession: provider });
+    const runtime = app.locals.ledgerRuntime as LedgerRuntime;
+    const server = app.listen(0, "127.0.0.1");
+    await once(server, "listening");
+    const address = server.address();
+    if (!address || typeof address === "string") throw new Error("Missing test address");
+    try {
+      const created = await request(app).post("/api/conversations").set("Origin", origin)
+        .send({ createRequestId: randomUUID(), appVersion: "test" }).expect(201);
+      const cookie = created.headers["set-cookie"]![0]!.split(";")[0]!;
+      const localId = randomUUID();
+      const body = JSON.stringify({ sdp: "synthetic-offer", liveSessionId: localId,
+        conversationId: created.body.conversationId, conversationVersion: created.body.version,
+        initialMode: "setup", startReason: "initial" });
+      const startRequest = () => {
+        let req!: ReturnType<typeof httpRequest>;
+        const done = new Promise<{ status: number; body: string }>((resolve, reject) => {
+          req = httpRequest({ host: "127.0.0.1", port: address.port, path: "/api/live/session", method: "POST",
+            headers: { Origin: origin, Cookie: cookie, "Content-Type": "application/json", "Content-Length": Buffer.byteLength(body) } },
+          res => {
+            let responseBody = ""; res.setEncoding("utf8");
+            res.on("data", chunk => { responseBody += chunk; });
+            res.on("end", () => resolve({ status: res.statusCode ?? 0, body: responseBody }));
+          });
+          req.on("error", reject); req.end(body);
+        });
+        return { req, done };
+      };
+
+      const first = startRequest();
+      await vi.waitFor(() => expect(provider).toHaveBeenCalledTimes(1));
+      const second = startRequest();
+      await vi.waitFor(() => expect(runtime.createWaiterCount(localId)).toBe(2));
+
+      first.req.destroy();
+      await first.done.catch(() => undefined);
+      await vi.waitFor(() => expect(runtime.createWaiterCount(localId)).toBe(1));
+      expect(providerSignal?.aborted).toBe(false);
+      expect(ledger.getAttemptInternal(localId).cleanup_requested_at).toBeNull();
+
+      finish({ session: { id: "shared-provider" }, transport: { type: "webrtc", sdp: "shared-answer" } });
+      const response = await second.done;
+      expect(response.status).toBe(201);
+      await vi.waitFor(() => expect(runtime.createWaiterCount(localId)).toBe(0));
+      expect(provider).toHaveBeenCalledTimes(1);
+      expect(ledger.getAttemptInternal(localId).openai_session_id).toBe("shared-provider");
+      expect(ledger.getAttemptInternal(localId).cleanup_requested_at).toBeNull();
+    } finally {
+      server.closeAllConnections();
+      await new Promise<void>(resolve => server.close(() => resolve()));
+      await runtime.shutdown({ drainMs: 0, timeoutMs: 100 });
+      db.close();
+    }
+  });
+
+  it("persists a provider ID that arrives after the shutdown drain has completed", async () => {
+    const db = openUsageDatabase(":memory:"), ledger = new UsageLedger(db);
+    const owner = randomUUID(), c = ledger.createConversation(owner, randomUUID(), "test");
+    const input = { liveSessionId: randomUUID(), conversationId: c.id, conversationVersion: c.version,
+      initialMode: "setup" as const, startReason: "initial" as const, fingerprint: "late-shutdown" };
+    let finish!: (value: LiveSessionResponse) => void;
+    const runtime = new LedgerRuntime(ledger, {
+      startWorker: false,
+      creator: () => new Promise<LiveSessionResponse>(resolve => { finish = resolve; }),
+    });
+    const creation = runtime.create(owner, input, "offer", () => false);
+    await vi.waitFor(() => expect(ledger.getAttemptInternal(input.liveSessionId).provider_request_dispatched_at).not.toBeNull());
+    await runtime.shutdown({ drainMs: 0, timeoutMs: 0 });
+
+    finish({ session: { id: "provider-after-shutdown" }, transport: { type: "webrtc", sdp: "late-answer" } });
+    await expect(creation).rejects.toThrow("server_shutting_down");
+    const row = ledger.getAttemptInternal(input.liveSessionId);
+    expect(row.openai_session_id).toBe("provider-after-shutdown");
+    expect(row.cleanup_reason).toBe("server_shutdown");
+    expect(row.cleanup_next_attempt_at).not.toBeNull();
+    db.close();
+  });
+
   it("never calls the provider again for an attempt restored after restart", async () => {
     const db = openUsageDatabase(":memory:"), ledger = new UsageLedger(db);
     const owner = randomUUID(), c = ledger.createConversation(owner, randomUUID(), "test");

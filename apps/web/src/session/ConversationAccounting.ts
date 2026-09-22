@@ -1,8 +1,20 @@
-import { AccountingBackend, type LedgerApi, type ConversationMetadata } from "../api/AccountingBackend";
+import { AccountingBackend, AccountingRequestError, type LedgerApi, type ConversationMetadata } from "../api/AccountingBackend";
 import { BackendClient, type CreateLiveSessionResponse } from "../api/BackendClient";
 import { CleanupIntentOutbox } from "./CleanupIntentOutbox";
 import { MetadataDeliveryBudget, type CleanupReason } from "./MetadataDeliveryBudget";
 import type { LiveCloseResult } from "../live/LiveClient";
+
+const DEFINITIVE_NO_PROVIDER_CODES = new Set([
+  "new_creations_paused", "client_upgrade_required", "invalid_request", "unexpected_origin",
+  "identity_required", "not_found", "provider_key_missing", "server_shutting_down",
+  "concurrent_session_limit", "conversation_expired", "conversation_version_conflict",
+  "attempt_in_progress", "attempt_conflict", "invalid_start_reason",
+  "attempt_not_dispatchable", "conversation_not_activatable", "attempt_cancelled",
+]);
+function isDefinitiveNoProviderError(error: unknown): boolean {
+  if (!(error instanceof AccountingRequestError)) return false;
+  return [400, 401, 403, 404, 410, 429].includes(error.status) || DEFINITIVE_NO_PROVIDER_CODES.has(error.code);
+}
 
 /** One product controller owns this scope; provider attempts keep immutable local IDs. */
 export class ConversationAccounting {
@@ -125,7 +137,16 @@ export class ProviderAccounting {
       this.controller = new AbortController(); this.dispatched = true;
       return await this.scope.api.createSession({ sdp, liveSessionId: this.localId, conversationId: c.conversationId,
         conversationVersion: c.version, initialMode: "setup", startReason: this.scope.noteDispatch(this) }, this.controller.signal);
-    } catch (error) { await this.abandon("response_not_received"); throw error; }
+    } catch (error) {
+      if (isDefinitiveNoProviderError(error)) {
+        this.cancelled = true;
+        await this.scope.budget.finishProducerAndRelease(this.localId, "no_provider");
+        this.finished = true;
+      } else {
+        await this.abandon("response_not_received");
+      }
+      throw error;
+    }
   }
   async handoff(): Promise<void> {
     if (!this.managed) return; this.assertCurrent();
@@ -144,7 +165,7 @@ export class ProviderAccounting {
     this.finishing ??= (async () => {
       try {
         if (this.dispatched) { await this.scope.outbox.enqueue(this.localId, reason); this.controller?.abort(); }
-        else { await this.scope.budget.finishProducer(this.localId, "no_provider"); await this.scope.budget.releaseIfSafe(this.localId); }
+        else { await this.scope.budget.finishProducerAndRelease(this.localId, "no_provider"); }
         this.finished = true;
       } catch {
         // Existing-session storage failure cannot keep audio alive. This is an explicitly degraded path.
@@ -158,10 +179,24 @@ export class ProviderAccounting {
     if (!this.managed) { this.cancelled = true; return; }
     if (!result.finalized) return this.abandon("primary_startup_failed");
     if (!this.hasReservation || this.finished) return this.finishing;
-    this.finishing ??= this.scope.outbox.observeClosed(this.localId, {
+    const observation = {
       ...(typeof result.usageSeconds === "number" && Number.isFinite(result.usageSeconds) && result.usageSeconds >= 0 ? { seconds: result.usageSeconds } : {}),
       ...(result.reason && result.reason.length <= 256 ? { reason: result.reason } : {}),
-    }).then(() => { this.finished = true; }).catch(() => console.error("Provider close metadata storage degraded", { localId: this.localId }));
-    await this.finishing;
+    };
+    if (this.finishing) return this.finishing;
+    const operation = (async () => {
+      try {
+        await this.scope.outbox.observeClosed(this.localId, observation);
+      } catch {
+        console.error("Provider close metadata storage degraded", { localId: this.localId });
+        await this.scope.api.closed(this.localId, observation);
+        try { await this.scope.budget.finishProducerAndRelease(this.localId, "provider_closed"); }
+        catch { console.error("Provider close envelope release degraded", { localId: this.localId }); }
+      }
+      this.finished = true;
+    })();
+    this.finishing = operation;
+    try { await operation; }
+    catch (error) { if (this.finishing === operation) this.finishing = undefined; throw error; }
   }
 }

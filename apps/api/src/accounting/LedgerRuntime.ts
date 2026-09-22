@@ -19,6 +19,7 @@ export class LedgerRuntime {
   readonly registry: SessionLeaseRegistry;
   readonly worker: CleanupWorker;
   private readonly network = new Map<string, Creation>();
+  private readonly createWaiters = new Map<string, number>();
   private readonly pendingFences = new Map<string, CleanupReason>();
   private readonly emergencyResults = new Map<string, { providerId: string; expiresAt?: number; outcome?: CleanupOutcome }>();
   private readonly logger: Pick<Console, "error">;
@@ -44,6 +45,16 @@ export class LedgerRuntime {
   get acceptingCreates() { return this.accepting; }
   get inflightCount() { return this.network.size; }
   activationBlocked(id: string): boolean { return this.pendingFences.has(id); }
+  registerCreateWaiter(id: string): void {
+    this.createWaiters.set(id, (this.createWaiters.get(id) ?? 0) + 1);
+  }
+  releaseCreateWaiter(id: string): number {
+    const next = Math.max(0, (this.createWaiters.get(id) ?? 0) - 1);
+    if (next === 0) this.createWaiters.delete(id); else this.createWaiters.set(id, next);
+    return next;
+  }
+  createWaiterCount(id: string): number { return this.createWaiters.get(id) ?? 0; }
+  hasCreateWaiters(id: string): boolean { return this.createWaiterCount(id) > 0; }
   syncAdmission(): void {
     this.registry.restoreReservations(this.ledger.reservations().map(s => ({ leaseId: s.lease_id!, expiresAt: s.lease_expires_at!, sessionId: s.openai_session_id })), this.ledger.now());
   }
@@ -95,12 +106,12 @@ export class LedgerRuntime {
       }
       throw error instanceof LedgerError ? error : new LedgerError("provider_creation_failed", 502);
     }
-    if (this.disposed) throw new LedgerError("server_shutting_down", 503);
     try {
       if (this.pendingFences.has(id)) this.cleanup(id, this.pendingFences.get(id)!);
       const row = this.ledger.recordProviderCreated(id, result.session.id,
         typeof result.session.expires_at === "number" ? result.session.expires_at * 1000 : undefined);
       entry.safe = true; this.syncAdmission(); this.wake();
+      if (this.disposed) throw new LedgerError("server_shutting_down", 503);
       if (row.cleanup_requested_at !== null || row.state !== "creating" || entry.controller.signal.aborted) throw new LedgerError("attempt_not_activatable");
       return result;
     } catch (error) {
@@ -119,7 +130,6 @@ export class LedgerRuntime {
   }
   private async repair(): Promise<void> {
     for (const [id, reason] of this.pendingFences) {
-      if (this.disposed) return;
       try {
         this.cleanup(id, reason);
         const entry = this.network.get(id);
@@ -128,7 +138,6 @@ export class LedgerRuntime {
       catch { /* Remains a volatile activation fence until storage recovers. */ }
     }
     for (const [id, value] of this.emergencyResults) {
-      if (this.disposed) return;
       try {
         this.cleanup(id, this.pendingFences.get(id) ?? "response_not_received");
         this.ledger.recordProviderCreated(id, value.providerId, value.expiresAt);
@@ -165,6 +174,7 @@ export class LedgerRuntime {
     }
     await boundedWait(work, Math.min(100, Math.max(0, deadline - performance.now())));
     await this.worker.stop(Math.min(this.ledger.policy.sessionCloseTimeoutMs, Math.max(0, deadline - performance.now())));
+    this.createWaiters.clear();
     this.disposed = true;
   }
 }

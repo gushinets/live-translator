@@ -4,6 +4,7 @@ import request from "supertest";
 import { openUsageDatabase } from "../src/persistence/database.js";
 import { UsageLedger } from "../src/accounting/UsageLedger.js";
 import { createApp } from "../src/app.js";
+import { LedgerRuntime } from "../src/accounting/LedgerRuntime.js";
 import type { LiveSessionCreator } from "../src/openai/createLiveSession.js";
 const origin = "http://localhost:5173";
 const answer = (id: string) => ({ session: { id }, transport: { type: "webrtc" as const, sdp: "answer-sdp" } });
@@ -95,6 +96,17 @@ describe("conversation HTTP ownership and handoff", () => {
     expect(res.body.sessions).toHaveLength(1); expect(res.body.sessions[0].handoffAcknowledgedAt).toBeNull();
     expect(JSON.stringify(res.body)).not.toContain("offer-sdp"); expect(JSON.stringify(res.body)).not.toContain("request_fingerprint");
   });
+  it("does not create a resume claim after runtime shutdown starts", async () => {
+    const f = fixture(), c = await f.conversation();
+    const paused = await f.agent.post(`/api/conversations/${c.conversationId}/pause`).set("Origin", origin)
+      .send({ expectedVersion: c.version }).expect(200);
+    await (f.app.locals.ledgerRuntime as LedgerRuntime).shutdown({ drainMs: 0, timeoutMs: 100 });
+    const res = await f.agent.post(`/api/conversations/${c.conversationId}/resume`).set("Origin", origin)
+      .send({ expectedVersion: paused.body.version, resumeAttemptId: randomUUID(), initialMode: "setup" }).expect(503);
+    expect(res.body.code).toBe("new_creations_paused");
+    expect(f.ledger.getConversation((f.db.prepare("SELECT anonymous_user_id FROM conversations WHERE id=?").get(c.conversationId) as { anonymous_user_id: string }).anonymous_user_id, c.conversationId).status).toBe("paused");
+  });
+
   it("keeps recovery endpoints while disabling new creations during rollback", async () => {
     const f = fixture(), c = await f.conversation();
     const app = createApp({ ledger: f.ledger, ledgerEnabled: false, startWorker: false, createLiveSession: f.provider, closeOrphan: f.closeOrphan });

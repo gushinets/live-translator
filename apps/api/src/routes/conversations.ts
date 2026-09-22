@@ -43,7 +43,7 @@ export function createConversationRouter(runtime: LedgerRuntime, identity: Anony
     reply(res, owner, ledger.endConversation(owner, req.params.id, body.expectedVersion, body.reason));
   });
   router.post("/:id/resume", (req, res) => {
-    if (!allowCreate) throw new LedgerError("new_creations_paused", 503);
+    if (!allowCreate || !runtime.acceptingCreates) throw new LedgerError("new_creations_paused", 503);
     const body = parseBody(z.object({ expectedVersion: version, resumeAttemptId: uuidSchema, initialMode: modeSchema }).strict(), req.body), owner = identity.require(req);
     const result = ledger.claimResume(owner, req.params.id, body.expectedVersion, body.resumeAttemptId, body.initialMode);
     identity.renew(res, owner); res.json({ ...publicConversation(result.conversation, ledger.now()), attempt: publicAttempt(result.attempt) });

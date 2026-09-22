@@ -93,6 +93,32 @@ describe("persistent provider ledger", () => {
     expect(ledger.getConversation(owner, c.id).end_reason).toBe("max_duration");
     expect(ledger.getAttempt(owner, row.id).cleanup_reason).toBe("handoff_not_activatable");
   });
+  it("watchdog ends an active conversation at its product deadline", () => {
+    const { c, row } = created(); ledger.acknowledgeHandoff(owner, row.id); now += 900000;
+    ledger.watchdog();
+    expect(ledger.getConversation(owner, c.id).end_reason).toBe("max_duration");
+    const s = ledger.getAttempt(owner, row.id);
+    expect(s.cleanup_reason).toBe("handoff_not_activatable");
+    expect(s.close_confirmed).toBe(0); expect(s.lease_released_at).toBeNull();
+  });
+  it("enforces the configured provider-session cap independently of the conversation cap", () => {
+    ledger = new UsageLedger(db, { now: () => now, policy: {
+      ...ledger.policy, maxProviderSessionMs: 1000, maxConversationElapsedMs: 900000,
+    } });
+    const { c, row } = created(); ledger.acknowledgeHandoff(owner, row.id); now += 1000;
+    ledger.watchdog();
+    expect(ledger.getConversation(owner, c.id).end_reason).toBe("max_duration");
+    expect(ledger.getAttempt(owner, row.id).cleanup_reason).toBe("handoff_not_activatable");
+  });
+  it("ignores browser close metadata for never-dispatched and failed attempts", () => {
+    const { row } = registered();
+    let current = ledger.recordProviderClosed(row.id, { seconds: 99, reason: "fabricated" }, "browser");
+    expect(current.close_confirmed).toBe(0); expect(current.provider_final_seconds).toBeNull();
+    ledger.requestCleanup(row.id, "cancelled");
+    current = ledger.recordProviderClosed(row.id, { seconds: 99 }, "browser");
+    expect(current.state).toBe("failed"); expect(current.close_confirmed).toBe(0); expect(current.provider_final_seconds).toBeNull();
+  });
+
   it("End wins over provisional handoff and is terminal", () => {
     const { c, row } = created(); ledger.endConversation(owner, c.id, c.version, "user_end");
     expect(() => ledger.acknowledgeHandoff(owner, row.id)).toThrow();

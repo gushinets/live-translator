@@ -287,6 +287,83 @@ describe("LiveClient.connect", () => {
     await connectPromise;
   });
 
+  it("buffers managed remote audio until accounting handoff succeeds", async () => {
+    const handoff = createDeferred<void>();
+    const accounting = {
+      managed: true,
+      create: vi.fn(async () => ({
+        session: { id: "managed-session" },
+        transport: { type: "webrtc" as const, sdp: "v=0 managed-answer" },
+      })),
+      handoff: vi.fn(() => handoff.promise),
+      finish: vi.fn(async () => {}),
+      abandon: vi.fn(async () => {}),
+    };
+    const client = new LiveClient({
+      backend: makeFakeBackend().backend,
+      accounting,
+      peerFactory: () => peer as unknown as RTCPeerConnection,
+      onRemoteStream,
+    });
+    const connectPromise = client.connect(makeFakeStream());
+
+    await vi.waitFor(() => expect(accounting.handoff).toHaveBeenCalledOnce());
+    const remoteStream = makeFakeStream();
+    peer.emitTrack([remoteStream]);
+    expect(onRemoteStream).not.toHaveBeenCalled();
+
+    peer.dataChannel?.emitMessage({
+      type: "session.started",
+      session: { id: "managed-session" },
+    });
+    handoff.resolve(undefined);
+    await connectPromise;
+
+    expect(onRemoteStream).toHaveBeenCalledExactlyOnceWith(remoteStream);
+  });
+
+  it("passes a confirmed managed close to accounting before transport release", async () => {
+    const accounting = {
+      managed: true,
+      create: vi.fn(async () => ({
+        session: { id: "managed-session" },
+        transport: { type: "webrtc" as const, sdp: "v=0 managed-answer" },
+      })),
+      handoff: vi.fn(async () => {}),
+      finish: vi.fn(async () => {}),
+      abandon: vi.fn(async () => {}),
+    };
+    const client = new LiveClient({
+      backend: makeFakeBackend().backend,
+      accounting,
+      peerFactory: () => peer as unknown as RTCPeerConnection,
+      onRemoteStream,
+    });
+    const connectPromise = client.connect(makeFakeStream());
+    await vi.waitFor(() => expect(peer.calls).toContain("setRemoteDescription"));
+    peer.dataChannel?.emitMessage({
+      type: "session.started",
+      session: { id: "managed-session" },
+    });
+    await connectPromise;
+
+    const closePromise = client.close();
+    peer.dataChannel?.emitMessage({
+      type: "session.closed",
+      reason: "user_requested",
+      usage: { seconds: 12 },
+    });
+    await closePromise;
+
+    expect(accounting.finish).toHaveBeenCalled();
+    expect(accounting.finish.mock.calls.every(([result]) => result.finalized === true)).toBe(true);
+    expect(accounting.finish.mock.calls[0]?.[0]).toMatchObject({
+      finalized: true,
+      reason: "user_requested",
+      usageSeconds: 12,
+    });
+  });
+
   it("rejects when ICE gathering never completes within the timeout, and tears down the peer and data channel", async () => {
     vi.useFakeTimers();
     peer.setLocalDescription = async (

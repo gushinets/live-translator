@@ -95,8 +95,35 @@ export class MetadataDeliveryBudget {
   acknowledgeCleanup(localId: string): Promise<void> { return this.change(localId, row => ({ ...row, cleanup: null })); }
   acknowledgeClose(localId: string): Promise<void> { return this.change(localId, row => ({ ...row, cleanup: null, closeObservation: null })); }
   finishProducer(localId: string, outcome: ProducerOutcome): Promise<void> { return this.change(localId, row => ({ ...row, producerFinalized: true, producerOutcome: outcome })); }
+  private releasable(row: MetadataEnvelope): boolean {
+    return row.producerFinalized && row.producerOutcome !== null && !row.cleanup && !row.closeObservation && !row.usagePending;
+  }
+  acknowledgeCleanupAndRelease(localId: string): Promise<void> {
+    return this.change(localId, row => {
+      const next = { ...row, cleanup: null };
+      return this.releasable(next) ? null : next;
+    });
+  }
+  acknowledgeCloseAndRelease(localId: string): Promise<void> {
+    return this.change(localId, row => {
+      const next = { ...row, cleanup: null, closeObservation: null };
+      return this.releasable(next) ? null : next;
+    });
+  }
+  finishProducerAndRelease(localId: string, outcome: ProducerOutcome): Promise<void> {
+    return this.change(localId, row => {
+      const next = { ...row, producerFinalized: true, producerOutcome: outcome };
+      return this.releasable(next) ? null : next;
+    });
+  }
+  discardDelivery(localId: string): Promise<void> {
+    return this.change(localId, row => {
+      const next: MetadataEnvelope = { ...row, cleanup: null, closeObservation: null, producerFinalized: true, producerOutcome: "lost" };
+      return this.releasable(next) ? null : next;
+    });
+  }
   releaseIfSafe(localId: string): Promise<void> {
-    return this.change(localId, row => row.producerFinalized && row.producerOutcome !== null && !row.cleanup && !row.closeObservation && !row.usagePending ? null : row);
+    return this.change(localId, row => this.releasable(row) ? null : row);
   }
   /** Caller must hold the old producer's exclusive Web Lock to prove its document is gone. */
   reclaimUndispatched(producerId: string): Promise<void> {

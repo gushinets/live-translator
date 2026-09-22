@@ -158,6 +158,7 @@ export class LiveClient {
   private started = false;
   private accountingReady = false;
   private pendingProductStarted: SessionStartedEvent | null = null;
+  private pendingRemoteStream: MediaStream | null = null;
   private readonly onEarlyHidden = () => {
     if (this.deps.accounting?.managed && (!this.started || !this.accountingReady) && document.visibilityState === "hidden") {
       void this.disconnectImmediately().catch(() => console.error("Abandoned startup cleanup incomplete"));
@@ -289,7 +290,12 @@ export class LiveClient {
       peer.addEventListener("track", (event) => {
         const trackEvent = event as RTCTrackEvent;
         const [remoteStream] = trackEvent.streams;
-        if (remoteStream !== undefined && !this.torndown && !this.closing) this.deps.onRemoteStream(remoteStream);
+        if (remoteStream === undefined || this.torndown || this.closing) return;
+        if (this.deps.accounting?.managed && !this.accountingReady) {
+          this.pendingRemoteStream = remoteStream;
+          return;
+        }
+        this.deps.onRemoteStream(remoteStream);
       });
       peer.addEventListener("connectionstatechange", () => {
         this.handleConnectionStateChange();
@@ -344,6 +350,9 @@ export class LiveClient {
         await raceAgainstAbort(this.deps.accounting.handoff(), abortIfFailed);
         if (this.closing || this.torndown) throw new Error("Provider closed before handoff completed");
         this.accountingReady = true;
+        const pendingRemoteStream = this.pendingRemoteStream;
+        this.pendingRemoteStream = null;
+        if (pendingRemoteStream !== null) this.deps.onRemoteStream(pendingRemoteStream);
         if (this.pendingProductStarted) {
           const pending = this.pendingProductStarted; this.pendingProductStarted = null;
           this.onSessionStarted?.(pending);
@@ -468,16 +477,16 @@ export class LiveClient {
         SESSION_CLOSE_TIMEOUT_MS,
       );
 
-      this.teardownTransportAndRelease();
       this.closeResult = result;
+      this.teardownTransportAndRelease();
       return result;
     } catch (error) {
-      this.teardownTransportAndRelease();
       const result: LiveCloseResult = {
         finalized: false,
         reason: error instanceof Error ? error.message : String(error),
       };
       this.closeResult = result;
+      this.teardownTransportAndRelease();
       return result;
     }
   }
@@ -488,6 +497,7 @@ export class LiveClient {
     this.torndown = true;
     document.removeEventListener("visibilitychange", this.onEarlyHidden);
     this.pendingProductStarted = null;
+    this.pendingRemoteStream = null;
     this.ackRegistry.rejectAll(new Error("Live session is no longer connected"));
     this.channel?.close();
     this.peer?.close();
