@@ -1,0 +1,62 @@
+# PR 1 — конфигурация и границы admission
+
+**Статус:** `planned`, реализация не начата этим документом.  
+**Зависимости:** Нет зависимостей от новых PR. Baseline остаётся работоспособным.  
+**Спецификация:** [v1.1](../../specs/2026-09-21-unit-economics-and-session-lifecycle.md).\
+**Общие ограничения и проверки:** [README плана](README.md).
+
+## Карта файлов и ответственности
+
+
+**Изменить:** `apps/api/src/config.ts`, `apps/api/src/app.ts`, `apps/api/src/routes/liveSession.ts`, `.env.example`, `infra/docker-compose.yml`, `docs/VPS_DEPLOY.md`.  
+**Тесты:** существующие `apps/api/test/liveSession.test.ts`, `apps/api/test/SessionLeaseRegistry.test.ts`; новый `apps/api/test/config.test.ts`.
+
+Ответственность config — валидация operational параметров; app/router — отдельное применение лимита создания; registry пока остаётся текущим admission engine. Product lifecycle не меняется.
+
+
+## Входной и выходной контракт
+
+
+Принимает env; выдаёт проверенные параметры с однозначным соответствием:
+
+| Env | Runtime field | Default |
+|---|---|---:|
+| `MAX_CONCURRENT_SESSIONS` | `maxConcurrentSessions` | 5 |
+| `LIVE_SESSION_LEASE_MS` | `leaseMs` | 900000 ms |
+| `LIVE_SESSION_RATE_LIMIT` | `creationLimit` | 20 |
+| `LIVE_SESSION_RATE_WINDOW_MS` | `creationWindowMs` | 600000 ms |
+
+Internal profile задаёт `maxConcurrentSessions=15`, `creationLimit=60`, `creationWindowMs=600000`; `leaseMs` берётся из deployment configuration, при отсутствии env остаётся 900000. Ошибочная заданная env приводит к ошибке запуска. POST-only limiter не применяется к DELETE.
+
+Коды и JSON старого API не меняются, кроме того, что release больше не блокируется creation quota. Strict Origin и текущая trust-proxy топология сохраняются. Release остаётся идемпотентным локальным освобождением, не OpenAI close.
+
+
+## Критерии приёмки
+
+| ID | Условие/сценарий | Ожидаемый результат |
+|---|---|---|
+| A1.1 | Конфигурация отсутствует / задана | Defaults maxConcurrentSessions=5, leaseMs=900000, creationLimit=20, creationWindowMs=600000 проверены по именам; явные значения 15/60 и overrides TTL/window действительно используются; 0, отрицательные, дроби, NaN, Infinity, пустая строка и превышение safe integer отклоняются. |
+| A1.2 | Лимит созданий в тесте равен двум | Два POST разрешены, третий получает 429; разрешённый DELETE получает 204, а не тот же 429. Счётчик внешних вызовов не растёт на отклонённом POST. |
+| A1.3 | Конкурентность в тесте равна двум | Два leases занимают слоты, третий отклоняется; release освобождает слот; повтор release безвреден. |
+| A1.4 | Несколько пользователей за одним NAT | Создания делят установленный IP budget; освобождения не расходуют его. Подмена произвольного forwarded IP не расширяет доверенную proxy boundary. |
+| A1.5 | Конфигурация deployment | Compose передаёт выбранные env в API; документация отличает локальные defaults и тестовый профиль; нет новой секретной переменной, попавшей во frontend. |
+
+## Последовательность работ
+
+
+- [ ] Добавить cases A1.1–A1.5 в указанные API tests, с fake provider и controllable clock. Сначала подтвердить, что A1.2 показывает прежний limiter на DELETE.
+- [ ] Вынести hardcoded параметры в validated config и ограничить limiter POST-операцией. Не менять lease TTL семантику.
+- [ ] Повторить targeted API tests и общие команды из README плана.
+- [ ] Проверить resolved Compose с тестовыми, не рабочими значениями ключа; убедиться, что env не попадает в web build.
+- [ ] В описание PR приложить команды, результаты и выбранный internal profile; отметить A1.1–A1.5 по реальным результатам.
+
+
+Каждый criterion сначала закрепляется regression test, затем изменением кода, затем повторной проверкой. Ожидаемый RED в новом тесте — обнаружение конкретного отсутствующего контракта, не случайная ошибка окружения. Общие root-команды обязательны; реальные provider/device tests — только в разрешённой среде.
+
+## Откат
+
+Возврат к прежним числам конфигурации не требует миграций. Исправление POST-only limiter не откатывать только ради изменения лимита.
+
+## Что приложить к PR
+
+Baseline SHA, связанные ADR/spec, список реально изменённых файлов, команды и вывод проверок, отмеченные критерии, новые известные ограничения и rollout/rollback policy. Не писать «все тесты прошли», если запускалась только часть. GitHub PR number появляется здесь только после фактического создания PR.
