@@ -280,7 +280,9 @@ export class UsageLedger {
   }
   recordCleanupClosed(id: string, observation: CloseObservation): SessionRow {
     return this.atomic(() => {
-      const s = this.attempt(id); if (terminal(s)) return s;
+      const s = this.attempt(id); if (s.state === "failed") return s;
+      // The primary transport may have reported close while Sideband was in flight.
+      // Still merge its final/provenance; closeInternal preserves the original release.
       this.closeInternal(id, observation, "sideband");
       this.updateAttempt(id, { cleanup_attempt_count: s.cleanup_attempt_count + 1, cleanup_last_attempt_at: this.now(), cleanup_last_result: "closed_observed", cleanup_last_error_code: null }); return this.attempt(id);
     });

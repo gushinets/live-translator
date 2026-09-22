@@ -60,4 +60,29 @@ describe("bounded durable cleanup worker", () => {
     const work = worker.drain(); await new Promise(r => setTimeout(r, 1)); await worker.stop(100); await work;
     expect(f.ledger.getAttemptInternal(id).close_confirmed).toBe(1);
   });
+  it.each([undefined, 16, 12])("preserves a late Sideband final after browser closure (browser seconds=%s)", async browserSeconds => {
+    const f = setup(), id = f.add();
+    let resolve!: (result: CleanupOutcome) => void;
+    const closer = vi.fn<OrphanCloser>(() => new Promise(done => { resolve = done; }));
+    const worker = new CleanupWorker(f.ledger, closer);
+    const work = worker.drain();
+    await vi.waitFor(() => expect(closer).toHaveBeenCalledTimes(1));
+    const first = f.ledger.recordProviderClosed(id,
+      browserSeconds === undefined ? {} : { seconds: browserSeconds }, "browser");
+    f.advance(10);
+    resolve({ kind: "closed_observed", observation: { seconds: 16, reason: "client_request" } });
+    await work;
+    const result = f.ledger.getAttemptInternal(id);
+    expect(result.close_confirmation_source).toBe("sideband");
+    expect(result.provider_final_seconds).toBe(browserSeconds ?? 16);
+    expect(result.provider_final_source).toBe(browserSeconds === 12 ? "browser" : "sideband");
+    expect(result.usage_conflict).toBe(browserSeconds === 12 ? 1 : 0);
+    expect(result.provider_close_reason_source).toBe("sideband");
+    expect(result.lease_released_at).toBe(first.lease_released_at);
+    expect(result.closed_observed_at).toBe(first.closed_observed_at);
+    expect(result.cleanup_attempt_count).toBe(1);
+    expect(f.ledger.reservations()).toHaveLength(0);
+    await worker.stop(0);
+  });
+
 });

@@ -103,6 +103,9 @@ jobs:
       - name: Build deployment images
         run: docker compose -f infra/docker-compose.yml build
 
+      - name: Verify ledger persistence in recreated production containers
+        run: python3 infra/tests/test_ledger_persistence.py
+
   e2e:
     name: Browser E2E (${{ matrix.browser }})
     runs-on: ubuntu-latest
