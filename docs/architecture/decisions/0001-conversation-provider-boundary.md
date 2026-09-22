@@ -10,7 +10,7 @@
 
 ## Решение в предлагаемой редакции
 
-Сохранять anonymous user → conversation → local provider attempt. Provider result/HTTP 201 остаётся provisional: `creation_completed_at` не означает browser handoff. PR 2 хранит durable handoff ACK deadline; после consumed 201 + successful `setRemoteDescription` browser подтверждает handoff отдельным idempotent ACK. До ACK provider row остаётся `creating`; missing ACK/restart scan ставит cleanup fence, а late ACK его не снимает. Dispatch-vs-cleanup CAS и route-owned disconnect fence закрывают соседние create races.
+Сохранять anonymous user → conversation → local provider attempt. Provider result/HTTP 201 остаётся provisional: `creation_completed_at` не означает browser handoff. PR 2 хранит durable handoff deadline/ACK; unacked+unexpired result-committed row переживает API restart как `creating`, acknowledged row — как `active`, expired startup-fence-ится `handoff_timeout`. Для resume valid pending claim сохраняется вместе с этим состоянием; `/resume/complete` требует acknowledged handoff + provider `active` в той же transaction. Late ACK/complete cleanup fence не снимают.
 
 Разделять `initial_mode`, `start_reason` и наблюдаемые phase durations. Состояние admission/lease не является состоянием provider billing. Product generation guards сохраняются; ledger generation/local ID не подменяют их. Ownership проверяется по cookie и FK, lifecycle защищается version CAS.
 
