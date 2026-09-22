@@ -14,7 +14,7 @@
 
 Разделять `initial_mode`, `start_reason` и наблюдаемые phase durations. Состояние admission/lease не является состоянием provider billing. Product generation guards сохраняются; ledger generation/local ID не подменяют их. Ownership проверяется по cookie и FK, lifecycle защищается version CAS.
 
-Для resume conversation имеет durable `resuming`, а local attempt — claim ID/version/deadline/outcome. Claim создаёт no-dispatch row в existing live_sessions, complete активирует продукт, abort/expiry возвращает paused с прежним retention либо ended. Две таблицы сохраняются; idempotency receipt не зависит от жизни вкладки. Подробные API/переходы — §6/§10.3 спецификации.
+Для resume conversation имеет durable `resuming`, а local attempt — claim ID/version/deadline/outcome. Valid provisional/handed-off pending claim переживает API restart до deadlines. Claim/retention/product expiry использует единый atomic transition: любой dispatched non-terminal provider сначала/одновременно получает cleanup activation fence (`resume_claim_expired` if first reason, closing, next due), затем claim→expired и conversation→paused/ended; lease release не подменяет provider close. `/resume/complete` требует acknowledged handoff + provider active.
 
 ## Рассмотренные альтернативы
 

@@ -39,14 +39,14 @@ Backup использует coherent SQLite procedure и проверяется 
 
 | ID | Условие/сценарий | Ожидаемый результат |
 |---|---|---|
-| A6.8 | Pending resuming без клиентских сообщений, maintenance и restart | По claim deadline — paused/ended с исходным retention; no-dispatch failed или dispatched unknown; нет auto-create/release как доказанного provider close. Late final обогащает прежний record, late complete не меняет продукт. |
+| A6.8 | Pending resuming без клиентских сообщений, claim expiry, maintenance и restart | Пока handoff/claim deadlines valid, PR-2 restart classifier сохраняет result-committed provisional/handed-off pending resume. По claim/retention/product deadline `expireResumeClaim()` atomically: no-dispatch→failed; dispatched non-terminal→cleanup marker/closing (`resume_claim_expired` first reason, next=now if known ID), затем paused/ended с исходным retention. Reconciliation показывает cleanup pending/unknown без fake close/final; lease release не считается provider termination. Late final обогащает record, late handoff/complete продукт не активируют. |
 | A6.9 | Synthetic final=120 s, active=60000 ms, accepted=30000 ms, completed=20000 ms; затем missing/zero/partial samples | Ratios 120/240/360 provider seconds на соответствующую минуту; provider seconds/accepted seconds=4. Missing/zero дают NULL, partial показывается отдельно; denominator method/version, app-finalization и cohort coverage видны. Completed-source proxy не назван доказанной semantic quality. |
 
 ## Последовательность работ
 
 
 - [ ] Добавить time-controlled reconciliation tests A6.1/A6.2 и mixed-data report fixtures A6.3/A6.4, не обнуляя неизвестные значения.
-- [ ] Реализовать maintenance hook для claim expiry/reporting, используя PR-2 primitives; не переносить сюда CleanupWorker/single-flight/expiry scan. Проверить отображение marker-without-ID `cleanup_retry_exhausted`/unknown rows в reconciliation и A6.1/A6.8.
+- [ ] Реализовать maintenance hook для claim expiry/reporting **через PR-2 `expireResumeClaim()`**, не дублируя transition в PR 6. Проверить handoff-acknowledged active provider + browser gone → claim deadline → atomic cleanup fence/closing + paused/ended + Sideband due, а также crash/failure injection и отображение pending/exhausted outcome в A6.1/A6.8.
 - [ ] Выполнить backup/restore в отдельной временной среде; сохранить команды и результаты A6.5, а не только наличие backup файла.
 - [ ] Проверить failure injection A6.6 с fake provider; при настоящей API credential production эксперимент не запускать из CI.
 - [ ] Выполнить/получить первичные материалы E1–E4 в рамках отдельно разрешённых измерений; redaction до commit результатов.

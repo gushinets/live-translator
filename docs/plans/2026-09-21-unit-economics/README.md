@@ -28,7 +28,7 @@
 | Поздний media track старого peer воспринимается как stream нового | A4.4 |
 | Lost/in-flight create, provisional handoff restart/ACK→resume-complete ordering, dispatch-vs-cleanup CAS, disconnect/shutdown fences и Sideband recovery | A2.3–A2.7/A2.10; PR-2 startup classifier + handoff watchdog/CAS + CleanupWorker; A5.14–A5.15 |
 | Mixed phase / text-only / нулевая или ненаблюдаемая речь искажают unit economics | A3.7–A3.13, A6.3, A6.9 |
-| После resume claim нет usable provider; browser исчез до abort | A2.10–A2.11, A5.13–A5.15, A6.8 |
+| После resume claim browser исчез: preserve-valid restart, claim-expiry cleanup fence, complete ordering | A2.6/A2.10–A2.11, A5.13–A5.15, A6.8 |
 
 ## Порядок
 
