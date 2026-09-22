@@ -20,23 +20,26 @@ export function createManagedSessionRouter(runtime: LedgerRuntime, identity: Ano
     const body = parseBody(creationSchema, req.body), owner = identity.require(req);
     ledger.getConversation(owner, body.conversationId);
     if (!process.env.OPENAI_API_KEY?.trim()) throw new LedgerError("provider_key_missing", 503);
-    let disconnected = req.aborted || res.destroyed, finished = false, waiterReleased = false;
-    runtime.registerCreateWaiter(body.liveSessionId);
+    let disconnected = req.aborted || res.destroyed, finished = false, waiterRegistered = false, waiterReleased = false;
     const releaseWaiter = () => {
-      if (waiterReleased) return runtime.createWaiterCount(body.liveSessionId);
+      if (!waiterRegistered || waiterReleased) return runtime.createWaiterCount(body.liveSessionId);
       waiterReleased = true; return runtime.releaseCreateWaiter(body.liveSessionId);
     };
     const onDisconnect = () => {
       if (finished || res.writableFinished || waiterReleased) return; disconnected = true;
-      if (releaseWaiter() > 0) return;
+      if (!waiterRegistered || releaseWaiter() > 0) return;
       try { ledger.getAttempt(owner, body.liveSessionId); runtime.cleanup(body.liveSessionId, "client_disconnected"); }
       catch { /* The runtime retains a failed post-dispatch fence; pre-dispatch flag is rechecked. */ }
     };
     const onFinish = () => { finished = true; releaseWaiter(); };
     req.once("aborted", onDisconnect); res.once("close", onDisconnect); res.once("finish", onFinish);
-    if (disconnected) onDisconnect();
     try {
-      const result = await runtime.create(owner, { ...body, fingerprint: createHash("sha256").update(body.sdp).digest("hex") }, body.sdp, () => !runtime.hasCreateWaiters(body.liveSessionId));
+      const create = runtime.create(owner, { ...body, fingerprint: createHash("sha256").update(body.sdp).digest("hex") }, body.sdp,
+        () => disconnected || !runtime.hasCreateWaiters(body.liveSessionId));
+      if (!disconnected) { runtime.registerCreateWaiter(body.liveSessionId); waiterRegistered = true; }
+      let result;
+      try { result = await create; }
+      catch (error) { releaseWaiter(); throw error; }
       if (disconnected || res.destroyed) return;
       const row = ledger.getAttempt(owner, body.liveSessionId);
       if (row.cleanup_requested_at !== null || row.state !== "creating" || runtime.activationBlocked(row.id)) throw new LedgerError("attempt_not_activatable");

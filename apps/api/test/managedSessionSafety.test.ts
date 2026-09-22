@@ -130,6 +130,50 @@ describe("managed session failure boundaries", () => {
     }
   });
 
+  it("does not register a conflicting duplicate as a shared-create waiter", async () => {
+    vi.stubEnv("OPENAI_API_KEY", "fake-key");
+    const db = openUsageDatabase(":memory:"), ledger = new UsageLedger(db);
+    let finish!: (value: LiveSessionResponse) => void;
+    const provider = vi.fn(() => new Promise<LiveSessionResponse>(resolve => { finish = resolve; }));
+    const app = createApp({ ledger, startWorker: false, createLiveSession: provider });
+    const runtime = app.locals.ledgerRuntime as LedgerRuntime, agent = request.agent(app);
+    try {
+      const created = await agent.post("/api/conversations").set("Origin", origin)
+        .send({ createRequestId: randomUUID(), appVersion: "test" }).expect(201);
+      const localId = randomUUID();
+      const body = { sdp: "shared-offer", liveSessionId: localId,
+        conversationId: created.body.conversationId, conversationVersion: created.body.version,
+        initialMode: "setup", startReason: "initial" };
+      const first = agent.post("/api/live/session").set("Origin", origin).send(body).then(result => result);
+      await vi.waitFor(() => expect(provider).toHaveBeenCalledTimes(1));
+      expect(runtime.createWaiterCount(localId)).toBe(1);
+
+      const register = vi.spyOn(runtime, "registerCreateWaiter");
+      await agent.post("/api/live/session").set("Origin", origin).send({ ...body, sdp: "conflicting-offer" }).expect(409);
+      expect(register).not.toHaveBeenCalled();
+      expect(runtime.createWaiterCount(localId)).toBe(1);
+
+      finish({ session: { id: "provider-after-conflict" }, transport: { type: "webrtc", sdp: "answer" } });
+      expect((await first).status).toBe(201);
+      await vi.waitFor(() => expect(runtime.createWaiterCount(localId)).toBe(0));
+      expect(ledger.getAttemptInternal(localId).cleanup_requested_at).toBeNull();
+    } finally {
+      await runtime.shutdown({ drainMs: 0, timeoutMs: 100 }); db.close();
+    }
+  });
+
+  it("uses a distinct error for shutdown before attempt registration", async () => {
+    const db = openUsageDatabase(":memory:"), ledger = new UsageLedger(db);
+    const runtime = new LedgerRuntime(ledger, { startWorker: false, creator: vi.fn() });
+    const owner = randomUUID(), c = ledger.createConversation(owner, randomUUID(), "test");
+    const input = { liveSessionId: randomUUID(), conversationId: c.id, conversationVersion: c.version,
+      initialMode: "setup" as const, startReason: "initial" as const, fingerprint: "shutdown" };
+    await runtime.shutdown({ drainMs: 0, timeoutMs: 100 });
+    expect(() => runtime.create(owner, input, "offer", () => false)).toThrow("server_shutting_down_before_dispatch");
+    expect(() => ledger.getAttemptInternal(input.liveSessionId)).toThrow("not_found");
+    db.close();
+  });
+
   it("persists a provider ID that arrives after the shutdown drain has completed", async () => {
     const db = openUsageDatabase(":memory:"), ledger = new UsageLedger(db);
     const owner = randomUUID(), c = ledger.createConversation(owner, randomUUID(), "test");

@@ -108,6 +108,32 @@ describe("controller-owned conversation accounting", () => {
     await retry.abandon("cancelled"); await f.scope.outbox.flush(); await f.budget.close();
   });
 
+  it("treats only the distinct pre-dispatch shutdown code as no-provider", async () => {
+    const f = fixture(); const attempt = f.scope.newAttempt();
+    f.api.createSession.mockRejectedValueOnce(new AccountingRequestError(503, "server_shutting_down_before_dispatch"));
+    await expect(attempt.create("offer")).rejects.toThrow("server_shutting_down_before_dispatch");
+    expect(await f.budget.entries()).toHaveLength(0);
+
+    f.api.createSession.mockResolvedValueOnce({ session: { id: "provider-retry" }, transport: { type: "webrtc", sdp: "answer" } });
+    const retry = f.scope.newAttempt(); await retry.create("retry");
+    expect(f.api.createSession.mock.calls[1]![0].startReason).toBe("initial");
+    await retry.abandon("cancelled"); await f.scope.outbox.flush(); await f.budget.close();
+  });
+  it.each(["server_shutting_down", "attempt_not_activatable"])("keeps post-provider %s ambiguous until cleanup ACK", async code => {
+    const f = fixture(); const attempt = f.scope.newAttempt();
+    f.api.createSession.mockRejectedValueOnce(new AccountingRequestError(code === "server_shutting_down" ? 503 : 409, code));
+    await expect(attempt.create("offer")).rejects.toThrow(code);
+    const pending = await f.budget.get(attempt.localId);
+    expect(pending?.cleanup?.reason).toBe("response_not_received");
+    expect(pending?.producerOutcome).toBe("lost");
+
+    await f.scope.outbox.flush();
+    f.api.createSession.mockResolvedValueOnce({ session: { id: "provider-retry" }, transport: { type: "webrtc", sdp: "answer" } });
+    const retry = f.scope.newAttempt(); await retry.create("retry");
+    expect(f.api.createSession.mock.calls[1]![0].startReason).toBe("bootstrap_replacement");
+    await retry.abandon("cancelled"); await f.scope.outbox.flush(); await f.budget.close();
+  });
+
   it("does not create any paid session when local storage is unavailable", async () => {
     const f = fixture(new MetadataDeliveryBudget({ indexedDB: null })); await expect(f.scope.newAttempt().create("offer")).rejects.toThrow("storage");
     expect(f.api.createSession).not.toHaveBeenCalled();
@@ -119,6 +145,20 @@ describe("controller-owned conversation accounting", () => {
     await vi.waitFor(() => expect(reject).toBeDefined()); expect(f.api.createSession).not.toHaveBeenCalled();
     reject(new Error("QuotaExceeded")); await creation; expect(f.api.createSession).not.toHaveBeenCalled(); expect(await f.budget.entries()).toHaveLength(0); await f.budget.close();
   });
+  it("retries degraded direct cleanup instead of resolving after an HTTP failure", async () => {
+    const f = fixture(); const attempt = f.scope.newAttempt(); await attempt.create("offer");
+    vi.spyOn(f.scope.outbox, "enqueue").mockRejectedValue(new Error("storage unavailable"));
+    f.api.cleanup.mockRejectedValueOnce(new Error("offline"));
+    await expect(attempt.abandon("replacement")).rejects.toThrow("offline");
+    expect(attempt.finished).toBe(false);
+
+    f.api.cleanup.mockResolvedValueOnce({ cleanupRequestedAt: Date.now() });
+    await expect(attempt.abandon("replacement")).resolves.toBeUndefined();
+    expect(f.api.cleanup).toHaveBeenCalledTimes(2);
+    expect(attempt.finished).toBe(true);
+    await f.budget.close();
+  });
+
   it("falls back to direct close delivery when durable close storage is unavailable", async () => {
     const f = fixture(); const attempt = f.scope.newAttempt(); await attempt.create("offer");
     vi.spyOn(f.scope.outbox, "observeClosed").mockRejectedValue(new Error("storage unavailable"));

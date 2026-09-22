@@ -6,7 +6,7 @@ import type { LiveCloseResult } from "../live/LiveClient";
 
 const DEFINITIVE_NO_PROVIDER_CODES = new Set([
   "new_creations_paused", "client_upgrade_required", "invalid_request", "unexpected_origin",
-  "identity_required", "not_found", "provider_key_missing", "server_shutting_down",
+  "identity_required", "not_found", "provider_key_missing", "server_shutting_down_before_dispatch",
   "concurrent_session_limit", "conversation_expired", "conversation_version_conflict",
   "attempt_in_progress", "attempt_conflict", "invalid_start_reason",
   "attempt_not_dispatchable", "conversation_not_activatable", "attempt_cancelled",
@@ -174,18 +174,23 @@ export class ProviderAccounting {
     if (this.finished) return this.finishing;
     if (this.reservation && !this.hasReservation) { try { await this.reservation; this.hasReservation = true; } catch { return; } }
     if (!this.hasReservation) return;
-    this.finishing ??= (async () => {
+    if (this.finishing) return this.finishing;
+    const operation = (async () => {
       try {
         if (this.dispatched) { await this.scope.outbox.enqueue(this.localId, reason); this.controller?.abort(); }
         else { await this.scope.budget.finishProducerAndRelease(this.localId, "no_provider"); }
         this.finished = true;
-      } catch {
+      } catch (error) {
         // Existing-session storage failure cannot keep audio alive. This is an explicitly degraded path.
         console.error("Existing session cleanup storage degraded", { localId: this.localId }); this.controller?.abort();
-        if (this.dispatched) void this.scope.api.cleanup(this.localId, reason).catch(() => undefined);
+        if (!this.dispatched) throw error;
+        await this.scope.api.cleanup(this.localId, reason);
+        this.finished = true;
       }
     })();
-    await this.finishing;
+    this.finishing = operation;
+    try { await operation; }
+    catch (error) { if (this.finishing === operation) this.finishing = undefined; throw error; }
   }
   async finish(result: LiveCloseResult): Promise<void> {
     if (!this.managed) { this.cancelled = true; return; }
