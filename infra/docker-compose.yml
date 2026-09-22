@@ -9,6 +9,11 @@ services:
       NODE_ENV: production
       OPENAI_API_KEY: ${OPENAI_API_KEY:?OPENAI_API_KEY is required}
       WEB_ORIGIN: ${WEB_ORIGIN:?WEB_ORIGIN is required}
+      # '-' preserves an explicitly empty value so API validation rejects it.
+      MAX_CONCURRENT_SESSIONS: "${MAX_CONCURRENT_SESSIONS-5}"
+      LIVE_SESSION_LEASE_MS: "${LIVE_SESSION_LEASE_MS-900000}"
+      LIVE_SESSION_RATE_LIMIT: "${LIVE_SESSION_RATE_LIMIT-20}"
+      LIVE_SESSION_RATE_WINDOW_MS: "${LIVE_SESSION_RATE_WINDOW_MS-600000}"
     ports:
       - "127.0.0.1:${API_BIND_PORT:-13001}:3001"
     restart: unless-stopped
