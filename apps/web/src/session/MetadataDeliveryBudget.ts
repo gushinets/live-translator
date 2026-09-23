@@ -99,50 +99,37 @@ export class MetadataDeliveryBudget {
   private releasable(row: MetadataEnvelope): boolean {
     return row.producerFinalized && row.producerOutcome !== null && !row.cleanup && !row.closeObservation && !row.usagePending;
   }
-  acknowledgeCleanupAndRelease(localId: string): Promise<void> {
+  private releaseAndRemoveEndDependency(localId: string, update: (row: MetadataEnvelope) => MetadataEnvelope): Promise<void> {
     return this.transaction("readwrite", (store, result, _fail, tx) => {
       const get = store.get(localId);
       get.onsuccess = () => {
         const row = get.result as MetadataEnvelope | undefined;
         if (row) {
-          const next = { ...row, cleanup: null, producerFinalized: true, producerOutcome: row.producerOutcome ?? "lost" as const };
+          const next = update(row);
           if (this.releasable(next)) store.delete(localId); else store.put(next);
         }
         const ends = tx.objectStore("lifecycle").getAll();
         ends.onsuccess = () => {
           const lifecycle = tx.objectStore("lifecycle");
           for (const intent of ends.result as EndIntent[]) {
-            const cleanupLocalIds = intent.cleanupLocalIds ?? [];
-            if (cleanupLocalIds.includes(localId)) {
-              lifecycle.put({ ...intent, cleanupLocalIds: cleanupLocalIds.filter(id => id !== localId) });
-            }
+            if (intent.cleanupLocalIds?.includes(localId)) lifecycle.put({ ...intent, cleanupLocalIds: intent.cleanupLocalIds.filter(id => id !== localId) });
           }
           result(undefined);
         };
       };
     }, ["envelopes", "lifecycle"]);
   }
+  acknowledgeCleanupAndRelease(localId: string): Promise<void> {
+    return this.releaseAndRemoveEndDependency(localId, row => ({ ...row, cleanup: null, producerFinalized: true, producerOutcome: row.producerOutcome ?? "lost" as const }));
+  }
   acknowledgeDirectCleanupAndRelease(localId: string): Promise<void> {
-    return this.transaction("readwrite", (store, result) => {
-      const get = store.get(localId);
-      get.onsuccess = () => {
-        const row = get.result as MetadataEnvelope | undefined;
-        if (!row) { result(undefined); return; }
-        const next: MetadataEnvelope = {
-          ...row, cleanup: null, producerFinalized: true, producerOutcome: "lost",
-        };
-        if (this.releasable(next)) store.delete(localId); else store.put(next);
-        result(undefined);
-      };
-    });
+    return this.releaseAndRemoveEndDependency(localId, row => ({ ...row, cleanup: null, producerFinalized: true, producerOutcome: "lost" }));
   }
   acknowledgeCloseAndRelease(localId: string): Promise<void> {
-    return this.change(localId, row => {
-      const next = { ...row, cleanup: null, closeObservation: null };
-      return this.releasable(next) ? null : next;
-    });
+    return this.releaseAndRemoveEndDependency(localId, row => ({ ...row, cleanup: null, closeObservation: null, producerFinalized: true, producerOutcome: "provider_closed" }));
   }
   finishProducerAndRelease(localId: string, outcome: ProducerOutcome): Promise<void> {
+    if (outcome === "provider_closed") return this.acknowledgeCloseAndRelease(localId);
     return this.change(localId, row => {
       const next = { ...row, producerFinalized: true, producerOutcome: outcome };
       return this.releasable(next) ? null : next;
@@ -203,21 +190,24 @@ export class MetadataDeliveryBudget {
     // Cleanup remains first-reason-wins, and no usage/close obligation is removed here.
     return this.transaction("readwrite", (store, result, fail, tx) => {
       const envelopes = tx.objectStore("envelopes");
-      for (const id of cleanupLocalIds) {
-        const read = envelopes.get(id);
-        read.onsuccess = () => {
-          const row = read.result as MetadataEnvelope | undefined;
-          if (!row || row.conversationId !== conversationId || row.dispatchStartedAt === null || row.closeObservation || row.producerOutcome === "provider_closed" || row.producerOutcome === "no_provider") return;
+      const rows = envelopes.getAll(); rows.onsuccess = () => {
+        const byId = new Map((rows.result as MetadataEnvelope[]).map(row => [row.localId, row]));
+        const applicable = [...new Set(cleanupLocalIds)].filter(id => {
+          const row = byId.get(id);
+          return row?.conversationId === conversationId && row.dispatchStartedAt !== null && !row.closeObservation && row.producerOutcome !== "provider_closed" && row.producerOutcome !== "no_provider";
+        });
+        for (const id of applicable) {
+          const row = byId.get(id)!;
           envelopes.put({ ...row, producerFinalized: true, producerOutcome: row.producerOutcome ?? "lost",
             cleanup: row.cleanup ?? { reason: reason === "setup_cancel" ? "cancelled" : "user_end", createdAt: Date.now(), expiresAt: Date.now() + TTL } });
-        };
-      }
-      const get = store.get(conversationId); get.onsuccess = () => {
-        const old = get.result as EndIntent | undefined;
-        if (old) { if (old.expectedVersion < expectedVersion) store.put({ conversationId, expectedVersion, reason, expiresAt: Date.now() + TTL, cleanupLocalIds: [...cleanupLocalIds] }); result(undefined); return; }
-        const count = store.count(); count.onsuccess = () => {
-          if (count.result >= 1000) { fail(new Error("Lifecycle metadata storage is full")); return; }
-          store.put({ conversationId, expectedVersion, reason, expiresAt: Date.now() + TTL, cleanupLocalIds: [...cleanupLocalIds] }); result(undefined);
+        }
+        const get = store.get(conversationId); get.onsuccess = () => {
+          const old = get.result as EndIntent | undefined;
+          if (old) { if (old.expectedVersion < expectedVersion) store.put({ conversationId, expectedVersion, reason, expiresAt: Date.now() + TTL, cleanupLocalIds: applicable }); result(undefined); return; }
+          const count = store.count(); count.onsuccess = () => {
+            if (count.result >= 1000) { fail(new Error("Lifecycle metadata storage is full")); return; }
+            store.put({ conversationId, expectedVersion, reason, expiresAt: Date.now() + TTL, cleanupLocalIds: applicable }); result(undefined);
+          };
         };
       };
     }, ["lifecycle", "envelopes"]);

@@ -21,7 +21,7 @@ function isDefinitiveNoProviderError(error: unknown): boolean {
 }
 
 interface PendingDirectEnd {
-  conversationId: string; version: number; reason: "user_end" | "setup_cancel"; epoch: number; inFlight?: Promise<void>;
+  conversationId: string; version: number; reason: "user_end" | "setup_cancel"; epoch: number; cleanupLocalIds: string[]; inFlight?: Promise<void>;
 }
 
 interface PendingEndBoundary {
@@ -141,6 +141,11 @@ export class ConversationAccounting {
   private async deliverDirectEnd(intent: PendingDirectEnd): Promise<void> {
     if (intent.inFlight) return intent.inFlight;
     const operation = (async () => {
+      await this.outbox.flush();
+      for (const localId of intent.cleanupLocalIds) {
+        const row = await this.budget.get(localId);
+        if (row?.cleanup || row?.closeObservation) throw new Error("Provider cleanup delivery is pending");
+      }
       const result = await this.api.end(intent.conversationId, intent.version, intent.reason);
       if (result.status !== "ended") throw new Error("Conversation End was not confirmed");
       if (this.pendingDirectEnds.get(intent.epoch) === intent) this.pendingDirectEnds.delete(intent.epoch);
@@ -188,7 +193,7 @@ export class ConversationAccounting {
     // Persist intent before waiting for provider final. Do not terminate the usage producer
     // or enqueue HTTP here: a crash can replay both stores, and a late final remains valid.
     await this.budget.enqueueEnd(c.conversationId, c.version, reason,
-      attempts.filter(a => a.dispatched && !a.finished).map(a => a.localId));
+      attempts.filter(a => a.dispatched).map(a => a.localId));
   }
 
   async end(reason: "user_end" | "setup_cancel", expectedEpoch = this.epoch): Promise<void> {
@@ -218,7 +223,7 @@ export class ConversationAccounting {
     if (c) {
       try {
         await this.outbox.enqueueEnd(c.conversationId, c.version, boundary.reason,
-          boundary.attempts.filter(a => a.dispatched && !a.finished).map(a => a.localId));
+          boundary.attempts.filter(a => a.dispatched).map(a => a.localId));
         persisted = true;
       } catch { console.error("Conversation end storage degraded", { conversationId: c.conversationId }); }
     }
@@ -231,6 +236,7 @@ export class ConversationAccounting {
       else {
         const intent = this.pendingDirectEnds.get(boundary.epoch) ?? {
           conversationId: c.conversationId, version: c.version, reason: boundary.reason, epoch: boundary.epoch,
+          cleanupLocalIds: boundary.attempts.filter(a => a.dispatched).map(a => a.localId),
         };
         this.pendingDirectEnds.set(boundary.epoch, intent);
         await this.deliverDirectEnd(intent);

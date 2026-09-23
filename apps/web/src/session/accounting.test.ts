@@ -102,6 +102,31 @@ describe("cleanup and End delivery", () => {
     expect(await f.budget.ends()).toHaveLength(0);
     await f.budget.close();
   });
+  it("delivers staged End after session.closed confirms its cleanup", async () => {
+    const f = fixture();
+    const attempt = f.scope.newAttempt();
+    await attempt.create("offer");
+
+    await f.scope.stageEnd("user_end");
+    await attempt.finish({ finalized: true, usageSeconds: 7 });
+    await f.scope.outbox.flush();
+
+    expect(f.api.closed).toHaveBeenCalledWith(attempt.localId, { seconds: 7 });
+    expect(f.api.end).toHaveBeenCalledWith(f.c.conversationId, f.c.version, "user_end");
+    expect(await f.budget.ends()).toHaveLength(0);
+    await f.budget.close();
+  });
+  it("removes an End dependency after direct cleanup proof", async () => {
+    const f = fixture();
+    await f.budget.reserve("attempt", "c");
+    await f.budget.markDispatchStarted("attempt");
+    await f.budget.enqueueEnd("c", 1, "user_end", ["attempt"]);
+
+    await f.scope.acknowledgeDirectCleanup("attempt");
+
+    expect((await f.budget.ends())[0]?.cleanupLocalIds).toEqual([]);
+    await f.budget.close();
+  });
   it("flushes a failed degraded direct End before the next managed create", async () => {
     const f = fixture(); const attempt = f.scope.newAttempt(); await attempt.create("offer");
     const revision = f.scope.revision;
@@ -343,16 +368,26 @@ describe("stage 4 durable lifecycle boundary", () => {
     recovered.usageOutbox?.stop();
     await recoveredBudget.close();
   });
+  it("keeps cleanup from an already finished attempt as an End dependency", async () => {
+    const f = fixture();
+    const attempt = f.scope.newAttempt();
+    await attempt.create("offer");
+    await attempt.abandon("hidden");
 
-  it("does not send End or allow a new create after dispatched cleanup loses storage and HTTP", async () => {
+    await f.scope.stageEnd("user_end");
+
+    expect((await f.budget.ends())[0]?.cleanupLocalIds).toEqual([attempt.localId]);
+    await f.budget.close();
+  });
+
+  it("does not send direct End or allow a new create before queued cleanup proof", async () => {
     const f = fixture(), attempt = f.scope.newAttempt(); await attempt.create("offer");
     const epoch = f.scope.revision;
-    vi.spyOn(f.scope.outbox, "enqueue").mockRejectedValue(new Error("quota"));
     vi.spyOn(f.scope.outbox, "enqueueEnd").mockRejectedValue(new Error("quota"));
     f.api.cleanup.mockRejectedValue(new Error("offline"));
-    await expect(f.scope.end("user_end", epoch)).rejects.toThrow("offline");
+    await expect(f.scope.end("user_end", epoch)).rejects.toThrow("cleanup delivery is pending");
     expect(f.api.end).not.toHaveBeenCalled();
-    await expect(f.scope.newAttempt().create("next")).rejects.toThrow("offline");
+    await expect(f.scope.newAttempt().create("next")).rejects.toThrow("cleanup delivery is pending");
     expect(f.api.createSession).toHaveBeenCalledTimes(1);
     f.api.cleanup.mockResolvedValue({ cleanupRequestedAt: Date.now() });
     await f.scope.end("user_end", epoch);
