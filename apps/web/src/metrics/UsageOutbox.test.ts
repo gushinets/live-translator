@@ -76,4 +76,35 @@ describe("usage transport retries", () => {
     const out = new UsageOutbox(b, transport, anomaly); await out.enqueue("id", "c", closed(46)); await out.flush();
     expect(transport.usage).toHaveBeenCalledWith("id", closed(46), false); expect(anomaly).toHaveBeenCalledWith("usage_storage_degraded"); await b.close();
   });
+  it("retries producer finalization after the usage ACK", async () => {
+    const b = new MetadataDeliveryBudget({ indexedDB: new IDBFactory() }); await b.reserve("id", "c", true);
+    await b.finishProducer("id", "provider_closed");
+    const finish = vi.spyOn(b, "finishUsageProducer").mockRejectedValueOnce(new Error("quota")).mockImplementation(() => MetadataDeliveryBudget.prototype.finishUsageProducer.call(b, "id"));
+    const transport = { usage: vi.fn().mockResolvedValue(ack), readConversation: vi.fn() }, out = new UsageOutbox(b, transport);
+    await out.enqueue("id", "c", closed(46)); await out.finishProducer("id");
+    expect((await b.get("id"))?.usageProducerFinalized).toBe(false);
+    await out.flush();
+    expect(finish).toHaveBeenCalledTimes(2); expect(await b.get("id")).toBeNull(); await b.close();
+  });
+  it("keeps the last persisted checkpoint in the volatile terminal report", async () => {
+    const b = new MetadataDeliveryBudget({ indexedDB: new IDBFactory() }); await b.reserve("id", "c", true);
+    const enqueue = vi.spyOn(b, "enqueueUsage");
+    const transport = { usage: vi.fn().mockResolvedValue(ack), readConversation: vi.fn() }, out = new UsageOutbox(b, transport);
+    await out.enqueue("id", "c", { schemaVersion: 1, checkpointSeconds: 43 });
+    enqueue.mockRejectedValueOnce(new Error("unavailable"));
+    await out.enqueue("id", "c", { schemaVersion: 1, providerClosed: { reason: "done" } });
+    vi.spyOn(b, "entries").mockRejectedValueOnce(new Error("unavailable"));
+    await out.flush();
+    expect(transport.usage.mock.calls[0]?.[1]).toMatchObject({ checkpointSeconds: 43, providerClosed: { reason: "done" } }); await b.close();
+  });
+  it("retries a failed no-provider discard after producer release", async () => {
+    const b = new MetadataDeliveryBudget({ indexedDB: new IDBFactory() }); await b.reserve("id", "c", true);
+    await b.enqueueUsage("id", closed(46));
+    const discard = vi.spyOn(b, "discardUsage").mockRejectedValueOnce(new Error("quota")).mockImplementation((id, revision) => MetadataDeliveryBudget.prototype.discardUsage.call(b, id, revision));
+    const out = new UsageOutbox(b, { usage: vi.fn().mockResolvedValue(ack), readConversation: vi.fn() });
+    await out.noProvider("id"); await b.finishProducerAndRelease("id", "no_provider");
+    expect(await b.get("id")).not.toBeNull();
+    await out.flush();
+    expect(discard).toHaveBeenCalledTimes(2); expect(await b.get("id")).toBeNull(); await b.close();
+  });
 });
