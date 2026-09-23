@@ -127,7 +127,14 @@ export class UsageOutbox {
           if (this.volatile.get(row.localId) === shadow) shadow.persisted = true;
           queued = (await this.budget.get(row.localId))?.usage ?? null;
         }
-        if (!queued) { if (this.volatile.get(row.localId) === shadow) this.volatile.delete(row.localId); continue; }
+        if (!queued) {
+          if (row.usagePending && row.usageProducerFinalized !== true && row.producerFinalized && Date.now() >= row.reservedAt + 7 * 86400000) {
+            this.anomaly("usage_delivery_expired");
+            await this.budget.discardUsage(row.localId);
+          }
+          if (this.volatile.get(row.localId) === shadow) this.volatile.delete(row.localId);
+          continue;
+        }
         shadow ??= { conversationId: row.conversationId, report: queued.report, expiresAt: queued.expiresAt, persisted: true, delivered: false };
         if (Date.now() >= queued.expiresAt) {
           this.anomaly("usage_delivery_expired"); this.pendingDiscard.add(row.localId);
