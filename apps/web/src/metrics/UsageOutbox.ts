@@ -34,7 +34,10 @@ export class UsageOutbox {
     this.pendingFinalization.add(localId);
     const shadow = this.volatile.get(localId);
     if (shadow && !shadow.persisted && !shadow.delivered) { this.revision++; if (this.started) this.onWake(); return; }
-    try { await this.budget.finishUsageProducer(localId); }
+    try {
+      await this.budget.finishUsageProducer(localId);
+      if (shadow?.delivered && this.volatile.get(localId) === shadow) this.volatile.delete(localId);
+    }
     catch { this.anomaly("usage_finalization_storage_degraded"); this.revision++; if (this.started) this.onWake(); return; }
     this.pendingFinalization.delete(localId);
   }
@@ -88,7 +91,11 @@ export class UsageOutbox {
     for (const id of this.pendingFinalization) {
       const shadow = this.volatile.get(id);
       if (shadow && !shadow.persisted && !shadow.delivered) { pending = true; continue; }
-      try { await this.budget.finishUsageProducer(id); this.pendingFinalization.delete(id); }
+      try {
+        await this.budget.finishUsageProducer(id);
+        if (shadow?.delivered && this.volatile.get(id) === shadow) this.volatile.delete(id);
+        this.pendingFinalization.delete(id);
+      }
       catch { this.anomaly("usage_finalization_storage_degraded"); pending = true; }
     }
     for (const id of this.pendingDiscard) {
@@ -156,3 +163,4 @@ export class UsageOutbox {
     else { this.failures = 0; if (this.timer !== undefined) clearTimeout(this.timer); this.timer = undefined; }
   }
 }
+
