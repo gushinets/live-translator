@@ -20,10 +20,15 @@ export class BackendClient {
   }
 
   async releaseLiveSession(sessionId: string): Promise<void> {
-    const response = await fetch(
-      `/api/live/session/${encodeURIComponent(sessionId)}`,
-      { method: "DELETE" },
-    );
-    if (!response.ok) throw new Error(await response.text());
+    // Match the managed metadata client's 10s request budget; a hanging DELETE must be retryable.
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 10_000);
+    try {
+      const response = await fetch(
+        `/api/live/session/${encodeURIComponent(sessionId)}`,
+        { method: "DELETE", signal: controller.signal },
+      );
+      if (!response.ok) throw new Error(await response.text());
+    } finally { clearTimeout(timer); }
   }
 }

@@ -3,7 +3,7 @@ import { UsageOutbox } from "../metrics/UsageOutbox";
 import type { UsageObservation } from "../metrics/UsageTypes";
 import { AccountingBackend, AccountingRequestError, type LedgerApi, type ConversationMetadata } from "../api/AccountingBackend";
 import { BackendClient, type CreateLiveSessionResponse } from "../api/BackendClient";
-import { CleanupIntentOutbox } from "./CleanupIntentOutbox";
+import { CleanupIntentOutbox, cleanupProofReceived } from "./CleanupIntentOutbox";
 import { MetadataDeliveryBudget, type CleanupReason } from "./MetadataDeliveryBudget";
 import type { LiveCloseResult } from "../live/LiveClient";
 
@@ -24,6 +24,15 @@ interface PendingDirectEnd {
   conversationId: string; version: number; reason: "user_end" | "setup_cancel"; epoch: number; inFlight?: Promise<void>;
 }
 
+interface PendingEndBoundary {
+  epoch: number;
+  reason: "user_end" | "setup_cancel";
+  attempts: ProviderAccounting[];
+  conversation: ConversationMetadata | undefined;
+  creating: Promise<ConversationMetadata> | undefined;
+  inFlight?: Promise<void>;
+}
+
 /** One product controller owns this scope; provider attempts keep immutable local IDs. */
 export class ConversationAccounting {
   readonly api: LedgerApi;
@@ -42,6 +51,7 @@ export class ConversationAccounting {
   private readonly autoDelivery: boolean;
   private readonly producerId = crypto.randomUUID();
   private producerLock: Promise<void> | undefined;
+  private readonly pendingEndBoundaries = new Map<number, PendingEndBoundary>();
   private readonly pendingDirectEnds = new Map<number, PendingDirectEnd>();
   private readonly pendingDirectCleanupAcks = new Set<string>();
   private readonly pendingDirectCloseAcks = new Set<string>();
@@ -93,6 +103,7 @@ export class ConversationAccounting {
       return p.usageLedgerEnabled;
     }).catch(error => { this.enabled = undefined; throw error; });
     if (!await this.enabled) return null;
+    for (const boundary of [...this.pendingEndBoundaries.values()]) await this.finishEndBoundary(boundary);
     await this.flushPendingDirectEnds();
     await this.flushPendingDirectCleanupAcks();
     await this.flushPendingDirectCloseAcks();
@@ -101,6 +112,8 @@ export class ConversationAccounting {
     this.creating ??= this.api.createConversation(this.requestId).catch(error => { this.creating = undefined; throw error; });
     const c = await this.creating; attempt.assertCurrent(); this.current = c;
     if (this.autoDelivery) { this.outbox.start(); this.usageOutbox?.start(); }
+    // close() only joins local media retirement; do not race its pending durable write.
+    if (this.last && this.last !== attempt && this.last.dispatched) await this.last.waitForRetirement();
     await this.outbox.flush(); attempt.assertCurrent();
     if ((await this.budget.entries()).some(row => row.conversationId === c.conversationId && (row.cleanup || row.closeObservation))) throw new Error("Previous session cleanup delivery is pending");
     if (this.last && this.last !== attempt && this.last.dispatched) {
@@ -167,33 +180,65 @@ export class ConversationAccounting {
       this.pendingDirectCloseAcks.delete(localId);
     }
   }
+  async stageEnd(reason: "user_end" | "setup_cancel", expectedEpoch = this.epoch): Promise<void> {
+    if (expectedEpoch !== this.epoch) return;
+    const attempts = [...this.attempts];
+    const c = this.current ?? await this.creating?.catch(() => undefined);
+    if (!c) return;
+    // Persist intent before waiting for provider final. Do not terminate the usage producer
+    // or enqueue HTTP here: a crash can replay both stores, and a late final remains valid.
+    await this.budget.enqueueEnd(c.conversationId, c.version, reason,
+      attempts.filter(a => a.dispatched && !a.finished).map(a => a.localId));
+  }
+
   async end(reason: "user_end" | "setup_cancel", expectedEpoch = this.epoch): Promise<void> {
-    if (expectedEpoch !== this.epoch) {
-      const pending = this.pendingDirectEnds.get(expectedEpoch);
-      if (pending?.reason === reason) await this.deliverDirectEnd(pending);
-      return;
+    let boundary = this.pendingEndBoundaries.get(expectedEpoch);
+    if (!boundary && expectedEpoch === this.epoch) {
+      boundary = { epoch: expectedEpoch, reason, attempts: [...this.attempts], conversation: this.current, creating: this.creating };
+      this.pendingEndBoundaries.set(expectedEpoch, boundary);
+      this.epoch++; this.current = undefined; this.creating = undefined; this.last = undefined;
+      this.dispatchCount = 0; this.requestId = crypto.randomUUID(); this.attempts = new Set();
     }
-    const ending = [...this.attempts], current = this.current, creating = this.creating;
-    this.epoch++; this.current = undefined; this.creating = undefined; this.last = undefined;
-    this.dispatchCount = 0; this.requestId = crypto.randomUUID(); this.attempts = new Set();
-    const abandonResults = await Promise.allSettled(ending.map(a => a.finished ? Promise.resolve() : a.abandon(reason === "setup_cancel" ? "cancelled" : "user_end")));
-    const abandonFailure = abandonResults.find(result => result.status === "rejected");
-    const c = current ?? await creating?.catch(() => undefined);
+    if (boundary) return this.finishEndBoundary(boundary); // First reason/version wins across retries.
+    const pending = this.pendingDirectEnds.get(expectedEpoch);
+    if (pending) await this.deliverDirectEnd(pending);
+  }
+
+  private async finishEndBoundary(boundary: PendingEndBoundary): Promise<void> {
+    if (boundary.inFlight) return boundary.inFlight;
+    const operation = this.deliverEndBoundary(boundary);
+    boundary.inFlight = operation;
+    try { await operation; }
+    finally { if (boundary.inFlight === operation) boundary.inFlight = undefined; }
+  }
+
+  private async deliverEndBoundary(boundary: PendingEndBoundary): Promise<void> {
+    const c = boundary.conversation ?? await boundary.creating?.catch(() => undefined);
+    let persisted = false;
     if (c) {
       try {
-        // Cleanup intent is committed locally before queuing the version-checked product End.
-        await this.outbox.enqueueEnd(c.conversationId, c.version, reason);
-        void this.outbox.flush().catch(() => console.error("Conversation end delivery pending"));
-      } catch {
-        console.error("Conversation end storage degraded", { conversationId: c.conversationId });
-        const intent = this.pendingDirectEnds.get(expectedEpoch) ?? {
-          conversationId: c.conversationId, version: c.version, reason, epoch: expectedEpoch,
+        await this.outbox.enqueueEnd(c.conversationId, c.version, boundary.reason,
+          boundary.attempts.filter(a => a.dispatched && !a.finished).map(a => a.localId));
+        persisted = true;
+      } catch { console.error("Conversation end storage degraded", { conversationId: c.conversationId }); }
+    }
+    const results = await Promise.allSettled(boundary.attempts.map(a => a.finished ? Promise.resolve() : a.abandon(boundary.reason === "setup_cancel" ? "cancelled" : "user_end")));
+    // A failed local transaction plus failed direct cleanup must never fall through to End/new create.
+    const dispatchedFailure = results.find((r, i) => r.status === "rejected" && boundary.attempts[i]!.dispatched);
+    if (!persisted && dispatchedFailure?.status === "rejected") throw dispatchedFailure.reason;
+    if (c) {
+      if (persisted) void this.outbox.flush().catch(() => console.error("Conversation end delivery pending"));
+      else {
+        const intent = this.pendingDirectEnds.get(boundary.epoch) ?? {
+          conversationId: c.conversationId, version: c.version, reason: boundary.reason, epoch: boundary.epoch,
         };
-        this.pendingDirectEnds.set(expectedEpoch, intent);
+        this.pendingDirectEnds.set(boundary.epoch, intent);
         await this.deliverDirectEnd(intent);
       }
     }
-    if (abandonFailure?.status === "rejected") throw abandonFailure.reason;
+    this.pendingEndBoundaries.delete(boundary.epoch);
+    const failure = results.find(r => r.status === "rejected");
+    if (failure?.status === "rejected") throw failure.reason;
   }
 }
 export class ProviderAccounting {
@@ -202,6 +247,7 @@ export class ProviderAccounting {
   dispatched = false;
   finished = false;
   private cancelled = false;
+  private cleanupReason: CleanupReason | undefined;
   private reservation: Promise<void> | undefined;
   private hasReservation = false;
   private controller: AbortController | undefined;
@@ -209,6 +255,7 @@ export class ProviderAccounting {
   private finishing: Promise<void> | undefined;
   private reporter: UsageReporter | undefined;
   private lastProduct: ProductObservation | undefined;
+  get closeTimeoutMs(): number | undefined { return this.conversation?.policy.sessionCloseTimeoutMs; }
   observeProduct(observation: ProductObservation): void { this.lastProduct = observation; this.reporter?.observeProduct(observation); }
   observeUsage(observation: UsageObservation): void { this.reporter?.observeUsage(observation); }
   providerStarted(): void { this.reporter?.providerStarted(); }
@@ -251,7 +298,13 @@ export class ProviderAccounting {
     if (receipt.state !== "active" || receipt.handoffAcknowledgedAt == null || receipt.cleanupRequestedAt != null || receipt.conversation.status !== "active" ||
         receipt.conversation.version !== this.conversation?.version || (receipt.conversation.productDeadlineAt !== null && receipt.conversation.serverTime >= receipt.conversation.productDeadlineAt)) throw new Error("Provider handoff was not confirmed");
   }
+  async waitForRetirement(): Promise<void> {
+    if (this.finishing) await this.finishing;
+    if (!this.finished) throw new Error("Previous provider retirement is not confirmed");
+  }
   async abandon(reason: CleanupReason): Promise<void> {
+    this.cleanupReason ??= reason;
+    const committedReason = this.cleanupReason;
     this.observeUsage({ kind: "local_close_unconfirmed" });
     this.cancelled = true;
     if (this.finished) return this.finishing;
@@ -260,7 +313,7 @@ export class ProviderAccounting {
     if (this.finishing) return this.finishing;
     const operation = (async () => {
       try {
-        if (this.dispatched) { await this.scope.outbox.enqueue(this.localId, reason); this.controller?.abort(); }
+        if (this.dispatched) { await this.scope.outbox.enqueue(this.localId, committedReason); this.controller?.abort(); }
         else {
           await this.scope.usageOutbox?.noProvider(this.localId);
           await this.scope.budget.finishProducerAndRelease(this.localId, "no_provider");
@@ -270,7 +323,8 @@ export class ProviderAccounting {
         // Existing-session storage failure cannot keep audio alive. This is an explicitly degraded path.
         console.error("Existing session cleanup storage degraded", { localId: this.localId }); this.controller?.abort();
         if (!this.dispatched) throw error;
-        await this.scope.api.cleanup(this.localId, reason);
+        const proof = await this.scope.api.cleanup(this.localId, committedReason);
+        if (!cleanupProofReceived(proof)) throw new Error("Provider cleanup was not confirmed", { cause: error });
         await this.scope.acknowledgeDirectCleanup(this.localId);
         this.finished = true;
       }

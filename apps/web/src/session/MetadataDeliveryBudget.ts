@@ -43,7 +43,7 @@ export class MetadataDeliveryBudget {
     }).catch(error => { this.opening = undefined; throw error; });
     return this.opening;
   }
-  private async transaction<T>(mode: IDBTransactionMode, work: (store: IDBObjectStore, result: (value: T) => void, fail: (error: Error) => void) => void, storeName = "envelopes"): Promise<T> {
+  private async transaction<T>(mode: IDBTransactionMode, work: (store: IDBObjectStore, result: (value: T) => void, fail: (error: Error) => void, tx: IDBTransaction) => void, storeName: string | string[] = "envelopes"): Promise<T> {
     const db = await this.database();
     return new Promise((resolve, reject) => {
       const tx = db.transaction(storeName, mode); let value: T; let failure: Error | undefined;
@@ -51,7 +51,7 @@ export class MetadataDeliveryBudget {
       const timer = setTimeout(() => fail(new Error("Metadata storage transaction timed out")), this.timeoutMs);
       tx.oncomplete = () => { clearTimeout(timer); resolve(value); };
       tx.onabort = tx.onerror = () => { clearTimeout(timer); reject(failure ?? new Error("Metadata storage transaction failed")); };
-      try { work(tx.objectStore(storeName), v => { value = v; }, fail); }
+      try { work(tx.objectStore(typeof storeName === "string" ? storeName : storeName[0]!), v => { value = v; }, fail, tx); }
       catch (error) { fail(error instanceof Error ? error : new Error("Metadata storage failure")); }
     });
   }
@@ -181,8 +181,20 @@ export class MetadataDeliveryBudget {
   entries(): Promise<MetadataEnvelope[]> {
     return this.transaction("readonly", (store, result) => { const r = store.getAll(); r.onsuccess = () => result(r.result as MetadataEnvelope[]); });
   }
-  enqueueEnd(conversationId: string, expectedVersion: number, reason: EndIntent["reason"]): Promise<void> {
-    return this.transaction("readwrite", (store, result, fail) => {
+  enqueueEnd(conversationId: string, expectedVersion: number, reason: EndIntent["reason"], cleanupLocalIds: readonly string[] = []): Promise<void> {
+    // One transaction removes the crash gap between saving cleanup and saving user intent.
+    // Cleanup remains first-reason-wins, and no usage/close obligation is removed here.
+    return this.transaction("readwrite", (store, result, fail, tx) => {
+      const envelopes = tx.objectStore("envelopes");
+      for (const id of cleanupLocalIds) {
+        const read = envelopes.get(id);
+        read.onsuccess = () => {
+          const row = read.result as MetadataEnvelope | undefined;
+          if (!row || row.conversationId !== conversationId || row.dispatchStartedAt === null || row.closeObservation || row.producerOutcome === "provider_closed" || row.producerOutcome === "no_provider") return;
+          envelopes.put({ ...row, producerFinalized: true, producerOutcome: row.producerOutcome ?? "lost",
+            cleanup: row.cleanup ?? { reason: reason === "setup_cancel" ? "cancelled" : "user_end", createdAt: Date.now(), expiresAt: Date.now() + TTL } });
+        };
+      }
       const get = store.get(conversationId); get.onsuccess = () => {
         const old = get.result as EndIntent | undefined;
         if (old) { if (old.expectedVersion < expectedVersion) store.put({ conversationId, expectedVersion, reason, expiresAt: Date.now() + TTL }); result(undefined); return; }
@@ -191,7 +203,7 @@ export class MetadataDeliveryBudget {
           store.put({ conversationId, expectedVersion, reason, expiresAt: Date.now() + TTL }); result(undefined);
         };
       };
-    }, "lifecycle");
+    }, ["lifecycle", "envelopes"]);
   }
   ends(): Promise<EndIntent[]> {
     return this.transaction("readonly", (store, result) => { const r = store.getAll(); r.onsuccess = () => result(r.result as EndIntent[]); }, "lifecycle");

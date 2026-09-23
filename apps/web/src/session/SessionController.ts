@@ -102,6 +102,8 @@ export class SessionController {
   private interpreterWork: Promise<void> | null = null;
   private cancelWork: Promise<void> | null = null;
   private sessionGeneration = 0;
+  private liveProductGeneration = 0;
+  private retiringLiveClose: Promise<{ finalized: boolean }> | null = null;
   private idleTimer: number | null = null;
   private maxSessionTimer: number | null = null;
   private maxSourceTimer: number | null = null;
@@ -262,6 +264,7 @@ export class SessionController {
   }
 
   async startContextCapture(): Promise<void> {
+    if (this.endWork !== null) await this.endWork;
     if (this.cancelWork !== null) {
       await this.cancelWork;
     }
@@ -285,6 +288,7 @@ export class SessionController {
   }
 
   async startBootstrap(): Promise<void> {
+    if (this.endWork !== null) await this.endWork;
     if (this.cancelWork !== null) {
       await this.cancelWork;
     }
@@ -303,7 +307,9 @@ export class SessionController {
     }
   }
 
-  handleRemoteStream(stream: MediaStream): void {
+  handleRemoteStream(stream: MediaStream, source: LiveClient): void {
+    // Validate origin BEFORE attaching. A generation captured after a stale callback is too late.
+    if (source !== this.live || this.liveProductGeneration !== this.sessionGeneration) return;
     const sessionGeneration = this.sessionGeneration;
     const playbackGeneration = this.remotePlaybackGeneration + 1;
     this.remotePlaybackGeneration = playbackGeneration;
@@ -314,7 +320,7 @@ export class SessionController {
       .play()
       .then(() => {
         if (
-          this.sessionGeneration !== sessionGeneration ||
+          source !== this.live || this.sessionGeneration !== sessionGeneration ||
           this.remotePlaybackGeneration !== playbackGeneration
         ) {
           return;
@@ -328,7 +334,7 @@ export class SessionController {
       })
       .catch((error: unknown) => {
         if (
-          this.sessionGeneration !== sessionGeneration ||
+          source !== this.live || this.sessionGeneration !== sessionGeneration ||
           this.remotePlaybackGeneration !== playbackGeneration
         ) {
           return;
@@ -485,19 +491,21 @@ export class SessionController {
     }
   }
 
-  async endConversation(): Promise<void> {
-    if (this.endWork !== null) {
-      await this.endWork;
-      return;
-    }
-    const work = this.runEndConversation();
-    this.endWork = work;
-    try {
-      await work;
-    } finally {
-      if (this.endWork === work) {
-        this.endWork = null;
-      }
+  endConversation(): Promise<void> { return this.runTerminalBoundary("end"); }
+
+  private async runTerminalBoundary(kind: "end" | "cancel"): Promise<void> {
+    const existing = this.endWork ?? this.cancelWork;
+    if (existing !== null) return existing;
+    let resolve!: () => void, reject!: (error: unknown) => void;
+    const work = new Promise<void>((ok, fail) => { resolve = ok; reject = fail; });
+    // Publish the shared operation before synchronous UI observers can re-enter End/cancel.
+    if (kind === "end") this.endWork = work; else this.cancelWork = work;
+    const operation = kind === "end" ? this.runEndConversation() : this.runCancel();
+    void operation.then(resolve, reject);
+    try { await work; }
+    finally {
+      if (this.endWork === work) this.endWork = null;
+      if (this.cancelWork === work) this.cancelWork = null;
     }
   }
 
@@ -704,21 +712,7 @@ export class SessionController {
     }
   }
 
-  async cancel(): Promise<void> {
-    if (this.cancelWork !== null) {
-      await this.cancelWork;
-      return;
-    }
-    const work = this.runCancel();
-    this.cancelWork = work;
-    try {
-      await work;
-    } finally {
-      if (this.cancelWork === work) {
-        this.cancelWork = null;
-      }
-    }
-  }
+  cancel(): Promise<void> { return this.runTerminalBoundary("cancel"); }
 
   private async runCancel(): Promise<void> {
     const pendingConnect = this.connectWork;
@@ -739,9 +733,17 @@ export class SessionController {
     this.clearTurnEngineTimers();
     this.capturingContext = false;
     this.capturingBootstrap = false;
+    this.speechInputReady = false;
+    this.stopLocalMedia();
+    const prepared = this.prepareConversationRetirement("setup_cancel").catch(() => {
+      console.error("Cancellation intent storage degraded; retirement will retry cleanup");
+    });
+    this.notify();
     if (this.hasConnected || this.liveConnectStarted) {
       try {
-        await this.live.close();
+        const retiring = this.retiringLiveClose;
+        await this.live.close("cancelled");
+        await retiring;
       } catch (error) {
         console.error("Live session close failed", {
           error,
@@ -753,7 +755,9 @@ export class SessionController {
     if (this.audio.getCaptureStream() !== null) {
       this.audio.stopCapture();
     }
-    this.resetToIdle();
+    await prepared;
+    try { await this.finishConversationRetirement("setup_cancel"); }
+    finally { this.resetToIdle(); }
     if (shouldWaitForMic) {
       try {
         await pendingConnect;
@@ -864,11 +868,16 @@ export class SessionController {
     this.capturingContext = false;
     this.capturingBootstrap = false;
     this.speechInputReady = false;
-    this.audio.setOutputAudible(false);
+    this.stopLocalMedia();
+    const prepared = this.prepareConversationRetirement("user_end").catch(() => {
+      console.error("End intent storage degraded; retirement will retry cleanup");
+    });
     this.dispatch({ type: "END" });
     let closeResult: { finalized: boolean };
     try {
+      const retiring = this.retiringLiveClose;
       closeResult = await this.live.close();
+      await retiring;
     } catch (error) {
       console.error("Live session close failed", {
         error,
@@ -883,7 +892,23 @@ export class SessionController {
     if (this.audio.getCaptureStream() !== null) {
       this.audio.stopCapture();
     }
-    this.resetToIdle({ preserveOwnerError: closeResult.finalized === false });
+    await prepared;
+    try { await this.finishConversationRetirement("user_end"); }
+    finally { this.resetToIdle({ preserveOwnerError: closeResult.finalized === false }); }
+  }
+
+  /** Saves recovery intent without holding open local media or finalizing its usage producer. */
+  protected async prepareConversationRetirement(reason: "user_end" | "setup_cancel"): Promise<void> { void reason; }
+
+  /** Runs after local retirement, before a fresh controller can use the next accounting scope. */
+  protected async finishConversationRetirement(reason: "user_end" | "setup_cancel"): Promise<void> { void reason; }
+
+  private stopLocalMedia(): void {
+    this.audio.setCaptureEnabled(false);
+    this.audio.setOutputAudible(false);
+    this.resetRemotePlaybackTracking();
+    this.audio.audioElement.srcObject = null;
+    if (this.audio.getCaptureStream() !== null) this.audio.stopCapture();
   }
 
   private get audio(): SessionControllerDeps["audio"] {
@@ -893,6 +918,7 @@ export class SessionController {
   private bindLive(): void {
     const live = this.live;
     const generation = this.sessionGeneration;
+    this.liveProductGeneration = generation;
     this.live.onTranscriptDelta = (event) => {
       if (this.live !== live || this.sessionGeneration !== generation) {
         return;
@@ -1667,7 +1693,6 @@ export class SessionController {
     // can still arrive from the previous data channel.
     this.capturingBootstrap = false;
     this.bootstrapBuffer = "";
-    this.notify();
     this.audio.setCaptureEnabled(false);
     this.audio.setOutputAudible(false);
     this.clearMaxSessionTimer();
@@ -1679,7 +1704,11 @@ export class SessionController {
     this.liveConnectStarted = true;
     this.gateBMuted = false;
     this.bindLive();
-    await previousLive.disconnectImmediately();
+    const retiring = previousLive.close("replacement");
+    this.retiringLiveClose = retiring;
+    this.notify();
+    try { await retiring; }
+    finally { if (this.retiringLiveClose === retiring) this.retiringLiveClose = null; }
 
     if (this.sessionGeneration !== generation) {
       await replacementLive.disconnectImmediately();
@@ -2467,7 +2496,6 @@ export class SessionController {
     this.correctionEpoch = 0;
     this.gateCHeldForCorrectionEpoch = null;
     this.correctionWork = null;
-    this.endWork = null;
     this.enteredInterpreter = false;
     this.conversationMetrics = new ConversationMetrics();
     this.finishPlaybackIdleWait();
@@ -2532,8 +2560,8 @@ export function createDefaultSessionController(): SessionController {
       new LiveClient({
         backend: new BackendClient(),
         peerFactory: () => new RTCPeerConnection(),
-        onRemoteStream: (stream) => {
-          controller.handleRemoteStream(stream);
+        onRemoteStream: (stream, source) => {
+          controller.handleRemoteStream(stream, source);
         },
       }),
     audio,
