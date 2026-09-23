@@ -76,4 +76,153 @@ describe("usage transport retries", () => {
     const out = new UsageOutbox(b, transport, anomaly); await out.enqueue("id", "c", closed(46)); await out.flush();
     expect(transport.usage).toHaveBeenCalledWith("id", closed(46), false); expect(anomaly).toHaveBeenCalledWith("usage_storage_degraded"); await b.close();
   });
+  it("retries producer finalization after the usage ACK", async () => {
+    const b = new MetadataDeliveryBudget({ indexedDB: new IDBFactory() }); await b.reserve("id", "c", true);
+    await b.finishProducer("id", "provider_closed");
+    const finish = vi.spyOn(b, "finishUsageProducer").mockRejectedValueOnce(new Error("quota")).mockImplementation(() => MetadataDeliveryBudget.prototype.finishUsageProducer.call(b, "id"));
+    const transport = { usage: vi.fn().mockResolvedValue(ack), readConversation: vi.fn() }, out = new UsageOutbox(b, transport);
+    await out.enqueue("id", "c", closed(46)); await out.finishProducer("id");
+    expect((await b.get("id"))?.usageProducerFinalized).toBe(false);
+    await out.flush();
+    expect(finish).toHaveBeenCalledTimes(2); expect(await b.get("id")).toBeNull(); await b.close();
+  });
+  it("keeps the last persisted checkpoint in the volatile terminal report", async () => {
+    const b = new MetadataDeliveryBudget({ indexedDB: new IDBFactory() }); await b.reserve("id", "c", true);
+    const enqueue = vi.spyOn(b, "enqueueUsage");
+    const transport = { usage: vi.fn().mockResolvedValue(ack), readConversation: vi.fn() }, out = new UsageOutbox(b, transport);
+    await out.enqueue("id", "c", { schemaVersion: 1, checkpointSeconds: 43 });
+    enqueue.mockRejectedValueOnce(new Error("unavailable"));
+    await out.enqueue("id", "c", { schemaVersion: 1, providerClosed: { reason: "done" } });
+    vi.spyOn(b, "entries").mockRejectedValueOnce(new Error("unavailable"));
+    await out.flush();
+    expect(transport.usage.mock.calls[0]?.[1]).toMatchObject({ checkpointSeconds: 43, providerClosed: { reason: "done" } }); await b.close();
+  });
+  it("retries a failed no-provider discard after producer release", async () => {
+    const b = new MetadataDeliveryBudget({ indexedDB: new IDBFactory() }); await b.reserve("id", "c", true);
+    await b.enqueueUsage("id", closed(46));
+    const discard = vi.spyOn(b, "discardUsage").mockRejectedValueOnce(new Error("quota")).mockImplementation((id, revision) => MetadataDeliveryBudget.prototype.discardUsage.call(b, id, revision));
+    const out = new UsageOutbox(b, { usage: vi.fn().mockResolvedValue(ack), readConversation: vi.fn() });
+    await out.noProvider("id"); await b.finishProducerAndRelease("id", "no_provider");
+    expect(await b.get("id")).not.toBeNull();
+    await out.flush();
+    expect(discard).toHaveBeenCalledTimes(2); expect(await b.get("id")).toBeNull(); await b.close();
+  });
+  it("discards a persisted no-provider report after the outbox is recreated", async () => {
+    const indexedDB = new IDBFactory(), name = "no-provider-reload";
+    const b = new MetadataDeliveryBudget({ indexedDB, name }); await b.reserve("id", "c", true);
+    await b.enqueueUsage("id", closed(46));
+    vi.spyOn(b, "discardUsage").mockRejectedValueOnce(new Error("quota"));
+    await new UsageOutbox(b, { usage: vi.fn().mockResolvedValue(ack), readConversation: vi.fn() }).noProvider("id");
+    await b.finishProducerAndRelease("id", "no_provider"); await b.close();
+
+    const reloaded = new MetadataDeliveryBudget({ indexedDB, name });
+    const transport = { usage: vi.fn().mockResolvedValue(ack), readConversation: vi.fn() };
+    await new UsageOutbox(reloaded, transport).flush();
+    expect(transport.usage).not.toHaveBeenCalled(); expect(await reloaded.get("id")).toBeNull(); await reloaded.close();
+  });
+  it("keeps the reservation after a volatile checkpoint ACK until the terminal report is saved", async () => {
+    const b = new MetadataDeliveryBudget({ indexedDB: new IDBFactory() }); await b.reserve("id", "c", true);
+    await b.enqueueClose("id", { seconds: 15 }); await b.acknowledgeCloseAndRelease("id");
+    vi.spyOn(b, "enqueueUsage").mockRejectedValueOnce(new Error("quota"));
+    vi.spyOn(b, "entries").mockRejectedValueOnce(new Error("unavailable"));
+    const transport = { usage: vi.fn().mockResolvedValue(ack), readConversation: vi.fn() }, out = new UsageOutbox(b, transport);
+    await out.enqueue("id", "c", { schemaVersion: 1, checkpointSeconds: 15 }); await out.flush();
+    await out.flush();
+    expect((await b.get("id"))?.usageProducerFinalized).toBe(false);
+    await out.enqueue("id", "c", { schemaVersion: 1, providerClosed: { reason: "done" } });
+    expect((await b.get("id"))?.usage?.report).toMatchObject({ providerClosed: { reason: "done" } });
+    await out.finishProducer("id"); await out.flush();
+    expect(transport.usage).toHaveBeenCalledTimes(2); expect(await b.get("id")).toBeNull(); await b.close();
+  });
+  it("keeps the durable hold until an unpersisted terminal report is delivered", async () => {
+    const b = new MetadataDeliveryBudget({ indexedDB: new IDBFactory() }); await b.reserve("id", "c", true);
+    await b.enqueueClose("id", { seconds: 15 }); await b.acknowledgeCloseAndRelease("id");
+    vi.spyOn(b, "enqueueUsage").mockRejectedValue(new Error("quota"));
+    const transport = { usage: vi.fn().mockResolvedValue(ack), readConversation: vi.fn() }, out = new UsageOutbox(b, transport);
+    await out.enqueue("id", "c", { schemaVersion: 1, providerClosed: { reason: "done" } });
+    await out.finishProducer("id");
+    expect((await b.get("id"))?.usageProducerFinalized).toBe(false);
+    await out.flush();
+    expect((await b.get("id"))?.usageProducerFinalized).toBe(false);
+    await out.flush();
+    expect(transport.usage).toHaveBeenCalledTimes(1); expect(await b.get("id")).toBeNull(); await b.close();
+  });
+  it("clears delivered volatile shadows after immediate and retried finalization", async () => {
+    const b = new MetadataDeliveryBudget({ indexedDB: new IDBFactory() });
+    const transport = { usage: vi.fn().mockResolvedValue(ack), readConversation: vi.fn() }, out = new UsageOutbox(b, transport);
+    const shadows = (out as unknown as { volatile: Map<string, unknown> }).volatile;
+    for (const id of ["immediate", "retried"]) {
+      await b.reserve(id, "c", true); await b.finishProducer(id, "provider_closed");
+      vi.spyOn(b, "enqueueUsage").mockRejectedValue(new Error("quota"));
+      vi.spyOn(b, "entries").mockRejectedValue(new Error("unavailable"));
+      await out.enqueue(id, "c", closed(46));
+      if (id === "retried") await out.finishProducer(id);
+      await out.flush();
+      if (id === "immediate") await out.finishProducer(id);
+      else await out.flush();
+      expect(shadows.has(id)).toBe(false);
+    }
+    await b.close();
+  });
+
+  it("releases an orphaned terminal reservation after expiry and outbox reload", async () => {
+    const indexedDB = new IDBFactory(), name = "orphaned-terminal-reload";
+    const now = Date.now(), b = new MetadataDeliveryBudget({ indexedDB, name, capacity: 1 });
+    const oldClock = vi.spyOn(Date, "now").mockReturnValue(now - 8 * 86400000);
+    await b.reserve("id", "c", true); oldClock.mockRestore();
+    await b.enqueueClose("id", { seconds: 15 }); await b.acknowledgeCloseAndRelease("id");
+    vi.spyOn(b, "enqueueUsage").mockRejectedValue(new Error("quota"));
+    vi.spyOn(b, "entries").mockRejectedValueOnce(new Error("unavailable"));
+    const firstTransport = { usage: vi.fn().mockRejectedValue(new Error("offline")), readConversation: vi.fn() };
+    const first = new UsageOutbox(b, firstTransport);
+    await first.enqueue("id", "c", { schemaVersion: 1, providerClosed: { reason: "done" } });
+    await first.finishProducer("id"); await first.flush();
+    expect((await b.get("id"))?.usage).toBeNull(); expect(firstTransport.usage).not.toHaveBeenCalled();
+    await b.close();
+
+    const reloaded = new MetadataDeliveryBudget({ indexedDB, name, capacity: 1 }), anomaly = vi.fn();
+    const transport = { usage: vi.fn().mockResolvedValue(ack), readConversation: vi.fn() };
+    await new UsageOutbox(reloaded, transport, anomaly).flush();
+    expect(transport.usage).not.toHaveBeenCalled(); expect(await reloaded.get("id")).toBeNull();
+    expect(anomaly).toHaveBeenCalledWith("usage_delivery_expired");
+    await expect(reloaded.reserve("next", "c", true)).resolves.toBeUndefined(); await reloaded.close();
+  });
+  it("does not extend the reservation TTL for a late volatile report", async () => {
+    const now = Date.now(), setNow = vi.spyOn(Date, "now").mockReturnValue(now);
+    const b = new MetadataDeliveryBudget({ indexedDB: new IDBFactory() }); await b.reserve("id", "c", true);
+    const transport = { usage: vi.fn().mockResolvedValue(ack), readConversation: vi.fn() }, anomaly = vi.fn();
+    const out = new UsageOutbox(b, transport, anomaly);
+    await out.flush();
+    setNow.mockReturnValue(now + 7 * 86400000 + 1);
+    vi.spyOn(b, "enqueueUsage").mockRejectedValue(new Error("quota"));
+    vi.spyOn(b, "entries").mockRejectedValue(new Error("unavailable"));
+    vi.spyOn(b, "get").mockRejectedValue(new Error("unavailable"));
+    await out.enqueue("id", "c", closed(46)); await out.flush();
+    expect(transport.usage).not.toHaveBeenCalled();
+    expect(anomaly).toHaveBeenCalledWith("usage_volatile_expired");
+    setNow.mockRestore(); await b.close();
+  });
+
+  it("keeps a volatile report when the first expiry lookup and persistence fail", async () => {
+    const b = new MetadataDeliveryBudget({ indexedDB: new IDBFactory() });
+    const transport = { usage: vi.fn().mockResolvedValue(ack), readConversation: vi.fn() };
+    const out = new UsageOutbox(b, transport);
+    await out.flush(); // The outbox can start before this attempt is reserved.
+    await b.reserve("id", "c", true);
+    vi.spyOn(b, "get").mockRejectedValueOnce(new Error("unavailable"));
+    vi.spyOn(b, "enqueueUsage").mockRejectedValueOnce(new Error("unavailable"));
+    vi.spyOn(b, "entries").mockRejectedValueOnce(new Error("unavailable"));
+
+    await out.enqueue("id", "c", closed(46));
+    await out.flush();
+    expect(transport.usage).not.toHaveBeenCalled();
+
+    await out.flush();
+    expect(transport.usage).toHaveBeenCalledWith("id", closed(46), false);
+    await out.finishProducer("id"); await out.flush();
+    expect((await b.get("id"))?.usage).toBeNull(); await b.close();
+  });
+
 });
+
+

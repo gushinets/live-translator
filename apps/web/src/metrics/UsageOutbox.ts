@@ -5,11 +5,15 @@ export interface UsageTransport {
   readConversation(conversationId: string): Promise<unknown>;
 }
 const statusOf = (error: unknown) => error && typeof error === "object" && "status" in error ? Number(error.status) : 0;
-interface VolatileReport { conversationId: string; report: UsageReport; expiresAt: number; }
+const USAGE_TTL = 7 * 86400000;
+interface VolatileReport { conversationId: string; report: UsageReport; expiresAt: number | undefined; persisted: boolean; delivered: boolean; }
 
 /** Delivery is independent of the current conversation, transport and product generation. */
 export class UsageOutbox {
   private readonly volatile = new Map<string, VolatileReport>();
+  private readonly reservationExpiry = new Map<string, number>();
+  private readonly pendingFinalization = new Set<string>();
+  private readonly pendingDiscard = new Set<string>();
   private flushing: Promise<void> | null = null;
   private revision = 0;
   private started = false;
@@ -18,22 +22,38 @@ export class UsageOutbox {
   constructor(private readonly budget: MetadataDeliveryBudget, private readonly transport: UsageTransport,
     private readonly anomaly: (code: string) => void = code => console.error("Usage delivery anomaly", { code })) {}
   async enqueue(localId: string, conversationId: string, report: UsageReport): Promise<void> {
-    try { await this.budget.enqueueUsage(localId, report); }
+    const old = this.volatile.get(localId);
+    let expiresAt = old?.expiresAt ?? this.reservationExpiry.get(localId);
+    if (expiresAt === undefined) {
+      try { const row = await this.budget.get(localId); expiresAt = row ? row.usage?.expiresAt ?? row.reservedAt + USAGE_TTL : Date.now(); }
+      catch { /* Keep the report until its original reservation expiry can be recovered. */ }
+    }
+    const pending: VolatileReport = { conversationId, report: coalesceUsage(old?.report, report), expiresAt, persisted: false, delivered: false };
+    this.volatile.set(localId, pending);
+    try { await this.budget.enqueueUsage(localId, pending.report); pending.persisted = true; }
     catch {
       // Only already-reserved attempts use this object. New creation still fails closed in PR2.
       this.anomaly("usage_storage_degraded");
-      const old = this.volatile.get(localId);
-      this.volatile.set(localId, { conversationId, report: coalesceUsage(old?.report, report), expiresAt: old?.expiresAt ?? Date.now() + 7 * 86400000 });
     }
     this.revision++; if (this.started) this.onWake();
   }
   async finishProducer(localId: string): Promise<void> {
-    try { await this.budget.finishUsageProducer(localId); }
-    catch { this.anomaly("usage_finalization_storage_degraded"); }
+    this.pendingFinalization.add(localId);
+    const shadow = this.volatile.get(localId);
+    if (shadow && !shadow.persisted && !shadow.delivered) { this.revision++; if (this.started) this.onWake(); return; }
+    try {
+      await this.budget.finishUsageProducer(localId);
+      if (shadow?.delivered && this.volatile.get(localId) === shadow) this.volatile.delete(localId);
+    }
+    catch { this.anomaly("usage_finalization_storage_degraded"); this.revision++; if (this.started) this.onWake(); return; }
+    this.pendingFinalization.delete(localId);
   }
   async noProvider(localId: string): Promise<void> {
+    this.pendingFinalization.delete(localId);
     this.volatile.delete(localId);
-    try { await this.budget.discardUsage(localId); } catch { this.anomaly("usage_no_provider_storage_degraded"); }
+    this.pendingDiscard.add(localId);
+    try { await this.budget.discardUsage(localId); this.pendingDiscard.delete(localId); }
+    catch { this.anomaly("usage_no_provider_storage_degraded"); this.revision++; if (this.started) this.onWake(); }
   }
   start(): void {
     if (this.started) return; this.started = true;
@@ -75,23 +95,95 @@ export class UsageOutbox {
   }
   private async deliver(): Promise<void> {
     let pending = false;
+    for (const id of this.pendingFinalization) {
+      const shadow = this.volatile.get(id);
+      if (shadow && !shadow.persisted && !shadow.delivered) { pending = true; continue; }
+      try {
+        await this.budget.finishUsageProducer(id);
+        if (shadow?.delivered && this.volatile.get(id) === shadow) this.volatile.delete(id);
+        this.pendingFinalization.delete(id);
+      }
+      catch { this.anomaly("usage_finalization_storage_degraded"); pending = true; }
+    }
+    for (const id of this.pendingDiscard) {
+      try {
+        await this.budget.discardUsage(id); this.pendingDiscard.delete(id);
+        this.pendingFinalization.delete(id); this.volatile.delete(id);
+      }
+      catch { this.anomaly("usage_no_provider_storage_degraded"); pending = true; }
+    }
+    let storageAvailable = true;
     try {
-      for (const row of await this.budget.entries()) {
-        if (!row.usage) continue;
-        if (Date.now() >= row.usage.expiresAt) { this.anomaly("usage_delivery_expired"); await this.budget.discardUsage(row.localId, row.usage.revision); continue; }
-        const outcome = await this.send(row.localId, row.conversationId, row.usage.report);
-        if (outcome === "ack") await this.budget.acknowledgeUsage(row.localId, row.usage.revision);
-        else if (outcome === "lost") await this.budget.discardUsage(row.localId, row.usage.revision);
+      const rows = await this.budget.entries();
+      const live = new Set(rows.map(row => row.localId));
+      for (const id of this.reservationExpiry.keys()) if (!live.has(id)) this.reservationExpiry.delete(id);
+      for (const [id, shadow] of this.volatile) if (shadow.expiresAt === undefined && !live.has(id)) shadow.expiresAt = Date.now();
+      for (const row of rows) {
+        const expiresAt = row.usage?.expiresAt ?? row.reservedAt + USAGE_TTL;
+        this.reservationExpiry.set(row.localId, expiresAt);
+        if (this.pendingDiscard.has(row.localId)) continue;
+        if (row.producerOutcome === "no_provider") {
+          this.pendingDiscard.add(row.localId);
+          await this.budget.discardUsage(row.localId);
+          this.pendingDiscard.delete(row.localId); this.pendingFinalization.delete(row.localId); this.volatile.delete(row.localId);
+          continue;
+        }
+        let queued = row.usage;
+        let shadow = this.volatile.get(row.localId);
+        if (shadow && shadow.expiresAt === undefined) shadow.expiresAt = expiresAt;
+        if (shadow?.delivered) {
+          if (queued) await this.budget.acknowledgeUsage(row.localId, queued.revision);
+          if (this.volatile.get(row.localId) === shadow) this.volatile.delete(row.localId);
+          continue;
+        }
+        if (shadow && !shadow.persisted) {
+          await this.budget.enqueueUsage(row.localId, shadow.report);
+          if (this.volatile.get(row.localId) === shadow) shadow.persisted = true;
+          queued = (await this.budget.get(row.localId))?.usage ?? null;
+        }
+        if (!queued) {
+          if (row.usagePending && row.usageProducerFinalized !== true && row.producerFinalized && Date.now() >= row.reservedAt + 7 * 86400000) {
+            this.anomaly("usage_delivery_expired");
+            await this.budget.discardUsage(row.localId);
+          }
+          if (this.volatile.get(row.localId) === shadow) this.volatile.delete(row.localId);
+          continue;
+        }
+        shadow ??= { conversationId: row.conversationId, report: queued.report, expiresAt: queued.expiresAt, persisted: true, delivered: false };
+        if (Date.now() >= queued.expiresAt) {
+          this.anomaly("usage_delivery_expired"); this.pendingDiscard.add(row.localId);
+          this.pendingFinalization.delete(row.localId);
+          await this.budget.discardUsage(row.localId, queued.revision); this.pendingDiscard.delete(row.localId);
+          if (this.volatile.get(row.localId) === shadow) this.volatile.delete(row.localId);
+          continue;
+        }
+        const outcome = await this.send(row.localId, shadow.conversationId, shadow.report);
+        if (outcome === "ack") {
+          shadow.delivered = true;
+          await this.budget.acknowledgeUsage(row.localId, queued.revision);
+          if (this.volatile.get(row.localId) === shadow) this.volatile.delete(row.localId);
+        } else if (outcome === "lost") {
+          this.pendingDiscard.add(row.localId);
+          this.pendingFinalization.delete(row.localId);
+          await this.budget.discardUsage(row.localId, queued.revision); this.pendingDiscard.delete(row.localId);
+          if (this.volatile.get(row.localId) === shadow) this.volatile.delete(row.localId);
+        }
         else pending = true;
       }
-    } catch { this.anomaly("usage_storage_degraded"); pending = true; }
+    } catch { this.anomaly("usage_storage_degraded"); pending = true; storageAvailable = false; }
     for (const [id, row] of [...this.volatile]) {
-      if (Date.now() >= row.expiresAt) { this.anomaly("usage_volatile_expired"); if (this.volatile.get(id) === row) this.volatile.delete(id); continue; }
+      if (this.pendingDiscard.has(id) || row.delivered || (storageAvailable && row.persisted)) continue;
+      if (row.expiresAt === undefined) { pending = true; continue; }
+      if (Date.now() >= row.expiresAt) { this.anomaly("usage_volatile_expired"); this.pendingDiscard.add(id); this.pendingFinalization.delete(id); if (this.volatile.get(id) === row) this.volatile.delete(id); pending = true; continue; }
       const outcome = await this.send(id, row.conversationId, row.report);
-      if (outcome !== "retry" && this.volatile.get(id) === row) this.volatile.delete(id);
+      if (outcome === "ack" && this.volatile.get(id) === row) row.delivered = true;
+      else if (outcome === "lost" && this.volatile.get(id) === row) { this.pendingDiscard.add(id); this.pendingFinalization.delete(id); this.volatile.delete(id); }
       if (outcome === "retry") pending = true;
+      else if (outcome === "ack" || outcome === "lost") pending = true;
     }
     if (pending) { this.schedule(); this.failures++; }
     else { this.failures = 0; if (this.timer !== undefined) clearTimeout(this.timer); this.timer = undefined; }
   }
 }
+
+
