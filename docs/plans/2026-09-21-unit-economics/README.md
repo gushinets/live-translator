@@ -6,7 +6,7 @@
 **Архитектура:** один API, SQLite, прямой WebRTC. Existing SessionController остаётся владельцем product state; usage delivery живёт независимо от product generation.  
 **Стек:** текущие React/TypeScript/Express, Node 24, pnpm/Vitest/Playwright; SQLite через тонкий адаптер.  
 **Spec:** [консолидированная v1.1](../../specs/2026-09-21-unit-economics-and-session-lifecycle.md).\
-**Baseline ревью:** `5a32ee2a1c3fe81e12b00be404214f0887c27e82`. **Статус:** этап 1 завершён в merged [GitHub PR #14](https://github.com/gushinets/live-translator/pull/14); этап 2 завершён в merged [PR #15](https://github.com/gushinets/live-translator/pull/15). этап 3 in-progress в [PR #17](https://github.com/gushinets/live-translator/pull/17); этапы 4–6 planned; документационный PR #13 merged от `158f011d63552d750ae9549fd29c4b3a51d56cf4`.
+**Baseline ревью:** `5a32ee2a1c3fe81e12b00be404214f0887c27e82`. **Статус:** этап 1 завершён в merged [GitHub PR #14](https://github.com/gushinets/live-translator/pull/14); этап 2 завершён в merged [PR #15](https://github.com/gushinets/live-translator/pull/15). этап 3 завершён в merged [PR #17](https://github.com/gushinets/live-translator/pull/17), устойчивость outbox дополнена merged [PR #18](https://github.com/gushinets/live-translator/pull/18); этап 4 in-progress в [PR #19](https://github.com/gushinets/live-translator/pull/19); этапы 5–6 planned; документационный PR #13 merged от `158f011d63552d750ae9549fd29c4b3a51d56cf4`.
 
 ## Global constraints
 
@@ -46,8 +46,8 @@ PR 1 → PR 2 → PR 3 → G1: измеряем текущий lifecycle
 |---|---|---|---:|
 | 1 | [конфигурация и границы admission](01-config-and-admission.md) | completed ([#14](https://github.com/gushinets/live-translator/pull/14)) | 5 |
 | 2 | [anonymous identity, conversation и журнал попыток](02-identity-and-ledger.md) | completed ([#15](https://github.com/gushinets/live-translator/pull/15)) | 11 |
-| 3 | [usage, active/speech time и отчёт по разговору](03-usage-and-product-metrics.md) | in-progress ([#17](https://github.com/gushinets/live-translator/pull/17)) | 13 |
-| 4 | [безопасное закрытие и границы replacement](04-graceful-session-boundaries.md) | planned | 7 |
+| 3 | [usage, active/speech time и отчёт по разговору](03-usage-and-product-metrics.md) | completed ([#17](https://github.com/gushinets/live-translator/pull/17), [#18](https://github.com/gushinets/live-translator/pull/18)) | 13 |
+| 4 | [безопасное закрытие и границы replacement](04-graceful-session-boundaries.md) | in-progress ([#19](https://github.com/gushinets/live-translator/pull/19)) | 7 |
 | 5 | [immediate background close и retained conversation](05-background-and-resume.md) | planned | 15 |
 | 6 | [сверка, эксплуатационная устойчивость и пилот](06-reconciliation-and-pilot.md) | planned | 9 |
 

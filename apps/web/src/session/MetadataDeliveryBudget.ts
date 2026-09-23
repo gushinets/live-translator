@@ -8,7 +8,7 @@ export interface MetadataEnvelope {
   cleanup: { reason: CleanupReason; createdAt: number; expiresAt: number } | null;
   closeObservation: CloseMetadata | null; usagePending: boolean; usage?: QueuedUsage | null; usageRevision?: number; usageProducerFinalized?: boolean;
 }
-export interface EndIntent { conversationId: string; expectedVersion: number; reason: "user_end" | "setup_cancel"; expiresAt: number; }
+export interface EndIntent { conversationId: string; expectedVersion: number; reason: "user_end" | "setup_cancel"; expiresAt: number; cleanupLocalIds?: string[]; }
 const TTL = 7 * 86400000;
 
 /** One origin-wide envelope per localId. Every pre-dispatch mutation waits for IDB commit. */
@@ -43,7 +43,7 @@ export class MetadataDeliveryBudget {
     }).catch(error => { this.opening = undefined; throw error; });
     return this.opening;
   }
-  private async transaction<T>(mode: IDBTransactionMode, work: (store: IDBObjectStore, result: (value: T) => void, fail: (error: Error) => void) => void, storeName = "envelopes"): Promise<T> {
+  private async transaction<T>(mode: IDBTransactionMode, work: (store: IDBObjectStore, result: (value: T) => void, fail: (error: Error) => void, tx: IDBTransaction) => void, storeName: string | string[] = "envelopes"): Promise<T> {
     const db = await this.database();
     return new Promise((resolve, reject) => {
       const tx = db.transaction(storeName, mode); let value: T; let failure: Error | undefined;
@@ -51,7 +51,7 @@ export class MetadataDeliveryBudget {
       const timer = setTimeout(() => fail(new Error("Metadata storage transaction timed out")), this.timeoutMs);
       tx.oncomplete = () => { clearTimeout(timer); resolve(value); };
       tx.onabort = tx.onerror = () => { clearTimeout(timer); reject(failure ?? new Error("Metadata storage transaction failed")); };
-      try { work(tx.objectStore(storeName), v => { value = v; }, fail); }
+      try { work(tx.objectStore(typeof storeName === "string" ? storeName : storeName[0]!), v => { value = v; }, fail, tx); }
       catch (error) { fail(error instanceof Error ? error : new Error("Metadata storage failure")); }
     });
   }
@@ -99,33 +99,37 @@ export class MetadataDeliveryBudget {
   private releasable(row: MetadataEnvelope): boolean {
     return row.producerFinalized && row.producerOutcome !== null && !row.cleanup && !row.closeObservation && !row.usagePending;
   }
-  acknowledgeCleanupAndRelease(localId: string): Promise<void> {
-    return this.change(localId, row => {
-      const next = { ...row, cleanup: null, producerFinalized: true, producerOutcome: row.producerOutcome ?? "lost" as const };
-      return this.releasable(next) ? null : next;
-    });
-  }
-  acknowledgeDirectCleanupAndRelease(localId: string): Promise<void> {
-    return this.transaction("readwrite", (store, result) => {
+  private releaseAndRemoveEndDependency(localId: string, update: (row: MetadataEnvelope) => MetadataEnvelope): Promise<void> {
+    return this.transaction("readwrite", (store, result, _fail, tx) => {
       const get = store.get(localId);
       get.onsuccess = () => {
         const row = get.result as MetadataEnvelope | undefined;
-        if (!row) { result(undefined); return; }
-        const next: MetadataEnvelope = {
-          ...row, cleanup: null, producerFinalized: true, producerOutcome: "lost",
+        if (row) {
+          const next = update(row);
+          if (this.releasable(next)) store.delete(localId); else store.put(next);
+        }
+        const ends = tx.objectStore("lifecycle").getAll();
+        ends.onsuccess = () => {
+          const lifecycle = tx.objectStore("lifecycle");
+          for (const intent of ends.result as EndIntent[]) {
+            if (intent.cleanupLocalIds?.includes(localId)) lifecycle.put({ ...intent, cleanupLocalIds: intent.cleanupLocalIds.filter(id => id !== localId) });
+          }
+          result(undefined);
         };
-        if (this.releasable(next)) store.delete(localId); else store.put(next);
-        result(undefined);
       };
-    });
+    }, ["envelopes", "lifecycle"]);
+  }
+  acknowledgeCleanupAndRelease(localId: string): Promise<void> {
+    return this.releaseAndRemoveEndDependency(localId, row => ({ ...row, cleanup: null, producerFinalized: true, producerOutcome: row.producerOutcome ?? "lost" as const }));
+  }
+  acknowledgeDirectCleanupAndRelease(localId: string): Promise<void> {
+    return this.releaseAndRemoveEndDependency(localId, row => ({ ...row, cleanup: null, producerFinalized: true, producerOutcome: "lost" }));
   }
   acknowledgeCloseAndRelease(localId: string): Promise<void> {
-    return this.change(localId, row => {
-      const next = { ...row, cleanup: null, closeObservation: null };
-      return this.releasable(next) ? null : next;
-    });
+    return this.releaseAndRemoveEndDependency(localId, row => ({ ...row, cleanup: null, closeObservation: null, producerFinalized: true, producerOutcome: "provider_closed" }));
   }
   finishProducerAndRelease(localId: string, outcome: ProducerOutcome): Promise<void> {
+    if (outcome === "provider_closed") return this.acknowledgeCloseAndRelease(localId);
     return this.change(localId, row => {
       const next = { ...row, producerFinalized: true, producerOutcome: outcome };
       return this.releasable(next) ? null : next;
@@ -181,17 +185,34 @@ export class MetadataDeliveryBudget {
   entries(): Promise<MetadataEnvelope[]> {
     return this.transaction("readonly", (store, result) => { const r = store.getAll(); r.onsuccess = () => result(r.result as MetadataEnvelope[]); });
   }
-  enqueueEnd(conversationId: string, expectedVersion: number, reason: EndIntent["reason"]): Promise<void> {
-    return this.transaction("readwrite", (store, result, fail) => {
-      const get = store.get(conversationId); get.onsuccess = () => {
-        const old = get.result as EndIntent | undefined;
-        if (old) { if (old.expectedVersion < expectedVersion) store.put({ conversationId, expectedVersion, reason, expiresAt: Date.now() + TTL }); result(undefined); return; }
-        const count = store.count(); count.onsuccess = () => {
-          if (count.result >= 1000) { fail(new Error("Lifecycle metadata storage is full")); return; }
-          store.put({ conversationId, expectedVersion, reason, expiresAt: Date.now() + TTL }); result(undefined);
+  enqueueEnd(conversationId: string, expectedVersion: number, reason: EndIntent["reason"], cleanupLocalIds: readonly string[] = []): Promise<void> {
+    // One transaction removes the crash gap between saving cleanup and saving user intent.
+    // Cleanup remains first-reason-wins, and no usage/close obligation is removed here.
+    return this.transaction("readwrite", (store, result, fail, tx) => {
+      const envelopes = tx.objectStore("envelopes");
+      const rows = envelopes.getAll(); rows.onsuccess = () => {
+        const byId = new Map((rows.result as MetadataEnvelope[]).map(row => [row.localId, row]));
+        const applicable = [...new Set(cleanupLocalIds)].filter(id => {
+          const row = byId.get(id);
+          return row?.conversationId === conversationId && row.dispatchStartedAt !== null && !row.closeObservation &&
+            !(row.producerFinalized && row.producerOutcome === "lost" && !row.cleanup) &&
+            row.producerOutcome !== "provider_closed" && row.producerOutcome !== "no_provider";
+        });
+        for (const id of applicable) {
+          const row = byId.get(id)!;
+          envelopes.put({ ...row, producerFinalized: true, producerOutcome: row.producerOutcome ?? "lost",
+            cleanup: row.cleanup ?? { reason: reason === "setup_cancel" ? "cancelled" : "user_end", createdAt: Date.now(), expiresAt: Date.now() + TTL } });
+        }
+        const get = store.get(conversationId); get.onsuccess = () => {
+          const old = get.result as EndIntent | undefined;
+          if (old) { if (old.expectedVersion < expectedVersion) store.put({ conversationId, expectedVersion, reason, expiresAt: Date.now() + TTL, cleanupLocalIds: applicable }); result(undefined); return; }
+          const count = store.count(); count.onsuccess = () => {
+            if (count.result >= 1000) { fail(new Error("Lifecycle metadata storage is full")); return; }
+            store.put({ conversationId, expectedVersion, reason, expiresAt: Date.now() + TTL, cleanupLocalIds: applicable }); result(undefined);
+          };
         };
       };
-    }, "lifecycle");
+    }, ["lifecycle", "envelopes"]);
   }
   ends(): Promise<EndIntent[]> {
     return this.transaction("readonly", (store, result) => { const r = store.getAll(); r.onsuccess = () => result(r.result as EndIntent[]); }, "lifecycle");

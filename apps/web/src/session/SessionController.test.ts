@@ -248,7 +248,7 @@ class DispatchableAudioContext extends EventTarget {
   }
 }
 
-function createDispatchableAudio(): {
+function createDispatchableAudio(getUserMedia?: () => Promise<MediaStream>): {
   audio: AudioController;
   track: DispatchableMicTrack;
   audioContext: DispatchableAudioContext;
@@ -258,7 +258,7 @@ function createDispatchableAudio(): {
   const audioElement = document.createElement("audio");
   audioElement.play = vi.fn().mockResolvedValue(undefined);
   const audio = new AudioController({
-    getUserMedia: async () =>
+    getUserMedia: getUserMedia ?? (async () =>
       ({
         getAudioTracks: () => [track],
         getTracks: () => [track],
@@ -269,7 +269,7 @@ function createDispatchableAudio(): {
             throw new Error("Nested MediaStream.clone is not used");
           },
         }),
-      }) as unknown as MediaStream,
+      }) as unknown as MediaStream),
     createAudioContext: () => audioContext as unknown as AudioContext,
     audioElement,
   });
@@ -462,10 +462,9 @@ describe("SessionController", () => {
     expect(controller.bootstrapText).toBe("This is the old sample that will be discarded.");
 
     let releaseDisconnect!: () => void;
-    firstLive.disconnectImmediately.mockImplementationOnce(async () => {
-      await new Promise<void>((resolve) => {
-        releaseDisconnect = resolve;
-      });
+    firstLive.close.mockImplementationOnce(async () => {
+      await new Promise<void>((resolve) => { releaseDisconnect = resolve; });
+      return { finalized: true };
     });
 
     const restarting = controller.startBootstrap();
@@ -483,7 +482,8 @@ describe("SessionController", () => {
     releaseDisconnect();
     await restarting;
 
-    expect(firstLive.disconnectImmediately).toHaveBeenCalledOnce();
+    expect(firstLive.close).toHaveBeenCalledOnce();
+    expect(firstLive.disconnectImmediately).not.toHaveBeenCalled();
     expect(secondLive.connect).toHaveBeenCalledExactlyOnceWith(audio.captureStream);
     expect(controller.bootstrapRecording).toBe(true);
     expect(controller.bootstrapText).toBe("");
@@ -747,7 +747,7 @@ describe("SessionController", () => {
     const { controller, audio } = createController();
     const remoteStream = { id: "remote" } as MediaStream;
 
-    controller.handleRemoteStream(remoteStream);
+    controller.handleRemoteStream(remoteStream, controllerHarnesses.get(controller)!.live as unknown as LiveClient);
 
     expect(audio.attachRemoteStream).toHaveBeenCalledExactlyOnceWith(remoteStream);
     expect(audio.audioElement.play).toHaveBeenCalledOnce();
@@ -763,7 +763,7 @@ describe("SessionController", () => {
     const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
 
     const unhandled = await collectUnhandledRejectionsDuring(async () => {
-      controller.handleRemoteStream(remoteStream);
+      controller.handleRemoteStream(remoteStream, controllerHarnesses.get(controller)!.live as unknown as LiveClient);
     });
 
     expect(unhandled).toEqual([]);
@@ -786,7 +786,7 @@ describe("SessionController", () => {
     const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
 
     const unhandled = await collectUnhandledRejectionsDuring(async () => {
-      controller.handleRemoteStream(remoteStream);
+      controller.handleRemoteStream(remoteStream, controllerHarnesses.get(controller)!.live as unknown as LiveClient);
       await controller.startContextCapture();
       await controller.cancel();
       rejectPlay?.(playError);
@@ -1200,6 +1200,31 @@ describe("SessionController", () => {
     expect(controller.session.state).toBe("context");
   });
 
+  it("cancels pending real microphone capture before its track exists", async () => {
+    let grant!: (stream: MediaStream) => void;
+    const { audio, track } = createDispatchableAudio(() => new Promise(resolve => { grant = resolve; }));
+    const stream = {
+      getAudioTracks: () => [track],
+      getTracks: () => [track],
+      clone: () => ({
+        getAudioTracks: () => [new DispatchableMicTrack()],
+        getTracks: () => [new DispatchableMicTrack()],
+      }),
+    } as unknown as MediaStream;
+    const { controller } = createController({ audio });
+
+    const starting = controller.startContextCapture();
+    await vi.waitFor(() => expect(grant).toBeTypeOf("function"));
+    const cancelling = controller.cancel();
+    grant(stream);
+
+    await expect(cancelling).resolves.toBeUndefined();
+    await expect(starting).resolves.toBeUndefined();
+    expect(controller.session.state).toBe("idle");
+    expect(controller.isConnectInFlight).toBe(false);
+    expect(audio.getCaptureStream()).toBeNull();
+  });
+
   it("swallows a late primeOutput rejection after cancel and still stops a late capture stream", async () => {
     const audio = createFakeAudio();
     let stream: MediaStream | null = null;
@@ -1514,7 +1539,7 @@ describe("SessionController turn engine", () => {
     vi.spyOn(console, "error").mockImplementation(() => {});
 
     await enterListening(controller);
-    controller.handleRemoteStream({ id: "remote" } as MediaStream);
+    controller.handleRemoteStream({ id: "remote" } as MediaStream, controllerHarnesses.get(controller)!.live as unknown as LiveClient);
     await flushMicrotasks();
 
     emitVoice(audio, true);
@@ -1567,7 +1592,7 @@ describe("SessionController turn engine", () => {
     );
 
     await enterListening(controller);
-    controller.handleRemoteStream({ id: "remote" } as MediaStream);
+    controller.handleRemoteStream({ id: "remote" } as MediaStream, controllerHarnesses.get(controller)!.live as unknown as LiveClient);
     emitVoice(audio, true);
     live.emit({ type: "session.input_transcript.delta", delta: "Hello, where is the nearest train station?" });
     live.emit({ type: "session.output_transcript.delta", delta: "Hola" });
@@ -2429,14 +2454,15 @@ describe("SessionController turn engine", () => {
         });
       }
     });
+    const { controller, audio } = createController({ live });
+    await enterListening(controller);
     live.close.mockImplementation(async () => {
       await new Promise<void>((resolve) => {
         releaseClose = resolve;
       });
       return { finalized: true };
     });
-    const { controller, audio } = createController({ live });
-    await enterListening(controller);
+
     emitVoice(audio, true);
     await vi.advanceTimersByTimeAsync(runtime.maxSourceMs);
     await flushMicrotasks();
@@ -3259,6 +3285,7 @@ describe("SessionController endConversation", () => {
   it("enters ending, closes Live, releases audio, and returns to idle start state", async () => {
     const { controller, live, audio } = createController();
     await enterListening(controller);
+    live.close.mockClear();
     controller.setContextText("We are ordering lunch.");
     live.close.mockImplementation(async () => {
       expect(controller.session.state).toBe("ending");
@@ -3279,7 +3306,7 @@ describe("SessionController endConversation", () => {
     expect(controller.session.contextText).toBe("");
   });
 
-  it("shows Incomplete finalization before releasing resources", async () => {
+  it("stops local capture before close and shows incomplete finalization after timeout", async () => {
     const { controller, live, audio } = createController();
     await enterListening(controller);
     const order: string[] = [];
@@ -3302,7 +3329,7 @@ describe("SessionController endConversation", () => {
 
     await controller.endConversation();
 
-    expect(order).toEqual(["close", "shown", "release"]);
+    expect(order).toEqual(["release", "close", "shown"]);
     expect(controller.ownerError).toBe(INCOMPLETE_FINALIZATION_MESSAGE);
     expect(controller.session.state).toBe("idle");
   });
@@ -3460,6 +3487,7 @@ describe("SessionController max session duration", () => {
   it("starts the 15-minute cap at session.started and ends through the graceful close path", async () => {
     const { controller, live, audio } = createController();
     await enterListening(controller);
+    live.close.mockClear();
     live.onSessionStarted?.({ type: "session.started", session: { id: "sess_1" } });
 
     await vi.advanceTimersByTimeAsync(runtime.maxSessionMs - 1);
@@ -4670,4 +4698,102 @@ describe("manual assignment without model output", () => {
     expect(controller.session.participantA.language).toBe("en");
     expect(controller.session.participantB.language).toBe("es");
   });
+});
+
+
+describe("stage 4 product retirement safety", () => {
+  it.each(["endConversation", "cancel"] as const)("%s closes capture before awaiting the provider", async operation => {
+    const { controller, live, audio } = createController();
+    await controller.startContextCapture();
+    let resolve!: (result: { finalized: boolean }) => void;
+    live.close.mockImplementationOnce(() => new Promise(r => { resolve = r; }));
+    const retiring = controller[operation]();
+    expect(audio.captureTrack.enabled).toBe(false);
+    expect(audio.getCaptureStream()).toBeNull();
+    expect(audio.setOutputAudible).toHaveBeenLastCalledWith(false);
+    resolve({ finalized: true }); await retiring;
+    expect(controller.session.state).toBe("idle");
+  });
+  it("A4.3 concurrent End and cancel share retirement and cannot reset a newer client", async () => {
+    const first = new FakeLive(), next = new FakeLive();
+    const { controller } = createController({ lives: [first, next] }); await controller.startContextCapture();
+    let resolve!: (value: { finalized: boolean }) => void;
+    first.close.mockImplementation(() => new Promise(r => { resolve = r; }));
+    const end = controller.endConversation(), cancel = controller.cancel();
+    expect(first.close).toHaveBeenCalledTimes(1);
+    resolve({ finalized: true }); await Promise.all([end, cancel]);
+    await controller.startContextCapture(); expect(next.connect).toHaveBeenCalledTimes(1);
+  });
+  it("A4.4 rejects a late old source before attaching it to the audio element", async () => {
+    const first = new FakeLive(), second = new FakeLive();
+    const { controller, audio } = createController({ lives: [first, second] });
+    await controller.startBootstrap(); await controller.startBootstrap();
+    const attach = controller.handleRemoteStream.bind(controller) as (stream: MediaStream, source: LiveClient) => void;
+    attach({ id: "stale" } as MediaStream, first as unknown as LiveClient);
+    expect(audio.attachRemoteStream).not.toHaveBeenCalled();
+    const stream = { id: "current" } as MediaStream;
+    attach(stream, second as unknown as LiveClient);
+    expect(audio.attachRemoteStream).toHaveBeenCalledExactlyOnceWith(stream);
+  });
+  it("A4.3 a synchronous ending subscriber cannot start a second terminal operation", async () => {
+    const { controller, live } = createController(); await controller.startContextCapture();
+    const cancellation: Promise<void>[] = [];
+    controller.subscribe(() => {
+      if (controller.session.state === "ending" && cancellation.length === 0) {
+        cancellation.push(Promise.resolve()); // Guard the observer itself against recursion.
+        cancellation.push(controller.cancel());
+      }
+    });
+    await controller.endConversation(); await Promise.all(cancellation);
+    expect(live.close).toHaveBeenCalledTimes(1); expect(controller.session.state).toBe("idle");
+  });
+
+  it("A4.3 cancel during replacement joins retirement of the old usable client", async () => {
+    const old = new FakeLive(), unused = new FakeLive(), next = new FakeLive();
+    const { controller, audio } = createController({ lives: [old, unused, next] });
+    await controller.startBootstrap();
+    let resolve!: (value: { finalized: boolean }) => void;
+    const oldClose = new Promise<{ finalized: boolean }>(r => { resolve = r; });
+    old.close.mockReturnValue(oldClose);
+    const replacement = controller.startBootstrap(); await flushMicrotasks();
+    let cancelled = false;
+    const cancellation = controller.cancel().then(() => { cancelled = true; });
+    await flushMicrotasks(); await flushMicrotasks();
+    expect(audio.getCaptureStream()).toBeNull(); expect(unused.connect).not.toHaveBeenCalled();
+    expect(cancelled).toBe(false);
+    resolve({ finalized: true }); await replacement; await cancellation;
+    await controller.startContextCapture(); expect(next.connect).toHaveBeenCalledTimes(1);
+  });
+
+  it("A4.3 End accepts finalization from the retiring bootstrap client", async () => {
+    const old = new FakeLive(), unused = new FakeLive(), next = new FakeLive();
+    const { controller } = createController({ lives: [old, unused, next] });
+    await controller.startBootstrap();
+    let resolve!: (value: { finalized: boolean }) => void;
+    const oldClose = new Promise<{ finalized: boolean }>(r => { resolve = r; });
+    old.close.mockReturnValueOnce(oldClose);
+    const replacement = controller.startBootstrap(); await flushMicrotasks();
+    unused.close.mockResolvedValue({ finalized: false });
+    const ending = controller.endConversation();
+    await flushMicrotasks(); resolve({ finalized: true });
+    await replacement; await ending;
+    expect(controller.ownerError).toBeUndefined();
+  });
+
+  it.each(["resolve", "reject"] as const)("A4.4 stale play %s cannot change the replacement readiness", async outcome => {
+    const old = new FakeLive(), next = new FakeLive();
+    const { controller, audio } = createController({ lives: [old, next] }); await controller.startBootstrap();
+    let resolve!: () => void, reject!: (error: Error) => void;
+    vi.mocked(audio.audioElement.play).mockReturnValueOnce(new Promise<void>((ok, fail) => { resolve = ok; reject = fail; }));
+    controller.handleRemoteStream({ id: "old" } as MediaStream, old as unknown as LiveClient);
+    await controller.startBootstrap();
+    controller.handleRemoteStream({ id: "new" } as MediaStream, next as unknown as LiveClient);
+    await flushMicrotasks();
+    const readiness = () => (controller as unknown as { remotePlaybackState: string }).remotePlaybackState;
+    expect(readiness()).toBe("ready");
+    if (outcome === "resolve") resolve(); else reject(new Error("old play failed"));
+    await flushMicrotasks(); expect(readiness()).toBe("ready");
+    expect(audio.stopCapture).not.toHaveBeenCalled();
+  });
+
 });

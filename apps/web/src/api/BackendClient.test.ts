@@ -4,6 +4,7 @@ import { BackendClient } from "./BackendClient";
 describe("BackendClient", () => {
   afterEach(() => {
     vi.unstubAllGlobals();
+    vi.useRealTimers();
   });
 
   it("posts the SDP offer to /api/live/session and returns the parsed session", async () => {
@@ -63,7 +64,19 @@ describe("BackendClient", () => {
 
     expect(fetchMock).toHaveBeenCalledWith(
       "/api/live/session/live%2Fsession-1",
-      { method: "DELETE" },
+      { method: "DELETE", signal: expect.any(AbortSignal) },
     );
   });
+  it("bounds a stalled release request so its caller can retry", async () => {
+    vi.useFakeTimers();
+    vi.stubGlobal("fetch", vi.fn((_url: string, init: RequestInit) => new Promise<Response>((_resolve, reject) => {
+      init.signal?.addEventListener("abort", () => reject(new Error("request aborted")), { once: true });
+    })));
+    let error: unknown;
+    const releasing = new BackendClient().releaseLiveSession("id").catch(value => { error = value; });
+    await vi.advanceTimersByTimeAsync(9999); expect(error).toBeUndefined();
+    await vi.advanceTimersByTimeAsync(1); expect(error).toBeInstanceOf(Error);
+    await releasing;
+  });
+
 });

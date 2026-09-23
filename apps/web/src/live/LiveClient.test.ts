@@ -279,7 +279,7 @@ describe("LiveClient.connect", () => {
     });
     const remoteStream = makeFakeStream();
     peer.emitTrack([remoteStream]);
-    expect(onRemoteStream).toHaveBeenCalledWith(remoteStream);
+    expect(onRemoteStream).toHaveBeenCalledWith(remoteStream, client);
 
     peer.dataChannel?.emitMessage({
       type: "session.started",
@@ -320,7 +320,7 @@ describe("LiveClient.connect", () => {
     handoff.resolve(undefined);
     await connectPromise;
 
-    expect(onRemoteStream).toHaveBeenCalledExactlyOnceWith(remoteStream);
+    expect(onRemoteStream).toHaveBeenCalledExactlyOnceWith(remoteStream, client);
   });
 
   it("records early managed backgrounding with hidden cleanup provenance", async () => {
@@ -2197,4 +2197,108 @@ describe("LiveClient trusted control commands", () => {
 
     expect(unhandled).toEqual([]);
   });
+});
+
+describe("stage 4 bounded transport boundary", () => {
+  afterEach(() => { vi.useRealTimers(); vi.restoreAllMocks(); });
+
+  async function managedClient(closeTimeoutMs?: number) {
+    const peer = new FakePeerConnection(), { backend } = makeFakeBackend();
+    const accounting = { managed: true, create: vi.fn(backend.createLiveSession), handoff: vi.fn(async () => {}),
+      finish: vi.fn<(result: LiveCloseResult) => Promise<void>>(async () => {}), abandon: vi.fn<(reason: CleanupReason) => Promise<void>>(async () => {}), observeUsage: vi.fn() };
+    const onRemoteStream = vi.fn();
+    const client = new LiveClient({ backend, accounting, peerFactory: () => peer as unknown as RTCPeerConnection,
+      onRemoteStream, ...{ closeTimeoutMs } });
+    const connection = client.connect(makeFakeStream());
+    await vi.waitFor(() => expect(peer.calls).toContain("setRemoteDescription"));
+    peer.dataChannel!.emitMessage({ type: "session.started", session: { id: "sess_123" } });
+    await connection;
+    return { client, peer, channel: peer.dataChannel!, accounting, onRemoteStream };
+  }
+
+  it("A4.7 resolves confirmed close while metadata persistence is still pending", async () => {
+    const f = await managedClient(), write = createDeferred<void>();
+    f.accounting.finish.mockReturnValue(write.promise);
+    let result: LiveCloseResult | undefined;
+    const work = f.client.close().then(value => { result = value; });
+    f.channel.emitMessage({ type: "session.closed", usage: { seconds: 46 } });
+    await flushMicrotasks(); await flushMicrotasks();
+    expect(f.peer.closeCalls).toBe(1);
+    expect(result).toMatchObject({ finalized: true, usageSeconds: 46 });
+    expect(f.accounting.observeUsage).toHaveBeenCalledWith({ kind: "provider_closed", seconds: 46 });
+    write.resolve(); await work;
+  });
+
+  it("A4.2 uses the configured close budget without waiting for failed-close delivery", async () => {
+    const f = await managedClient(80), write = createDeferred<void>();
+    f.accounting.finish.mockReturnValue(write.promise); f.accounting.abandon.mockReturnValue(write.promise);
+    vi.useFakeTimers();
+    let result: LiveCloseResult | undefined;
+    const work = f.client.close().then(value => { result = value; });
+    await vi.advanceTimersByTimeAsync(79); expect(f.peer.closeCalls).toBe(0);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(f.peer.closeCalls).toBe(1); expect(result?.finalized).toBe(false);
+    write.resolve(); await work;
+  });
+
+  it("A4.5 retries a failed DELETE on a subsequent close instead of marking it delivered", async () => {
+    const peer = new FakePeerConnection(), { backend } = makeFakeBackend();
+    const release = vi.spyOn(backend, "releaseLiveSession").mockRejectedValueOnce(new Error("offline")).mockResolvedValue(undefined);
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    const client = new LiveClient({ backend, peerFactory: () => peer as unknown as RTCPeerConnection, onRemoteStream: vi.fn() });
+    const connecting = client.connect(makeFakeStream());
+    await vi.waitFor(() => expect(peer.calls).toContain("setRemoteDescription"));
+    peer.dataChannel!.emitMessage({ type: "session.started", session: { id: "sess_123" } }); await connecting;
+    const closed = client.close(); peer.dataChannel!.emitMessage({ type: "session.closed" }); await closed;
+    await flushMicrotasks();
+    await client.close(); await flushMicrotasks();
+    expect(release).toHaveBeenCalledTimes(2);
+    await client.close(); expect(release).toHaveBeenCalledTimes(2); expect(peer.closeCalls).toBe(1);
+  });
+
+  it("A4.4 carries the originating LiveClient into the remote stream callback", async () => {
+    const f = await managedClient(); const stream = makeFakeStream();
+    f.peer.emitTrack([stream]);
+    expect(f.onRemoteStream).toHaveBeenCalledWith(stream, f.client);
+    const closed = f.client.close(); f.channel.emitMessage({ type: "session.closed" }); await closed;
+    f.peer.emitTrack([makeFakeStream()]); expect(f.onRemoteStream).toHaveBeenCalledTimes(1);
+  });
+
+  it("A4.6 a retired unused client can never start a provider later", async () => {
+    const { backend } = makeFakeBackend(), factory = vi.fn(() => new FakePeerConnection() as unknown as RTCPeerConnection);
+    const client = new LiveClient({ backend, peerFactory: factory, onRemoteStream: vi.fn() });
+    await client.close();
+    const result = client.connect(makeFakeStream()).catch((error: unknown) => error);
+    await flushMicrotasks();
+    expect(factory).not.toHaveBeenCalled();
+    await expect(result).resolves.toBeInstanceOf(Error);
+  });
+  it("A4.2 expires the existing close budget on wake after frozen timers", async () => {
+    const f = await managedClient(80); vi.useFakeTimers();
+    const removed = vi.spyOn(document, "removeEventListener");
+    let result: LiveCloseResult | undefined;
+    const work = f.client.close().then(value => { result = value; });
+    vi.setSystemTime(Date.now() + 81); // Wall time advanced while scheduled callbacks could not run.
+    document.dispatchEvent(new Event("visibilitychange"));
+    await flushMicrotasks(); await flushMicrotasks();
+    expect(result?.finalized).toBe(false); expect(f.peer.closeCalls).toBe(1);
+    expect(removed.mock.calls.some(([type]) => type === "visibilitychange")).toBe(true);
+    await work;
+  });
+
+  it("A4.5 retries legacy release automatically without blocking media teardown", async () => {
+    const peer = new FakePeerConnection(), { backend } = makeFakeBackend();
+    const release = vi.spyOn(backend, "releaseLiveSession").mockRejectedValueOnce(new Error("offline")).mockResolvedValue(undefined);
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    const client = new LiveClient({ backend, peerFactory: () => peer as unknown as RTCPeerConnection, onRemoteStream: vi.fn() });
+    const connecting = client.connect(makeFakeStream());
+    await vi.waitFor(() => expect(peer.calls).toContain("setRemoteDescription"));
+    peer.dataChannel!.emitMessage({ type: "session.started", session: { id: "sess_123" } }); await connecting;
+    vi.useFakeTimers();
+    const work = client.close(); peer.dataChannel!.emitMessage({ type: "session.closed" }); await work;
+    expect(peer.closeCalls).toBe(1); expect(release).toHaveBeenCalledTimes(1);
+    await vi.advanceTimersByTimeAsync(1000); expect(release).toHaveBeenCalledTimes(2);
+    await vi.advanceTimersByTimeAsync(60000); expect(release).toHaveBeenCalledTimes(2);
+  });
+
 });

@@ -9,7 +9,7 @@ export interface CleanupTransport {
   end?(id: string, version: number, reason: EndIntent["reason"]): Promise<{ status: string }>;
 }
 const statusOf = (error: unknown) => typeof error === "object" && error !== null && "status" in error ? error.status : undefined;
-const proofReceived = (p: AttemptProof) => p.cleanupRequestedAt != null || p.closeConfirmed === true || p.state === "closed" || (p.state === "failed" && !p.openaiSessionId);
+export const cleanupProofReceived = (p: AttemptProof) => p.cleanupRequestedAt != null || p.closeConfirmed === true || p.state === "closed" || (p.state === "failed" && !p.openaiSessionId);
 
 /** A durable cleanup marker transfers responsibility. Admission DELETE alone never does. */
 export class CleanupIntentOutbox {
@@ -26,8 +26,8 @@ export class CleanupIntentOutbox {
   async observeClosed(localId: string, observation: CloseMetadata): Promise<void> {
     await this.budget.enqueueClose(localId, observation); this.revision++; this.schedule();
   }
-  async enqueueEnd(id: string, version: number, reason: EndIntent["reason"]): Promise<void> {
-    await this.budget.enqueueEnd(id, version, reason); this.revision++; this.schedule();
+  async enqueueEnd(id: string, version: number, reason: EndIntent["reason"], cleanupLocalIds: readonly string[] = []): Promise<void> {
+    await this.budget.enqueueEnd(id, version, reason, cleanupLocalIds); this.revision++; this.schedule();
   }
   start(): void {
     if (this.started) return; this.started = true;
@@ -58,7 +58,7 @@ export class CleanupIntentOutbox {
       }
       try {
         const proof = row.closeObservation ? await this.transport.closed(row.localId, row.closeObservation) : await this.transport.cleanup(row.localId, row.cleanup!.reason);
-        if (!proofReceived(proof)) { pending = true; continue; }
+        if (!cleanupProofReceived(proof)) { pending = true; continue; }
         if (row.closeObservation) await this.budget.acknowledgeCloseAndRelease(row.localId);
         else await this.budget.acknowledgeCleanupAndRelease(row.localId);
       } catch (error) {
@@ -74,6 +74,10 @@ export class CleanupIntentOutbox {
     }
     for (const intent of await this.budget.ends()) {
       if (Date.now() >= intent.expiresAt) { this.anomaly("conversation_end_expired"); await this.budget.acknowledgeEnd(intent.conversationId, intent.expectedVersion); continue; }
+      const cleanupLocalIds = intent.cleanupLocalIds ?? (await this.budget.entries())
+        .filter(row => row.conversationId === intent.conversationId && (row.cleanup || row.closeObservation))
+        .map(row => row.localId);
+      if (cleanupLocalIds.length > 0) { pending = true; continue; }
       try {
         if (!this.transport.end) { pending = true; continue; }
         const result = await this.transport.end(intent.conversationId, intent.expectedVersion, intent.reason);

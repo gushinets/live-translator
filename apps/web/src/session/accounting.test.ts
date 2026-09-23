@@ -85,6 +85,48 @@ describe("cleanup and End delivery", () => {
     f.api.end.mockResolvedValue({ ...f.c, status: "ended" }); await f.scope.outbox.flush();
     expect(f.api.end).toHaveBeenLastCalledWith("c", 2, "user_end"); expect(await f.budget.ends()).toHaveLength(0); await f.budget.close();
   });
+  it("holds setup-cancel End until its cleanup receives proof", async () => {
+    const f = fixture();
+    await f.budget.reserve("attempt", "c");
+    await f.budget.markDispatchStarted("attempt");
+    await f.scope.outbox.enqueueEnd("c", 1, "setup_cancel", ["attempt"]);
+    f.api.cleanup.mockRejectedValueOnce(new Error("offline"));
+
+    await f.scope.outbox.flush();
+
+    expect(f.api.end).not.toHaveBeenCalled();
+    expect(await f.budget.ends()).toHaveLength(1);
+    f.api.cleanup.mockResolvedValueOnce({ cleanupRequestedAt: Date.now() });
+    await f.scope.outbox.flush();
+    expect(f.api.end).toHaveBeenCalledWith("c", 1, "setup_cancel");
+    expect(await f.budget.ends()).toHaveLength(0);
+    await f.budget.close();
+  });
+  it("delivers staged End after session.closed confirms its cleanup", async () => {
+    const f = fixture();
+    const attempt = f.scope.newAttempt();
+    await attempt.create("offer");
+
+    await f.scope.stageEnd("user_end");
+    await attempt.finish({ finalized: true, usageSeconds: 7 });
+    await f.scope.outbox.flush();
+
+    expect(f.api.closed).toHaveBeenCalledWith(attempt.localId, { seconds: 7 });
+    expect(f.api.end).toHaveBeenCalledWith(f.c.conversationId, f.c.version, "user_end");
+    expect(await f.budget.ends()).toHaveLength(0);
+    await f.budget.close();
+  });
+  it("removes an End dependency after direct cleanup proof", async () => {
+    const f = fixture();
+    await f.budget.reserve("attempt", "c");
+    await f.budget.markDispatchStarted("attempt");
+    await f.budget.enqueueEnd("c", 1, "user_end", ["attempt"]);
+
+    await f.scope.acknowledgeDirectCleanup("attempt");
+
+    expect((await f.budget.ends())[0]?.cleanupLocalIds).toEqual([]);
+    await f.budget.close();
+  });
   it("flushes a failed degraded direct End before the next managed create", async () => {
     const f = fixture(); const attempt = f.scope.newAttempt(); await attempt.create("offer");
     const revision = f.scope.revision;
@@ -297,4 +339,151 @@ describe("controller-owned conversation accounting", () => {
     expect(f.api.createSession).toHaveBeenCalledTimes(1); expect(f.api.readAttempt).toHaveBeenCalledTimes(1);
     await a.abandon("cancelled"); await f.scope.outbox.flush(); await f.budget.close();
   });
+});
+
+describe("stage 4 durable lifecycle boundary", () => {
+  it("replays staged cleanup before End when a fresh accounting scope opens", async () => {
+    const indexedDB = new IDBFactory(), name = crypto.randomUUID();
+    const originalBudget = new MetadataDeliveryBudget({ indexedDB, name });
+    const original = fixture(originalBudget);
+    const attempt = original.scope.newAttempt();
+    await attempt.create("offer");
+    await original.scope.stageEnd("setup_cancel");
+    await originalBudget.close();
+
+    const recoveredBudget = new MetadataDeliveryBudget({ indexedDB, name });
+    const order: string[] = [];
+    original.api.cleanup.mockImplementation(async () => {
+      order.push("cleanup");
+      return { cleanupRequestedAt: Date.now() };
+    });
+    original.api.end.mockImplementation(async () => {
+      order.push("end");
+      return { ...original.c, status: "ended" };
+    });
+    const recovered = new ConversationAccounting({ api: original.api, budget: recoveredBudget });
+
+    await vi.waitFor(() => expect(order).toEqual(["cleanup", "end"]));
+    recovered.outbox.stop();
+    recovered.usageOutbox?.stop();
+    await recoveredBudget.close();
+  });
+  it("keeps cleanup from an already finished attempt as an End dependency", async () => {
+    const f = fixture();
+    const attempt = f.scope.newAttempt();
+    await attempt.create("offer");
+    await attempt.abandon("hidden");
+
+    await f.scope.stageEnd("user_end");
+
+    expect((await f.budget.ends())[0]?.cleanupLocalIds).toEqual([attempt.localId]);
+    await f.budget.close();
+  });
+
+  it("does not re-enqueue cleanup after its proof while usage remains pending", async () => {
+    const f = fixture();
+    await f.budget.reserve("attempt", f.c.conversationId, true);
+    await f.budget.markDispatchStarted("attempt");
+    await f.budget.enqueueUsage("attempt", { schemaVersion: 1, checkpointSeconds: 10 });
+    await f.scope.outbox.enqueue("attempt", "response_not_received");
+    await f.scope.outbox.flush();
+    expect(await f.budget.get("attempt")).toMatchObject({ cleanup: null, usagePending: true, producerOutcome: "lost" });
+
+    f.api.cleanup.mockRejectedValue(new Error("offline"));
+    await f.scope.outbox.enqueueEnd(f.c.conversationId, f.c.version, "setup_cancel", ["attempt"]);
+    expect((await f.budget.get("attempt"))?.cleanup).toBeNull();
+    expect((await f.budget.ends())[0]?.cleanupLocalIds).toEqual([]);
+    await f.scope.outbox.flush();
+    expect(f.api.cleanup).toHaveBeenCalledTimes(1);
+    expect(f.api.end).toHaveBeenCalledWith(f.c.conversationId, f.c.version, "setup_cancel");
+    await f.budget.close();
+  });
+
+  it("does not send direct End or allow a new create before queued cleanup proof", async () => {
+    const f = fixture(), attempt = f.scope.newAttempt(); await attempt.create("offer");
+    const epoch = f.scope.revision;
+    vi.spyOn(f.scope.outbox, "enqueueEnd").mockRejectedValue(new Error("quota"));
+    f.api.cleanup.mockRejectedValue(new Error("offline"));
+    await expect(f.scope.end("user_end", epoch)).rejects.toThrow("cleanup delivery is pending");
+    expect(f.api.end).not.toHaveBeenCalled();
+    await expect(f.scope.newAttempt().create("next")).rejects.toThrow("cleanup delivery is pending");
+    expect(f.api.createSession).toHaveBeenCalledTimes(1);
+    f.api.cleanup.mockResolvedValue({ cleanupRequestedAt: Date.now() });
+    await f.scope.end("user_end", epoch);
+    expect(f.api.end).toHaveBeenCalledTimes(1);
+    expect(f.api.end).toHaveBeenCalledWith(f.c.conversationId, 1, "user_end"); await f.budget.close();
+  });
+
+  it("does not treat a release-only degraded response as a cleanup proof", async () => {
+    const f = fixture(), attempt = f.scope.newAttempt(); await attempt.create("offer");
+    vi.spyOn(f.scope.outbox, "enqueue").mockRejectedValue(new Error("quota"));
+    f.api.cleanup.mockResolvedValue({ leaseReleasedAt: 123 });
+    await expect(attempt.abandon("replacement")).rejects.toThrow("confirmed");
+    expect(attempt.finished).toBe(false);
+    f.api.cleanup.mockResolvedValue({ cleanupRequestedAt: 123 });
+    await attempt.abandon("cancelled");
+    expect(f.api.cleanup).toHaveBeenLastCalledWith(attempt.localId, "replacement"); await f.budget.close();
+  });
+
+  it("waits for the previous terminal metadata write before dispatching a replacement", async () => {
+    const f = fixture(), first = f.scope.newAttempt(); await first.create("first");
+    let resume!: () => void;
+    const observe = f.scope.outbox.observeClosed.bind(f.scope.outbox);
+    vi.spyOn(f.scope.outbox, "observeClosed").mockImplementationOnce(async (id, value) => {
+      await new Promise<void>(r => { resume = r; }); await observe(id, value);
+    });
+    const finishing = first.finish({ finalized: true, usageSeconds: 46 });
+    const next = f.scope.newAttempt(), creating = next.create("next");
+    await new Promise(r => setTimeout(r, 30));
+    expect(f.api.createSession).toHaveBeenCalledTimes(1);
+    resume(); await finishing; await creating;
+    expect(f.api.createSession).toHaveBeenCalledTimes(2);
+    await next.abandon("cancelled"); await f.scope.outbox.flush(); await f.budget.close();
+  });
+
+  it("atomically stores user End with dispatched cleanup for recovery after a crash", async () => {
+    const indexedDB = new IDBFactory(), name = crypto.randomUUID();
+    const store = new MetadataDeliveryBudget({ indexedDB, name });
+    await store.reserve("attempt", "c", true); await store.markDispatchStarted("attempt");
+    await store.enqueueUsage("attempt", { schemaVersion: 1, checkpointSeconds: 43 });
+    const enqueue = store.enqueueEnd.bind(store) as (id: string, version: number, reason: "user_end", cleanupIds: string[]) => Promise<void>;
+    await enqueue("c", 1, "user_end", ["attempt"]); await store.close();
+    const reloaded = new MetadataDeliveryBudget({ indexedDB, name });
+    expect((await reloaded.get("attempt"))?.cleanup?.reason).toBe("user_end");
+    expect((await reloaded.get("attempt"))?.usage?.report.checkpointSeconds).toBe(43);
+    expect(await reloaded.ends()).toMatchObject([{ conversationId: "c", expectedVersion: 1 }]);
+    const f = fixture(reloaded), order: string[] = [];
+    f.api.cleanup.mockImplementation(async () => { order.push("cleanup"); return { cleanupRequestedAt: 1 }; });
+    f.api.end.mockImplementation(async () => { order.push("end"); return { ...f.c, status: "ended" }; });
+    await f.scope.outbox.flush(); expect(order).toEqual(["cleanup", "end"]);
+    expect((await reloaded.get("attempt"))?.usage?.report.checkpointSeconds).toBe(43); await reloaded.close();
+  });
+  it("holds a legacy End until its matching cleanup receives proof", async () => {
+    const indexedDB = new IDBFactory(), name = crypto.randomUUID();
+    const store = new MetadataDeliveryBudget({ indexedDB, name });
+    await store.reserve("attempt", "c"); await store.markDispatchStarted("attempt");
+    await store.enqueueCleanup("attempt", "cancelled"); await store.enqueueEnd("c", 1, "setup_cancel");
+    const db = await new Promise<IDBDatabase>((resolve, reject) => {
+      const request = indexedDB.open(name); request.onsuccess = () => resolve(request.result); request.onerror = () => reject(request.error);
+    });
+    await new Promise<void>((resolve, reject) => {
+      const tx = db.transaction("lifecycle", "readwrite"), lifecycle = tx.objectStore("lifecycle"), get = lifecycle.get("c");
+      get.onsuccess = () => { const legacy = get.result as { cleanupLocalIds?: string[] }; delete legacy.cleanupLocalIds; lifecycle.put(legacy); };
+      tx.oncomplete = () => resolve(); tx.onerror = () => reject(tx.error);
+    });
+    db.close();
+    const f = fixture(store); f.api.cleanup.mockRejectedValue(new Error("offline"));
+    await f.scope.outbox.flush(); expect(f.api.end).not.toHaveBeenCalled();
+    f.api.cleanup.mockResolvedValue({ cleanupRequestedAt: Date.now() });
+    await f.scope.outbox.flush(); expect(f.api.end).toHaveBeenCalledWith("c", 1, "setup_cancel"); await store.close();
+  });
+  it("rolls back cleanup markers when the atomic End transaction cannot be stored", async () => {
+    const f = fixture(); await f.budget.reserve("attempt", "c", true); await f.budget.markDispatchStarted("attempt");
+    // Fill the existing bounded lifecycle store: its rejection must abort both stores.
+    for (let i = 0; i < 1000; i++) await f.budget.enqueueEnd(`old-${i}`, 1, "user_end");
+    await expect(f.budget.enqueueEnd("c", 1, "user_end", ["attempt"])).rejects.toThrow("full");
+    expect((await f.budget.get("attempt"))?.cleanup).toBeNull();
+    expect((await f.budget.ends()).some(e => e.conversationId === "c")).toBe(false); await f.budget.close();
+  });
+
 });

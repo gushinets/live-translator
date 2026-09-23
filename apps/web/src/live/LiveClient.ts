@@ -45,9 +45,10 @@ const DISCONNECTED_CLOSE_REASON = "Live session is no longer connected";
 
 export interface LiveClientDeps {
   backend: BackendClient;
-  accounting?: Pick<ProviderAccounting, "managed" | "create" | "handoff" | "finish" | "abandon"> & Partial<Pick<ProviderAccounting, "observeUsage" | "observeProduct" | "providerStarted">>;
+  accounting?: Pick<ProviderAccounting, "managed" | "create" | "handoff" | "finish" | "abandon"> & Partial<Pick<ProviderAccounting, "observeUsage" | "observeProduct" | "providerStarted" | "closeTimeoutMs">>;
   peerFactory: () => RTCPeerConnection;
-  onRemoteStream: (stream: MediaStream) => void;
+  onRemoteStream: (stream: MediaStream, source: LiveClient) => void;
+  closeTimeoutMs?: number;
 }
 
 export interface LiveCloseResult {
@@ -185,6 +186,10 @@ export class LiveClient {
   private closeResult: LiveCloseResult | null = null;
   private sessionId: string | null = null;
   private leaseReleased = false;
+  private leaseReleaseWork: Promise<void> | null = null;
+  private leaseReleaseTimer: ReturnType<typeof setTimeout> | undefined;
+  private leaseReleaseRetries = 0;
+  private retirementReason: CleanupReason | undefined;
   /** Dedupes concurrent close() calls onto a single in-flight operation. */
   private closePromise: Promise<LiveCloseResult> | null = null;
   /** Guards `teardownTransport()` against closing the channel/peer twice. */
@@ -198,7 +203,11 @@ export class LiveClient {
   private connectCalled = false;
   private readonly ackRegistry = new AckRegistry();
 
-  constructor(private readonly deps: LiveClientDeps) {}
+  constructor(private readonly deps: LiveClientDeps) {
+    if (deps.closeTimeoutMs !== undefined && (!Number.isSafeInteger(deps.closeTimeoutMs) || deps.closeTimeoutMs <= 0 || deps.closeTimeoutMs > 2147483647)) {
+      throw new Error("closeTimeoutMs must be a positive timer-safe integer");
+    }
+  }
 
   /** Actual RTCPeerConnection.connectionState, or null if no peer exists. */
   get peerConnectionState(): RTCPeerConnectionState | null {
@@ -286,6 +295,7 @@ export class LiveClient {
     if (this.connectCalled) {
       throw new Error("connect() has already been called on this LiveClient");
     }
+    if (this.closing || this.torndown) throw new Error(DISCONNECTED_CLOSE_REASON);
     this.connectCalled = true;
     if (this.deps.accounting) document.addEventListener("visibilitychange", this.onEarlyHidden);
 
@@ -314,7 +324,7 @@ export class LiveClient {
           this.pendingRemoteStream = remoteStream;
           return;
         }
-        this.deps.onRemoteStream(remoteStream);
+        this.deps.onRemoteStream(remoteStream, this);
       });
       peer.addEventListener("connectionstatechange", () => {
         this.handleConnectionStateChange();
@@ -371,7 +381,7 @@ export class LiveClient {
         this.accountingReady = true;
         const pendingRemoteStream = this.pendingRemoteStream;
         this.pendingRemoteStream = null;
-        if (pendingRemoteStream !== null) this.deps.onRemoteStream(pendingRemoteStream);
+        if (pendingRemoteStream !== null) this.deps.onRemoteStream(pendingRemoteStream, this);
         if (this.pendingProductStarted) {
           const pending = this.pendingProductStarted; this.pendingProductStarted = null;
           this.onSessionStarted?.(pending);
@@ -389,7 +399,7 @@ export class LiveClient {
       // close() or a remote session.closed suppress them (§23).
       this.closing = true;
       this.teardownTransport();
-      await this.deps.accounting?.abandon("abandoned_connect");
+      await this.deps.accounting?.abandon(this.retirementReason ?? "abandoned_connect");
       if (!this.deps.accounting?.managed) await this.releaseSessionLeaseAndWait();
       throw error;
     }
@@ -421,6 +431,7 @@ export class LiveClient {
    * session. Normal conversation shutdown should continue to use close().
    */
   async disconnectImmediately(reason: CleanupReason = "replacement"): Promise<void> {
+    this.retirementReason ??= reason;
     if (!this.torndown) {
       this.closing = true;
       this.rejectPendingConnect(new Error(DISCONNECTED_CLOSE_REASON));
@@ -432,7 +443,7 @@ export class LiveClient {
         };
       }
     }
-    await this.deps.accounting?.abandon(reason);
+    await this.deps.accounting?.abandon(this.retirementReason);
     await this.releaseSessionLeaseAndWait();
   }
 
@@ -442,15 +453,16 @@ export class LiveClient {
    * instead of throwing or sending a redundant `session.close`. Concurrent
    * calls share the same in-flight close operation.
    */
-  async close(): Promise<LiveCloseResult> {
-    const result = await this.closeTransport();
-    try { await this.deps.accounting?.finish(result); }
-    catch { console.error("Session metadata delivery incomplete"); }
-    return result;
+  close(reason: CleanupReason = "user_end"): Promise<LiveCloseResult> {
+    this.retirementReason ??= reason;
+    // Transport completion and reliable metadata delivery have different lifetimes.
+    // The independent sink/outboxes own delivery; a DB/HTTP stall cannot extend this wait.
+    return this.closeTransport();
   }
 
   private async closeTransport(): Promise<LiveCloseResult> {
     if (this.closeResult !== null) {
+      this.releaseSessionLease(); // A previous failed delivery is not an acknowledgement.
       return this.closeResult;
     }
     if (this.closePromise !== null) {
@@ -463,8 +475,9 @@ export class LiveClient {
         finalized: false,
         reason: DISCONNECTED_CLOSE_REASON,
       };
+      this.closing = true;
       this.closeResult = result;
-      this.releaseSessionLease();
+      this.teardownTransportAndRelease();
       return result;
     }
     this.closePromise = this.performLocalClose(channel);
@@ -495,7 +508,7 @@ export class LiveClient {
 
       const result = await this.waitForSessionClosedOrTimeout(
         sessionClosedPromise,
-        SESSION_CLOSE_TIMEOUT_MS,
+        this.deps.closeTimeoutMs ?? this.deps.accounting?.closeTimeoutMs ?? SESSION_CLOSE_TIMEOUT_MS,
       );
 
       this.closeResult = result;
@@ -528,41 +541,52 @@ export class LiveClient {
   }
 
   private teardownTransportAndRelease(): void {
+    const alreadyRetired = this.torndown;
     this.teardownTransport();
-    this.releaseSessionLease();
-  }
-
-  private takeSessionLeaseForRelease(): string | null {
-    const sessionId = this.sessionId;
-    if (sessionId === null || this.leaseReleased) return null;
-    this.leaseReleased = true;
-    return sessionId;
+    if (!alreadyRetired) this.releaseSessionLease();
   }
 
   private releaseSessionLease(): void {
     if (this.deps.accounting?.managed) {
-      void this.deps.accounting.finish(this.closeResult ?? { finalized: false }).catch(() => console.error("Session metadata delivery incomplete"));
+      const result = this.closeResult;
+      // Guard synchronous consumer errors as well as asynchronous delivery errors.
+      try {
+        const work = result?.finalized
+          ? this.deps.accounting.finish(result)
+          : this.deps.accounting.abandon(this.retirementReason ?? "primary_startup_failed");
+        void work.catch(() => console.error("Session metadata delivery incomplete"));
+      } catch { console.error("Session metadata delivery incomplete"); }
       return;
     }
-    const sessionId = this.takeSessionLeaseForRelease();
-    if (sessionId === null) return;
-    void this.deps.backend.releaseLiveSession(sessionId).catch(() => {
-      console.error("Live session lease release failed");
-    });
+    void this.releaseSessionLeaseAndWait();
   }
 
   private async releaseSessionLeaseAndWait(): Promise<void> {
-    if (this.deps.accounting?.managed) {
-      await this.deps.accounting.finish(this.closeResult ?? { finalized: false });
-      return;
-    }
-    const sessionId = this.takeSessionLeaseForRelease();
-    if (sessionId === null) return;
-    try {
-      await this.deps.backend.releaseLiveSession(sessionId);
-    } catch {
-      console.error("Live session lease release failed");
-    }
+    if (this.deps.accounting?.managed) return; // Durable managed delivery is owned by its outbox.
+    const sessionId = this.sessionId;
+    if (sessionId === null || this.leaseReleased) return;
+    if (this.leaseReleaseWork !== null) return this.leaseReleaseWork;
+    if (this.leaseReleaseTimer !== undefined) clearTimeout(this.leaseReleaseTimer);
+    this.leaseReleaseTimer = undefined;
+    const work = (async () => {
+      try {
+        await this.deps.backend.releaseLiveSession(sessionId);
+        this.leaseReleased = true; // Only a successful HTTP acknowledgement proves delivery.
+      } catch {
+        console.error("Live session lease release failed");
+        // Legacy (ledger-off) best effort. Managed attempts use the persistent cleanup outbox.
+        if (this.leaseReleaseRetries < 5) {
+          const delay = Math.min(30000, 1000 * 2 ** this.leaseReleaseRetries++);
+          this.leaseReleaseTimer = setTimeout(() => {
+            this.leaseReleaseTimer = undefined;
+            this.releaseSessionLease();
+          }, delay);
+        }
+      }
+    })();
+    this.leaseReleaseWork = work;
+    try { await work; }
+    finally { if (this.leaseReleaseWork === work) this.leaseReleaseWork = null; }
   }
 
   private watchAbandonedSessionCreation(
@@ -604,20 +628,23 @@ export class LiveClient {
     timeoutMs: number,
   ): Promise<LiveCloseResult> {
     return new Promise<LiveCloseResult>((resolve) => {
-      const timer = window.setTimeout(() => {
-        resolve({
-          finalized: false,
-          reason: "Timed out waiting for session.closed",
-        });
-      }, timeoutMs);
-      sessionClosedPromise.then((event) => {
+      // Timers can be suspended with the document. A wake must not start a fresh budget.
+      const deadline = Date.now() + timeoutMs;
+      let settled = false;
+      const finish = (result: LiveCloseResult) => {
+        if (settled) return;
+        settled = true;
         window.clearTimeout(timer);
-        resolve({
-          finalized: true,
-          reason: event.reason,
-          usageSeconds: event.usage?.seconds,
-        });
-      });
+        document.removeEventListener("visibilitychange", onWake);
+        window.removeEventListener("pageshow", onWake);
+        resolve(result);
+      };
+      const timeout = () => finish({ finalized: false, reason: "Timed out waiting for session.closed" });
+      const onWake = () => { if (Date.now() >= deadline) timeout(); };
+      const timer = window.setTimeout(timeout, timeoutMs);
+      document.addEventListener("visibilitychange", onWake);
+      window.addEventListener("pageshow", onWake);
+      sessionClosedPromise.then(event => finish({ finalized: true, reason: event.reason, usageSeconds: event.usage?.seconds }));
     });
   }
 

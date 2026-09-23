@@ -16,6 +16,7 @@ class LazyAccounting implements NonNullable<LiveClientDeps["accounting"]> {
   observeUsage(value: UsageObservation) { this.attempt?.observeUsage(value); }
   providerStarted() { this.attempt?.providerStarted(); }
   constructor(private readonly scope: ConversationAccounting) {}
+  get closeTimeoutMs() { return this.attempt?.closeTimeoutMs; }
   get managed() { return this.attempt?.managed ?? false; }
   create(sdp: string, beforeDispatch?: () => void) {
     if (this.cancelled) return Promise.reject(new Error("Provider attempt cancelled"));
@@ -30,18 +31,18 @@ class LazyAccounting implements NonNullable<LiveClientDeps["accounting"]> {
 export class AccountedSessionController extends SessionController {
   constructor(deps: SessionControllerDeps, private readonly accounting: ConversationAccounting) { super(deps); }
   get conversationId() { return this.accounting.conversationId; }
-  override async endConversation(): Promise<void> {
-    const revision = this.accounting.revision; await super.endConversation(); await this.accounting.end("user_end", revision);
+  protected override prepareConversationRetirement(reason: "user_end" | "setup_cancel"): Promise<void> {
+    return this.accounting.stageEnd(reason, this.accounting.revision);
   }
-  override async cancel(): Promise<void> {
-    const revision = this.accounting.revision; await super.cancel(); await this.accounting.end("setup_cancel", revision);
+  protected override finishConversationRetirement(reason: "user_end" | "setup_cancel"): Promise<void> {
+    return this.accounting.end(reason, this.accounting.revision);
   }
 }
 export function createAccountedSessionController(): SessionController {
   const audio = new AudioController(), scope = new ConversationAccounting();
   const controller = new AccountedSessionController({
     createLive: () => new LiveClient({ backend: new BackendClient(), accounting: new LazyAccounting(scope),
-      peerFactory: () => new RTCPeerConnection(), onRemoteStream: stream => controller.handleRemoteStream(stream) }),
+      peerFactory: () => new RTCPeerConnection(), onRemoteStream: (stream, source) => controller.handleRemoteStream(stream, source) }),
     audio,
   }, scope);
   return controller;
