@@ -107,4 +107,31 @@ describe("usage transport retries", () => {
     await out.flush();
     expect(discard).toHaveBeenCalledTimes(2); expect(await b.get("id")).toBeNull(); await b.close();
   });
+  it("discards a persisted no-provider report after the outbox is recreated", async () => {
+    const indexedDB = new IDBFactory(), name = "no-provider-reload";
+    const b = new MetadataDeliveryBudget({ indexedDB, name }); await b.reserve("id", "c", true);
+    await b.enqueueUsage("id", closed(46));
+    vi.spyOn(b, "discardUsage").mockRejectedValueOnce(new Error("quota"));
+    await new UsageOutbox(b, { usage: vi.fn().mockResolvedValue(ack), readConversation: vi.fn() }).noProvider("id");
+    await b.finishProducerAndRelease("id", "no_provider"); await b.close();
+
+    const reloaded = new MetadataDeliveryBudget({ indexedDB, name });
+    const transport = { usage: vi.fn().mockResolvedValue(ack), readConversation: vi.fn() };
+    await new UsageOutbox(reloaded, transport).flush();
+    expect(transport.usage).not.toHaveBeenCalled(); expect(await reloaded.get("id")).toBeNull(); await reloaded.close();
+  });
+  it("keeps the reservation after a volatile checkpoint ACK until the terminal report is saved", async () => {
+    const b = new MetadataDeliveryBudget({ indexedDB: new IDBFactory() }); await b.reserve("id", "c", true);
+    await b.enqueueClose("id", { seconds: 15 }); await b.acknowledgeCloseAndRelease("id");
+    vi.spyOn(b, "enqueueUsage").mockRejectedValueOnce(new Error("quota"));
+    vi.spyOn(b, "entries").mockRejectedValueOnce(new Error("unavailable"));
+    const transport = { usage: vi.fn().mockResolvedValue(ack), readConversation: vi.fn() }, out = new UsageOutbox(b, transport);
+    await out.enqueue("id", "c", { schemaVersion: 1, checkpointSeconds: 15 }); await out.flush();
+    await out.flush();
+    expect((await b.get("id"))?.usageProducerFinalized).toBe(false);
+    await out.enqueue("id", "c", { schemaVersion: 1, providerClosed: { reason: "done" } });
+    expect((await b.get("id"))?.usage?.report).toMatchObject({ providerClosed: { reason: "done" } });
+    await out.finishProducer("id"); await out.flush();
+    expect(transport.usage).toHaveBeenCalledTimes(2); expect(await b.get("id")).toBeNull(); await b.close();
+  });
 });

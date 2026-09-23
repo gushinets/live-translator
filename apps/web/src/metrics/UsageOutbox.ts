@@ -98,11 +98,16 @@ export class UsageOutbox {
     try {
       for (const row of await this.budget.entries()) {
         if (this.pendingDiscard.has(row.localId)) continue;
+        if (row.producerOutcome === "no_provider") {
+          this.pendingDiscard.add(row.localId);
+          await this.budget.discardUsage(row.localId);
+          this.pendingDiscard.delete(row.localId); this.pendingFinalization.delete(row.localId); this.volatile.delete(row.localId);
+          continue;
+        }
         let queued = row.usage;
         let shadow = this.volatile.get(row.localId);
         if (shadow?.delivered) {
           if (queued) await this.budget.acknowledgeUsage(row.localId, queued.revision);
-          else await this.budget.discardUsage(row.localId);
           if (this.volatile.get(row.localId) === shadow) this.volatile.delete(row.localId);
           continue;
         }
