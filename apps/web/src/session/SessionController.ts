@@ -874,10 +874,11 @@ export class SessionController {
     });
     this.dispatch({ type: "END" });
     let closeResult: { finalized: boolean };
+    let retiringResult: { finalized: boolean } | null;
     try {
       const retiring = this.retiringLiveClose;
       closeResult = await this.live.close();
-      await retiring;
+      retiringResult = retiring ? await retiring : null;
     } catch (error) {
       console.error("Live session close failed", {
         error,
@@ -885,7 +886,8 @@ export class SessionController {
       });
       throw error;
     }
-    if (closeResult.finalized === false) {
+    const finalized = closeResult.finalized || retiringResult?.finalized === true;
+    if (!finalized) {
       this.ownerErrorMessage = INCOMPLETE_FINALIZATION_MESSAGE;
       this.notify();
     }
@@ -894,7 +896,7 @@ export class SessionController {
     }
     await prepared;
     try { await this.finishConversationRetirement("user_end"); }
-    finally { this.resetToIdle({ preserveOwnerError: closeResult.finalized === false }); }
+    finally { this.resetToIdle({ preserveOwnerError: !finalized }); }
   }
 
   /** Saves recovery intent without holding open local media or finalizing its usage producer. */

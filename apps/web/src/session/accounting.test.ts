@@ -439,6 +439,25 @@ describe("stage 4 durable lifecycle boundary", () => {
     await f.scope.outbox.flush(); expect(order).toEqual(["cleanup", "end"]);
     expect((await reloaded.get("attempt"))?.usage?.report.checkpointSeconds).toBe(43); await reloaded.close();
   });
+  it("holds a legacy End until its matching cleanup receives proof", async () => {
+    const indexedDB = new IDBFactory(), name = crypto.randomUUID();
+    const store = new MetadataDeliveryBudget({ indexedDB, name });
+    await store.reserve("attempt", "c"); await store.markDispatchStarted("attempt");
+    await store.enqueueCleanup("attempt", "cancelled"); await store.enqueueEnd("c", 1, "setup_cancel");
+    const db = await new Promise<IDBDatabase>((resolve, reject) => {
+      const request = indexedDB.open(name); request.onsuccess = () => resolve(request.result); request.onerror = () => reject(request.error);
+    });
+    await new Promise<void>((resolve, reject) => {
+      const tx = db.transaction("lifecycle", "readwrite"), lifecycle = tx.objectStore("lifecycle"), get = lifecycle.get("c");
+      get.onsuccess = () => { const legacy = get.result as { cleanupLocalIds?: string[] }; delete legacy.cleanupLocalIds; lifecycle.put(legacy); };
+      tx.oncomplete = () => resolve(); tx.onerror = () => reject(tx.error);
+    });
+    db.close();
+    const f = fixture(store); f.api.cleanup.mockRejectedValue(new Error("offline"));
+    await f.scope.outbox.flush(); expect(f.api.end).not.toHaveBeenCalled();
+    f.api.cleanup.mockResolvedValue({ cleanupRequestedAt: Date.now() });
+    await f.scope.outbox.flush(); expect(f.api.end).toHaveBeenCalledWith("c", 1, "setup_cancel"); await store.close();
+  });
   it("rolls back cleanup markers when the atomic End transaction cannot be stored", async () => {
     const f = fixture(); await f.budget.reserve("attempt", "c", true); await f.budget.markDispatchStarted("attempt");
     // Fill the existing bounded lifecycle store: its rejection must abort both stores.

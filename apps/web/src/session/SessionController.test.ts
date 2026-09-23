@@ -4765,6 +4765,21 @@ describe("stage 4 product retirement safety", () => {
     await controller.startContextCapture(); expect(next.connect).toHaveBeenCalledTimes(1);
   });
 
+  it("A4.3 End accepts finalization from the retiring bootstrap client", async () => {
+    const old = new FakeLive(), unused = new FakeLive(), next = new FakeLive();
+    const { controller } = createController({ lives: [old, unused, next] });
+    await controller.startBootstrap();
+    let resolve!: (value: { finalized: boolean }) => void;
+    const oldClose = new Promise<{ finalized: boolean }>(r => { resolve = r; });
+    old.close.mockReturnValueOnce(oldClose);
+    const replacement = controller.startBootstrap(); await flushMicrotasks();
+    unused.close.mockResolvedValue({ finalized: false });
+    const ending = controller.endConversation();
+    await flushMicrotasks(); resolve({ finalized: true });
+    await replacement; await ending;
+    expect(controller.ownerError).toBeUndefined();
+  });
+
   it.each(["resolve", "reject"] as const)("A4.4 stale play %s cannot change the replacement readiness", async outcome => {
     const old = new FakeLive(), next = new FakeLive();
     const { controller, audio } = createController({ lives: [old, next] }); await controller.startBootstrap();
