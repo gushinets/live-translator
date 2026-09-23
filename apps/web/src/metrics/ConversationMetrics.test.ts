@@ -109,3 +109,11 @@ describe("ConversationMetrics", () => {
     expect(snapshot.correctionSuccessCount).toBe(1);
   });
 });
+
+it("keeps technical outcomes distinct and deduplicates correction of one logical turn", () => {
+  const metrics = new ConversationMetrics();
+  metrics.recordTechnicalOutcome("one", "audio"); metrics.recordTechnicalOutcome("one", "audio");
+  metrics.recordTechnicalOutcome("two", "text_only"); metrics.recordTechnicalOutcome("three", "failed");
+  metrics.recordTechnicalOutcome("four", "discarded"); metrics.recordCorrectionAttempt();
+  expect(metrics.snapshot()).toMatchObject({ audioCompletedTurnCount: 1, textOnlyCompletedTurnCount: 1, failedTurnCount: 1, discardedTurnCount: 1, correctionAttemptCount: 1 });
+});

@@ -1,3 +1,4 @@
+import { COUNTER_NAMES, type MetricCounters } from "../metrics/UsageTypes";
 import { BackendClient } from "../api/BackendClient";
 import { AudioController } from "../audio/AudioController";
 import type { AudioActivityEvent } from "../audio/VoiceActivityMonitor";
@@ -65,6 +66,8 @@ export interface SessionControllerDeps {
     | "audioElement"
     | "resetVoiceActivityBaseline"
   > & {
+    onSourceSample?: AudioController["onSourceSample"];
+    meteringMediaReady?: boolean;
     onVoiceActivity: AudioController["onVoiceActivity"];
     onPlaybackActivity: AudioController["onPlaybackActivity"];
     onAudioInterruption: AudioController["onAudioInterruption"];
@@ -917,6 +920,7 @@ export class SessionController {
   }
 
   private bindAudio(): void {
+    this.audio.onSourceSample = sample => this.observeMetrics(undefined, sample);
     this.audio.onVoiceActivity = (event) => {
       void this.handleVoiceActivity(event);
     };
@@ -2478,11 +2482,43 @@ export class SessionController {
   }
 
   private dispatch(action: SessionAction): void {
+    const previousTurn = this.currentSession.activeTurn;
     this.currentSession = sessionReducer(this.currentSession, action);
-    this.notify();
+    let completedTurnId: string | undefined;
+    if (action.type === "CORRECTION_START") this.conversationMetrics.recordCorrectionAttempt();
+    if (previousTurn && action.type === "TURN_CLOSED") {
+      if (previousTurn.audioOutputStarted && previousTurn.playbackEndAtMs !== undefined && this.audio.audioElement.muted === false && this.remotePlaybackState === "ready") {
+        if (this.conversationMetrics.recordTechnicalOutcome(previousTurn.id, "audio")) completedTurnId = previousTurn.id;
+      } else if (!previousTurn.audioOutputStarted) this.conversationMetrics.recordTechnicalOutcome(previousTurn.id, "text_only");
+    }
+    if (previousTurn && action.type === "TURN_FAILED") this.conversationMetrics.recordTechnicalOutcome(previousTurn.id, "failed");
+    if (previousTurn && ["SUSPEND", "END", "SESSION_ERROR"].includes(action.type) && previousTurn.turnCompletedAtMs === undefined && !previousTurn.corrected) {
+      this.conversationMetrics.recordTechnicalOutcome(previousTurn.id, action.type === "SESSION_ERROR" ? "failed" : "discarded");
+    }
+    this.notify(completedTurnId);
   }
 
-  private notify(): void {
+  /** Observe facts only. These hooks never change product states, thresholds, or audio gates. */
+  private observeMetrics(completedTurnId?: string, sample?: AudioActivityEvent & { reset?: boolean }): void {
+    if (typeof this.live.observeProductMetrics !== "function") return;
+    try {
+      const track = this.audio.getCaptureStream()?.getAudioTracks()[0];
+      const visible = document.visibilityState !== "hidden" && !this.visibility.isHidden();
+      const mediaReady = this.hasConnected && this.remotePlaybackState === "ready" && track?.readyState === "live" &&
+        this.live.peerConnectionState === "connected" && this.live.dataChannelReadyState === "open" && this.audio.meteringMediaReady !== false;
+      const counters: MetricCounters = {}, snapshot = this.conversationMetrics.snapshot();
+      for (const name of COUNTER_NAMES) if (name in snapshot) counters[name] = snapshot[name as keyof typeof snapshot] as number;
+      this.live.observeProductMetrics({ atMs: sample?.atMs ?? performance.now(), visible, state: this.currentSession.state,
+        interpreterReady: this.enteredInterpreter, mediaReady,
+        speechEligible: visible && mediaReady && this.enteredInterpreter && ["listening", "outputting"].includes(this.currentSession.state) && track?.enabled === true && this.live.inputMeteringReady,
+        counters, turnId: this.currentSession.activeTurn?.id, completedTurnId,
+        ...(sample?.reset ? { resetSpeech: true } : sample ? { sample: { active: sample.active, atMs: sample.atMs } } : {}),
+      });
+    } catch { console.error("Product measurement unavailable"); }
+  }
+
+  private notify(completedTurnId?: string): void {
+    this.observeMetrics(completedTurnId);
     for (const listener of this.listeners) {
       listener();
     }

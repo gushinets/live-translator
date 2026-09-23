@@ -1,3 +1,6 @@
+import { UsageReporter, type ProductObservation } from "../metrics/UsageReporter";
+import { UsageOutbox } from "../metrics/UsageOutbox";
+import type { UsageObservation } from "../metrics/UsageTypes";
 import { AccountingBackend, AccountingRequestError, type LedgerApi, type ConversationMetadata } from "../api/AccountingBackend";
 import { BackendClient, type CreateLiveSessionResponse } from "../api/BackendClient";
 import { CleanupIntentOutbox } from "./CleanupIntentOutbox";
@@ -26,6 +29,7 @@ export class ConversationAccounting {
   readonly api: LedgerApi;
   readonly budget: MetadataDeliveryBudget;
   readonly outbox: CleanupIntentOutbox;
+  readonly usageOutbox: UsageOutbox | undefined;
   private enabled: Promise<boolean> | undefined;
   private creating: Promise<ConversationMetadata> | undefined;
   private current: ConversationMetadata | undefined;
@@ -45,6 +49,7 @@ export class ConversationAccounting {
     this.api = options.api ?? new AccountingBackend();
     this.budget = options.budget ?? new MetadataDeliveryBudget({ producerId: this.producerId });
     this.outbox = new CleanupIntentOutbox(this.budget, this.api); this.autoDelivery = options.autoDelivery ?? true;
+    if (this.api.usage) this.usageOutbox = new UsageOutbox(this.budget, { usage: this.api.usage.bind(this.api), readConversation: this.api.readConversation.bind(this.api) });
   }
   get revision() { return this.epoch; }
   get conversationId(): string | null { return this.current?.conversationId ?? null; }
@@ -72,9 +77,11 @@ export class ConversationAccounting {
         if (!lock) return; // Never take over a live/frozen producer in another tab.
         await this.budget.reclaimUndispatched(id);
         for (const row of await this.budget.entries()) {
-          if (row.producerId === id && row.dispatchStartedAt !== null && !row.producerFinalized && !row.cleanup && !row.closeObservation) {
-            await this.outbox.enqueue(row.localId, "response_not_received");
-          }
+          if (row.producerId !== id || row.dispatchStartedAt === null) continue;
+          if (!row.producerFinalized && !row.cleanup && !row.closeObservation) await this.outbox.enqueue(row.localId, "response_not_received");
+          // The exclusive producer lock proves the app producer died, not that its metrics are complete.
+          // Keep its last partial report for delivery; release the producer hold only.
+          if (row.usageProducerFinalized === false) await this.budget.finishUsageProducer(row.localId);
         }
       });
     }
@@ -93,7 +100,7 @@ export class ConversationAccounting {
     await this.holdProducerLock();
     this.creating ??= this.api.createConversation(this.requestId).catch(error => { this.creating = undefined; throw error; });
     const c = await this.creating; attempt.assertCurrent(); this.current = c;
-    if (this.autoDelivery) this.outbox.start();
+    if (this.autoDelivery) { this.outbox.start(); this.usageOutbox?.start(); }
     await this.outbox.flush(); attempt.assertCurrent();
     if ((await this.budget.entries()).some(row => row.conversationId === c.conversationId && (row.cleanup || row.closeObservation))) throw new Error("Previous session cleanup delivery is pending");
     if (this.last && this.last !== attempt && this.last.dispatched) {
@@ -200,6 +207,11 @@ export class ProviderAccounting {
   private controller: AbortController | undefined;
   private conversation: ConversationMetadata | undefined;
   private finishing: Promise<void> | undefined;
+  private reporter: UsageReporter | undefined;
+  private lastProduct: ProductObservation | undefined;
+  observeProduct(observation: ProductObservation): void { this.lastProduct = observation; this.reporter?.observeProduct(observation); }
+  observeUsage(observation: UsageObservation): void { this.reporter?.observeUsage(observation); }
+  providerStarted(): void { this.reporter?.providerStarted(); }
   constructor(private readonly scope: ConversationAccounting, private readonly epoch: number) {}
   assertCurrent(): void {
     if (this.cancelled || !this.scope.isCurrent(this.epoch) || (typeof document !== "undefined" && document.visibilityState === "hidden" && this.managed)) throw new Error("Provider attempt cancelled");
@@ -208,16 +220,19 @@ export class ProviderAccounting {
     const c = await this.scope.prepare(this); this.assertCurrent();
     if (!c) return new BackendClient().createLiveSession(sdp);
     this.conversation = c; beforeManagedCreate?.();
-    this.reservation = this.scope.budget.reserve(this.localId, c.conversationId);
+    this.reservation = this.scope.budget.reserve(this.localId, c.conversationId, this.scope.usageOutbox !== undefined);
     await this.reservation; this.hasReservation = true;
     try {
       this.assertCurrent(); await this.scope.budget.markDispatchStarted(this.localId); this.assertCurrent();
+      if (this.scope.usageOutbox) this.reporter = new UsageReporter(this.localId, c.conversationId, this.scope.usageOutbox, { initial: this.lastProduct });
       this.controller = new AbortController(); this.dispatched = true;
       return await this.scope.api.createSession({ sdp, liveSessionId: this.localId, conversationId: c.conversationId,
         conversationVersion: c.version, initialMode: "setup", startReason: this.scope.noteDispatch(this) }, this.controller.signal);
     } catch (error) {
       if (isDefinitiveNoProviderError(error)) {
         this.cancelled = true;
+        await this.reporter?.noProvider();
+        if (!this.reporter && this.scope.usageOutbox) await this.scope.usageOutbox.noProvider(this.localId);
         await this.scope.budget.finishProducerAndRelease(this.localId, "no_provider");
         this.scope.noteNoProvider(this);
         this.finished = true;
@@ -237,6 +252,7 @@ export class ProviderAccounting {
         receipt.conversation.version !== this.conversation?.version || (receipt.conversation.productDeadlineAt !== null && receipt.conversation.serverTime >= receipt.conversation.productDeadlineAt)) throw new Error("Provider handoff was not confirmed");
   }
   async abandon(reason: CleanupReason): Promise<void> {
+    this.observeUsage({ kind: "local_close_unconfirmed" });
     this.cancelled = true;
     if (this.finished) return this.finishing;
     if (this.reservation && !this.hasReservation) { try { await this.reservation; this.hasReservation = true; } catch { return; } }
@@ -245,7 +261,10 @@ export class ProviderAccounting {
     const operation = (async () => {
       try {
         if (this.dispatched) { await this.scope.outbox.enqueue(this.localId, reason); this.controller?.abort(); }
-        else { await this.scope.budget.finishProducerAndRelease(this.localId, "no_provider"); }
+        else {
+          await this.scope.usageOutbox?.noProvider(this.localId);
+          await this.scope.budget.finishProducerAndRelease(this.localId, "no_provider");
+        }
         this.finished = true;
       } catch (error) {
         // Existing-session storage failure cannot keep audio alive. This is an explicitly degraded path.
@@ -261,6 +280,8 @@ export class ProviderAccounting {
     catch (error) { if (this.finishing === operation) this.finishing = undefined; throw error; }
   }
   async finish(result: LiveCloseResult): Promise<void> {
+    // Must precede the PR2 finished guard: late usage still belongs to this immutable attempt.
+    this.observeUsage(result.finalized ? { kind: "provider_closed", seconds: result.usageSeconds, reason: result.reason } : { kind: "local_close_unconfirmed" });
     if (!this.managed) { this.cancelled = true; return; }
     if (!result.finalized) return this.abandon("primary_startup_failed");
     if (!this.hasReservation || this.finished) return this.finishing;

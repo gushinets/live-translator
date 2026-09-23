@@ -66,6 +66,7 @@ function readMicrophoneSettings(track: MediaStreamTrack): MicrophoneSettingsDiag
  * Does not mute Live model input (Gate B).
  */
 export class AudioController {
+  onSourceSample: ((event: AudioActivityEvent & { reset?: boolean }) => void) | null = null;
   onVoiceActivity: ((event: AudioActivityEvent) => void) | null = null;
   onPlaybackActivity: ((event: AudioActivityEvent) => void) | null = null;
   onAudioInterruption: (() => void) | null = null;
@@ -108,6 +109,9 @@ export class AudioController {
     this.voiceActivityMonitor.onActivity = (event) => {
       this.onVoiceActivity?.(event);
     };
+    this.voiceActivityMonitor.onSample = event => {
+      this.onSourceSample?.({ active: event.active, atMs: performance.now() });
+    };
     this.playbackDetector.onActivity = (event) => {
       this.onPlaybackActivity?.(event);
     };
@@ -148,12 +152,19 @@ export class AudioController {
     return { ...this.microphoneSettings };
   }
 
+  get meteringMediaReady(): boolean { return this.audioContext?.state === "running" && this.captureTrack?.readyState === "live"; }
+  private notifyMeteringBoundary(): void {
+    try { this.onSourceSample?.({ active: false, atMs: performance.now(), reset: true }); }
+    catch { console.error("Audio metadata boundary observer failed"); }
+  }
   getCaptureStream(): MediaStream | null {
     return this.captureStream;
   }
 
   resetVoiceActivityBaseline(): void {
     this.voiceActivityMonitor.resetBaseline();
+    try { this.onSourceSample?.({ active: false, atMs: performance.now(), reset: true }); }
+    catch { console.error("Source reset metadata observer failed"); }
   }
 
   async startCapture(): Promise<void> {
@@ -228,6 +239,7 @@ export class AudioController {
     this.micAnalysisStream = null;
     this.captureTrack = null;
     this.captureStream = null;
+    this.notifyMeteringBoundary();
     this.syncSampler();
   }
 
@@ -239,6 +251,7 @@ export class AudioController {
     for (const track of this.micAnalysisStream.getAudioTracks()) {
       track.enabled = enabled;
     }
+    this.notifyMeteringBoundary();
   }
 
   /** Gate C: mute local GPT playback. Never uses Live input mute. */
@@ -292,6 +305,7 @@ export class AudioController {
     if (this.captureTrack?.readyState !== "ended") {
       return;
     }
+    this.notifyMeteringBoundary();
     this.onCaptureEnded?.();
   };
 
@@ -299,6 +313,7 @@ export class AudioController {
     if (this.audioContext === null) {
       return;
     }
+    this.notifyMeteringBoundary();
     if ((this.audioContext.state as string) === "interrupted") {
       this.contextWasInterrupted = true;
       this.onAudioInterruption?.();

@@ -66,3 +66,11 @@ describe("append payload builders", () => {
     );
   });
 });
+
+import { parseLiveServerEvent } from "./LiveEvents";
+describe("terminal accounting parsing", () => {
+  it.each([-1, NaN, Infinity, "invalid", null])("retains a close with invalid seconds %j without inventing final zero", seconds => {
+    const parsed = parseLiveServerEvent({ type: "session.closed", reason: "done", usage: { seconds } });
+    expect(parsed).toEqual({ kind: "known", event: { type: "session.closed", reason: "done", usage: {} } });
+  });
+});

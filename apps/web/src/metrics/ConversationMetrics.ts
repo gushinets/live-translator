@@ -30,6 +30,11 @@ export interface ConversationMetricsSnapshot {
   vamFalseActiveCount: number;
   wrongSideCorrectionCount: number;
   correctionSuccessCount: number;
+  audioCompletedTurnCount: number;
+  textOnlyCompletedTurnCount: number;
+  failedTurnCount: number;
+  discardedTurnCount: number;
+  correctionAttemptCount: number;
   poorOutputRoute: boolean;
   lastTurn: TurnMetrics | undefined;
 }
@@ -62,6 +67,12 @@ export function calculateMetrics(input: TurnTimingInput): TurnMetrics {
 }
 
 export class ConversationMetrics {
+  private readonly technicalTurns = { audio: new Set<string>(), text_only: new Set<string>(), failed: new Set<string>(), discarded: new Set<string>() };
+  private correctionAttemptCount = 0;
+  recordTechnicalOutcome(id: string, kind: keyof ConversationMetrics["technicalTurns"]): boolean {
+    const set = this.technicalTurns[kind]; if (set.has(id)) return false; set.add(id); return true;
+  }
+  recordCorrectionAttempt(): void { this.correctionAttemptCount++; }
   private earlyOutputCount = 0;
   private completedTurnCount = 0;
   private sourceTailClippingReports = 0;
@@ -121,6 +132,11 @@ export class ConversationMetrics {
       vamFalseActiveCount: this.vamFalseActiveCount,
       wrongSideCorrectionCount: this.wrongSideCorrectionCount,
       correctionSuccessCount: this.correctionSuccessCount,
+      audioCompletedTurnCount: this.technicalTurns.audio.size,
+      textOnlyCompletedTurnCount: this.technicalTurns.text_only.size,
+      failedTurnCount: this.technicalTurns.failed.size,
+      discardedTurnCount: this.technicalTurns.discarded.size,
+      correctionAttemptCount: this.correctionAttemptCount,
       poorOutputRoute: this.poorOutputRoute,
       lastTurn: this.lastTurn === undefined ? undefined : { ...this.lastTurn },
     };

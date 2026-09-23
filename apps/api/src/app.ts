@@ -1,3 +1,4 @@
+import { createUsageRouter } from "./routes/usage.js";
 import express, { type Request, type Response, type NextFunction } from "express";
 import { existsSync } from "node:fs";
 import { z } from "zod";
@@ -69,6 +70,7 @@ export function createApp(dependencies: AppDependencies = {}) {
     app.locals.ledgerRuntime = runtime;
     const identity = new AnonymousIdentity(process.env.NODE_ENV === "production");
     app.use("/api/conversations", createConversationRouter(runtime, identity, apiConfig.webOrigin, enabled));
+    app.use("/api/live/session", createUsageRouter(runtime, identity, apiConfig.webOrigin));
     app.use("/api/live/session", createManagedSessionRouter(runtime, identity, apiConfig.webOrigin, enabled));
     app.use((error: unknown, _req: Request, res: Response, _next: NextFunction) => {
       if (res.headersSent) { _next(error); return; }

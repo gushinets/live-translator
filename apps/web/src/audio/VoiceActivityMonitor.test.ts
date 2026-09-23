@@ -36,3 +36,11 @@ describe("VoiceActivityMonitor", () => {
     ]);
   });
 });
+
+it("exposes pre-tail samples while retaining the original delayed product edges", () => {
+  const monitor = new VoiceActivityMonitor(), samples: Array<{active: boolean; atMs: number}> = [];
+  monitor.onSample = sample => samples.push(sample);
+  pushQuietBaseline(monitor); monitor.pushRms(.08, false, 5100); monitor.pushRms(.09, false, 5150);
+  monitor.pushRms(0, false, 5200); monitor.pushRms(0, false, 5600); monitor.pushRms(0, false, 5650);
+  expect(samples.at(-1)).toEqual({ active: false, atMs: 5650 }); expect(monitor.active).toBe(true);
+});
