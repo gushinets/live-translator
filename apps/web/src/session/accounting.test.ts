@@ -90,6 +90,7 @@ describe("cleanup and End delivery", () => {
     await f.budget.reserve("attempt", "c");
     await f.budget.markDispatchStarted("attempt");
     await f.scope.outbox.enqueueEnd("c", 1, "setup_cancel", ["attempt"]);
+    await f.scope.outbox.enqueue("attempt", "cancelled");
     f.api.cleanup.mockRejectedValueOnce(new Error("offline"));
 
     await f.scope.outbox.flush();
@@ -125,6 +126,20 @@ describe("cleanup and End delivery", () => {
     await f.scope.acknowledgeDirectCleanup("attempt");
 
     expect((await f.budget.ends())[0]?.cleanupLocalIds).toEqual([]);
+    await f.budget.close();
+  });
+  it("sends direct End after direct cleanup proof even when IndexedDB remains unavailable", async () => {
+    const f = fixture(), attempt = f.scope.newAttempt(); await attempt.create("offer");
+    vi.spyOn(f.scope.outbox, "enqueueEnd").mockRejectedValue(new Error("storage unavailable"));
+    vi.spyOn(f.scope.outbox, "enqueue").mockRejectedValue(new Error("storage unavailable"));
+    vi.spyOn(f.budget, "acknowledgeDirectCleanupAndRelease").mockRejectedValue(new Error("storage unavailable"));
+    vi.spyOn(f.budget, "entries").mockRejectedValue(new Error("storage unavailable"));
+    vi.spyOn(f.budget, "get").mockRejectedValue(new Error("storage unavailable"));
+
+    await f.scope.end("user_end");
+
+    expect(f.api.cleanup).toHaveBeenCalledWith(attempt.localId, "user_end");
+    expect(f.api.end).toHaveBeenCalledWith(f.c.conversationId, f.c.version, "user_end");
     await f.budget.close();
   });
   it("flushes a failed degraded direct End before the next managed create", async () => {
@@ -174,6 +189,25 @@ describe("controller-owned conversation accounting", () => {
     expect(f.api.createSession.mock.calls[1]![0].startReason).toBe("initial");
 
     await retry.abandon("cancelled"); await f.scope.outbox.flush(); await f.budget.close();
+  });
+
+  it("removes staged cleanup dependency when a pending create definitively creates no provider", async () => {
+    const f = fixture(), attempt = f.scope.newAttempt();
+    let rejectCreate!: (error: Error) => void;
+    f.api.createSession.mockImplementationOnce(() => new Promise((_resolve, reject) => { rejectCreate = reject; }));
+    const creating = attempt.create("offer").catch(error => error);
+    await vi.waitFor(() => expect(rejectCreate).toBeDefined());
+    const staging = f.scope.stageEnd("setup_cancel");
+    await vi.waitFor(async () => expect((await f.budget.get(attempt.localId))?.cleanup?.reason).toBe("cancelled"));
+    rejectCreate(new AccountingRequestError(404, "attempt_registration_unavailable"));
+    await Promise.all([creating, staging]);
+
+    expect((await f.budget.get(attempt.localId))?.cleanup ?? null).toBeNull();
+    expect((await f.budget.ends())[0]?.cleanupLocalIds).toEqual([]);
+    await f.scope.outbox.flush();
+    expect(f.api.cleanup).not.toHaveBeenCalled();
+    expect(f.api.end).toHaveBeenCalledWith(f.c.conversationId, f.c.version, "setup_cancel");
+    await f.budget.close();
   });
 
   it("treats only the distinct pre-dispatch shutdown code as no-provider", async () => {
@@ -378,6 +412,24 @@ describe("stage 4 durable lifecycle boundary", () => {
 
     expect((await f.budget.ends())[0]?.cleanupLocalIds).toEqual([attempt.localId]);
     await f.budget.close();
+  });
+
+  it("does not auto-deliver staged cleanup until graceful close has confirmation", async () => {
+    const f = fixture(), attempt = f.scope.newAttempt(); await attempt.create("offer");
+    f.scope.outbox.start();
+    await f.scope.stageEnd("user_end");
+    globalThis.dispatchEvent(new Event("online"));
+    await f.scope.outbox.flush();
+    expect(f.api.cleanup).not.toHaveBeenCalled();
+    expect(f.api.closed).not.toHaveBeenCalled();
+    expect(f.api.end).not.toHaveBeenCalled();
+
+    await attempt.finish({ finalized: true, usageSeconds: 46 });
+    await f.scope.outbox.flush();
+    expect(f.api.closed).toHaveBeenCalledWith(attempt.localId, { seconds: 46 });
+    expect(f.api.cleanup).not.toHaveBeenCalled();
+    expect(f.api.end).toHaveBeenCalledWith(f.c.conversationId, f.c.version, "user_end");
+    f.scope.outbox.stop(); await f.budget.close();
   });
 
   it("does not re-enqueue cleanup after its proof while usage remains pending", async () => {

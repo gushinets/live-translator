@@ -130,6 +130,7 @@ export class MetadataDeliveryBudget {
   }
   finishProducerAndRelease(localId: string, outcome: ProducerOutcome): Promise<void> {
     if (outcome === "provider_closed") return this.acknowledgeCloseAndRelease(localId);
+    if (outcome === "no_provider") return this.releaseAndRemoveEndDependency(localId, row => ({ ...row, cleanup: null, producerFinalized: true, producerOutcome: outcome }));
     return this.change(localId, row => {
       const next = { ...row, producerFinalized: true, producerOutcome: outcome };
       return this.releasable(next) ? null : next;

@@ -55,6 +55,7 @@ export class ConversationAccounting {
   private readonly pendingDirectEnds = new Map<number, PendingDirectEnd>();
   private readonly pendingDirectCleanupAcks = new Set<string>();
   private readonly pendingDirectCloseAcks = new Set<string>();
+  private readonly directRetirementProofs = new Set<string>();
   constructor(options: { api?: LedgerApi; budget?: MetadataDeliveryBudget; autoDelivery?: boolean } = {}) {
     this.api = options.api ?? new AccountingBackend();
     this.budget = options.budget ?? new MetadataDeliveryBudget({ producerId: this.producerId });
@@ -141,8 +142,9 @@ export class ConversationAccounting {
   private async deliverDirectEnd(intent: PendingDirectEnd): Promise<void> {
     if (intent.inFlight) return intent.inFlight;
     const operation = (async () => {
-      await this.outbox.flush();
-      for (const localId of intent.cleanupLocalIds) {
+      const pending = intent.cleanupLocalIds.filter(localId => !this.directRetirementProofs.has(localId));
+      if (pending.length) await this.outbox.flush();
+      for (const localId of pending) {
         const row = await this.budget.get(localId);
         if (row?.cleanup || row?.closeObservation) throw new Error("Provider cleanup delivery is pending");
       }
@@ -158,6 +160,8 @@ export class ConversationAccounting {
     for (const intent of [...this.pendingDirectEnds.values()]) await this.deliverDirectEnd(intent);
   }
   async acknowledgeDirectCleanup(localId: string): Promise<void> {
+    this.directRetirementProofs.add(localId);
+    this.outbox.confirmRetirement(localId);
     try {
       await this.budget.acknowledgeDirectCleanupAndRelease(localId);
       this.pendingDirectCleanupAcks.delete(localId);
@@ -172,6 +176,8 @@ export class ConversationAccounting {
     }
   }
   async acknowledgeDirectClose(localId: string): Promise<void> {
+    this.directRetirementProofs.add(localId);
+    this.outbox.confirmRetirement(localId);
     try {
       await this.budget.finishProducerAndRelease(localId, "provider_closed");
       this.pendingDirectCloseAcks.delete(localId);
@@ -192,8 +198,9 @@ export class ConversationAccounting {
     if (!c) return;
     // Persist intent before waiting for provider final. Do not terminate the usage producer
     // or enqueue HTTP here: a crash can replay both stores, and a late final remains valid.
-    await this.budget.enqueueEnd(c.conversationId, c.version, reason,
-      attempts.filter(a => a.dispatched).map(a => a.localId));
+    const dispatched = attempts.filter(a => a.dispatched).map(a => a.localId);
+    this.outbox.deferCleanup(dispatched);
+    await this.outbox.enqueueEnd(c.conversationId, c.version, reason, dispatched);
   }
 
   async end(reason: "user_end" | "setup_cancel", expectedEpoch = this.epoch): Promise<void> {
@@ -287,6 +294,7 @@ export class ProviderAccounting {
         await this.reporter?.noProvider();
         if (!this.reporter && this.scope.usageOutbox) await this.scope.usageOutbox.noProvider(this.localId);
         await this.scope.budget.finishProducerAndRelease(this.localId, "no_provider");
+        this.scope.outbox.confirmRetirement(this.localId);
         this.scope.noteNoProvider(this);
         this.finished = true;
       } else {

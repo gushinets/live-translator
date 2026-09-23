@@ -18,17 +18,20 @@ export class CleanupIntentOutbox {
   private started = false;
   private retries = 0;
   private revision = 0;
+  private readonly deferredCleanup = new Set<string>();
   constructor(private readonly budget: MetadataDeliveryBudget, private readonly transport: CleanupTransport,
     private readonly anomaly: (code: string) => void = code => console.error("Metadata delivery anomaly", { code })) {}
   async enqueue(localId: string, reason: CleanupReason): Promise<void> {
-    await this.budget.enqueueCleanup(localId, reason); await this.budget.finishProducer(localId, "lost"); this.revision++; this.schedule();
+    await this.budget.enqueueCleanup(localId, reason); await this.budget.finishProducer(localId, "lost"); this.deferredCleanup.delete(localId); this.revision++; this.schedule();
   }
   async observeClosed(localId: string, observation: CloseMetadata): Promise<void> {
-    await this.budget.enqueueClose(localId, observation); this.revision++; this.schedule();
+    await this.budget.enqueueClose(localId, observation); this.deferredCleanup.delete(localId); this.revision++; this.schedule();
   }
   async enqueueEnd(id: string, version: number, reason: EndIntent["reason"], cleanupLocalIds: readonly string[] = []): Promise<void> {
     await this.budget.enqueueEnd(id, version, reason, cleanupLocalIds); this.revision++; this.schedule();
   }
+  deferCleanup(localIds: readonly string[]): void { for (const id of localIds) this.deferredCleanup.add(id); }
+  confirmRetirement(localId: string): void { this.deferredCleanup.delete(localId); }
   start(): void {
     if (this.started) return; this.started = true;
     globalThis.addEventListener?.("online", this.onWake); globalThis.document?.addEventListener("visibilitychange", this.onWake); this.onWake();
@@ -53,6 +56,7 @@ export class CleanupIntentOutbox {
     let pending = false;
     for (const row of await this.budget.entries()) {
       if (!row.cleanup && !row.closeObservation) continue;
+      if (!row.closeObservation && this.deferredCleanup.has(row.localId)) { pending = true; continue; }
       if (Date.now() >= (row.cleanup?.expiresAt ?? row.reservedAt + 7 * 86400000)) {
         this.anomaly("metadata_delivery_expired"); await this.discard(row.localId); continue;
       }
