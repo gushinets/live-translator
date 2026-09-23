@@ -186,5 +186,21 @@ describe("usage transport retries", () => {
     expect(anomaly).toHaveBeenCalledWith("usage_delivery_expired");
     await expect(reloaded.reserve("next", "c", true)).resolves.toBeUndefined(); await reloaded.close();
   });
+  it("does not extend the reservation TTL for a late volatile report", async () => {
+    const now = Date.now(), setNow = vi.spyOn(Date, "now").mockReturnValue(now);
+    const b = new MetadataDeliveryBudget({ indexedDB: new IDBFactory() }); await b.reserve("id", "c", true);
+    const transport = { usage: vi.fn().mockResolvedValue(ack), readConversation: vi.fn() }, anomaly = vi.fn();
+    const out = new UsageOutbox(b, transport, anomaly);
+    await out.flush();
+    setNow.mockReturnValue(now + 7 * 86400000 + 1);
+    vi.spyOn(b, "enqueueUsage").mockRejectedValue(new Error("quota"));
+    vi.spyOn(b, "entries").mockRejectedValue(new Error("unavailable"));
+    vi.spyOn(b, "get").mockRejectedValue(new Error("unavailable"));
+    await out.enqueue("id", "c", closed(46)); await out.flush();
+    expect(transport.usage).not.toHaveBeenCalled();
+    expect(anomaly).toHaveBeenCalledWith("usage_volatile_expired");
+    setNow.mockRestore(); await b.close();
+  });
+
 });
 
