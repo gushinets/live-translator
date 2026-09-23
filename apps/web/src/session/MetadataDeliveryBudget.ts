@@ -194,7 +194,9 @@ export class MetadataDeliveryBudget {
         const byId = new Map((rows.result as MetadataEnvelope[]).map(row => [row.localId, row]));
         const applicable = [...new Set(cleanupLocalIds)].filter(id => {
           const row = byId.get(id);
-          return row?.conversationId === conversationId && row.dispatchStartedAt !== null && !row.closeObservation && row.producerOutcome !== "provider_closed" && row.producerOutcome !== "no_provider";
+          return row?.conversationId === conversationId && row.dispatchStartedAt !== null && !row.closeObservation &&
+            !(row.producerFinalized && row.producerOutcome === "lost" && !row.cleanup) &&
+            row.producerOutcome !== "provider_closed" && row.producerOutcome !== "no_provider";
         });
         for (const id of applicable) {
           const row = byId.get(id)!;

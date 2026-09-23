@@ -380,6 +380,25 @@ describe("stage 4 durable lifecycle boundary", () => {
     await f.budget.close();
   });
 
+  it("does not re-enqueue cleanup after its proof while usage remains pending", async () => {
+    const f = fixture();
+    await f.budget.reserve("attempt", f.c.conversationId, true);
+    await f.budget.markDispatchStarted("attempt");
+    await f.budget.enqueueUsage("attempt", { schemaVersion: 1, checkpointSeconds: 10 });
+    await f.scope.outbox.enqueue("attempt", "response_not_received");
+    await f.scope.outbox.flush();
+    expect(await f.budget.get("attempt")).toMatchObject({ cleanup: null, usagePending: true, producerOutcome: "lost" });
+
+    f.api.cleanup.mockRejectedValue(new Error("offline"));
+    await f.scope.outbox.enqueueEnd(f.c.conversationId, f.c.version, "setup_cancel", ["attempt"]);
+    expect((await f.budget.get("attempt"))?.cleanup).toBeNull();
+    expect((await f.budget.ends())[0]?.cleanupLocalIds).toEqual([]);
+    await f.scope.outbox.flush();
+    expect(f.api.cleanup).toHaveBeenCalledTimes(1);
+    expect(f.api.end).toHaveBeenCalledWith(f.c.conversationId, f.c.version, "setup_cancel");
+    await f.budget.close();
+  });
+
   it("does not send direct End or allow a new create before queued cleanup proof", async () => {
     const f = fixture(), attempt = f.scope.newAttempt(); await attempt.create("offer");
     const epoch = f.scope.revision;
