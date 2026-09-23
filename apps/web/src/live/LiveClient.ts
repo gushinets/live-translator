@@ -1,3 +1,5 @@
+import type { ProductObservation } from "../metrics/UsageReporter";
+import type { UsageObservation } from "../metrics/UsageTypes";
 import type { ProviderAccounting } from "../session/ConversationAccounting";
 import type { CleanupReason } from "../session/MetadataDeliveryBudget";
 import type {
@@ -43,7 +45,7 @@ const DISCONNECTED_CLOSE_REASON = "Live session is no longer connected";
 
 export interface LiveClientDeps {
   backend: BackendClient;
-  accounting?: Pick<ProviderAccounting, "managed" | "create" | "handoff" | "finish" | "abandon">;
+  accounting?: Pick<ProviderAccounting, "managed" | "create" | "handoff" | "finish" | "abandon"> & Partial<Pick<ProviderAccounting, "observeUsage" | "observeProduct" | "providerStarted">>;
   peerFactory: () => RTCPeerConnection;
   onRemoteStream: (stream: MediaStream) => void;
 }
@@ -158,6 +160,19 @@ export class LiveClient {
   /** True only once a `session.started` message has actually been received. */
   private started = false;
   private accountingReady = false;
+  private inputMeteringUnmuted = false;
+  private inputMeteringRequest: string | null = null;
+  private lastProductObservation: ProductObservation | undefined;
+  get inputMeteringReady(): boolean { return this.inputMeteringUnmuted && !this.closing; }
+  observeProductMetrics(observation: ProductObservation): void {
+    this.lastProductObservation = observation;
+    try { this.deps.accounting?.observeProduct?.(observation); }
+    catch { console.error("Product metrics observation failed"); }
+  }
+  private observeAccounting(usage: UsageObservation): void {
+    try { this.deps.accounting?.observeUsage?.(usage); }
+    catch { console.error("Provider metrics observation failed"); }
+  }
   private pendingProductStarted: SessionStartedEvent | null = null;
   private pendingRemoteStream: MediaStream | null = null;
   private readonly onEarlyHidden = () => {
@@ -232,6 +247,8 @@ export class LiveClient {
    */
   async setInputMuted(muted: boolean): Promise<void> {
     const eventId = crypto.randomUUID();
+    this.inputMeteringRequest = eventId; this.inputMeteringUnmuted = false;
+    if (this.lastProductObservation) this.observeProductMetrics({ ...this.lastProductObservation, atMs: performance.now(), speechEligible: false, sample: undefined, completedTurnId: undefined });
     const command: LiveClientEvent = {
       type: muted ? "session.input_audio.mute" : "session.input_audio.unmute",
       event_id: eventId,
@@ -247,6 +264,7 @@ export class LiveClient {
       throw error;
     }
     await wait;
+    if (this.inputMeteringRequest === eventId && !this.closing) this.inputMeteringUnmuted = !muted;
   }
 
   /**
@@ -504,6 +522,9 @@ export class LiveClient {
     this.ackRegistry.rejectAll(new Error("Live session is no longer connected"));
     this.channel?.close();
     this.peer?.close();
+    if (!this.closeResult?.finalized) {
+      this.observeAccounting({ kind: "local_close_unconfirmed" });
+    }
   }
 
   private teardownTransportAndRelease(): void {
@@ -695,6 +716,7 @@ export class LiveClient {
     switch (serverEvent.type) {
       case "session.started":
         this.started = true;
+        try { this.deps.accounting?.providerStarted?.(); } catch { console.error("Provider start metrics failed"); }
         this.pendingSessionStarted?.(serverEvent);
         this.pendingSessionStarted = null;
         this.pendingConnectReject = null;
@@ -722,16 +744,13 @@ export class LiveClient {
         this.ackRegistry.accept(serverEvent);
         this.onMuteAcknowledged?.(serverEvent);
         return;
-      case "session.usage.updated":
-        this.onUsage?.(
-          serverEvent.context_window === undefined
-            ? serverEvent.usage
-            : {
-                ...serverEvent.usage,
-                context_window: serverEvent.context_window,
-              },
-        );
+      case "session.usage.updated": {
+        const observation = { kind: "checkpoint" as const, ...serverEvent.usage };
+        this.observeAccounting(observation);
+        // Preserve the existing diagnostics callback shape; typed accounting uses its own independent sink.
+        this.onUsage?.({ ...serverEvent.usage, ...(serverEvent.context_window ? { context_window: serverEvent.context_window } : {}) });
         return;
+      }
       case "session.closed": {
         // A server-initiated session.closed enters the same non-error
         // closing path as a local close(): it stops new sends, suppresses
@@ -755,13 +774,15 @@ export class LiveClient {
           usageSeconds: serverEvent.usage?.seconds,
         };
         this.closeResult = result;
+        const observation = { kind: "provider_closed" as const, ...(serverEvent.usage?.seconds !== undefined ? { seconds: serverEvent.usage.seconds } : {}), ...(serverEvent.reason !== undefined ? { reason: serverEvent.reason } : {}) };
+        this.observeAccounting(observation);
         this.sessionClosedDeferred?.resolve(serverEvent);
         this.rejectPendingConnect(
           new Error("session.closed received before session.started"),
         );
         this.teardownTransportAndRelease();
-        this.onSessionClosed?.(serverEvent);
-        if (serverEvent.usage !== undefined) this.onUsage?.(serverEvent.usage);
+        try { this.onSessionClosed?.(serverEvent); }
+        finally { if (serverEvent.usage !== undefined) this.onUsage?.(serverEvent.usage); }
         return;
       }
       case "error": {

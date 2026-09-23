@@ -1,6 +1,6 @@
 # PR 3 — usage, active/speech time и отчёт по разговору
 
-**Статус:** `planned`, реализация не начата этим документом.  
+**Статус:** `in-progress` — [PR #17](https://github.com/gushinets/live-translator/pull/17), от merge `571a07273a5491b06767581b024ab753e8d66e2e`; не слито.
 **Зависимости:** Зависит от PR 2. Это первая измеримая контрольная точка G1; новый background lifecycle ещё выключен.  
 **Спецификация:** [v1.1](../../specs/2026-09-21-unit-economics-and-session-lifecycle.md).\
 **Общие ограничения и проверки:** [README плана](README.md).
@@ -71,3 +71,51 @@ Reporter можно выключить для новых conversations отде�
 ## Что приложить к PR
 
 Baseline SHA, связанные ADR/spec, список реально изменённых файлов, команды и вывод проверок, отмеченные критерии, новые известные ограничения и rollout/rollback policy. Не писать «все тесты прошли», если запускалась только часть. GitHub PR number появляется здесь только после фактического создания PR.
+
+
+## Реализация и проверка PR #17
+
+Source-aware merge встроен в existing `UsageLedger`: checkpoint, final, close/reason
+provenance и app sequence независимы. PUT `/api/live/session/:localId/usage` сохраняет
+только allowlisted metadata, source назначает сервер. GET `/api/conversations/:id`
+сохраняет прежний ответ и добавляет `summary`; owner check применяется ко всему ответу.
+Использованы уже существующие SQL001 columns, миграция схемы не требуется.
+
+Совместимость: legacy `LiveClient.onUsage` сохраняет raw snapshot для имеющихся
+диагностик. Новый discriminated `UsageObservation` получает отдельный accounting sink,
+привязанный к immutable localId; он видит close без seconds и local-unconfirmed,
+не зависит от product generation или исключения пользовательского callback.
+Это уточнение точки подключения, не второй close/release primitive.
+
+`UsageOutbox` использует тот же IndexedDB envelope/capacity, что PR 2. Producer hold
+установлен до dispatch; ACK usage с предыдущей revision не стирает новое значение,
+cleanup ACK не удаляет pending usage. Потерянный app producer не объявляется
+полностью измеренным. После no-provider результата локальная обязанность usage
+очищается, historical server row не заполняется фиктивными нулями.
+
+Пять новых технических counters расширяют существующий `ConversationMetrics`.
+Active/source measurements добавлены через metadata-only наблюдение переходов и
+pre-tail samples; thresholds, mute/ACK timing и background lifecycle не меняются.
+Длительности freeze-ятся при teardown; final counters снимаются следующей microtask
+после синхронных terminal product callbacks, не после network/IDB ожидания.
+
+### Карта автоматизированных проверок
+
+| Критерии | Модули / наблюдаемый результат |
+|---|---|
+| A3.1–A3.2 | `apps/api/test/usage.test.ts`: 15→28→15→43/final46, estimate90/final74, equal source upgrade, конфликт с обеими value/source. |
+| A3.3–A3.4 | `LiveUsage.test.ts`, `LiveEvents.test.ts`, `UsageReporter.test.ts`, existing ledger tests: независимый final, consumer exception, invalid/missing seconds, late final после terminal. |
+| A3.5 | `usage.test.ts`: app seq не фильтрует late final; regressions/unsupported versions отклоняются отдельно от valid provider observation. |
+| A3.6 | `UsageOutbox.test.ts`, existing `accounting.test.ts`: producer hold, revision ACK, cleanup isolation, restart/network retry, IDB degradation и owner read-back перед lost outcome. |
+| A3.7–A3.9 | `ActiveTimeMetrics.test.ts`, `SessionMetrics.test.ts`, `ConversationMetrics.test.ts`: source/inputReady=false учитывается, technical audible completion фиксируется до последующего steering failure, caption/correction различимы. |
+| A3.10 | `usage.test.ts`, `usage-accounting.spec.ts`: ownership/Origin/strict body, metadata-only report, provenance, NULL ratios и реальные browser/IndexedDB delivery hooks с fake HTTP/provider. |
+| A3.11–A3.13 | `SourceSpeechMetrics.test.ts`, `VoiceActivityMonitor.test.ts`, `UsageReporter.test.ts`: pre-tail 5000 ms, gap/backward clock partial, measured zero vs NULL, completed logical turn без повторного учёта. |
+
+[Воспроизводимый G1 mock report](../../experiments/2026-09-23-g1-mock-usage-report.md)
+генерируется из in-memory SQLite через фактический merge/report code. Это synthetic
+fixture, не замер OpenAI и не monetary calibration. Browser test требует установленных
+Playwright engines; отсутствие локального browser executable не считается прошедшим E2E.
+Фактические результаты CI и версия проверенного коммита фиксируются в PR #17.
+
+Флаг ledger остаётся выключенным по умолчанию. Real provider/device tests,
+production deploy, pricing и смена background/resume не выполнены этим этапом.

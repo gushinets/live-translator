@@ -16,6 +16,7 @@ export interface AudioActivityEvent {
  * source-audio tail to reach the Live session instead of racing input mute.
  */
 export class VoiceActivityMonitor {
+  onSample: ((event: AudioActivityEvent) => void) | null = null;
   onActivity: ((event: AudioActivityEvent) => void) | null = null;
 
   private reportedActive = false;
@@ -34,6 +35,13 @@ export class VoiceActivityMonitor {
   }
 
   pushRms(rms: number, playbackActive: boolean, atMs: number): void {
+    try { this.pushProductRms(rms, playbackActive, atMs); }
+    finally {
+      try { this.onSample?.({ active: this.estimator.active, atMs }); }
+      catch { console.error("Source sample metadata observer failed"); }
+    }
+  }
+  private pushProductRms(rms: number, playbackActive: boolean, atMs: number): void {
     this.estimator.pushRms(rms, playbackActive, atMs);
 
     if (this.estimator.active) {

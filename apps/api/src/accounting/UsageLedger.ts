@@ -1,3 +1,4 @@
+import { mergeUsage, mergeAppMetrics, type UsageReport } from "./mergeUsage.js";
 import { randomUUID } from "node:crypto";
 import type { DatabaseSync, SQLInputValue } from "node:sqlite";
 import { transaction } from "../persistence/database.js";
@@ -216,20 +217,7 @@ export class UsageLedger {
     const fields: Partial<SessionRow> = { state: "closed", close_confirmed: 1, closed_observed_at: s.closed_observed_at ?? now,
       lease_released_at: s.lease_released_at ?? now, last_report_received_at: now, cleanup_next_attempt_at: null, cleanup_blocked_at: null,
       close_confirmation_source: strength(source) > strength(s.close_confirmation_source) ? source : s.close_confirmation_source };
-    const { seconds, reason } = observation;
-    if (seconds !== undefined && Number.isFinite(seconds) && seconds >= 0) {
-      if (s.provider_final_seconds === null) { fields.provider_final_seconds = seconds; fields.provider_final_source = source; }
-      else if (s.provider_final_seconds === seconds && strength(source) > strength(s.provider_final_source)) fields.provider_final_source = source;
-      if ((s.provider_final_seconds !== null && s.provider_final_seconds !== seconds) || (s.provider_checkpoint_seconds !== null && seconds < s.provider_checkpoint_seconds)) {
-        fields.usage_conflict = 1;
-        fields.usage_conflict_details = s.usage_conflict_details ?? JSON.stringify({ kind: "conflicting_final", existing: s.provider_final_seconds ?? s.provider_checkpoint_seconds, incoming: seconds, receivedAt: now });
-      }
-    }
-    if (reason && reason.length <= 256 && !Array.from(reason).some(char => char.charCodeAt(0) < 32 || char.charCodeAt(0) === 127) && (s.provider_close_reason === null || strength(source) > strength(s.provider_close_reason_source))) {
-      fields.provider_close_reason = reason; fields.provider_close_reason_source = source;
-    }
-    const final = fields.provider_final_seconds ?? s.provider_final_seconds;
-    fields.usage_quality = fields.usage_conflict === 1 || s.usage_conflict === 1 ? "conflict" : final !== null ? "final" : s.provider_checkpoint_seconds !== null ? "partial" : "unknown";
+    Object.assign(fields, mergeUsage(s, { closed: observation }, source, now));
     this.updateAttempt(id, fields); return this.attempt(id);
   }
   recordProviderClosed(id: string, observation: CloseObservation, source: ObservationSource): SessionRow {
@@ -237,6 +225,27 @@ export class UsageLedger {
       const s = this.attempt(id);
       if (s.state === "failed" || s.provider_request_dispatched_at === null) return s;
       return this.closeInternal(id, observation, source);
+    });
+  }
+  /** One commit for the whole report; close uses the same primitive as PR-2 observers. */
+  recordUsage(owner: string, id: string, report: UsageReport, source: ObservationSource = "browser") {
+    return this.atomic(() => {
+      let row = this.ownedAttempt(owner, id);
+      const now = this.now();
+      if (row.provider_request_dispatched_at !== null && row.state !== "failed") {
+        this.updateAttempt(id, mergeUsage(row, { checkpointSeconds: report.checkpointSeconds }, source, now));
+        for (const closed of [report.providerClosed, report.conflictingProviderClosed]) if (closed) this.closeInternal(id, closed, source);
+      }
+      row = this.attempt(id);
+      const app = report.invalidAppMetrics ? { accepted: false, reason: "invalid_app_metrics", fields: {} }
+        : report.app ? mergeAppMetrics(row, report.app) : { accepted: true, fields: {} };
+      this.updateAttempt(id, { ...app.fields, last_report_received_at: now });
+      if (report.app && app.accepted && Object.keys(app.fields).length) {
+        const c = this.conversation(row.conversation_id);
+        this.updateConversation(c.id, { last_product_activity_received_at: now,
+          first_interpreter_observed_at: c.first_interpreter_observed_at ?? report.app.interpreterReadyObservedAt ?? null });
+      }
+      return { row: this.attempt(id), appAccepted: app.accepted, appRejection: app.reason };
     });
   }
   recordProviderTerminalNotLive(id: string): SessionRow {

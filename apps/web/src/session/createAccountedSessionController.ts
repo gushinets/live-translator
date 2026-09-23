@@ -1,3 +1,5 @@
+import type { ProductObservation } from "../metrics/UsageReporter";
+import type { UsageObservation } from "../metrics/UsageTypes";
 import { BackendClient } from "../api/BackendClient";
 import { AudioController } from "../audio/AudioController";
 import { LiveClient, type LiveCloseResult, type LiveClientDeps } from "../live/LiveClient";
@@ -9,11 +11,17 @@ import type { CleanupReason } from "./MetadataDeliveryBudget";
 class LazyAccounting implements NonNullable<LiveClientDeps["accounting"]> {
   private attempt: ProviderAccounting | undefined;
   private cancelled = false;
+  private lastProduct: ProductObservation | undefined;
+  observeProduct(value: ProductObservation) { this.lastProduct = value; this.attempt?.observeProduct(value); }
+  observeUsage(value: UsageObservation) { this.attempt?.observeUsage(value); }
+  providerStarted() { this.attempt?.providerStarted(); }
   constructor(private readonly scope: ConversationAccounting) {}
   get managed() { return this.attempt?.managed ?? false; }
   create(sdp: string, beforeDispatch?: () => void) {
     if (this.cancelled) return Promise.reject(new Error("Provider attempt cancelled"));
-    this.attempt ??= this.scope.newAttempt(); return this.attempt.create(sdp, beforeDispatch);
+    this.attempt ??= this.scope.newAttempt();
+    if (this.lastProduct) this.attempt.observeProduct(this.lastProduct);
+    return this.attempt.create(sdp, beforeDispatch);
   }
   async handoff() { await this.attempt?.handoff(); }
   async finish(result: LiveCloseResult) { this.cancelled = true; await this.attempt?.finish(result); }

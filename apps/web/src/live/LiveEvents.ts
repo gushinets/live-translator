@@ -175,6 +175,12 @@ export function parseLiveServerEvent(
       message: `Received malformed ${type} event`,
     };
   }
+  if (type === "session.closed") {
+    const seconds = isRecord(value.usage) ? value.usage.seconds : undefined;
+    const reason = typeof value.reason === "string" && value.reason.length > 0 && value.reason.length <= 256 && !Array.from(value.reason).some(c => c.charCodeAt(0) < 32 || c.charCodeAt(0) === 127) ? value.reason : undefined;
+    return { kind: "known", event: { type: "session.closed", ...(reason !== undefined ? { reason } : {}),
+      ...("usage" in value ? { usage: typeof seconds === "number" && Number.isFinite(seconds) && seconds >= 0 ? { seconds } : {} } : {}) } };
+  }
   return { kind: "known", event: value as unknown as LiveServerEvent };
 }
 
@@ -250,10 +256,8 @@ function hasValidPayload(
           hasValidContextWindow(value.context_window))
       );
     case "session.closed":
-      return (
-        hasOptionalString(value, "reason") &&
-        (!("usage" in value) || hasValidUsage(value.usage))
-      );
+      // Metering is optional and sanitized independently of terminal lifecycle.
+      return hasOptionalString(value, "reason");
     case "error": {
       const error = value.error;
       return (

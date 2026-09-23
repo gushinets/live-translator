@@ -1,3 +1,4 @@
+import type { UsageReport, UsageReceipt } from "../metrics/UsageTypes";
 import type { CreateLiveSessionResponse } from "./BackendClient";
 import type { CleanupReason, CloseMetadata } from "../session/MetadataDeliveryBudget";
 import type { AttemptProof, CleanupTransport } from "../session/CleanupIntentOutbox";
@@ -13,6 +14,7 @@ export interface AttemptMetadata extends AttemptProof {
   liveSessionId: string; handoffAcknowledgedAt: number | null; conversation: ConversationMetadata;
 }
 export interface LedgerApi extends CleanupTransport {
+  usage?(id: string, report: UsageReport, keepalive?: boolean): Promise<UsageReceipt>;
   policy(): Promise<{ usageLedgerEnabled: boolean; creationPaused?: boolean }>;
   createConversation(requestId: string): Promise<ConversationMetadata>;
   createSession(body: ProviderCreateBody, signal: AbortSignal): Promise<CreateLiveSessionResponse>;
@@ -24,12 +26,12 @@ export class AccountingRequestError extends Error {
   constructor(readonly status: number, readonly code: string) { super(code); }
 }
 export class AccountingBackend implements LedgerApi {
-  private async json<T>(url: string, method = "GET", body?: unknown, signal?: AbortSignal, timeoutMs = 10000): Promise<T> {
+  private async json<T>(url: string, method = "GET", body?: unknown, signal?: AbortSignal, timeoutMs = 10000, keepalive = false): Promise<T> {
     const controller = new AbortController(), abort = () => controller.abort();
     if (signal?.aborted) abort(); else signal?.addEventListener("abort", abort, { once: true });
     const timer = setTimeout(abort, timeoutMs);
     try {
-      const response = await fetch(url, { method, credentials: "same-origin", signal: controller.signal,
+      const response = await fetch(url, { method, keepalive, credentials: "same-origin", signal: controller.signal,
         ...(body !== undefined ? { headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) } : {}) });
       if (!response.ok) {
         const data = await response.json().catch(() => ({})) as { code?: string };
@@ -37,6 +39,9 @@ export class AccountingBackend implements LedgerApi {
       }
       return await response.json() as T;
     } finally { clearTimeout(timer); signal?.removeEventListener("abort", abort); }
+  }
+  usage(id: string, report: UsageReport, keepalive = false): Promise<UsageReceipt> {
+    return this.json(`/api/live/session/${encodeURIComponent(id)}/usage`, "PUT", report, undefined, 10000, keepalive);
   }
   async policy(): Promise<{ usageLedgerEnabled: boolean; creationPaused?: boolean }> {
     try { return await this.json("/api/policy"); }

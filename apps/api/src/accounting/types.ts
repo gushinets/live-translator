@@ -57,6 +57,12 @@ export interface SessionRow {
   provider_checkpoint_seconds: number | null; provider_final_seconds: number | null;
   provider_checkpoint_source: ObservationSource | null; provider_final_source: ObservationSource | null;
   usage_conflict: number; usage_conflict_details: string | null;
+  observed_wall_ms: number | null; setup_ms: number | null; active_interpreter_ms: number | null; visible_paused_ms: number | null;
+  last_checkpoint_at_interpreter_ready: number | null; last_checkpoint_received_at: number | null;
+  estimated_total_seconds: number | null; estimate_method_version: string | null; estimate_as_of: number | null;
+  measurement_version: string | null; activity_report_seq: number | null;
+  speech_measurement_version: string | null; speech_measurement_status: "complete" | "partial" | "unavailable" | null;
+  metrics_json: string | null; pricing_policy_version: string | null;
   usage_quality: "final" | "partial" | "unknown" | "conflict";
   accepted_source_speech_ms: number | null; completed_source_speech_ms: number | null; app_metrics_finalized: number;
 }
@@ -64,7 +70,7 @@ export interface AttemptInput {
   liveSessionId: string; conversationId: string; conversationVersion: number;
   initialMode: InitialMode; startReason: StartReason; fingerprint: string;
 }
-export interface CloseObservation { seconds?: number; reason?: string; }
+export interface CloseObservation { seconds?: number; reason?: string; invalidSeconds?: boolean; }
 export class LedgerError extends Error {
   constructor(public readonly code: string, public readonly status = 409) { super(code); this.name = "LedgerError"; }
 }

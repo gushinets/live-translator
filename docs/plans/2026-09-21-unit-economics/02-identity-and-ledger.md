@@ -1,6 +1,6 @@
 # PR 2 — anonymous identity, conversation и журнал попыток
 
-**Статус:** `in-progress` — реализация и проверки в [PR #15](https://github.com/gushinets/live-translator/pull/15); не слито.
+**Статус:** `completed` — реализация слита в [PR #15](https://github.com/gushinets/live-translator/pull/15), merge `571a07273a5491b06767581b024ab753e8d66e2e`. Это не подтверждение production rollout или provider/device gates.
 **Зависимости:** Зависит от PR 1. Внешние создания регистрируются, UX background пока прежний.  
 **Спецификация:** [v1.1](../../specs/2026-09-21-unit-economics-and-session-lifecycle.md).\
 **Общие ограничения и проверки:** [README плана](README.md).

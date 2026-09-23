@@ -1,3 +1,4 @@
+import { conversationSummary } from "../reports/conversationSummary.js";
 import { Router, type Request, type Response, type NextFunction } from "express";
 import { z } from "zod";
 import type { LedgerRuntime } from "../accounting/LedgerRuntime.js";
@@ -32,7 +33,8 @@ export function createConversationRouter(runtime: LedgerRuntime, identity: Anony
   router.get("/:id", (req, res) => {
     const owner = identity.require(req), id = uuidSchema.parse(req.params.id), c = ledger.getConversation(owner, id);
     identity.renew(res, owner); runtime.syncAdmission(); runtime.wake();
-    res.json({ ...publicConversation(c, ledger.now()), sessions: ledger.listAttempts(owner, id).map(publicAttempt) });
+    const sessions = ledger.listAttempts(owner, id);
+    res.json({ ...publicConversation(c, ledger.now()), sessions: sessions.map(publicAttempt), summary: conversationSummary(sessions) });
   });
   router.post("/:id/pause", (req, res) => {
     const body = parseBody(z.object({ expectedVersion: version }).strict(), req.body), owner = identity.require(req);
