@@ -134,4 +134,17 @@ describe("usage transport retries", () => {
     await out.finishProducer("id"); await out.flush();
     expect(transport.usage).toHaveBeenCalledTimes(2); expect(await b.get("id")).toBeNull(); await b.close();
   });
+  it("keeps the durable hold until an unpersisted terminal report is delivered", async () => {
+    const b = new MetadataDeliveryBudget({ indexedDB: new IDBFactory() }); await b.reserve("id", "c", true);
+    await b.enqueueClose("id", { seconds: 15 }); await b.acknowledgeCloseAndRelease("id");
+    vi.spyOn(b, "enqueueUsage").mockRejectedValue(new Error("quota"));
+    const transport = { usage: vi.fn().mockResolvedValue(ack), readConversation: vi.fn() }, out = new UsageOutbox(b, transport);
+    await out.enqueue("id", "c", { schemaVersion: 1, providerClosed: { reason: "done" } });
+    await out.finishProducer("id");
+    expect((await b.get("id"))?.usageProducerFinalized).toBe(false);
+    await out.flush();
+    expect((await b.get("id"))?.usageProducerFinalized).toBe(false);
+    await out.flush();
+    expect(transport.usage).toHaveBeenCalledTimes(1); expect(await b.get("id")).toBeNull(); await b.close();
+  });
 });
