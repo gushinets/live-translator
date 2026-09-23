@@ -1,0 +1,25 @@
+# Temporary read-only source export; removed before this PR is ready for review.
+name: PR4 source verification
+on:
+  pull_request:
+    paths:
+      - .github/workflows/pr4-source-verification.yml
+permissions:
+  contents: read
+jobs:
+  source:
+    if: github.repository == 'gushinets/live-translator' && github.head_ref == 'feat/graceful-session-boundaries' && github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          persist-credentials: false
+      - name: Export tracked source without Git configuration or runtime environment
+        run: git archive --format=tar.gz HEAD > "$RUNNER_TEMP/pr4-source.tar.gz"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: pr4-source
+          path: ${{ runner.temp }}/pr4-source.tar.gz
+          retention-days: 1
