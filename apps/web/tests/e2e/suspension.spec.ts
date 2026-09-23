@@ -78,6 +78,12 @@ async function installLiveStubs(page: Page): Promise<void> {
       }
       send(data: string): void {
         const message = JSON.parse(data) as { type: string; event_id?: string };
+        if (message.type === "session.close") {
+          queueMicrotask(() => this.dispatchEvent(new MessageEvent("message", {
+            data: JSON.stringify({ type: "session.closed", reason: "user_requested" }),
+          })));
+          return;
+        }
         const ackType = (
           {
             "session.instructions.append": "session.instructions.appended",
@@ -225,6 +231,8 @@ async function installLiveStubs(page: Page): Promise<void> {
   });
 
   await page.route("**/api/policy", route => route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ usageLedgerEnabled: false }) }));
+  await page.route("**/api/live/session/*", route => route.request().method() === "DELETE"
+    ? route.fulfill({ status: 204 }) : route.continue());
     await page.route("**/api/live/session", async (route) => {
     await route.fulfill({
       status: 200,

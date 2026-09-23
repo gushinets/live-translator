@@ -249,6 +249,8 @@ export class MockLiveHarness {
 
   private async installBackendStub(): Promise<void> {
     await this.page.route("**/api/policy", route => route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ usageLedgerEnabled: false }) }));
+    await this.page.route("**/api/live/session/*", route => route.request().method() === "DELETE"
+      ? route.fulfill({ status: 204 }) : route.continue());
     await this.page.route("**/api/live/session", async (route) => {
       this.liveSessionCreates += 1;
       await route.fulfill({
@@ -360,6 +362,12 @@ export class MockLiveHarness {
         send(data: string): void {
           const message = JSON.parse(data) as LiveHarnessSentEvent;
           sent.push(message);
+          if (message.type === "session.close") {
+            queueMicrotask(() => this.dispatchEvent(new MessageEvent("message", {
+              data: JSON.stringify({ type: "session.closed", reason: "user_requested" }),
+            })));
+            return;
+          }
           const ackType = ACK_TYPES[message.type];
           if (ackType === undefined || message.event_id === undefined) {
             return;
