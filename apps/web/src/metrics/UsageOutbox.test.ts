@@ -164,5 +164,27 @@ describe("usage transport retries", () => {
     }
     await b.close();
   });
+
+  it("releases an orphaned terminal reservation after expiry and outbox reload", async () => {
+    const indexedDB = new IDBFactory(), name = "orphaned-terminal-reload";
+    const now = Date.now(), b = new MetadataDeliveryBudget({ indexedDB, name, capacity: 1 });
+    const oldClock = vi.spyOn(Date, "now").mockReturnValue(now - 8 * 86400000);
+    await b.reserve("id", "c", true); oldClock.mockRestore();
+    await b.enqueueClose("id", { seconds: 15 }); await b.acknowledgeCloseAndRelease("id");
+    vi.spyOn(b, "enqueueUsage").mockRejectedValue(new Error("quota"));
+    const firstTransport = { usage: vi.fn().mockRejectedValue(new Error("offline")), readConversation: vi.fn() };
+    const first = new UsageOutbox(b, firstTransport);
+    await first.enqueue("id", "c", { schemaVersion: 1, providerClosed: { reason: "done" } });
+    await first.finishProducer("id"); await first.flush();
+    expect((await b.get("id"))?.usage).toBeNull(); expect(firstTransport.usage).toHaveBeenCalledTimes(1);
+    await b.close();
+
+    const reloaded = new MetadataDeliveryBudget({ indexedDB, name, capacity: 1 }), anomaly = vi.fn();
+    const transport = { usage: vi.fn().mockResolvedValue(ack), readConversation: vi.fn() };
+    await new UsageOutbox(reloaded, transport, anomaly).flush();
+    expect(transport.usage).not.toHaveBeenCalled(); expect(await reloaded.get("id")).toBeNull();
+    expect(anomaly).toHaveBeenCalledWith("usage_delivery_expired");
+    await expect(reloaded.reserve("next", "c", true)).resolves.toBeUndefined(); await reloaded.close();
+  });
 });
 
