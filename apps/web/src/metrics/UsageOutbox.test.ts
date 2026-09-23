@@ -203,5 +203,26 @@ describe("usage transport retries", () => {
     setNow.mockRestore(); await b.close();
   });
 
+  it("keeps a volatile report when the first expiry lookup and persistence fail", async () => {
+    const b = new MetadataDeliveryBudget({ indexedDB: new IDBFactory() });
+    const transport = { usage: vi.fn().mockResolvedValue(ack), readConversation: vi.fn() };
+    const out = new UsageOutbox(b, transport);
+    await out.flush(); // The outbox can start before this attempt is reserved.
+    await b.reserve("id", "c", true);
+    vi.spyOn(b, "get").mockRejectedValueOnce(new Error("unavailable"));
+    vi.spyOn(b, "enqueueUsage").mockRejectedValueOnce(new Error("unavailable"));
+    vi.spyOn(b, "entries").mockRejectedValueOnce(new Error("unavailable"));
+
+    await out.enqueue("id", "c", closed(46));
+    await out.flush();
+    expect(transport.usage).not.toHaveBeenCalled();
+
+    await out.flush();
+    expect(transport.usage).toHaveBeenCalledWith("id", closed(46), false);
+    await out.finishProducer("id"); await out.flush();
+    expect((await b.get("id"))?.usage).toBeNull(); await b.close();
+  });
+
 });
+
 

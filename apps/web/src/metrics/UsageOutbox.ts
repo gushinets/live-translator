@@ -6,7 +6,7 @@ export interface UsageTransport {
 }
 const statusOf = (error: unknown) => error && typeof error === "object" && "status" in error ? Number(error.status) : 0;
 const USAGE_TTL = 7 * 86400000;
-interface VolatileReport { conversationId: string; report: UsageReport; expiresAt: number; persisted: boolean; delivered: boolean; }
+interface VolatileReport { conversationId: string; report: UsageReport; expiresAt: number | undefined; persisted: boolean; delivered: boolean; }
 
 /** Delivery is independent of the current conversation, transport and product generation. */
 export class UsageOutbox {
@@ -26,7 +26,7 @@ export class UsageOutbox {
     let expiresAt = old?.expiresAt ?? this.reservationExpiry.get(localId);
     if (expiresAt === undefined) {
       try { const row = await this.budget.get(localId); expiresAt = row ? row.usage?.expiresAt ?? row.reservedAt + USAGE_TTL : Date.now(); }
-      catch { expiresAt = Date.now(); }
+      catch { /* Keep the report until its original reservation expiry can be recovered. */ }
     }
     const pending: VolatileReport = { conversationId, report: coalesceUsage(old?.report, report), expiresAt, persisted: false, delivered: false };
     this.volatile.set(localId, pending);
@@ -117,8 +117,10 @@ export class UsageOutbox {
       const rows = await this.budget.entries();
       const live = new Set(rows.map(row => row.localId));
       for (const id of this.reservationExpiry.keys()) if (!live.has(id)) this.reservationExpiry.delete(id);
+      for (const [id, shadow] of this.volatile) if (shadow.expiresAt === undefined && !live.has(id)) shadow.expiresAt = Date.now();
       for (const row of rows) {
-        this.reservationExpiry.set(row.localId, row.usage?.expiresAt ?? row.reservedAt + USAGE_TTL);
+        const expiresAt = row.usage?.expiresAt ?? row.reservedAt + USAGE_TTL;
+        this.reservationExpiry.set(row.localId, expiresAt);
         if (this.pendingDiscard.has(row.localId)) continue;
         if (row.producerOutcome === "no_provider") {
           this.pendingDiscard.add(row.localId);
@@ -128,6 +130,7 @@ export class UsageOutbox {
         }
         let queued = row.usage;
         let shadow = this.volatile.get(row.localId);
+        if (shadow && shadow.expiresAt === undefined) shadow.expiresAt = expiresAt;
         if (shadow?.delivered) {
           if (queued) await this.budget.acknowledgeUsage(row.localId, queued.revision);
           if (this.volatile.get(row.localId) === shadow) this.volatile.delete(row.localId);
@@ -170,6 +173,7 @@ export class UsageOutbox {
     } catch { this.anomaly("usage_storage_degraded"); pending = true; storageAvailable = false; }
     for (const [id, row] of [...this.volatile]) {
       if (this.pendingDiscard.has(id) || row.delivered || (storageAvailable && row.persisted)) continue;
+      if (row.expiresAt === undefined) { pending = true; continue; }
       if (Date.now() >= row.expiresAt) { this.anomaly("usage_volatile_expired"); this.pendingDiscard.add(id); this.pendingFinalization.delete(id); if (this.volatile.get(id) === row) this.volatile.delete(id); pending = true; continue; }
       const outcome = await this.send(id, row.conversationId, row.report);
       if (outcome === "ack" && this.volatile.get(id) === row) row.delivered = true;
@@ -181,4 +185,5 @@ export class UsageOutbox {
     else { this.failures = 0; if (this.timer !== undefined) clearTimeout(this.timer); this.timer = undefined; }
   }
 }
+
 
