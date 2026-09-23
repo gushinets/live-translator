@@ -78,8 +78,10 @@ describe("cumulative usage ingestion", () => {
     await other.put(`/api/live/session/${f.id}/usage`).set("Origin", origin).send({ schemaVersion: 1, checkpointSeconds: 3 }).expect(404);
     await f.agent.put(`/api/live/session/${f.id}/usage`).send({ schemaVersion: 1, checkpointSeconds: 3 }).expect(403);
     for (const extra of [{ source: "sideband" }, { transcript: "secret" }, { openaiSessionId: "spoofed" }]) await f.put({ checkpointSeconds: 3, ...extra }).expect(400);
-    await f.put({ app: { ...totals(1), counters: { transcript: "secret" } } }).expect(400);
+    const invalidApp = await f.put({ app: { ...totals(1), counters: { transcript: "secret" } } }).expect(200);
+    expect(invalidApp.body).toMatchObject({ appAccepted: false, appRejection: "invalid_app_metrics" });
     expect(f.row().provider_checkpoint_seconds).toBeNull();
+    expect(f.row().activity_report_seq).toBeNull();
   });
   it("commits provider and app metadata atomically before ACK; retry is safe", async () => {
     const f = await fixture(), exec = f.db.exec.bind(f.db);
@@ -132,6 +134,13 @@ it("rejects an unsupported measurement version independently from a valid final"
   const result = await f.put({ providerClosed: { seconds: 46 }, app: totals(1, { measurementVersion: "active-time-v2" }) }).expect(200);
   expect(result.body.appAccepted).toBe(false); expect(f.row().provider_final_seconds).toBe(46);
   expect(f.row().activity_report_seq).toBeNull();
+});
+
+it("rejects malformed app metrics independently from a valid final", async () => {
+  const f = await fixture();
+  const result = await f.put({ providerClosed: { seconds: 46 }, app: { activityReportSeq: 1 } }).expect(200);
+  expect(result.body).toMatchObject({ appAccepted: false, appRejection: "invalid_app_metrics" });
+  expect(f.row()).toMatchObject({ provider_final_seconds: 46, activity_report_seq: null });
 });
 
 it("updates checkpoint provenance only for the max value or an equal stronger observation", async () => {

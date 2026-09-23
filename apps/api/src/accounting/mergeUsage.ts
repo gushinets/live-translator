@@ -36,13 +36,28 @@ const closeSchema = z.object({ seconds: z.unknown().optional(), reason: z.unknow
   ...(validReason(value.reason) ? { reason: value.reason } : {}),
   ...(value.seconds !== undefined && !validSeconds(value.seconds) ? { invalidSeconds: true } : {}),
 }));
+type UsageCloseReport = z.output<typeof closeSchema>;
+export interface UsageReport {
+  schemaVersion: 1;
+  checkpointSeconds?: number;
+  providerClosed?: UsageCloseReport;
+  conflictingProviderClosed?: UsageCloseReport;
+  localCloseUnconfirmed?: true;
+  app?: AppMetricsReport;
+  invalidAppMetrics?: true;
+}
 export const usageReportSchema = z.object({
   schemaVersion: z.literal(1), checkpointSeconds: nonNegative.optional(),
   providerClosed: closeSchema.optional(), conflictingProviderClosed: closeSchema.optional(),
-  localCloseUnconfirmed: z.literal(true).optional(), app: appMetricsSchema.optional(),
-}).strict().refine(value => value.checkpointSeconds !== undefined || value.providerClosed !== undefined || value.localCloseUnconfirmed || value.app,
-  "Empty usage report").refine(value => !value.conflictingProviderClosed || value.providerClosed, "Conflict requires original close observation");
-export type UsageReport = z.infer<typeof usageReportSchema>;
+  localCloseUnconfirmed: z.literal(true).optional(), app: z.unknown().optional(),
+}).strict().refine(value => value.checkpointSeconds !== undefined || value.providerClosed !== undefined || value.localCloseUnconfirmed || value.app !== undefined,
+  "Empty usage report").refine(value => !value.conflictingProviderClosed || value.providerClosed, "Conflict requires original close observation")
+  .transform(value => {
+    const { app: rawApp, ...report } = value;
+    if (rawApp === undefined) return report;
+    const app = appMetricsSchema.safeParse(rawApp);
+    return app.success ? { ...report, app: app.data } : { ...report, invalidAppMetrics: true as const };
+  }) as unknown as z.ZodType<UsageReport>;
 const strength = (source: ObservationSource | null) => source === "sideband" ? 2 : source === "browser" ? 1 : 0;
 
 /** Pure numeric/reason merge. Lifecycle and cooperative release remain in UsageLedger.closeInternal. */

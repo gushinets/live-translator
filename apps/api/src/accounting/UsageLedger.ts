@@ -237,7 +237,8 @@ export class UsageLedger {
         for (const closed of [report.providerClosed, report.conflictingProviderClosed]) if (closed) this.closeInternal(id, closed, source);
       }
       row = this.attempt(id);
-      const app = report.app ? mergeAppMetrics(row, report.app) : { accepted: true, fields: {} };
+      const app = report.invalidAppMetrics ? { accepted: false, reason: "invalid_app_metrics", fields: {} }
+        : report.app ? mergeAppMetrics(row, report.app) : { accepted: true, fields: {} };
       this.updateAttempt(id, { ...app.fields, last_report_received_at: now });
       if (report.app && app.accepted && Object.keys(app.fields).length) {
         const c = this.conversation(row.conversation_id);
