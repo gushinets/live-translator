@@ -172,11 +172,12 @@ describe("usage transport retries", () => {
     await b.reserve("id", "c", true); oldClock.mockRestore();
     await b.enqueueClose("id", { seconds: 15 }); await b.acknowledgeCloseAndRelease("id");
     vi.spyOn(b, "enqueueUsage").mockRejectedValue(new Error("quota"));
+    vi.spyOn(b, "entries").mockRejectedValueOnce(new Error("unavailable"));
     const firstTransport = { usage: vi.fn().mockRejectedValue(new Error("offline")), readConversation: vi.fn() };
     const first = new UsageOutbox(b, firstTransport);
     await first.enqueue("id", "c", { schemaVersion: 1, providerClosed: { reason: "done" } });
     await first.finishProducer("id"); await first.flush();
-    expect((await b.get("id"))?.usage).toBeNull(); expect(firstTransport.usage).toHaveBeenCalledTimes(1);
+    expect((await b.get("id"))?.usage).toBeNull(); expect(firstTransport.usage).not.toHaveBeenCalled();
     await b.close();
 
     const reloaded = new MetadataDeliveryBudget({ indexedDB, name, capacity: 1 }), anomaly = vi.fn();
