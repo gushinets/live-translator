@@ -147,4 +147,22 @@ describe("usage transport retries", () => {
     await out.flush();
     expect(transport.usage).toHaveBeenCalledTimes(1); expect(await b.get("id")).toBeNull(); await b.close();
   });
+  it("clears delivered volatile shadows after immediate and retried finalization", async () => {
+    const b = new MetadataDeliveryBudget({ indexedDB: new IDBFactory() });
+    const transport = { usage: vi.fn().mockResolvedValue(ack), readConversation: vi.fn() }, out = new UsageOutbox(b, transport);
+    const shadows = (out as unknown as { volatile: Map<string, unknown> }).volatile;
+    for (const id of ["immediate", "retried"]) {
+      await b.reserve(id, "c", true); await b.finishProducer(id, "provider_closed");
+      vi.spyOn(b, "enqueueUsage").mockRejectedValue(new Error("quota"));
+      vi.spyOn(b, "entries").mockRejectedValue(new Error("unavailable"));
+      await out.enqueue(id, "c", closed(46));
+      if (id === "retried") await out.finishProducer(id);
+      await out.flush();
+      if (id === "immediate") await out.finishProducer(id);
+      else await out.flush();
+      expect(shadows.has(id)).toBe(false);
+    }
+    await b.close();
+  });
 });
+
