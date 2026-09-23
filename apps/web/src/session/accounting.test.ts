@@ -142,6 +142,24 @@ describe("cleanup and End delivery", () => {
     expect(f.api.end).toHaveBeenCalledWith(f.c.conversationId, f.c.version, "user_end");
     await f.budget.close();
   });
+  it("sends a persisted End after direct cleanup proof when IndexedDB later fails", async () => {
+    const f = fixture(), attempt = f.scope.newAttempt(); await attempt.create("offer");
+    await f.scope.stageEnd("user_end");
+    const enqueueEnd = f.scope.outbox.enqueueEnd.bind(f.scope.outbox);
+    vi.spyOn(f.scope.outbox, "enqueueEnd").mockImplementation(async (...args) => {
+      await enqueueEnd(...args);
+      vi.spyOn(f.scope.outbox, "enqueue").mockRejectedValue(new Error("storage unavailable"));
+      vi.spyOn(f.budget, "acknowledgeDirectCleanupAndRelease").mockRejectedValue(new Error("storage unavailable"));
+      vi.spyOn(f.budget, "entries").mockRejectedValue(new Error("storage unavailable"));
+      vi.spyOn(f.budget, "get").mockRejectedValue(new Error("storage unavailable"));
+    });
+
+    await f.scope.end("user_end");
+
+    expect(f.api.cleanup).toHaveBeenCalledWith(attempt.localId, "user_end");
+    expect(f.api.end).toHaveBeenCalledWith(f.c.conversationId, f.c.version, "user_end");
+    await f.budget.close();
+  });
   it("flushes a failed degraded direct End before the next managed create", async () => {
     const f = fixture(); const attempt = f.scope.newAttempt(); await attempt.create("offer");
     const revision = f.scope.revision;
@@ -205,6 +223,24 @@ describe("controller-owned conversation accounting", () => {
     expect((await f.budget.get(attempt.localId))?.cleanup ?? null).toBeNull();
     expect((await f.budget.ends())[0]?.cleanupLocalIds).toEqual([]);
     await f.scope.outbox.flush();
+    expect(f.api.cleanup).not.toHaveBeenCalled();
+    expect(f.api.end).toHaveBeenCalledWith(f.c.conversationId, f.c.version, "setup_cancel");
+    await f.budget.close();
+  });
+
+  it("sends a staged End after definitive no-provider proof when IndexedDB later fails", async () => {
+    const f = fixture(), attempt = f.scope.newAttempt();
+    let rejectCreate!: (error: Error) => void;
+    f.api.createSession.mockImplementationOnce(() => new Promise((_resolve, reject) => { rejectCreate = reject; }));
+    const creating = attempt.create("offer").catch(error => error);
+    await vi.waitFor(() => expect(rejectCreate).toBeDefined());
+    await f.scope.stageEnd("setup_cancel");
+    rejectCreate(new AccountingRequestError(404, "attempt_registration_unavailable"));
+    await creating;
+    vi.spyOn(f.budget, "entries").mockRejectedValue(new Error("storage unavailable"));
+
+    await f.scope.end("setup_cancel");
+
     expect(f.api.cleanup).not.toHaveBeenCalled();
     expect(f.api.end).toHaveBeenCalledWith(f.c.conversationId, f.c.version, "setup_cancel");
     await f.budget.close();
@@ -411,6 +447,27 @@ describe("stage 4 durable lifecycle boundary", () => {
     await f.scope.stageEnd("user_end");
 
     expect((await f.budget.ends())[0]?.cleanupLocalIds).toEqual([attempt.localId]);
+    await f.budget.close();
+  });
+  it("requires proof before treating a direct closed response as retirement", async () => {
+    const f = fixture(), attempt = f.scope.newAttempt(); await attempt.create("offer");
+    vi.spyOn(f.scope.outbox, "observeClosed").mockRejectedValue(new Error("storage unavailable"));
+    f.api.closed.mockResolvedValue({ state: "creating", closeConfirmed: false });
+
+    await expect(attempt.finish({ finalized: true, usageSeconds: 7 })).rejects.toThrow("close was not confirmed");
+    expect(attempt.finished).toBe(false);
+    await f.budget.close();
+  });
+  it("delivers cleanup already committed before End instead of deferring it forever", async () => {
+    const f = fixture(), attempt = f.scope.newAttempt();
+    await attempt.create("offer");
+    await attempt.abandon("hidden");
+    await f.scope.stageEnd("user_end");
+    await f.scope.end("user_end");
+    await f.scope.outbox.flush();
+
+    expect(f.api.cleanup).toHaveBeenCalledWith(attempt.localId, "hidden");
+    expect(f.api.end).toHaveBeenCalledWith(f.c.conversationId, f.c.version, "user_end");
     await f.budget.close();
   });
 

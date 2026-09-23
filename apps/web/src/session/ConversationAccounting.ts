@@ -191,6 +191,10 @@ export class ConversationAccounting {
       this.pendingDirectCloseAcks.delete(localId);
     }
   }
+  noteNoProviderRetirement(localId: string): void {
+    this.directRetirementProofs.add(localId);
+    this.outbox.confirmRetirement(localId);
+  }
   async stageEnd(reason: "user_end" | "setup_cancel", expectedEpoch = this.epoch): Promise<void> {
     if (expectedEpoch !== this.epoch) return;
     const attempts = [...this.attempts];
@@ -198,9 +202,9 @@ export class ConversationAccounting {
     if (!c) return;
     // Persist intent before waiting for provider final. Do not terminate the usage producer
     // or enqueue HTTP here: a crash can replay both stores, and a late final remains valid.
-    const dispatched = attempts.filter(a => a.dispatched).map(a => a.localId);
-    this.outbox.deferCleanup(dispatched);
-    await this.outbox.enqueueEnd(c.conversationId, c.version, reason, dispatched);
+    const dispatched = attempts.filter(a => a.dispatched);
+    this.outbox.deferCleanup(dispatched.filter(a => !a.finished).map(a => a.localId));
+    await this.outbox.enqueueEnd(c.conversationId, c.version, reason, dispatched.map(a => a.localId));
   }
 
   async end(reason: "user_end" | "setup_cancel", expectedEpoch = this.epoch): Promise<void> {
@@ -239,15 +243,15 @@ export class ConversationAccounting {
     const dispatchedFailure = results.find((r, i) => r.status === "rejected" && boundary.attempts[i]!.dispatched);
     if (!persisted && dispatchedFailure?.status === "rejected") throw dispatchedFailure.reason;
     if (c) {
-      if (persisted) void this.outbox.flush().catch(() => console.error("Conversation end delivery pending"));
-      else {
+      const dispatched = boundary.attempts.filter(a => a.dispatched);
+      if (!persisted || dispatched.every(a => this.directRetirementProofs.has(a.localId))) {
         const intent = this.pendingDirectEnds.get(boundary.epoch) ?? {
           conversationId: c.conversationId, version: c.version, reason: boundary.reason, epoch: boundary.epoch,
-          cleanupLocalIds: boundary.attempts.filter(a => a.dispatched).map(a => a.localId),
+          cleanupLocalIds: dispatched.map(a => a.localId),
         };
         this.pendingDirectEnds.set(boundary.epoch, intent);
         await this.deliverDirectEnd(intent);
-      }
+      } else void this.outbox.flush().catch(() => console.error("Conversation end delivery pending"));
     }
     this.pendingEndBoundaries.delete(boundary.epoch);
     const failure = results.find(r => r.status === "rejected");
@@ -294,7 +298,7 @@ export class ProviderAccounting {
         await this.reporter?.noProvider();
         if (!this.reporter && this.scope.usageOutbox) await this.scope.usageOutbox.noProvider(this.localId);
         await this.scope.budget.finishProducerAndRelease(this.localId, "no_provider");
-        this.scope.outbox.confirmRetirement(this.localId);
+        this.scope.noteNoProviderRetirement(this.localId);
         this.scope.noteNoProvider(this);
         this.finished = true;
       } else {
@@ -363,7 +367,10 @@ export class ProviderAccounting {
         await this.scope.outbox.observeClosed(this.localId, observation);
       } catch {
         console.error("Provider close metadata storage degraded", { localId: this.localId });
-        await this.scope.api.closed(this.localId, observation);
+        const proof = await this.scope.api.closed(this.localId, observation);
+        if (proof.closeConfirmed !== true && proof.state !== "closed" && !(proof.state === "failed" && !proof.openaiSessionId)) {
+          throw new Error("Provider close was not confirmed");
+        }
         await this.scope.acknowledgeDirectClose(this.localId);
       }
       this.finished = true;
