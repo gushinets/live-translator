@@ -5,11 +5,13 @@ export interface UsageTransport {
   readConversation(conversationId: string): Promise<unknown>;
 }
 const statusOf = (error: unknown) => error && typeof error === "object" && "status" in error ? Number(error.status) : 0;
+const USAGE_TTL = 7 * 86400000;
 interface VolatileReport { conversationId: string; report: UsageReport; expiresAt: number; persisted: boolean; delivered: boolean; }
 
 /** Delivery is independent of the current conversation, transport and product generation. */
 export class UsageOutbox {
   private readonly volatile = new Map<string, VolatileReport>();
+  private readonly reservationExpiry = new Map<string, number>();
   private readonly pendingFinalization = new Set<string>();
   private readonly pendingDiscard = new Set<string>();
   private flushing: Promise<void> | null = null;
@@ -21,7 +23,12 @@ export class UsageOutbox {
     private readonly anomaly: (code: string) => void = code => console.error("Usage delivery anomaly", { code })) {}
   async enqueue(localId: string, conversationId: string, report: UsageReport): Promise<void> {
     const old = this.volatile.get(localId);
-    const pending: VolatileReport = { conversationId, report: coalesceUsage(old?.report, report), expiresAt: old?.expiresAt ?? Date.now() + 7 * 86400000, persisted: false, delivered: false };
+    let expiresAt = old?.expiresAt ?? this.reservationExpiry.get(localId);
+    if (expiresAt === undefined) {
+      try { const row = await this.budget.get(localId); expiresAt = row ? row.usage?.expiresAt ?? row.reservedAt + USAGE_TTL : Date.now(); }
+      catch { expiresAt = Date.now(); }
+    }
+    const pending: VolatileReport = { conversationId, report: coalesceUsage(old?.report, report), expiresAt, persisted: false, delivered: false };
     this.volatile.set(localId, pending);
     try { await this.budget.enqueueUsage(localId, pending.report); pending.persisted = true; }
     catch {
@@ -107,7 +114,11 @@ export class UsageOutbox {
     }
     let storageAvailable = true;
     try {
-      for (const row of await this.budget.entries()) {
+      const rows = await this.budget.entries();
+      const live = new Set(rows.map(row => row.localId));
+      for (const id of this.reservationExpiry.keys()) if (!live.has(id)) this.reservationExpiry.delete(id);
+      for (const row of rows) {
+        this.reservationExpiry.set(row.localId, row.usage?.expiresAt ?? row.reservedAt + USAGE_TTL);
         if (this.pendingDiscard.has(row.localId)) continue;
         if (row.producerOutcome === "no_provider") {
           this.pendingDiscard.add(row.localId);
