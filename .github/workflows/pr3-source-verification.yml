@@ -1,0 +1,25 @@
+# Temporary read-only export for an offline verification environment; removed before review.
+name: PR3 source verification
+on:
+  pull_request:
+    paths:
+      - .github/workflows/pr3-source-verification.yml
+permissions:
+  contents: read
+jobs:
+  source:
+    if: github.repository == 'gushinets/live-translator' && github.head_ref == 'feat/usage-and-product-metrics' && github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          persist-credentials: false
+      - name: Export tracked source without credentials or runtime data
+        run: git archive --format=tar.gz --output=/tmp/pr3-source.tar.gz HEAD
+      - uses: actions/upload-artifact@v4
+        with:
+          name: pr3-source
+          path: /tmp/pr3-source.tar.gz
+          retention-days: 1
