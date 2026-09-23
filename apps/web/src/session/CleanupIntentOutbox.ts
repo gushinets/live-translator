@@ -74,6 +74,7 @@ export class CleanupIntentOutbox {
     }
     for (const intent of await this.budget.ends()) {
       if (Date.now() >= intent.expiresAt) { this.anomaly("conversation_end_expired"); await this.budget.acknowledgeEnd(intent.conversationId, intent.expectedVersion); continue; }
+      if ((intent.cleanupLocalIds?.length ?? 0) > 0) { pending = true; continue; }
       try {
         if (!this.transport.end) { pending = true; continue; }
         const result = await this.transport.end(intent.conversationId, intent.expectedVersion, intent.reason);

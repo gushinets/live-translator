@@ -248,7 +248,7 @@ class DispatchableAudioContext extends EventTarget {
   }
 }
 
-function createDispatchableAudio(): {
+function createDispatchableAudio(getUserMedia?: () => Promise<MediaStream>): {
   audio: AudioController;
   track: DispatchableMicTrack;
   audioContext: DispatchableAudioContext;
@@ -258,7 +258,7 @@ function createDispatchableAudio(): {
   const audioElement = document.createElement("audio");
   audioElement.play = vi.fn().mockResolvedValue(undefined);
   const audio = new AudioController({
-    getUserMedia: async () =>
+    getUserMedia: getUserMedia ?? (async () =>
       ({
         getAudioTracks: () => [track],
         getTracks: () => [track],
@@ -269,7 +269,7 @@ function createDispatchableAudio(): {
             throw new Error("Nested MediaStream.clone is not used");
           },
         }),
-      }) as unknown as MediaStream,
+      }) as unknown as MediaStream),
     createAudioContext: () => audioContext as unknown as AudioContext,
     audioElement,
   });
@@ -1198,6 +1198,31 @@ describe("SessionController", () => {
     await controller.startContextCapture();
     expect(audio.startCapture).toHaveBeenCalledTimes(2);
     expect(controller.session.state).toBe("context");
+  });
+
+  it("cancels pending real microphone capture before its track exists", async () => {
+    let grant!: (stream: MediaStream) => void;
+    const { audio, track } = createDispatchableAudio(() => new Promise(resolve => { grant = resolve; }));
+    const stream = {
+      getAudioTracks: () => [track],
+      getTracks: () => [track],
+      clone: () => ({
+        getAudioTracks: () => [new DispatchableMicTrack()],
+        getTracks: () => [new DispatchableMicTrack()],
+      }),
+    } as unknown as MediaStream;
+    const { controller } = createController({ audio });
+
+    const starting = controller.startContextCapture();
+    await vi.waitFor(() => expect(grant).toBeTypeOf("function"));
+    const cancelling = controller.cancel();
+    grant(stream);
+
+    await expect(cancelling).resolves.toBeUndefined();
+    await expect(starting).resolves.toBeUndefined();
+    expect(controller.session.state).toBe("idle");
+    expect(controller.isConnectInFlight).toBe(false);
+    expect(audio.getCaptureStream()).toBeNull();
   });
 
   it("swallows a late primeOutput rejection after cancel and still stops a late capture stream", async () => {

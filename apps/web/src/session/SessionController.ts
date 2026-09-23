@@ -904,7 +904,7 @@ export class SessionController {
   protected async finishConversationRetirement(reason: "user_end" | "setup_cancel"): Promise<void> { void reason; }
 
   private stopLocalMedia(): void {
-    this.audio.setCaptureEnabled(false);
+    if (this.audio.getCaptureStream() !== null) this.audio.setCaptureEnabled(false);
     this.audio.setOutputAudible(false);
     this.resetRemotePlaybackTracking();
     this.audio.audioElement.srcObject = null;

@@ -60,6 +60,7 @@ export class ConversationAccounting {
     this.budget = options.budget ?? new MetadataDeliveryBudget({ producerId: this.producerId });
     this.outbox = new CleanupIntentOutbox(this.budget, this.api); this.autoDelivery = options.autoDelivery ?? true;
     if (this.api.usage) this.usageOutbox = new UsageOutbox(this.budget, { usage: this.api.usage.bind(this.api), readConversation: this.api.readConversation.bind(this.api) });
+    if (this.autoDelivery) { this.outbox.start(); this.usageOutbox?.start(); }
   }
   get revision() { return this.epoch; }
   get conversationId(): string | null { return this.current?.conversationId ?? null; }
@@ -111,7 +112,6 @@ export class ConversationAccounting {
     await this.holdProducerLock();
     this.creating ??= this.api.createConversation(this.requestId).catch(error => { this.creating = undefined; throw error; });
     const c = await this.creating; attempt.assertCurrent(); this.current = c;
-    if (this.autoDelivery) { this.outbox.start(); this.usageOutbox?.start(); }
     // close() only joins local media retirement; do not race its pending durable write.
     if (this.last && this.last !== attempt && this.last.dispatched) await this.last.waitForRetirement();
     await this.outbox.flush(); attempt.assertCurrent();

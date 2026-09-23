@@ -8,7 +8,7 @@ export interface MetadataEnvelope {
   cleanup: { reason: CleanupReason; createdAt: number; expiresAt: number } | null;
   closeObservation: CloseMetadata | null; usagePending: boolean; usage?: QueuedUsage | null; usageRevision?: number; usageProducerFinalized?: boolean;
 }
-export interface EndIntent { conversationId: string; expectedVersion: number; reason: "user_end" | "setup_cancel"; expiresAt: number; }
+export interface EndIntent { conversationId: string; expectedVersion: number; reason: "user_end" | "setup_cancel"; expiresAt: number; cleanupLocalIds: string[]; }
 const TTL = 7 * 86400000;
 
 /** One origin-wide envelope per localId. Every pre-dispatch mutation waits for IDB commit. */
@@ -100,10 +100,27 @@ export class MetadataDeliveryBudget {
     return row.producerFinalized && row.producerOutcome !== null && !row.cleanup && !row.closeObservation && !row.usagePending;
   }
   acknowledgeCleanupAndRelease(localId: string): Promise<void> {
-    return this.change(localId, row => {
-      const next = { ...row, cleanup: null, producerFinalized: true, producerOutcome: row.producerOutcome ?? "lost" as const };
-      return this.releasable(next) ? null : next;
-    });
+    return this.transaction("readwrite", (store, result, _fail, tx) => {
+      const get = store.get(localId);
+      get.onsuccess = () => {
+        const row = get.result as MetadataEnvelope | undefined;
+        if (row) {
+          const next = { ...row, cleanup: null, producerFinalized: true, producerOutcome: row.producerOutcome ?? "lost" as const };
+          if (this.releasable(next)) store.delete(localId); else store.put(next);
+        }
+        const ends = tx.objectStore("lifecycle").getAll();
+        ends.onsuccess = () => {
+          const lifecycle = tx.objectStore("lifecycle");
+          for (const intent of ends.result as EndIntent[]) {
+            const cleanupLocalIds = intent.cleanupLocalIds ?? [];
+            if (cleanupLocalIds.includes(localId)) {
+              lifecycle.put({ ...intent, cleanupLocalIds: cleanupLocalIds.filter(id => id !== localId) });
+            }
+          }
+          result(undefined);
+        };
+      };
+    }, ["envelopes", "lifecycle"]);
   }
   acknowledgeDirectCleanupAndRelease(localId: string): Promise<void> {
     return this.transaction("readwrite", (store, result) => {
@@ -197,10 +214,10 @@ export class MetadataDeliveryBudget {
       }
       const get = store.get(conversationId); get.onsuccess = () => {
         const old = get.result as EndIntent | undefined;
-        if (old) { if (old.expectedVersion < expectedVersion) store.put({ conversationId, expectedVersion, reason, expiresAt: Date.now() + TTL }); result(undefined); return; }
+        if (old) { if (old.expectedVersion < expectedVersion) store.put({ conversationId, expectedVersion, reason, expiresAt: Date.now() + TTL, cleanupLocalIds: [...cleanupLocalIds] }); result(undefined); return; }
         const count = store.count(); count.onsuccess = () => {
           if (count.result >= 1000) { fail(new Error("Lifecycle metadata storage is full")); return; }
-          store.put({ conversationId, expectedVersion, reason, expiresAt: Date.now() + TTL }); result(undefined);
+          store.put({ conversationId, expectedVersion, reason, expiresAt: Date.now() + TTL, cleanupLocalIds: [...cleanupLocalIds] }); result(undefined);
         };
       };
     }, ["lifecycle", "envelopes"]);
