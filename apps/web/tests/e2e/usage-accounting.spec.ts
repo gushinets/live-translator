@@ -45,12 +45,15 @@ test("ledger-enabled browser retains final metadata across an HTTP outage withou
     window.__liveTranslatorTestLive!.emit({ type: "session.usage.updated", usage: { seconds: 15 } });
   });
   await harness.sessionClosed("user_requested", 46);
-  await expect.poll(() => attempts.get(id)?.state).toBe("closed");
-  await page.waitForFunction(async localId => {
+  await expect.poll(() => page.evaluate(async localId => {
     const db = await new Promise<IDBDatabase>((resolve, reject) => { const r = indexedDB.open("live-translator-metadata-v1", 1); r.onsuccess = () => resolve(r.result); r.onerror = reject; });
     try { return await new Promise<boolean>((resolve, reject) => { const tx = db.transaction("envelopes"), r = tx.objectStore("envelopes").get(localId); r.onsuccess = () => resolve(r.result?.usage?.report?.providerClosed?.seconds === 46); r.onerror = reject; }); }
     finally { db.close(); }
-  }, id);
+  }, id)).toBe(true);
+  // MockLiveHarness pauses browser time. Wake both delivery loops explicitly rather
+  // than expecting the cleanup retry timer to run under that frozen clock.
+  await page.evaluate(() => window.dispatchEvent(new Event("online")));
+  await expect.poll(() => attempts.get(id)?.state).toBe("closed");
   blockUsage = false;
   await page.evaluate(() => window.dispatchEvent(new Event("online")));
   await expect.poll(() => received.some(item => item.id === id && (item.body.providerClosed as { seconds?: number } | undefined)?.seconds === 46)).toBe(true);
