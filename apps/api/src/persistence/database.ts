@@ -10,10 +10,14 @@ export function openUsageDatabase(path: string, busyTimeoutMs = 1000): DatabaseS
   try {
     db.exec(`PRAGMA foreign_keys=ON; PRAGMA busy_timeout=${busyTimeoutMs}; PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL;`);
     const version = Number(db.prepare("PRAGMA user_version").get()!.user_version);
-    if (version > 1) throw new Error("Usage database schema is newer than this application");
-    if (version === 0) transaction(db, () => {
+    if (version > 2) throw new Error("Usage database schema is newer than this application");
+    if (version < 1) transaction(db, () => {
       db.exec(readFileSync(new URL("./migrations/001-usage-ledger.sql", import.meta.url), "utf8"));
       db.exec("PRAGMA user_version=1");
+    });
+    if (version < 2) transaction(db, () => {
+      db.exec(readFileSync(new URL("./migrations/002-live-session-recovery-fences.sql", import.meta.url), "utf8"));
+      db.exec("PRAGMA user_version=2");
     });
     return db;
   } catch (error) { db.close(); throw error; }

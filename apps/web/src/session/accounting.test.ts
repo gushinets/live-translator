@@ -86,25 +86,19 @@ describe("cleanup and End delivery", () => {
     await f.budget.close();
   });
 
-  it("does not migrate an ordinary abandoned cleanup as a staged End", async () => {
+  it("preserves an ordinary abandoned v1 cleanup without guessing producer liveness", async () => {
     const indexedDB = new IDBFactory(), name = crypto.randomUUID(), now = Date.now();
     await seedV1(indexedDB, name, {
       localId: "legacy", conversationId: "c", producerId: "old-producer", reservedAt: now - 1000, dispatchStartedAt: now - 900,
       producerFinalized: true, producerOutcome: "lost", cleanup: { reason: "hidden", createdAt: now - 100, expiresAt: now + 7 * 86400000 - 100 },
       closeObservation: null, usagePending: false, usage: null,
     }, { conversationId: "c", expectedVersion: 1, reason: "user_end", expiresAt: now + 7 * 86400000, cleanupLocalIds: [] });
-    const f = fixture(new MetadataDeliveryBudget({ indexedDB, name }));
-    f.api.cleanup.mockRejectedValue(new Error("offline"));
-    f.api.readAttempt.mockResolvedValue({ liveSessionId: "legacy", state: "active", handoffAcknowledgedAt: null, cleanupRequestedAt: null, conversation: f.c });
+    const store = new MetadataDeliveryBudget({ indexedDB, name });
     try {
-      await f.scope.outbox.flush();
-      const migrated = await f.budget.get("legacy");
-      expect(f.api.cleanup).not.toHaveBeenCalled();
-      expect(migrated?.producerCloseDeadlineAt).toBe(now - 100);
-      expect(migrated?.producerFinalized).toBe(true);
-    } finally { await f.budget.close(); }
+      expect(await store.get("legacy")).toMatchObject({ producerFinalized: true, producerOutcome: "lost" });
+      expect((await store.get("legacy"))?.producerCloseDeadlineAt).toBeUndefined();
+    } finally { await store.close(); }
   });
-
   it("does not reinterpret a completed v1 cleanup just because End depends on it", async () => {
     const indexedDB = new IDBFactory(), name = crypto.randomUUID(), now = Date.now();
     await seedV1(indexedDB, name, {
@@ -119,7 +113,7 @@ describe("cleanup and End delivery", () => {
     } finally { await store.close(); }
   });
 
-  it("migrates a PR19 staged row before replay without Web Locks", async () => {
+  it("replays a legacy staged cleanup through the server fence without semantic migration", async () => {
     const indexedDB = new IDBFactory(), name = crypto.randomUUID(), now = Date.now();
     const locks = Object.getOwnPropertyDescriptor(navigator, "locks");
     await seedV1(indexedDB, name, {
@@ -129,51 +123,46 @@ describe("cleanup and End delivery", () => {
     }, { conversationId: "c", expectedVersion: 1, reason: "user_end", expiresAt: now + 7 * 86400000, cleanupLocalIds: ["legacy"] });
     Reflect.deleteProperty(navigator, "locks");
     const f = fixture(new MetadataDeliveryBudget({ indexedDB, name }));
-    f.api.readAttempt.mockResolvedValue({ liveSessionId: "legacy", state: "active", handoffAcknowledgedAt: null, cleanupRequestedAt: null, conversation: f.c });
+    f.api.recover.mockResolvedValue({ cleanupRequestedAt: Date.now(), state: "closing", openaiSessionId: "provider" });
+    f.api.readAttempt.mockResolvedValue({ liveSessionId: "legacy", state: "closing", handoffAcknowledgedAt: null,
+      cleanupRequestedAt: Date.now(), openaiSessionId: "provider", conversation: f.c });
     try {
       await f.scope.outbox.flush();
-      const migrated = await f.budget.get("legacy");
-      expect(f.api.cleanup).not.toHaveBeenCalled();
-      expect(migrated).toMatchObject({ producerFinalized: false, producerOutcome: null });
-      expect(migrated!.producerCloseDeadlineAt).toBeGreaterThanOrEqual(now + 2_147_483_647);
-      expect(migrated!.cleanup!.expiresAt).toBeGreaterThan(migrated!.producerCloseDeadlineAt!);
-      expect((await f.budget.ends())[0]!.expiresAt).toBeGreaterThanOrEqual(migrated!.cleanup!.expiresAt);
-
-      await updateEnvelope(indexedDB, name, "legacy", { producerCloseDeadlineAt: Date.now() - 1 });
-      f.api.readAttempt.mockResolvedValue({ liveSessionId: "legacy", state: "closing", handoffAcknowledgedAt: null, cleanupRequestedAt: Date.now(), conversation: f.c });
-      await f.scope.outbox.flush();
-      expect(f.api.cleanup).not.toHaveBeenCalled();
+      expect(f.api.recover).toHaveBeenCalledWith("legacy", "c", "user_end");
+      expect(await f.budget.get("legacy")).toMatchObject({ cleanup: null, producerFinalized: false, producerOutcome: null });
+      expect(f.api.end).toHaveBeenCalledWith("c", 1, "user_end");
     } finally {
       if (locks) Object.defineProperty(navigator, "locks", locks); else Reflect.deleteProperty(navigator, "locks");
       await f.budget.close();
     }
   });
-
-  it("waits for server retirement proof instead of expiring a frozen producer lease without Web Locks", async () => {
+  it("uses a server cleanup fence to unblock End without treating the ACK as producer finality", async () => {
     const indexedDB = new IDBFactory(), name = crypto.randomUUID();
     const owner = fixture(new MetadataDeliveryBudget({ indexedDB, name }));
     const follower = fixture(new MetadataDeliveryBudget({ indexedDB, name }));
     const attempt = owner.scope.newAttempt();
     const locks = Object.getOwnPropertyDescriptor(navigator, "locks");
     await attempt.create("offer"); await owner.scope.stageEnd("user_end");
-    await updateEnvelope(indexedDB, name, attempt.localId, { producerCloseDeadlineAt: Date.now() - 1 });
     Reflect.deleteProperty(navigator, "locks");
-
     try {
-      follower.api.readAttempt.mockResolvedValue({ liveSessionId: attempt.localId, state: "active", handoffAcknowledgedAt: Date.now(), cleanupRequestedAt: null, conversation: follower.c });
+      follower.api.recover.mockResolvedValue({ cleanupRequestedAt: Date.now(), state: "closing", openaiSessionId: "provider" });
+      follower.api.readAttempt.mockResolvedValue({ liveSessionId: attempt.localId, state: "closing", handoffAcknowledgedAt: Date.now(),
+        cleanupRequestedAt: Date.now(), openaiSessionId: "provider", conversation: follower.c });
       await follower.scope.outbox.flush();
-      expect(follower.api.cleanup).not.toHaveBeenCalled();
-      expect((await follower.budget.ends())[0]?.cleanupLocalIds).toEqual([attempt.localId]);
-      follower.api.readAttempt.mockResolvedValue({ liveSessionId: attempt.localId, state: "active", handoffAcknowledgedAt: Date.now(), cleanupRequestedAt: Date.now(), conversation: follower.c });
-      await follower.scope.outbox.flush();
-      expect(follower.api.cleanup).not.toHaveBeenCalled();
+
+      expect(follower.api.recover).toHaveBeenCalledWith(attempt.localId, owner.c.conversationId, "user_end");
       expect(follower.api.end).toHaveBeenCalledWith(owner.c.conversationId, owner.c.version, "user_end");
+      expect(await follower.budget.get(attempt.localId)).toMatchObject({ cleanup: null, producerFinalized: false, producerOutcome: null });
+
+      follower.api.readAttempt.mockResolvedValue({ liveSessionId: attempt.localId, state: "closed", closeConfirmed: true,
+        handoffAcknowledgedAt: Date.now(), cleanupRequestedAt: Date.now(), openaiSessionId: "provider", conversation: follower.c });
+      await follower.scope.outbox.flush();
+      expect(await follower.budget.get(attempt.localId)).toBeNull();
     } finally {
       if (locks) Object.defineProperty(navigator, "locks", locks); else Reflect.deleteProperty(navigator, "locks");
       await owner.budget.close(); await follower.budget.close();
     }
   });
-
   it("recovers a dispatched orphan without Web Locks after the server fences it", async () => {
     const indexedDB = new IDBFactory(), name = crypto.randomUUID();
     const producer = fixture(new MetadataDeliveryBudget({ indexedDB, name }));
@@ -190,6 +179,10 @@ describe("cleanup and End delivery", () => {
       expect(recovery.api.cleanup).not.toHaveBeenCalled();
 
       recovery.api.readAttempt.mockResolvedValue({ liveSessionId: attempt.localId, state: "closing", handoffAcknowledgedAt: Date.now(), cleanupRequestedAt: Date.now(), conversation: recovery.c });
+      await recovery.scope.outbox.flush();
+      expect(await recovery.budget.get(attempt.localId)).not.toBeNull();
+      recovery.api.readAttempt.mockResolvedValue({ liveSessionId: attempt.localId, state: "closed", closeConfirmed: true,
+        handoffAcknowledgedAt: Date.now(), cleanupRequestedAt: Date.now(), openaiSessionId: "provider", conversation: recovery.c });
       await recovery.scope.outbox.flush();
       expect(await recovery.budget.get(attempt.localId)).toBeNull();
 
@@ -239,7 +232,7 @@ describe("cleanup and End delivery", () => {
     }
   });
 
-  it("honors the legacy End close grace when its producer was marked lost", async () => {
+  it("fences legacy staged cleanup instead of trusting a synthesized close deadline", async () => {
     const indexedDB = new IDBFactory(), name = crypto.randomUUID();
     const owner = fixture(new MetadataDeliveryBudget({ indexedDB, name }));
     const follower = fixture(new MetadataDeliveryBudget({ indexedDB, name }));
@@ -254,14 +247,16 @@ describe("cleanup and End delivery", () => {
     Reflect.deleteProperty(navigator, "locks");
 
     try {
+      follower.api.recover.mockResolvedValue({ cleanupRequestedAt: Date.now(), state: "closing", openaiSessionId: "provider" });
       await follower.scope.outbox.flush();
+      expect(follower.api.recover).toHaveBeenCalledWith(attempt.localId, owner.c.conversationId, "user_end");
       expect(follower.api.cleanup).not.toHaveBeenCalled();
+      expect(await follower.budget.get(attempt.localId)).toMatchObject({ cleanup: null, producerFinalized: false, producerOutcome: null });
     } finally {
       if (locks) Object.defineProperty(navigator, "locks", locks); else Reflect.deleteProperty(navigator, "locks");
       await owner.budget.close(); await follower.budget.close();
     }
   });
-
   it("drops a legacy cleanup envelope at its seven-day expiry", async () => {
     const indexedDB = new IDBFactory(), name = crypto.randomUUID();
     const f = fixture(new MetadataDeliveryBudget({ indexedDB, name }));

@@ -86,6 +86,11 @@ export class UsageLedger {
     return Boolean(this.db.prepare("SELECT 1 FROM live_sessions WHERE conversation_id=? AND state IN ('creating','active','closing') AND id<>? LIMIT 1").get(id, except));
   }
   private insertAttempt(c: ConversationRow, id: string, mode: InitialMode, reason: AttemptInput["startReason"], resume?: { version: number; expires: number }): SessionRow {
+    const fence = this.db.prepare("SELECT conversation_id FROM live_session_recovery_fences WHERE id=?").get(id) as { conversation_id: string } | undefined;
+    if (fence) {
+      if (fence.conversation_id !== c.id) throw new LedgerError("attempt_conflict");
+      throw new LedgerError("attempt_retired", 410);
+    }
     const generation = Number(this.db.prepare("SELECT COALESCE(MAX(generation),0)+1 AS n FROM live_sessions WHERE conversation_id=?").get(c.id)!.n);
     this.db.prepare(`INSERT INTO live_sessions(id,conversation_id,generation,state,initial_mode,start_reason,model,transport,prompt_version,app_version,creation_requested_at,resume_claimed_at,resume_claim_expires_at,resume_claim_version,resume_outcome)
       VALUES(?,?,?,'creating',?,?,'gpt-live-1','webrtc','silent-pre-interpreter-v1',?,?,?,?,?,?)`)
@@ -202,6 +207,29 @@ export class UsageLedger {
   }
   requestCleanup(id: string, reason: CleanupReason): SessionRow {
     return this.atomic(() => { this.cleanupInternal(this.attempt(id), reason, this.now()); return this.attempt(id); });
+  }
+  fenceRecovery(owner: string, conversationId: string, id: string, reason: CleanupReason): { attempt: SessionRow | null; fencedAt: number } {
+    return this.atomic(() => {
+      this.owned(owner, conversationId);
+      const existing = this.db.prepare("SELECT * FROM live_sessions WHERE id=?").get(id) as unknown as SessionRow | undefined;
+      if (existing) {
+        this.ownedAttempt(owner, id);
+        if (existing.conversation_id !== conversationId) return new LedgerError("not_found", 404);
+        const now = this.now();
+        this.cleanupInternal(existing, reason, now);
+        return { attempt: this.attempt(id), fencedAt: now };
+      }
+      const old = this.db.prepare("SELECT conversation_id,created_at FROM live_session_recovery_fences WHERE id=?").get(id) as
+        { conversation_id: string; created_at: number } | undefined;
+      if (old) {
+        if (old.conversation_id !== conversationId) return new LedgerError("not_found", 404);
+        return { attempt: null, fencedAt: Number(old.created_at) };
+      }
+      const now = this.now();
+      this.db.prepare("INSERT INTO live_session_recovery_fences(id,conversation_id,cleanup_reason,created_at) VALUES(?,?,?,?)")
+        .run(id, conversationId, reason, now);
+      return { attempt: null, fencedAt: now };
+    });
   }
   recordCreateFailure(id: string, definitive: boolean): SessionRow {
     return this.atomic(() => {

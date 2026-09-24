@@ -5,6 +5,7 @@ export interface AttemptProof {
 }
 export interface CleanupTransport {
   cleanup(localId: string, reason: CleanupReason): Promise<AttemptProof>;
+  recover?(localId: string, conversationId: string, reason: CleanupReason): Promise<AttemptProof>;
   closed(localId: string, observation: CloseMetadata): Promise<AttemptProof>;
   readAttempt?(localId: string): Promise<AttemptProof>;
   readConversation(conversationId: string): Promise<unknown>;
@@ -12,6 +13,7 @@ export interface CleanupTransport {
 }
 const statusOf = (error: unknown) => typeof error === "object" && error !== null && "status" in error ? error.status : undefined;
 export const cleanupProofReceived = (p: AttemptProof) => p.cleanupRequestedAt != null || p.closeConfirmed === true || p.state === "closed" || (p.state === "failed" && !p.openaiSessionId);
+export const terminalRetirementProof = (p: AttemptProof) => p.closeConfirmed === true || p.state === "closed" || (p.state === "failed" && !p.openaiSessionId);
 
 /** A durable cleanup marker transfers responsibility. Admission DELETE alone never does. */
 export class CleanupIntentOutbox {
@@ -53,6 +55,13 @@ export class CleanupIntentOutbox {
     if (!this.started || this.timer) return;
     this.timer = setTimeout(() => { this.timer = undefined; this.onWake(); }, Math.min(30000, 1000 * 2 ** Math.min(this.retries, 5)));
   }
+  private async finishForeignRetirement(localId: string, proof: AttemptProof): Promise<boolean> {
+    if (!terminalRetirementProof(proof)) return false;
+    await this.budget.finishUsageProducer(localId);
+    const outcome = proof.state === "failed" && !proof.openaiSessionId ? "no_provider" : proof.closeConfirmed === true ? "provider_closed" : "lost";
+    await this.budget.finishProducerAndRelease(localId, outcome);
+    return true;
+  }
   flush(): Promise<void> {
     this.flushing ??= (async () => {
       let revision: number;
@@ -76,14 +85,13 @@ export class CleanupIntentOutbox {
         if (row.producerId !== this.budget.ownerProducerId && row.dispatchStartedAt !== null && !row.producerFinalized && !globalThis.navigator?.locks) {
           try {
             const proof = await this.transport.readAttempt?.(row.localId);
-            if (!proof || !cleanupProofReceived(proof)) { pending = true; continue; }
-            await this.budget.finishUsageProducer(row.localId);
-            await this.budget.finishProducerAndRelease(row.localId, "lost");
+            if (!proof || !(await this.finishForeignRetirement(row.localId, proof))) { pending = true; continue; }
           } catch (error) {
-            if (statusOf(error) === 404) {
-              await this.budget.finishUsageProducer(row.localId);
-              await this.budget.finishProducerAndRelease(row.localId, "no_provider");
-            } else pending = true;
+            if (statusOf(error) !== 404 || !this.transport.recover) { pending = true; continue; }
+            try {
+              const proof = await this.transport.recover(row.localId, row.conversationId, "response_not_received");
+              if (!(await this.finishForeignRetirement(row.localId, proof))) pending = true;
+            } catch { pending = true; }
           }
         }
         continue;
@@ -111,6 +119,9 @@ export class CleanupIntentOutbox {
       };
       // The durable marker is an explicit retirement request; replay is safe if its producer tab is frozen or gone.
       if (row.cleanup && !row.closeObservation && row.producerId !== this.budget.ownerProducerId) {
+        if (Date.now() >= row.cleanup.expiresAt) {
+          this.anomaly("metadata_delivery_expired"); await this.discard(row.localId); continue;
+        }
         const locks = globalThis.navigator?.locks;
         if (locks) {
           try {
@@ -119,16 +130,24 @@ export class CleanupIntentOutbox {
               await deliverRow();
             });
           } catch { pending = true; }
-        } else {
+        } else if (this.transport.recover) {
           try {
-            const proof = await this.transport.readAttempt?.(row.localId);
-            if (!proof || !cleanupProofReceived(proof)) { pending = true; continue; }
-            await this.budget.acknowledgeCleanupAndRelease(row.localId);
+            const proof = await this.transport.recover(row.localId, row.conversationId, row.cleanup.reason);
+            if (!cleanupProofReceived(proof)) { pending = true; continue; }
+            await this.budget.acknowledgeForeignCleanupFence(row.localId);
+            if (!(await this.finishForeignRetirement(row.localId, proof))) pending = true;
           } catch (error) {
-            if (statusOf(error) === 404) await this.budget.finishProducerAndRelease(row.localId, "no_provider");
-            else pending = true;
+            if ([401, 403, 404].includes(Number(statusOf(error)))) {
+              try { await this.transport.readConversation(row.conversationId); }
+              catch (readError) {
+                if (statusOf(readError) === 401 || statusOf(readError) === 404) {
+                  this.anomaly("metadata_identity_lost"); await this.discard(row.localId); continue;
+                }
+              }
+            }
+            pending = true;
           }
-        }
+        } else pending = true;
       } else await deliverRow();
     }
     for (const intent of await this.budget.ends()) {

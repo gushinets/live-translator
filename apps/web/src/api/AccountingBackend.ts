@@ -57,6 +57,9 @@ export class AccountingBackend implements LedgerApi {
   readAttempt(id: string): Promise<AttemptMetadata> { return this.json(`/api/live/session/${encodeURIComponent(id)}`); }
   readConversation(id: string): Promise<ConversationMetadata> { return this.json(`/api/conversations/${encodeURIComponent(id)}`); }
   cleanup(id: string, reason: CleanupReason): Promise<AttemptProof> { return this.json(`/api/live/session/${encodeURIComponent(id)}/cleanup`, "POST", { reason }); }
+  recover(id: string, conversationId: string, reason: CleanupReason): Promise<AttemptProof> {
+    return this.json(`/api/live/session/${encodeURIComponent(id)}/recover`, "POST", { conversationId, reason });
+  }
   closed(id: string, observation: CloseMetadata): Promise<AttemptProof> { return this.json(`/api/live/session/${encodeURIComponent(id)}/closed`, "POST", observation); }
   end(id: string, expectedVersion: number, reason: "user_end" | "setup_cancel"): Promise<ConversationMetadata> { return this.json(`/api/conversations/${encodeURIComponent(id)}/end`, "POST", { expectedVersion, reason }); }
 }
