@@ -38,7 +38,7 @@ export class CleanupIntentOutbox {
   }
   deferCleanup(localIds: readonly string[]): void { for (const id of localIds) this.deferredCleanup.add(id); }
   confirmRetirement(localId: string): void { this.deferredCleanup.delete(localId); }
-  wake(): void { this.onWake(); }
+  wake(): void { this.revision++; this.onWake(); }
   start(): void {
     if (this.started) return; this.started = true;
     globalThis.addEventListener?.("online", this.onWake); globalThis.document?.addEventListener("visibilitychange", this.onWake); this.onWake();

@@ -197,14 +197,14 @@ export class ConversationAccounting {
   async finalizeNoProvider(localId: string): Promise<void> {
     this.directRetirementProofs.add(localId);
     this.pendingNoProviderFinalizations.add(localId);
-    await this.flushPendingNoProviderFinalizations();
+    try { await this.flushPendingNoProviderFinalizations(); }
+    catch (error) { this.outbox.wake(); throw error; }
   }
   private async flushPendingNoProviderFinalizations(): Promise<void> {
     for (const localId of [...this.pendingNoProviderFinalizations]) {
       try { await this.budget.finishProducerAndRelease(localId, "no_provider"); }
       catch (error) {
         try { await this.budget.finishProducer(localId, "no_provider"); } catch { /* Preserve the confirmed outcome if IDB permits. */ }
-        this.outbox.wake();
         throw error;
       }
       this.outbox.confirmRetirement(localId);

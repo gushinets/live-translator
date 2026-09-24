@@ -33,6 +33,19 @@ async function updateEnvelope(indexedDB: IDBFactory, name: string, id: string, p
   });
   db.close();
 }
+async function seedV1(database: IDBFactory, name: string, row: Record<string, unknown>, end: Record<string, unknown>) {
+  const db = await new Promise<IDBDatabase>((resolve, reject) => {
+    const request = database.open(name, 1);
+    request.onupgradeneeded = () => { request.result.createObjectStore("envelopes", { keyPath: "localId" }); request.result.createObjectStore("lifecycle", { keyPath: "conversationId" }); };
+    request.onsuccess = () => resolve(request.result); request.onerror = () => reject(request.error);
+  });
+  await new Promise<void>((resolve, reject) => {
+    const tx = db.transaction(["envelopes", "lifecycle"], "readwrite");
+    tx.objectStore("envelopes").put(row); tx.objectStore("lifecycle").put(end);
+    tx.oncomplete = () => resolve(); tx.onerror = () => reject(tx.error);
+  });
+  db.close();
+}
 
 describe("shared IndexedDB metadata budget", () => {
   it("serializes two connections reserving the last slot and deduplicates IDs", async () => {
@@ -56,6 +69,34 @@ describe("shared IndexedDB metadata budget", () => {
   });
 });
 describe("cleanup and End delivery", () => {
+  it("migrates a PR19 staged row before replay without Web Locks", async () => {
+    const indexedDB = new IDBFactory(), name = crypto.randomUUID(), now = Date.now();
+    const locks = Object.getOwnPropertyDescriptor(navigator, "locks");
+    await seedV1(indexedDB, name, {
+      localId: "legacy", conversationId: "c", producerId: "old-producer", reservedAt: now - 1000, dispatchStartedAt: now - 900,
+      producerFinalized: true, producerOutcome: "lost", cleanup: { reason: "user_end", createdAt: now - 100, expiresAt: now + 7 * 86400000 - 100 },
+      closeObservation: null, usagePending: false, usage: null,
+    }, { conversationId: "c", expectedVersion: 1, reason: "user_end", expiresAt: now + 7 * 86400000, cleanupLocalIds: ["legacy"] });
+    Reflect.deleteProperty(navigator, "locks");
+    const f = fixture(new MetadataDeliveryBudget({ indexedDB, name }));
+    try {
+      await f.scope.outbox.flush();
+      const migrated = await f.budget.get("legacy");
+      expect(f.api.cleanup).not.toHaveBeenCalled();
+      expect(migrated).toMatchObject({ producerFinalized: false, producerOutcome: null });
+      expect(migrated!.producerCloseDeadlineAt).toBeGreaterThan(now);
+      expect(migrated!.cleanup!.expiresAt).toBeGreaterThan(migrated!.producerCloseDeadlineAt!);
+      expect((await f.budget.ends())[0]!.expiresAt).toBeGreaterThanOrEqual(migrated!.cleanup!.expiresAt);
+
+      await updateEnvelope(indexedDB, name, "legacy", { producerCloseDeadlineAt: Date.now() - 1 });
+      await f.scope.outbox.flush();
+      expect(f.api.cleanup).toHaveBeenCalledWith("legacy", "user_end");
+    } finally {
+      if (locks) Object.defineProperty(navigator, "locks", locks); else Reflect.deleteProperty(navigator, "locks");
+      await f.budget.close();
+    }
+  });
+
   it("waits for the persisted close deadline before replaying without Web Locks", async () => {
     const indexedDB = new IDBFactory(), name = crypto.randomUUID();
     const owner = fixture(new MetadataDeliveryBudget({ indexedDB, name }));
@@ -742,6 +783,27 @@ describe("controller-owned conversation accounting", () => {
 });
 
 describe("stage 4 durable lifecycle boundary", () => {
+  it("reruns pending no-provider finalization when its wake coalesces with an in-flight flush", async () => {
+    const f = fixture();
+    await f.budget.reserve("attempt", f.c.conversationId);
+    let entered!: () => void, releaseRead!: () => void;
+    const atRead = new Promise<void>(resolve => { entered = resolve; });
+    const readGate = new Promise<void>(resolve => { releaseRead = resolve; });
+    const entries = vi.spyOn(f.budget, "entries").mockImplementationOnce(async () => { entered(); await readGate; return MetadataDeliveryBudget.prototype.entries.call(f.budget); });
+    f.scope.outbox.start();
+    await atRead; // This flush has already passed retryPendingFinalizations.
+    const finish = vi.spyOn(f.budget, "finishProducerAndRelease").mockRejectedValueOnce(new Error("IDB write failed"));
+    const fallback = vi.spyOn(f.budget, "finishProducer").mockRejectedValueOnce(new Error("IDB write failed"));
+    await expect(f.scope.finalizeNoProvider("attempt")).rejects.toThrow("IDB write failed");
+    finish.mockImplementation((id, outcome) => MetadataDeliveryBudget.prototype.finishProducerAndRelease.call(f.budget, id, outcome));
+    fallback.mockImplementation((id, outcome) => MetadataDeliveryBudget.prototype.finishProducer.call(f.budget, id, outcome));
+    releaseRead();
+
+    await vi.waitFor(async () => expect(await f.budget.get("attempt")).toBeNull());
+    expect(entries).toHaveBeenCalledTimes(2);
+    await f.scope.outbox.stop(); await f.budget.close();
+  });
+
   it("schedules a retry after an outbox wake cannot read IndexedDB", async () => {
     const f = fixture();
     try {

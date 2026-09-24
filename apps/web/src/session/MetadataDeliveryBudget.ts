@@ -11,6 +11,7 @@ export interface MetadataEnvelope {
 }
 export interface EndIntent { conversationId: string; expectedVersion: number; reason: "user_end" | "setup_cancel"; expiresAt: number; cleanupLocalIds?: string[]; }
 export const METADATA_TTL_MS = 7 * 86400000;
+const LEGACY_PRODUCER_CLOSE_GRACE_MS = 30000;
 
 /** One origin-wide envelope per localId. Every pre-dispatch mutation waits for IDB commit. */
 export class MetadataDeliveryBudget {
@@ -30,12 +31,45 @@ export class MetadataDeliveryBudget {
     if (!this.factory) return Promise.reject(new Error("Metadata storage unavailable"));
     this.opening ??= new Promise<IDBDatabase>((resolve, reject) => {
       let settled = false;
-      const request = this.factory!.open(this.name, 1);
+      const request = this.factory!.open(this.name, 2);
       const fail = () => { if (!settled) { settled = true; clearTimeout(timer); reject(new Error("Metadata storage unavailable")); } };
       const timer = setTimeout(fail, this.timeoutMs);
-      request.onupgradeneeded = () => {
-        request.result.createObjectStore("envelopes", { keyPath: "localId" });
-        request.result.createObjectStore("lifecycle", { keyPath: "conversationId" });
+      request.onupgradeneeded = event => {
+        const db = request.result, tx = request.transaction!;
+        if (!db.objectStoreNames.contains("envelopes")) db.createObjectStore("envelopes", { keyPath: "localId" });
+        if (!db.objectStoreNames.contains("lifecycle")) db.createObjectStore("lifecycle", { keyPath: "conversationId" });
+        if ((event as IDBVersionChangeEvent).oldVersion === 1) {
+          const migrated: Array<{ conversationId: string; localId: string; expiresAt: number }> = [];
+          const rows = tx.objectStore("envelopes").openCursor();
+          rows.onsuccess = () => {
+            const cursor = rows.result;
+            if (cursor) {
+              const row = cursor.value as MetadataEnvelope;
+              if (!row.producerCloseDeadlineAt && row.cleanup) {
+                const stagedByPr19 = row.producerFinalized && row.producerOutcome === "lost";
+                // ponytail: fixed 30s grace for PR19 rows; persist a per-attempt deadline if policy needs to vary.
+                const deadline = stagedByPr19 ? Date.now() + LEGACY_PRODUCER_CLOSE_GRACE_MS : Math.max(row.cleanup.createdAt, row.cleanup.expiresAt - METADATA_TTL_MS);
+                if (stagedByPr19) { row.producerFinalized = false; row.producerOutcome = null; }
+                row.producerCloseDeadlineAt = deadline;
+                row.cleanup.expiresAt = Math.max(row.cleanup.expiresAt, deadline + METADATA_TTL_MS);
+                migrated.push({ conversationId: row.conversationId, localId: row.localId, expiresAt: row.cleanup.expiresAt });
+                cursor.update(row);
+              }
+              cursor.continue(); return;
+            }
+            if (!migrated.length) return;
+            const ends = tx.objectStore("lifecycle").openCursor();
+            ends.onsuccess = () => {
+              const end = ends.result;
+              if (!end) return;
+              const intent = end.value as EndIntent;
+              const expiry = Math.max(intent.expiresAt, ...migrated.filter(row => row.conversationId === intent.conversationId &&
+                (!intent.cleanupLocalIds || intent.cleanupLocalIds.includes(row.localId))).map(row => row.expiresAt));
+              if (expiry !== intent.expiresAt) { intent.expiresAt = expiry; end.update(intent); }
+              end.continue();
+            };
+          };
+        }
       };
       request.onsuccess = () => {
         if (settled) { request.result.close(); return; }
