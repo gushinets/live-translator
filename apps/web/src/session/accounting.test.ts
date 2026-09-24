@@ -65,8 +65,9 @@ describe("cleanup and End delivery", () => {
       await follower.scope.outbox.flush();
       expect(follower.api.cleanup).not.toHaveBeenCalled();
 
-      await attempt.abandon("cancelled"); await owner.scope.outbox.flush();
-      expect(owner.api.cleanup).toHaveBeenCalledOnce();
+      await attempt.finish({ finalized: true, usageSeconds: 7 }); await owner.scope.outbox.flush();
+      expect(owner.api.closed).toHaveBeenCalledOnce();
+      expect(owner.api.cleanup).not.toHaveBeenCalled();
       expect(follower.api.cleanup).not.toHaveBeenCalled();
 
       await ownerBudget.reserve("orphan", "conversation"); await ownerBudget.markDispatchStarted("orphan");
