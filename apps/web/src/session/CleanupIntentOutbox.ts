@@ -1,5 +1,8 @@
 import { MetadataDeliveryBudget, METADATA_TTL_MS, type CleanupReason, type CloseMetadata, type EndIntent } from "./MetadataDeliveryBudget";
 export const producerLeaseKey = (id: string) => `live-metadata-producer:${id}`;
+export const MANAGED_SESSION_CREATE_TIMEOUT_MS = 120_000;
+// Without Web Locks, wait beyond the owner's managed create timeout before fencing a pre-registration 404.
+export const ATTEMPT_REGISTRATION_GRACE_MS = MANAGED_SESSION_CREATE_TIMEOUT_MS + 30_000;
 export interface AttemptProof {
   cleanupRequestedAt?: number | null; closeConfirmed?: boolean; state?: string; openaiSessionId?: string | null; leaseReleasedAt?: number | null;
 }
@@ -82,13 +85,15 @@ export class CleanupIntentOutbox {
         continue;
       }
       if (!row.cleanup && !row.closeObservation) {
-        if (row.producerId !== this.budget.ownerProducerId && row.dispatchStartedAt !== null && !row.producerFinalized &&
+        const dispatchStartedAt = row.dispatchStartedAt;
+        if (row.producerId !== this.budget.ownerProducerId && dispatchStartedAt !== null && !row.producerFinalized &&
             (row.cleanupAcknowledged || !globalThis.navigator?.locks)) {
           try {
             const proof = await this.transport.readAttempt?.(row.localId);
             if (!proof || !(await this.finishForeignRetirement(row.localId, proof))) { pending = true; continue; }
           } catch (error) {
             if (statusOf(error) !== 404 || !this.transport.recover) { pending = true; continue; }
+            if (Date.now() < dispatchStartedAt + ATTEMPT_REGISTRATION_GRACE_MS) { pending = true; continue; }
             try {
               const proof = await this.transport.recover(row.localId, row.conversationId, "response_not_received");
               if (!(await this.finishForeignRetirement(row.localId, proof))) pending = true;
@@ -151,7 +156,8 @@ export class CleanupIntentOutbox {
               await recoverForeignCleanup();
             });
           } catch { pending = true; }
-        } else await recoverForeignCleanup();
+        } else if (row.producerCloseDeadlineAt !== undefined && Date.now() < row.producerCloseDeadlineAt) pending = true;
+        else await recoverForeignCleanup();
       } else await deliverRow();
     }
     for (const intent of await this.budget.ends()) {
