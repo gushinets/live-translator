@@ -79,7 +79,12 @@ export class CleanupIntentOutbox {
             if (!proof || !cleanupProofReceived(proof)) { pending = true; continue; }
             await this.budget.finishUsageProducer(row.localId);
             await this.budget.finishProducerAndRelease(row.localId, "lost");
-          } catch { pending = true; }
+          } catch (error) {
+            if (statusOf(error) === 404) {
+              await this.budget.finishUsageProducer(row.localId);
+              await this.budget.finishProducerAndRelease(row.localId, "no_provider");
+            } else pending = true;
+          }
         }
         continue;
       }
@@ -119,7 +124,10 @@ export class CleanupIntentOutbox {
             const proof = await this.transport.readAttempt?.(row.localId);
             if (!proof || !cleanupProofReceived(proof)) { pending = true; continue; }
             await this.budget.acknowledgeCleanupAndRelease(row.localId);
-          } catch { pending = true; }
+          } catch (error) {
+            if (statusOf(error) === 404) await this.budget.finishProducerAndRelease(row.localId, "no_provider");
+            else pending = true;
+          }
         }
       } else await deliverRow();
     }

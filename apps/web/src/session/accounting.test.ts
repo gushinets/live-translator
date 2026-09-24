@@ -175,6 +175,12 @@ describe("cleanup and End delivery", () => {
       recovery.api.readAttempt.mockResolvedValue({ liveSessionId: attempt.localId, state: "closing", handoffAcknowledgedAt: Date.now(), cleanupRequestedAt: Date.now(), conversation: recovery.c });
       await recovery.scope.outbox.flush();
       expect(await recovery.budget.get(attempt.localId)).toBeNull();
+
+      await producer.budget.reserve("request-never-arrived", producer.c.conversationId);
+      await producer.budget.markDispatchStarted("request-never-arrived");
+      recovery.api.readAttempt.mockRejectedValue(Object.assign(new Error("not found"), { status: 404 }));
+      await recovery.scope.outbox.flush();
+      expect(await recovery.budget.get("request-never-arrived")).toBeNull();
     } finally {
       if (locks) Object.defineProperty(navigator, "locks", locks); else Reflect.deleteProperty(navigator, "locks");
       await recovery.budget.close();
