@@ -163,6 +163,59 @@ describe("managed session failure boundaries", () => {
     }
   });
 
+  it("tombstones a missing recovery ID before a late create can register it", async () => {
+    vi.stubEnv("OPENAI_API_KEY", "fake-key");
+    const db = openUsageDatabase(":memory:"), ledger = new UsageLedger(db);
+    const provider = vi.fn();
+    const app = createApp({ ledger, startWorker: false, createLiveSession: provider });
+    const runtime = app.locals.ledgerRuntime as LedgerRuntime, agent = request.agent(app);
+    try {
+      const created = await agent.post("/api/conversations").set("Origin", origin)
+        .send({ createRequestId: randomUUID(), appVersion: "test" }).expect(201);
+      const localId = randomUUID();
+      const fence = await agent.post(`/api/live/session/${localId}/recover`).set("Origin", origin)
+        .send({ conversationId: created.body.conversationId, reason: "response_not_received" }).expect(200);
+      expect(fence.body).toMatchObject({ liveSessionId: localId, state: "failed", openaiSessionId: null, recoveryFenced: true });
+
+      await agent.post("/api/live/session").set("Origin", origin).send({
+        sdp: "late-offer", liveSessionId: localId, conversationId: created.body.conversationId,
+        conversationVersion: created.body.version, initialMode: "setup", startReason: "initial",
+      }).expect(410);
+      expect(provider).not.toHaveBeenCalled();
+    } finally { await runtime.shutdown({ drainMs: 0, timeoutMs: 100 }); db.close(); }
+  });
+
+  it("durably fences an already registered in-flight create before aborting it", async () => {
+    vi.stubEnv("OPENAI_API_KEY", "fake-key");
+    const db = openUsageDatabase(":memory:"), ledger = new UsageLedger(db);
+    let providerSignal: AbortSignal | undefined;
+    const provider = vi.fn((_offer: string, context?: { signal: AbortSignal }) => {
+      providerSignal = context!.signal;
+      return new Promise<LiveSessionResponse>((_resolve, reject) => {
+        context!.signal.addEventListener("abort", () => reject(new Error("aborted")), { once: true });
+      });
+    });
+    const app = createApp({ ledger, startWorker: false, createLiveSession: provider });
+    const runtime = app.locals.ledgerRuntime as LedgerRuntime, agent = request.agent(app);
+    try {
+      const created = await agent.post("/api/conversations").set("Origin", origin)
+        .send({ createRequestId: randomUUID(), appVersion: "test" }).expect(201);
+      const localId = randomUUID();
+      const creation = agent.post("/api/live/session").set("Origin", origin).send({
+        sdp: "pending-offer", liveSessionId: localId, conversationId: created.body.conversationId,
+        conversationVersion: created.body.version, initialMode: "setup", startReason: "initial",
+      }).then(result => result);
+      await vi.waitFor(() => expect(provider).toHaveBeenCalledTimes(1));
+
+      const fence = await agent.post(`/api/live/session/${localId}/recover`).set("Origin", origin)
+        .send({ conversationId: created.body.conversationId, reason: "response_not_received" }).expect(200);
+      expect(fence.body.cleanupRequestedAt).not.toBeNull();
+      await vi.waitFor(() => expect(providerSignal?.aborted).toBe(true));
+      expect(ledger.getAttemptInternal(localId).cleanup_requested_at).not.toBeNull();
+      expect((await creation).status).toBe(502);
+    } finally { await runtime.shutdown({ drainMs: 0, timeoutMs: 100 }); db.close(); }
+  });
+
   it("uses a distinct error for shutdown before attempt registration", async () => {
     const db = openUsageDatabase(":memory:"), ledger = new UsageLedger(db);
     const runtime = new LedgerRuntime(ledger, { startWorker: false, creator: vi.fn() });

@@ -15,6 +15,7 @@ function fixture(store = budget()) {
     handoff: vi.fn<LedgerApi["handoff"]>(async id => ({ liveSessionId: id, state: "active", handoffAcknowledgedAt: Date.now(), cleanupRequestedAt: null, conversation: c })),
     readAttempt: vi.fn<LedgerApi["readAttempt"]>(async id => ({ liveSessionId: id, state: "closed", handoffAcknowledgedAt: Date.now(), conversation: c })),
     cleanup: vi.fn<CleanupTransport["cleanup"]>(async () => ({ cleanupRequestedAt: Date.now() })),
+    recover: vi.fn(async (_localId: string, _conversationId: string, _reason: string) => ({ cleanupRequestedAt: Date.now(), state: "closing", openaiSessionId: "provider" })),
     closed: vi.fn<CleanupTransport["closed"]>(async () => ({ state: "closed", closeConfirmed: true })),
     readConversation: vi.fn<LedgerApi["readConversation"]>(async () => c),
     end: vi.fn<LedgerApi["end"]>(async () => ({ ...c, status: "ended" })),
@@ -102,6 +103,20 @@ describe("cleanup and End delivery", () => {
     } finally { await f.budget.close(); }
   });
 
+  it("does not reinterpret a completed v1 cleanup just because End depends on it", async () => {
+    const indexedDB = new IDBFactory(), name = crypto.randomUUID(), now = Date.now();
+    await seedV1(indexedDB, name, {
+      localId: "legacy-complete", conversationId: "c", producerId: "old-producer", reservedAt: now - 1000, dispatchStartedAt: now - 900,
+      producerFinalized: true, producerOutcome: "lost", cleanup: { reason: "hidden", createdAt: now - 100, expiresAt: now + 7 * 86400000 - 100 },
+      closeObservation: null, usagePending: false, usage: null,
+    }, { conversationId: "c", expectedVersion: 1, reason: "user_end", expiresAt: now + 7 * 86400000, cleanupLocalIds: ["legacy-complete"] });
+
+    const store = new MetadataDeliveryBudget({ indexedDB, name });
+    try {
+      expect(await store.get("legacy-complete")).toMatchObject({ producerFinalized: true, producerOutcome: "lost" });
+    } finally { await store.close(); }
+  });
+
   it("migrates a PR19 staged row before replay without Web Locks", async () => {
     const indexedDB = new IDBFactory(), name = crypto.randomUUID(), now = Date.now();
     const locks = Object.getOwnPropertyDescriptor(navigator, "locks");
@@ -179,11 +194,46 @@ describe("cleanup and End delivery", () => {
       await producer.budget.reserve("request-never-arrived", producer.c.conversationId);
       await producer.budget.markDispatchStarted("request-never-arrived");
       recovery.api.readAttempt.mockRejectedValue(Object.assign(new Error("not found"), { status: 404 }));
+      recovery.api.recover.mockResolvedValue({ state: "failed", openaiSessionId: null });
       await recovery.scope.outbox.flush();
+      expect(recovery.api.recover).toHaveBeenCalledWith("request-never-arrived", producer.c.conversationId, "response_not_received");
       expect(await recovery.budget.get("request-never-arrived")).toBeNull();
     } finally {
       if (locks) Object.defineProperty(navigator, "locks", locks); else Reflect.deleteProperty(navigator, "locks");
       await recovery.budget.close();
+    }
+  });
+
+  it("keeps a foreign usage producer after cleanup fencing until terminal retirement proof", async () => {
+    const indexedDB = new IDBFactory(), name = crypto.randomUUID();
+    const owner = fixture(new MetadataDeliveryBudget({ indexedDB, name }));
+    const recovery = fixture(new MetadataDeliveryBudget({ indexedDB, name }));
+    const locks = Object.getOwnPropertyDescriptor(navigator, "locks");
+    await owner.budget.reserve("foreign-usage", owner.c.conversationId, true);
+    await owner.budget.markDispatchStarted("foreign-usage");
+    await owner.budget.enqueueCleanup("foreign-usage", "hidden");
+    await owner.budget.finishProducer("foreign-usage", "lost");
+    Reflect.deleteProperty(navigator, "locks");
+    try {
+      recovery.api.recover.mockResolvedValue({ cleanupRequestedAt: Date.now(), state: "closing", openaiSessionId: "provider" });
+      recovery.api.readAttempt.mockResolvedValue({ liveSessionId: "foreign-usage", state: "closing", handoffAcknowledgedAt: Date.now(),
+        cleanupRequestedAt: Date.now(), openaiSessionId: "provider", conversation: recovery.c });
+
+      await recovery.scope.outbox.flush();
+      await recovery.scope.outbox.flush();
+
+      expect(recovery.api.recover).toHaveBeenCalledWith("foreign-usage", owner.c.conversationId, "hidden");
+      expect(await recovery.budget.get("foreign-usage")).toMatchObject({
+        cleanup: null, producerFinalized: false, producerOutcome: null, usageProducerFinalized: false,
+      });
+
+      recovery.api.readAttempt.mockResolvedValue({ liveSessionId: "foreign-usage", state: "closed", closeConfirmed: true,
+        handoffAcknowledgedAt: Date.now(), cleanupRequestedAt: Date.now(), openaiSessionId: "provider", conversation: recovery.c });
+      await recovery.scope.outbox.flush();
+      expect(await recovery.budget.get("foreign-usage")).toBeNull();
+    } finally {
+      if (locks) Object.defineProperty(navigator, "locks", locks); else Reflect.deleteProperty(navigator, "locks");
+      await owner.budget.close(); await recovery.budget.close();
     }
   });
 
