@@ -509,6 +509,34 @@ describe("controller-owned conversation accounting", () => {
       await recoveredBudget.close();
     }
   });
+  it("retries both failed no-provider finalization writes on an outbox wake", async () => {
+    const indexedDB = new IDBFactory(), name = crypto.randomUUID();
+    const store = new MetadataDeliveryBudget({ indexedDB, name });
+    const f = fixture(store), scope = f.scope;
+    const attempt = scope.newAttempt();
+    let rejectCreate!: (error: Error) => void;
+    f.api.createSession.mockImplementationOnce(() => new Promise((_resolve, reject) => { rejectCreate = reject; }));
+    const creating = attempt.create("offer").catch(error => error);
+    await vi.waitFor(() => expect(rejectCreate).toBeDefined());
+    await scope.stageEnd("setup_cancel");
+    const release = vi.spyOn(store, "finishProducerAndRelease").mockRejectedValue(new Error("storage unavailable"));
+    const finalize = vi.spyOn(store, "finishProducer").mockRejectedValue(new Error("storage unavailable"));
+
+    rejectCreate(new AccountingRequestError(404, "attempt_not_found"));
+    await expect(creating).resolves.toMatchObject({ message: "storage unavailable" });
+    expect(await store.get(attempt.localId)).toMatchObject({ producerOutcome: "lost", cleanup: { reason: "cancelled" } });
+    expect(finalize).toHaveBeenCalledTimes(1);
+
+    release.mockImplementation((id, outcome) => MetadataDeliveryBudget.prototype.finishProducerAndRelease.call(store, id, outcome));
+    finalize.mockImplementation((id, outcome) => MetadataDeliveryBudget.prototype.finishProducer.call(store, id, outcome));
+    scope.outbox.start(); // start() performs the normal online/storage recovery wake.
+    await vi.waitFor(async () => expect(await store.get(attempt.localId)).toBeNull());
+
+    expect(release).toHaveBeenCalledTimes(2);
+    expect(release).toHaveBeenLastCalledWith(attempt.localId, "no_provider");
+    expect(f.api.cleanup).not.toHaveBeenCalled();
+    await scope.outbox.stop(); await scope.usageOutbox?.stop(); await store.close();
+  });
 
   it("does not cache an unavailable producer lock", async () => {
     const f = fixture(); let available = false;

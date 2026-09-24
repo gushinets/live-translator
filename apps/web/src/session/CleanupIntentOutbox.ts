@@ -20,6 +20,7 @@ export class CleanupIntentOutbox {
   private revision = 0;
   private readonly deferredCleanup = new Set<string>();
   constructor(private readonly budget: MetadataDeliveryBudget, private readonly transport: CleanupTransport,
+    private readonly retryPendingFinalizations?: () => Promise<void>,
     private readonly anomaly: (code: string) => void = code => console.error("Metadata delivery anomaly", { code })) {}
   async enqueue(localId: string, reason: CleanupReason): Promise<void> {
     await this.budget.enqueueCleanup(localId, reason); await this.budget.finishProducer(localId, "lost"); this.deferredCleanup.delete(localId); this.revision++; this.schedule();
@@ -54,6 +55,7 @@ export class CleanupIntentOutbox {
   }
   private async deliver(): Promise<void> {
     let pending = false;
+    try { await this.retryPendingFinalizations?.(); } catch { pending = true; }
     for (const row of await this.budget.entries()) {
       if (row.producerOutcome === "no_provider") {
         await this.budget.finishProducerAndRelease(row.localId, "no_provider");

@@ -61,7 +61,7 @@ export class ConversationAccounting {
     this.api = options.api ?? new AccountingBackend();
     this.producerId = options.budget?.ownerProducerId ?? crypto.randomUUID();
     this.budget = options.budget ?? new MetadataDeliveryBudget({ producerId: this.producerId });
-    this.outbox = new CleanupIntentOutbox(this.budget, this.api); this.autoDelivery = options.autoDelivery ?? true;
+    this.outbox = new CleanupIntentOutbox(this.budget, this.api, () => this.flushPendingNoProviderFinalizations()); this.autoDelivery = options.autoDelivery ?? true;
     if (this.api.usage) this.usageOutbox = new UsageOutbox(this.budget, { usage: this.api.usage.bind(this.api), readConversation: this.api.readConversation.bind(this.api) });
     if (this.autoDelivery) { this.outbox.start(); this.usageOutbox?.start(); }
   }
