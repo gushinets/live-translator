@@ -1,7 +1,7 @@
 import type { UsageReport, UsageReceipt } from "../metrics/UsageTypes";
 import type { CreateLiveSessionResponse } from "./BackendClient";
 import type { CleanupReason, CloseMetadata } from "../session/MetadataDeliveryBudget";
-import type { AttemptProof, CleanupTransport } from "../session/CleanupIntentOutbox";
+import { MANAGED_SESSION_CREATE_TIMEOUT_MS, type AttemptProof, type CleanupTransport } from "../session/CleanupIntentOutbox";
 export interface ConversationMetadata {
   conversationId: string; version: number; status: "active" | "paused" | "resuming" | "ended";
   productDeadlineAt: number | null; serverTime: number; policy: { sessionCloseTimeoutMs: number };
@@ -52,7 +52,7 @@ export class AccountingBackend implements LedgerApi {
     }
   }
   createConversation(createRequestId: string): Promise<ConversationMetadata> { return this.json("/api/conversations", "POST", { createRequestId, appVersion: "ledger-client-v1" }); }
-  createSession(body: ProviderCreateBody, signal: AbortSignal): Promise<CreateLiveSessionResponse> { return this.json("/api/live/session", "POST", body, signal, 120000); }
+  createSession(body: ProviderCreateBody, signal: AbortSignal): Promise<CreateLiveSessionResponse> { return this.json("/api/live/session", "POST", body, signal, MANAGED_SESSION_CREATE_TIMEOUT_MS); }
   handoff(id: string): Promise<AttemptMetadata> { return this.json(`/api/live/session/${encodeURIComponent(id)}/handoff`, "POST", {}); }
   readAttempt(id: string): Promise<AttemptMetadata> { return this.json(`/api/live/session/${encodeURIComponent(id)}`); }
   readConversation(id: string): Promise<ConversationMetadata> { return this.json(`/api/conversations/${encodeURIComponent(id)}`); }
