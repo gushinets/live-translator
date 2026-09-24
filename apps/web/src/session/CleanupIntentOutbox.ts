@@ -6,6 +6,7 @@ export interface AttemptProof {
 export interface CleanupTransport {
   cleanup(localId: string, reason: CleanupReason): Promise<AttemptProof>;
   closed(localId: string, observation: CloseMetadata): Promise<AttemptProof>;
+  readAttempt?(localId: string): Promise<AttemptProof>;
   readConversation(conversationId: string): Promise<unknown>;
   end?(id: string, version: number, reason: EndIntent["reason"]): Promise<{ status: string }>;
 }
@@ -71,7 +72,17 @@ export class CleanupIntentOutbox {
         await this.budget.finishProducerAndRelease(row.localId, "no_provider");
         continue;
       }
-      if (!row.cleanup && !row.closeObservation) continue;
+      if (!row.cleanup && !row.closeObservation) {
+        if (row.producerId !== this.budget.ownerProducerId && row.dispatchStartedAt !== null && !row.producerFinalized && !globalThis.navigator?.locks) {
+          try {
+            const proof = await this.transport.readAttempt?.(row.localId);
+            if (!proof || !cleanupProofReceived(proof)) { pending = true; continue; }
+            await this.budget.finishUsageProducer(row.localId);
+            await this.budget.finishProducerAndRelease(row.localId, "lost");
+          } catch { pending = true; }
+        }
+        continue;
+      }
       if (!row.closeObservation && this.deferredCleanup.has(row.localId)) { pending = true; continue; }
       const deliverRow = async () => {
         if (Date.now() >= (row.cleanup?.expiresAt ?? row.reservedAt + 7 * 86400000)) {
@@ -103,8 +114,13 @@ export class CleanupIntentOutbox {
               await deliverRow();
             });
           } catch { pending = true; }
-        } else if (Date.now() < (row.producerCloseDeadlineAt ?? Math.max(row.cleanup.createdAt, row.cleanup.expiresAt - METADATA_TTL_MS))) pending = true;
-        else await deliverRow();
+        } else {
+          try {
+            const proof = await this.transport.readAttempt?.(row.localId);
+            if (!proof || !cleanupProofReceived(proof)) { pending = true; continue; }
+            await this.budget.acknowledgeCleanupAndRelease(row.localId);
+          } catch { pending = true; }
+        }
       } else await deliverRow();
     }
     for (const intent of await this.budget.ends()) {

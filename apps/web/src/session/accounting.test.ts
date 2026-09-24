@@ -69,6 +69,39 @@ describe("shared IndexedDB metadata budget", () => {
   });
 });
 describe("cleanup and End delivery", () => {
+  it("keeps a preexisting close observation as a dependency on the first End", async () => {
+    const f = fixture(), attempt = f.scope.newAttempt();
+    await attempt.create("offer");
+    f.api.closed.mockRejectedValue(new Error("offline"));
+    await attempt.finish({ finalized: true, usageSeconds: 7 });
+
+    await f.scope.stageEnd("user_end");
+    await f.scope.outbox.flush();
+
+    expect((await f.budget.ends())[0]?.cleanupLocalIds).toEqual([attempt.localId]);
+    expect(f.api.end).not.toHaveBeenCalled();
+    await f.budget.close();
+  });
+
+  it("does not migrate an ordinary abandoned cleanup as a staged End", async () => {
+    const indexedDB = new IDBFactory(), name = crypto.randomUUID(), now = Date.now();
+    await seedV1(indexedDB, name, {
+      localId: "legacy", conversationId: "c", producerId: "old-producer", reservedAt: now - 1000, dispatchStartedAt: now - 900,
+      producerFinalized: true, producerOutcome: "lost", cleanup: { reason: "hidden", createdAt: now - 100, expiresAt: now + 7 * 86400000 - 100 },
+      closeObservation: null, usagePending: false, usage: null,
+    }, { conversationId: "c", expectedVersion: 1, reason: "user_end", expiresAt: now + 7 * 86400000, cleanupLocalIds: [] });
+    const f = fixture(new MetadataDeliveryBudget({ indexedDB, name }));
+    f.api.cleanup.mockRejectedValue(new Error("offline"));
+    f.api.readAttempt.mockResolvedValue({ liveSessionId: "legacy", state: "active", handoffAcknowledgedAt: null, cleanupRequestedAt: null, conversation: f.c });
+    try {
+      await f.scope.outbox.flush();
+      const migrated = await f.budget.get("legacy");
+      expect(f.api.cleanup).not.toHaveBeenCalled();
+      expect(migrated?.producerCloseDeadlineAt).toBe(now - 100);
+      expect(migrated?.producerFinalized).toBe(true);
+    } finally { await f.budget.close(); }
+  });
+
   it("migrates a PR19 staged row before replay without Web Locks", async () => {
     const indexedDB = new IDBFactory(), name = crypto.randomUUID(), now = Date.now();
     const locks = Object.getOwnPropertyDescriptor(navigator, "locks");
@@ -79,6 +112,7 @@ describe("cleanup and End delivery", () => {
     }, { conversationId: "c", expectedVersion: 1, reason: "user_end", expiresAt: now + 7 * 86400000, cleanupLocalIds: ["legacy"] });
     Reflect.deleteProperty(navigator, "locks");
     const f = fixture(new MetadataDeliveryBudget({ indexedDB, name }));
+    f.api.readAttempt.mockResolvedValue({ liveSessionId: "legacy", state: "active", handoffAcknowledgedAt: null, cleanupRequestedAt: null, conversation: f.c });
     try {
       await f.scope.outbox.flush();
       const migrated = await f.budget.get("legacy");
@@ -89,50 +123,61 @@ describe("cleanup and End delivery", () => {
       expect((await f.budget.ends())[0]!.expiresAt).toBeGreaterThanOrEqual(migrated!.cleanup!.expiresAt);
 
       await updateEnvelope(indexedDB, name, "legacy", { producerCloseDeadlineAt: Date.now() - 1 });
+      f.api.readAttempt.mockResolvedValue({ liveSessionId: "legacy", state: "closing", handoffAcknowledgedAt: null, cleanupRequestedAt: Date.now(), conversation: f.c });
       await f.scope.outbox.flush();
-      expect(f.api.cleanup).toHaveBeenCalledWith("legacy", "user_end");
+      expect(f.api.cleanup).not.toHaveBeenCalled();
     } finally {
       if (locks) Object.defineProperty(navigator, "locks", locks); else Reflect.deleteProperty(navigator, "locks");
       await f.budget.close();
     }
   });
 
-  it("waits for the persisted close deadline before replaying without Web Locks", async () => {
+  it("waits for server retirement proof instead of expiring a frozen producer lease without Web Locks", async () => {
     const indexedDB = new IDBFactory(), name = crypto.randomUUID();
     const owner = fixture(new MetadataDeliveryBudget({ indexedDB, name }));
     const follower = fixture(new MetadataDeliveryBudget({ indexedDB, name }));
     const attempt = owner.scope.newAttempt();
     const locks = Object.getOwnPropertyDescriptor(navigator, "locks");
-    const storage = Object.getOwnPropertyDescriptor(globalThis, "localStorage");
     await attempt.create("offer"); await owner.scope.stageEnd("user_end");
-    await updateEnvelope(indexedDB, name, attempt.localId, { producerCloseDeadlineAt: Date.now() + 120000 });
+    await updateEnvelope(indexedDB, name, attempt.localId, { producerCloseDeadlineAt: Date.now() - 1 });
     Reflect.deleteProperty(navigator, "locks");
 
     try {
-      await follower.scope.outbox.flush();
-
-      expect(follower.api.cleanup).not.toHaveBeenCalled();
-      localStorage.setItem(`live-metadata-producer:${owner.budget.ownerProducerId}`, String(Date.now() - 120_000));
+      follower.api.readAttempt.mockResolvedValue({ liveSessionId: attempt.localId, state: "active", handoffAcknowledgedAt: Date.now(), cleanupRequestedAt: null, conversation: follower.c });
       await follower.scope.outbox.flush();
       expect(follower.api.cleanup).not.toHaveBeenCalled();
-
-      Object.defineProperty(globalThis, "localStorage", { configurable: true, value: { getItem: () => { throw new Error("storage blocked"); } } });
+      expect((await follower.budget.ends())[0]?.cleanupLocalIds).toEqual([attempt.localId]);
+      follower.api.readAttempt.mockResolvedValue({ liveSessionId: attempt.localId, state: "active", handoffAcknowledgedAt: Date.now(), cleanupRequestedAt: Date.now(), conversation: follower.c });
       await follower.scope.outbox.flush();
       expect(follower.api.cleanup).not.toHaveBeenCalled();
-
-      if (storage) Object.defineProperty(globalThis, "localStorage", storage); else Reflect.deleteProperty(globalThis, "localStorage");
-      await updateEnvelope(indexedDB, name, attempt.localId, { producerCloseDeadlineAt: Date.now() - 1 });
-      await follower.scope.outbox.flush();
-      expect(follower.api.cleanup).toHaveBeenCalledWith(attempt.localId, "user_end");
-      await attempt.finish({ finalized: true, usageSeconds: 9 });
-      await follower.scope.outbox.flush();
-      expect(follower.api.closed).toHaveBeenCalledWith(attempt.localId, { seconds: 9 });
-      expect(follower.api.cleanup).toHaveBeenCalledTimes(1);
+      expect(follower.api.end).toHaveBeenCalledWith(owner.c.conversationId, owner.c.version, "user_end");
     } finally {
-      if (storage) Object.defineProperty(globalThis, "localStorage", storage); else Reflect.deleteProperty(globalThis, "localStorage");
-      localStorage.removeItem(`live-metadata-producer:${owner.budget.ownerProducerId}`);
       if (locks) Object.defineProperty(navigator, "locks", locks); else Reflect.deleteProperty(navigator, "locks");
       await owner.budget.close(); await follower.budget.close();
+    }
+  });
+
+  it("recovers a dispatched orphan without Web Locks after the server fences it", async () => {
+    const indexedDB = new IDBFactory(), name = crypto.randomUUID();
+    const producer = fixture(new MetadataDeliveryBudget({ indexedDB, name }));
+    const recovery = fixture(new MetadataDeliveryBudget({ indexedDB, name }));
+    const attempt = producer.scope.newAttempt();
+    const locks = Object.getOwnPropertyDescriptor(navigator, "locks");
+    await attempt.create("offer");
+    await producer.budget.close();
+    Reflect.deleteProperty(navigator, "locks");
+    try {
+      recovery.api.readAttempt.mockResolvedValue({ liveSessionId: attempt.localId, state: "active", handoffAcknowledgedAt: Date.now(), cleanupRequestedAt: null, conversation: recovery.c });
+      await recovery.scope.outbox.flush();
+      expect(await recovery.budget.get(attempt.localId)).not.toBeNull();
+      expect(recovery.api.cleanup).not.toHaveBeenCalled();
+
+      recovery.api.readAttempt.mockResolvedValue({ liveSessionId: attempt.localId, state: "closing", handoffAcknowledgedAt: Date.now(), cleanupRequestedAt: Date.now(), conversation: recovery.c });
+      await recovery.scope.outbox.flush();
+      expect(await recovery.budget.get(attempt.localId)).toBeNull();
+    } finally {
+      if (locks) Object.defineProperty(navigator, "locks", locks); else Reflect.deleteProperty(navigator, "locks");
+      await recovery.budget.close();
     }
   });
 

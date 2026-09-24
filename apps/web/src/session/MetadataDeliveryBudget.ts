@@ -40,32 +40,36 @@ export class MetadataDeliveryBudget {
         if (!db.objectStoreNames.contains("lifecycle")) db.createObjectStore("lifecycle", { keyPath: "conversationId" });
         if ((event as IDBVersionChangeEvent).oldVersion === 1) {
           const migrated: Array<{ conversationId: string; localId: string; expiresAt: number }> = [];
-          const rows = tx.objectStore("envelopes").openCursor();
-          rows.onsuccess = () => {
-            const cursor = rows.result;
-            if (cursor) {
-              const row = cursor.value as MetadataEnvelope;
-              if (!row.producerCloseDeadlineAt && row.cleanup) {
-                const stagedByPr19 = row.producerFinalized && row.producerOutcome === "lost";
-                const deadline = stagedByPr19 ? Date.now() + MAX_SESSION_CLOSE_TIMEOUT_MS : Math.max(row.cleanup.createdAt, row.cleanup.expiresAt - METADATA_TTL_MS);
-                if (stagedByPr19) { row.producerFinalized = false; row.producerOutcome = null; }
-                row.producerCloseDeadlineAt = deadline;
-                row.cleanup.expiresAt = Math.max(row.cleanup.expiresAt, deadline + METADATA_TTL_MS);
-                migrated.push({ conversationId: row.conversationId, localId: row.localId, expiresAt: row.cleanup.expiresAt });
-                cursor.update(row);
+          const lifecycle = tx.objectStore("lifecycle").getAll();
+          lifecycle.onsuccess = () => {
+            const stagedIds = new Set((lifecycle.result as EndIntent[]).flatMap(intent => intent.cleanupLocalIds ?? []));
+            const rows = tx.objectStore("envelopes").openCursor();
+            rows.onsuccess = () => {
+              const cursor = rows.result;
+              if (cursor) {
+                const row = cursor.value as MetadataEnvelope;
+                if (!row.producerCloseDeadlineAt && row.cleanup) {
+                  const stagedByPr19 = row.producerFinalized && row.producerOutcome === "lost" && stagedIds.has(row.localId);
+                  const deadline = stagedByPr19 ? Date.now() + MAX_SESSION_CLOSE_TIMEOUT_MS : Math.max(row.cleanup.createdAt, row.cleanup.expiresAt - METADATA_TTL_MS);
+                  if (stagedByPr19) { row.producerFinalized = false; row.producerOutcome = null; }
+                  row.producerCloseDeadlineAt = deadline;
+                  row.cleanup.expiresAt = Math.max(row.cleanup.expiresAt, deadline + METADATA_TTL_MS);
+                  migrated.push({ conversationId: row.conversationId, localId: row.localId, expiresAt: row.cleanup.expiresAt });
+                  cursor.update(row);
+                }
+                cursor.continue(); return;
               }
-              cursor.continue(); return;
-            }
-            if (!migrated.length) return;
-            const ends = tx.objectStore("lifecycle").openCursor();
-            ends.onsuccess = () => {
-              const end = ends.result;
-              if (!end) return;
-              const intent = end.value as EndIntent;
-              const expiry = Math.max(intent.expiresAt, ...migrated.filter(row => row.conversationId === intent.conversationId &&
-                (!intent.cleanupLocalIds || intent.cleanupLocalIds.includes(row.localId))).map(row => row.expiresAt));
-              if (expiry !== intent.expiresAt) { intent.expiresAt = expiry; end.update(intent); }
-              end.continue();
+              if (!migrated.length) return;
+              const ends = tx.objectStore("lifecycle").openCursor();
+              ends.onsuccess = () => {
+                const end = ends.result;
+                if (!end) return;
+                const intent = end.value as EndIntent;
+                const expiry = Math.max(intent.expiresAt, ...migrated.filter(row => row.conversationId === intent.conversationId &&
+                  (!intent.cleanupLocalIds || intent.cleanupLocalIds.includes(row.localId))).map(row => row.expiresAt));
+                if (expiry !== intent.expiresAt) { intent.expiresAt = expiry; end.update(intent); }
+                end.continue();
+              };
             };
           };
         }
@@ -234,10 +238,10 @@ export class MetadataDeliveryBudget {
           const sameEnd = old?.expectedVersion === expectedVersion;
           const applicable = [...new Set(cleanupLocalIds)].filter(id => {
             const row = byId.get(id);
-            return row?.conversationId === conversationId && row.dispatchStartedAt !== null && !row.closeObservation &&
+            return row?.conversationId === conversationId && row.dispatchStartedAt !== null && (row.closeObservation || (
               !row.cleanupAcknowledged &&
               !(row.producerFinalized && row.producerOutcome === "lost" && !row.cleanup) &&
-              row.producerOutcome !== "provider_closed" && row.producerOutcome !== "no_provider";
+              row.producerOutcome !== "provider_closed" && row.producerOutcome !== "no_provider"));
           });
           const retained = sameEnd ? (old?.cleanupLocalIds ?? []).filter(id => {
             const row = byId.get(id);
@@ -246,6 +250,7 @@ export class MetadataDeliveryBudget {
           const dependencies = [...new Set([...retained, ...applicable])];
           for (const id of applicable) {
             const row = byId.get(id)!;
+            if (row.closeObservation) continue;
             const legacyDeadline = row.cleanup ? Math.max(row.cleanup.createdAt, row.cleanup.expiresAt - METADATA_TTL_MS) : 0;
             const existingDeadline = row.producerCloseDeadlineAt ?? (row.cleanup ? legacyDeadline : requestedCloseDeadlineAt);
             const producerCloseDeadlineAt = sameEnd ? existingDeadline : row.producerFinalized
