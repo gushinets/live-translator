@@ -1,7 +1,7 @@
 import { IDBFactory } from "fake-indexeddb";
 import { describe, expect, it, vi } from "vitest";
 import { MetadataDeliveryBudget } from "./MetadataDeliveryBudget";
-import type { CleanupTransport } from "./CleanupIntentOutbox";
+import { ATTEMPT_REGISTRATION_GRACE_MS, type CleanupTransport } from "./CleanupIntentOutbox";
 import { ConversationAccounting } from "./ConversationAccounting";
 import { AccountingRequestError, type LedgerApi, type ConversationMetadata } from "../api/AccountingBackend";
 
@@ -136,13 +136,15 @@ describe("cleanup and End delivery", () => {
       await f.budget.close();
     }
   });
-  it("uses a server cleanup fence to unblock End without treating the ACK as producer finality", async () => {
+  it("waits for the graceful-close deadline before no-lock cleanup recovery", async () => {
     const indexedDB = new IDBFactory(), name = crypto.randomUUID();
     const owner = fixture(new MetadataDeliveryBudget({ indexedDB, name }));
     const follower = fixture(new MetadataDeliveryBudget({ indexedDB, name }));
     const attempt = owner.scope.newAttempt();
     const locks = Object.getOwnPropertyDescriptor(navigator, "locks");
     await attempt.create("offer"); await owner.scope.stageEnd("user_end");
+    const deadline = (await owner.budget.get(attempt.localId))!.producerCloseDeadlineAt!;
+    const clock = vi.spyOn(Date, "now").mockReturnValue(deadline - 1);
     Reflect.deleteProperty(navigator, "locks");
     try {
       follower.api.recover.mockResolvedValue({ cleanupRequestedAt: Date.now(), state: "closing", openaiSessionId: "provider" });
@@ -150,6 +152,12 @@ describe("cleanup and End delivery", () => {
         cleanupRequestedAt: Date.now(), openaiSessionId: "provider", conversation: follower.c });
       await follower.scope.outbox.flush();
 
+      expect(follower.api.recover).not.toHaveBeenCalled();
+      expect(follower.api.end).not.toHaveBeenCalled();
+      expect(await follower.budget.get(attempt.localId)).toMatchObject({ cleanup: { reason: "user_end" } });
+
+      clock.mockReturnValue(deadline);
+      await follower.scope.outbox.flush();
       expect(follower.api.recover).toHaveBeenCalledWith(attempt.localId, owner.c.conversationId, "user_end");
       expect(follower.api.end).toHaveBeenCalledWith(owner.c.conversationId, owner.c.version, "user_end");
       expect(await follower.budget.get(attempt.localId)).toMatchObject({ cleanup: null, producerFinalized: false, producerOutcome: null });
@@ -159,6 +167,7 @@ describe("cleanup and End delivery", () => {
       await follower.scope.outbox.flush();
       expect(await follower.budget.get(attempt.localId)).toBeNull();
     } finally {
+      clock.mockRestore();
       if (locks) Object.defineProperty(navigator, "locks", locks); else Reflect.deleteProperty(navigator, "locks");
       await owner.budget.close(); await follower.budget.close();
     }
@@ -188,6 +197,7 @@ describe("cleanup and End delivery", () => {
 
       await producer.budget.reserve("request-never-arrived", producer.c.conversationId);
       await producer.budget.markDispatchStarted("request-never-arrived");
+      await updateEnvelope(indexedDB, name, "request-never-arrived", { dispatchStartedAt: Date.now() - ATTEMPT_REGISTRATION_GRACE_MS });
       recovery.api.readAttempt.mockRejectedValue(Object.assign(new Error("not found"), { status: 404 }));
       recovery.api.recover.mockResolvedValue({ state: "failed", openaiSessionId: null });
       await recovery.scope.outbox.flush();
@@ -196,6 +206,36 @@ describe("cleanup and End delivery", () => {
     } finally {
       if (locks) Object.defineProperty(navigator, "locks", locks); else Reflect.deleteProperty(navigator, "locks");
       await recovery.budget.close();
+    }
+  });
+
+  it("does not fence a foreign create on a pre-registration 404 before the no-lock grace expires", async () => {
+    const indexedDB = new IDBFactory(), name = crypto.randomUUID();
+    const ownerBudget = new MetadataDeliveryBudget({ indexedDB, name });
+    const followerBudget = new MetadataDeliveryBudget({ indexedDB, name });
+    const follower = fixture(followerBudget);
+    const locks = Object.getOwnPropertyDescriptor(navigator, "locks");
+    await ownerBudget.reserve("in-flight-create", follower.c.conversationId);
+    await ownerBudget.markDispatchStarted("in-flight-create");
+    const startedAt = (await ownerBudget.get("in-flight-create"))!.dispatchStartedAt!;
+    const clock = vi.spyOn(Date, "now").mockReturnValue(startedAt + ATTEMPT_REGISTRATION_GRACE_MS - 1);
+    Reflect.deleteProperty(navigator, "locks");
+    try {
+      follower.api.readAttempt.mockRejectedValue(Object.assign(new Error("not found"), { status: 404 }));
+      follower.api.recover.mockResolvedValue({ state: "failed", openaiSessionId: null });
+
+      await follower.scope.outbox.flush();
+      expect(follower.api.recover).not.toHaveBeenCalled();
+      expect(await follower.budget.get("in-flight-create")).not.toBeNull();
+
+      clock.mockReturnValue(startedAt + ATTEMPT_REGISTRATION_GRACE_MS);
+      await follower.scope.outbox.flush();
+      expect(follower.api.recover).toHaveBeenCalledWith("in-flight-create", follower.c.conversationId, "response_not_received");
+      expect(await follower.budget.get("in-flight-create")).toBeNull();
+    } finally {
+      clock.mockRestore();
+      if (locks) Object.defineProperty(navigator, "locks", locks); else Reflect.deleteProperty(navigator, "locks");
+      await ownerBudget.close(); await followerBudget.close();
     }
   });
 
