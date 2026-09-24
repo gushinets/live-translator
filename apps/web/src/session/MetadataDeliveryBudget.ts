@@ -206,7 +206,7 @@ export class MetadataDeliveryBudget {
         }
         const get = store.get(conversationId); get.onsuccess = () => {
           const old = get.result as EndIntent | undefined;
-          if (old) { if (old.expectedVersion < expectedVersion) store.put({ conversationId, expectedVersion, reason, expiresAt: Date.now() + TTL, cleanupLocalIds: applicable }); result(undefined); return; }
+          if (old) { if (old.expectedVersion <= expectedVersion) store.put({ conversationId, expectedVersion, reason: old.expectedVersion === expectedVersion ? old.reason : reason, expiresAt: Date.now() + TTL, cleanupLocalIds: applicable }); result(undefined); return; }
           const count = store.count(); count.onsuccess = () => {
             if (count.result >= 1000) { fail(new Error("Lifecycle metadata storage is full")); return; }
             store.put({ conversationId, expectedVersion, reason, expiresAt: Date.now() + TTL, cleanupLocalIds: applicable }); result(undefined);

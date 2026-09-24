@@ -193,7 +193,6 @@ export class ConversationAccounting {
   }
   noteNoProviderRetirement(localId: string): void {
     this.directRetirementProofs.add(localId);
-    this.outbox.confirmRetirement(localId);
   }
   async stageEnd(reason: "user_end" | "setup_cancel", expectedEpoch = this.epoch): Promise<void> {
     if (expectedEpoch !== this.epoch) return;
@@ -234,7 +233,7 @@ export class ConversationAccounting {
     if (c) {
       try {
         await this.outbox.enqueueEnd(c.conversationId, c.version, boundary.reason,
-          boundary.attempts.filter(a => a.dispatched).map(a => a.localId));
+          boundary.attempts.filter(a => a.dispatched && !this.directRetirementProofs.has(a.localId)).map(a => a.localId));
         persisted = true;
       } catch { console.error("Conversation end storage degraded", { conversationId: c.conversationId }); }
     }
@@ -297,10 +296,11 @@ export class ProviderAccounting {
         this.cancelled = true;
         await this.reporter?.noProvider();
         if (!this.reporter && this.scope.usageOutbox) await this.scope.usageOutbox.noProvider(this.localId);
-        await this.scope.budget.finishProducerAndRelease(this.localId, "no_provider");
         this.scope.noteNoProviderRetirement(this.localId);
         this.scope.noteNoProvider(this);
         this.finished = true;
+        await this.scope.budget.finishProducerAndRelease(this.localId, "no_provider");
+        this.scope.outbox.confirmRetirement(this.localId);
       } else {
         await this.abandon("response_not_received");
       }

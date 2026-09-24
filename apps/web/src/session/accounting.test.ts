@@ -371,6 +371,27 @@ describe("controller-owned conversation accounting", () => {
     await retry.abandon("cancelled"); await f.scope.outbox.flush(); await f.budget.close();
   });
 
+  it("ends without cleanup when no-provider finalization storage fails", async () => {
+    const f = fixture(), attempt = f.scope.newAttempt();
+    let rejectCreate!: (error: Error) => void;
+    f.api.createSession.mockImplementationOnce(() => new Promise((_resolve, reject) => { rejectCreate = reject; }));
+    const creating = attempt.create("offer").catch(error => error);
+    await vi.waitFor(() => expect(rejectCreate).toBeDefined());
+    await f.scope.stageEnd("setup_cancel");
+    f.api.cleanup.mockRejectedValue({ status: 404 });
+    vi.spyOn(f.budget, "finishProducerAndRelease").mockRejectedValueOnce(new Error("finalization storage failed"));
+
+    rejectCreate(new AccountingRequestError(404, "attempt_not_found"));
+    await expect(creating).resolves.toMatchObject({ message: "finalization storage failed" });
+    await f.scope.end("setup_cancel", f.scope.revision);
+    await f.scope.outbox.flush();
+
+    expect(f.api.cleanup).not.toHaveBeenCalled();
+    expect(f.api.end).toHaveBeenCalledWith(f.c.conversationId, f.c.version, "setup_cancel");
+    expect(await f.budget.ends()).toHaveLength(0);
+    await f.budget.close();
+  });
+
   it("does not cache an unavailable producer lock", async () => {
     const f = fixture(); let available = false;
     const locks = { request: vi.fn((_name: string, _options: { ifAvailable: boolean }, callback: (lock: object | null) => unknown) =>
