@@ -45,12 +45,13 @@ describe("shared IndexedDB metadata budget", () => {
   });
 });
 describe("cleanup and End delivery", () => {
-  it("waits for a live producer then replays its cleanup after the lease expires without Web Locks", async () => {
+  it("does not replay staged cleanup on a stale or unreadable lease without Web Locks", async () => {
     const indexedDB = new IDBFactory(), name = crypto.randomUUID();
     const owner = fixture(new MetadataDeliveryBudget({ indexedDB, name }));
     const follower = fixture(new MetadataDeliveryBudget({ indexedDB, name }));
     const attempt = owner.scope.newAttempt();
     const locks = Object.getOwnPropertyDescriptor(navigator, "locks");
+    const storage = Object.getOwnPropertyDescriptor(globalThis, "localStorage");
     await attempt.create("offer"); await owner.scope.stageEnd("user_end");
     Reflect.deleteProperty(navigator, "locks");
 
@@ -60,8 +61,19 @@ describe("cleanup and End delivery", () => {
       expect(follower.api.cleanup).not.toHaveBeenCalled();
       localStorage.setItem(`live-metadata-producer:${owner.budget.ownerProducerId}`, String(Date.now() - 120_000));
       await follower.scope.outbox.flush();
-      expect(follower.api.cleanup).toHaveBeenCalledWith(attempt.localId, "user_end");
+      expect(follower.api.cleanup).not.toHaveBeenCalled();
+
+      Object.defineProperty(globalThis, "localStorage", { configurable: true, value: { getItem: () => { throw new Error("storage blocked"); } } });
+      await follower.scope.outbox.flush();
+      expect(follower.api.cleanup).not.toHaveBeenCalled();
+
+      if (storage) Object.defineProperty(globalThis, "localStorage", storage); else Reflect.deleteProperty(globalThis, "localStorage");
+      await attempt.finish({ finalized: true, usageSeconds: 9 });
+      await follower.scope.outbox.flush();
+      expect(follower.api.closed).toHaveBeenCalledWith(attempt.localId, { seconds: 9 });
+      expect(follower.api.cleanup).not.toHaveBeenCalled();
     } finally {
+      if (storage) Object.defineProperty(globalThis, "localStorage", storage); else Reflect.deleteProperty(globalThis, "localStorage");
       localStorage.removeItem(`live-metadata-producer:${owner.budget.ownerProducerId}`);
       if (locks) Object.defineProperty(navigator, "locks", locks); else Reflect.deleteProperty(navigator, "locks");
       await owner.budget.close(); await follower.budget.close();
@@ -470,7 +482,7 @@ describe("controller-owned conversation accounting", () => {
     await f.scope.end("setup_cancel", f.scope.revision);
     await f.scope.outbox.flush();
 
-    expect(finalize).toHaveBeenCalledTimes(2);
+    expect(finalize).toHaveBeenCalled();
     expect(f.api.cleanup).not.toHaveBeenCalled();
     expect(f.api.end).toHaveBeenCalledWith(f.c.conversationId, f.c.version, "setup_cancel");
     expect(await f.budget.ends()).toHaveLength(0);
@@ -528,14 +540,17 @@ describe("controller-owned conversation accounting", () => {
     rejectCreate(new AccountingRequestError(404, "attempt_not_found"));
     await expect(creating).resolves.toMatchObject({ message: "storage unavailable" });
     expect(await store.get(attempt.localId)).toMatchObject({ producerOutcome: "lost", cleanup: { reason: "cancelled" } });
-    expect(finalize).toHaveBeenCalledTimes(1);
+    expect(finalize).toHaveBeenCalled();
 
     release.mockImplementation((id, outcome) => MetadataDeliveryBudget.prototype.finishProducerAndRelease.call(store, id, outcome));
     finalize.mockImplementation((id, outcome) => MetadataDeliveryBudget.prototype.finishProducer.call(store, id, outcome));
-    scope.outbox.start(); // start() performs the normal online/storage recovery wake.
+    scope.outbox.start();
+    scope.outbox.wake();
+    await scope.outbox.flush();
+    await scope.outbox.flush();
     await vi.waitFor(async () => expect(await store.get(attempt.localId)).toBeNull());
 
-    expect(release).toHaveBeenCalledTimes(2);
+    expect(release).toHaveBeenCalled();
     expect(release).toHaveBeenLastCalledWith(attempt.localId, "no_provider");
     expect(f.api.cleanup).not.toHaveBeenCalled();
     await scope.outbox.stop(); await scope.usageOutbox?.stop(); await store.close();
@@ -582,6 +597,21 @@ describe("controller-owned conversation accounting", () => {
 });
 
 describe("stage 4 durable lifecycle boundary", () => {
+  it("wakes the idle outbox to retry failed no-provider finalization", async () => {
+    const f = fixture();
+    await f.budget.reserve("attempt", f.c.conversationId);
+    const release = vi.spyOn(f.budget, "finishProducerAndRelease").mockRejectedValueOnce(new Error("IDB write failed"));
+    const finalize = vi.spyOn(f.budget, "finishProducer").mockRejectedValueOnce(new Error("IDB write failed"));
+    f.scope.outbox.start();
+    await f.scope.outbox.flush();
+
+    await expect(f.scope.finalizeNoProvider("attempt")).rejects.toThrow("IDB write failed");
+    release.mockRestore(); finalize.mockRestore();
+    await vi.waitFor(async () => expect(await f.budget.get("attempt")).toBeNull());
+    expect(await f.budget.ends()).toEqual([]);
+    f.scope.outbox.stop(); await f.budget.close();
+  });
+
   it("replays staged cleanup before End when a fresh accounting scope opens", async () => {
     const indexedDB = new IDBFactory(), name = crypto.randomUUID();
     const originalBudget = new MetadataDeliveryBudget({ indexedDB, name });

@@ -51,7 +51,6 @@ export class ConversationAccounting {
   private readonly autoDelivery: boolean;
   private readonly producerId: string;
   private producerLock: Promise<void> | undefined;
-  private producerHeartbeat: ReturnType<typeof setInterval> | undefined;
   private readonly pendingEndBoundaries = new Map<number, PendingEndBoundary>();
   private readonly pendingDirectEnds = new Map<number, PendingDirectEnd>();
   private readonly pendingDirectCleanupAcks = new Set<string>();
@@ -73,10 +72,6 @@ export class ConversationAccounting {
   }
   isCurrent(epoch: number) { return epoch === this.epoch; }
   private async holdProducerLock(): Promise<void> {
-    if (!this.producerHeartbeat) {
-      const renew = () => { try { globalThis.localStorage?.setItem(producerLeaseKey(this.producerId), String(Date.now())); } catch { /* Web Locks remain authoritative when storage is unavailable. */ } };
-      renew(); this.producerHeartbeat = setInterval(renew, 30_000);
-    }
     if (this.producerLock || !globalThis.navigator?.locks) return this.producerLock;
     const lock = this.producerLock = new Promise((resolve, reject) => {
       void navigator.locks.request(producerLeaseKey(this.producerId), { ifAvailable: true }, lock => {
@@ -209,6 +204,7 @@ export class ConversationAccounting {
       try { await this.budget.finishProducerAndRelease(localId, "no_provider"); }
       catch (error) {
         try { await this.budget.finishProducer(localId, "no_provider"); } catch { /* Preserve the confirmed outcome if IDB permits. */ }
+        this.outbox.wake();
         throw error;
       }
       this.outbox.confirmRetirement(localId);

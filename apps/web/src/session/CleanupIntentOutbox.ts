@@ -1,13 +1,5 @@
 import { MetadataDeliveryBudget, type CleanupReason, type CloseMetadata, type EndIntent } from "./MetadataDeliveryBudget";
 export const producerLeaseKey = (id: string) => `live-metadata-producer:${id}`;
-// ponytail: a suspended tab may outlive this lease; Web Locks remain authoritative where supported.
-const PRODUCER_LEASE_MS = 2 * 60_000;
-export const producerLeaseIsLive = (id: string, now = Date.now()) => {
-  try {
-    const heartbeat = Number(globalThis.localStorage?.getItem(producerLeaseKey(id)));
-    return Number.isFinite(heartbeat) && now - heartbeat < PRODUCER_LEASE_MS;
-  } catch { return false; }
-};
 export interface AttemptProof {
   cleanupRequestedAt?: number | null; closeConfirmed?: boolean; state?: string; openaiSessionId?: string | null; leaseReleasedAt?: number | null;
 }
@@ -42,6 +34,7 @@ export class CleanupIntentOutbox {
   }
   deferCleanup(localIds: readonly string[]): void { for (const id of localIds) this.deferredCleanup.add(id); }
   confirmRetirement(localId: string): void { this.deferredCleanup.delete(localId); }
+  wake(): void { this.onWake(); }
   start(): void {
     if (this.started) return; this.started = true;
     globalThis.addEventListener?.("online", this.onWake); globalThis.document?.addEventListener("visibilitychange", this.onWake); this.onWake();
@@ -101,8 +94,7 @@ export class CleanupIntentOutbox {
               await deliverRow();
             });
           } catch { pending = true; }
-        } else if (producerLeaseIsLive(row.producerId)) pending = true;
-        else await deliverRow();
+        } else pending = true; // ponytail: defer forever without Web Locks; safe takeover needs a trustworthy death signal.
       } else {
         await deliverRow();
       }
