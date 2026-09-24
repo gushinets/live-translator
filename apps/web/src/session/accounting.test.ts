@@ -369,6 +369,35 @@ describe("cleanup and End delivery", () => {
     }
   });
 
+  it("routes dead-producer cleanup through recovery when the server attempt is missing", async () => {
+    const indexedDB = new IDBFactory(), name = crypto.randomUUID();
+    const ownerBudget = new MetadataDeliveryBudget({ indexedDB, name }), followerBudget = new MetadataDeliveryBudget({ indexedDB, name });
+    const follower = fixture(followerBudget);
+    const locks = Object.getOwnPropertyDescriptor(navigator, "locks");
+    Object.defineProperty(navigator, "locks", { configurable: true, value: {
+      request: vi.fn((_key: string, _options: { ifAvailable: boolean }, callback: (lock: object | null) => unknown) => Promise.resolve(callback({}))),
+    } });
+    try {
+      await ownerBudget.reserve("missing", follower.c.conversationId);
+      await ownerBudget.markDispatchStarted("missing");
+      await ownerBudget.enqueueCleanup("missing", "user_end");
+      await ownerBudget.finishProducer("missing", "lost");
+      await ownerBudget.enqueueEnd(follower.c.conversationId, follower.c.version, "user_end", ["missing"]);
+
+      follower.api.cleanup.mockRejectedValue(Object.assign(new Error("not found"), { status: 404 }));
+      follower.api.recover.mockResolvedValue({ state: "failed", openaiSessionId: null });
+
+      await follower.scope.outbox.flush();
+
+      expect(follower.api.recover).toHaveBeenCalledWith("missing", follower.c.conversationId, "user_end");
+      expect(await follower.budget.get("missing")).toBeNull();
+      expect(follower.api.end).toHaveBeenCalledWith(follower.c.conversationId, follower.c.version, "user_end");
+    } finally {
+      if (locks) Object.defineProperty(navigator, "locks", locks); else Reflect.deleteProperty(navigator, "locks");
+      await ownerBudget.close(); await followerBudget.close();
+    }
+  });
+
   it("waits for a live producer lock before replaying staged cleanup", async () => {
     const indexedDB = new IDBFactory(), name = crypto.randomUUID();
     const ownerBudget = new MetadataDeliveryBudget({ indexedDB, name }), followerBudget = new MetadataDeliveryBudget({ indexedDB, name });

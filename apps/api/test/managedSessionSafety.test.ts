@@ -10,6 +10,7 @@ import { UsageLedger } from "../src/accounting/UsageLedger.js";
 import { openUsageDatabase } from "../src/persistence/database.js";
 import { AnonymousIdentity } from "../src/security/AnonymousIdentity.js";
 import type { LiveSessionResponse } from "../src/openai/createLiveSession.js";
+import { DEFAULT_LEDGER_POLICY } from "../src/accounting/types.js";
 
 const origin = "http://localhost:5173";
 afterEach(() => vi.unstubAllEnvs());
@@ -187,7 +188,10 @@ describe("managed session failure boundaries", () => {
 
   it("durably fences an already registered in-flight create before aborting it", async () => {
     vi.stubEnv("OPENAI_API_KEY", "fake-key");
-    const db = openUsageDatabase(":memory:"), ledger = new UsageLedger(db);
+    let now = 1_800_000_000_000;
+    const db = openUsageDatabase(":memory:"), ledger = new UsageLedger(db, {
+      now: () => now, policy: { ...DEFAULT_LEDGER_POLICY, maxProviderSessionMs: 100 },
+    });
     let providerSignal: AbortSignal | undefined;
     const provider = vi.fn((_offer: string, context?: { signal: AbortSignal }) => {
       providerSignal = context!.signal;
@@ -211,8 +215,22 @@ describe("managed session failure boundaries", () => {
         .send({ conversationId: created.body.conversationId, reason: "response_not_received" }).expect(200);
       expect(fence.body.cleanupRequestedAt).not.toBeNull();
       await vi.waitFor(() => expect(providerSignal?.aborted).toBe(true));
-      expect(ledger.getAttemptInternal(localId).cleanup_requested_at).not.toBeNull();
       expect((await creation).status).toBe(502);
+
+      let row = ledger.getAttemptInternal(localId);
+      expect(row.cleanup_requested_at).not.toBeNull();
+      expect(row.state).toBe("closing");
+      expect(row.provider_expires_at).toBe(now + 100);
+
+      now += 99; ledger.watchdog();
+      expect(ledger.getAttemptInternal(localId).state).toBe("closing");
+
+      now += 1; ledger.watchdog();
+      row = ledger.getAttemptInternal(localId);
+      expect(row.state).toBe("closed");
+      expect(row.close_confirmed).toBe(0);
+      expect(row.lease_released_at).toBe(now);
+      expect(ledger.reservations()).toHaveLength(0);
     } finally { await runtime.shutdown({ drainMs: 0, timeoutMs: 100 }); db.close(); }
   });
 
