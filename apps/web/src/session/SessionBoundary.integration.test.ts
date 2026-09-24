@@ -39,11 +39,14 @@ class Peer extends EventTarget {
 function fixture(closeTimeoutMs = 2000) {
   const budget = new MetadataDeliveryBudget({ indexedDB: new IDBFactory(), name: crypto.randomUUID() });
   const c: ConversationMetadata = { conversationId: "conversation", version: 1, status: "active", productDeadlineAt: null,
-    serverTime: Date.now(), policy: { sessionCloseTimeoutMs: closeTimeoutMs } };
+    resumeExpiresAt: null, resumeAttemptId: null, serverTime: Date.now(), policy: { sessionCloseTimeoutMs: closeTimeoutMs,
+      backgroundSessionCloseEnabled: false, conversationRetentionMs: 300000, maxProviderSessionMs: 900000,
+      maxConversationElapsedMs: 900000, sessionHandoffAckTimeoutMs: 30000, resumeClaimTimeoutMs: 60000,
+      policyVersion: "unit-economics-v1.1" } };
   const states = new Map<string, string>();
   const reports: Array<{ id: string; report: UsageReport }> = [];
   const api = {
-    policy: vi.fn<LedgerApi["policy"]>(async () => ({ usageLedgerEnabled: true })),
+    policy: vi.fn<LedgerApi["policy"]>(async () => ({ usageLedgerEnabled: true, backgroundSessionCloseEnabled: false })),
     createConversation: vi.fn<LedgerApi["createConversation"]>(async () => c),
     createSession: vi.fn<LedgerApi["createSession"]>(async body => { states.set(body.liveSessionId, "creating"); return { session: { id: "provider" }, transport: { type: "webrtc", sdp: "answer" } }; }),
     handoff: vi.fn<LedgerApi["handoff"]>(async id => { states.set(id, "active"); return { liveSessionId: id, state: "active", handoffAcknowledgedAt: Date.now(), conversation: c }; }),
@@ -51,6 +54,10 @@ function fixture(closeTimeoutMs = 2000) {
     cleanup: vi.fn<LedgerApi["cleanup"]>(async id => { states.set(id, "unknown"); return { cleanupRequestedAt: Date.now() }; }),
     closed: vi.fn<LedgerApi["closed"]>(async id => { states.set(id, "closed"); return { state: "closed", closeConfirmed: true }; }),
     readConversation: vi.fn<LedgerApi["readConversation"]>(async () => c),
+    pause: vi.fn<LedgerApi["pause"]>(),
+    claimResume: vi.fn<LedgerApi["claimResume"]>(),
+    completeResume: vi.fn<LedgerApi["completeResume"]>(),
+    abortResume: vi.fn<LedgerApi["abortResume"]>(),
     end: vi.fn<LedgerApi["end"]>(async () => ({ ...c, status: "ended" })),
     usage: vi.fn<NonNullable<LedgerApi["usage"]>>(async (id, report) => {
       reports.push({ id, report }); return { schemaVersion: 1, appAccepted: true, activityReportSeq: null, appMetricsFinalized: true };

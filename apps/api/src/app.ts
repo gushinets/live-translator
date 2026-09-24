@@ -55,13 +55,13 @@ export function createApp(dependencies: AppDependencies = {}) {
   const enabled = dependencies.ledgerEnabled ?? (dependencies.ledger !== undefined || apiConfig.usageLedgerEnabled);
   const retainLedger = enabled || dependencies.ledger !== undefined || existsSync(apiConfig.usageDbPath);
   app.use("/api", (_req, res, next) => { res.set("Cache-Control", "no-store"); next(); });
-  app.get("/api/policy", (_req, res) => res.json({ usageLedgerEnabled: enabled, creationPaused: !enabled && retainLedger, schemaVersion: 1 }));
+  app.get("/api/policy", (_req, res) => res.json({ usageLedgerEnabled: enabled, backgroundSessionCloseEnabled: enabled && apiConfig.backgroundSessionCloseEnabled, creationPaused: !enabled && retainLedger, schemaVersion: 1 }));
   if (retainLedger) {
     const ledger = dependencies.ledger ?? new UsageLedger(openUsageDatabase(apiConfig.usageDbPath), { policy: {
       ...DEFAULT_LEDGER_POLICY, conversationRetentionMs: apiConfig.conversationRetentionMs,
       maxProviderSessionMs: apiConfig.maxProviderSessionMs, maxConversationElapsedMs: apiConfig.maxConversationElapsedMs,
       sessionCloseTimeoutMs: apiConfig.sessionCloseTimeoutMs, sessionHandoffAckTimeoutMs: apiConfig.sessionHandoffAckTimeoutMs,
-      resumeClaimTimeoutMs: apiConfig.resumeClaimTimeoutMs,
+      resumeClaimTimeoutMs: apiConfig.resumeClaimTimeoutMs, backgroundSessionCloseEnabled: apiConfig.backgroundSessionCloseEnabled,
     } });
     const runtime = new LedgerRuntime(ledger, { creator: dependencies.createLiveSession, closeOrphan: dependencies.closeOrphan,
       maxConcurrent: apiConfig.maxConcurrentSessions, leaseMs: apiConfig.leaseMs,

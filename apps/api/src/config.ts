@@ -72,9 +72,15 @@ function dbPath(): string {
   if (!path.trim()) throw new Error("USAGE_DB_PATH must not be empty");
   return path;
 }
+const usageLedgerEnabled = booleanEnv("USAGE_LEDGER_ENABLED", false);
+const backgroundSessionCloseEnabled = booleanEnv("BACKGROUND_SESSION_CLOSE_ENABLED", false);
+if (backgroundSessionCloseEnabled && !usageLedgerEnabled) {
+  throw new Error("BACKGROUND_SESSION_CLOSE_ENABLED requires USAGE_LEDGER_ENABLED");
+}
 export const apiConfig = {
   webOrigin: resolveWebOrigin(),
-  usageLedgerEnabled: booleanEnv("USAGE_LEDGER_ENABLED", false),
+  usageLedgerEnabled,
+  backgroundSessionCloseEnabled,
   usageDbPath: dbPath(),
   conversationRetentionMs: positiveIntegerEnv("CONVERSATION_RETENTION_MS", 300000, 2147483647),
   maxProviderSessionMs: positiveIntegerEnv("MAX_PROVIDER_SESSION_MS", 900000, 2147483647),

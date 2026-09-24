@@ -67,6 +67,7 @@ export class ConversationAccounting {
   }
   get revision() { return this.epoch; }
   get conversationId(): string | null { return this.current?.conversationId ?? null; }
+  get backgroundSessionCloseEnabled(): boolean { return this.current?.policy.backgroundSessionCloseEnabled === true; }
   newAttempt(): ProviderAccounting {
     const attempt = new ProviderAccounting(this, this.epoch); this.attempts.add(attempt); return attempt;
   }
@@ -104,6 +105,7 @@ export class ConversationAccounting {
     this.enabled ??= this.api.policy().then(p => {
       if (p.creationPaused) throw new Error("New sessions are temporarily paused");
       if (typeof p.usageLedgerEnabled !== "boolean") throw new Error("Invalid accounting policy");
+      if (p.backgroundSessionCloseEnabled && !p.usageLedgerEnabled) throw new Error("Background close requires the usage ledger");
       return p.usageLedgerEnabled;
     }).catch(error => { this.enabled = undefined; throw error; });
     if (!await this.enabled) return null;

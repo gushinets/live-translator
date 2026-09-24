@@ -7,9 +7,13 @@ import { AccountingRequestError, type LedgerApi, type ConversationMetadata } fro
 
 function budget(capacity = 1000) { return new MetadataDeliveryBudget({ indexedDB: new IDBFactory(), name: crypto.randomUUID(), capacity }); }
 function fixture(store = budget()) {
-  const c: ConversationMetadata = { conversationId: "conversation", version: 1, status: "active", productDeadlineAt: null, serverTime: Date.now(), policy: { sessionCloseTimeoutMs: 10 } };
+  const c: ConversationMetadata = { conversationId: "conversation", version: 1, status: "active", productDeadlineAt: null,
+    resumeExpiresAt: null, resumeAttemptId: null, serverTime: Date.now(), policy: { sessionCloseTimeoutMs: 10,
+      backgroundSessionCloseEnabled: false, conversationRetentionMs: 300000, maxProviderSessionMs: 900000,
+      maxConversationElapsedMs: 900000, sessionHandoffAckTimeoutMs: 30000, resumeClaimTimeoutMs: 60000,
+      policyVersion: "unit-economics-v1.1" } };
   const api = {
-    policy: vi.fn<LedgerApi["policy"]>(async () => ({ usageLedgerEnabled: true })),
+    policy: vi.fn<LedgerApi["policy"]>(async () => ({ usageLedgerEnabled: true, backgroundSessionCloseEnabled: false })),
     createConversation: vi.fn<LedgerApi["createConversation"]>(async () => c),
     createSession: vi.fn<LedgerApi["createSession"]>(async () => ({ session: { id: "provider" }, transport: { type: "webrtc", sdp: "answer" } })),
     handoff: vi.fn<LedgerApi["handoff"]>(async id => ({ liveSessionId: id, state: "active", handoffAcknowledgedAt: Date.now(), cleanupRequestedAt: null, conversation: c })),
@@ -20,6 +24,10 @@ function fixture(store = budget()) {
     }),
     closed: vi.fn<CleanupTransport["closed"]>(async () => ({ state: "closed", closeConfirmed: true })),
     readConversation: vi.fn<LedgerApi["readConversation"]>(async () => c),
+    pause: vi.fn<LedgerApi["pause"]>(),
+    claimResume: vi.fn<LedgerApi["claimResume"]>(),
+    completeResume: vi.fn<LedgerApi["completeResume"]>(),
+    abortResume: vi.fn<LedgerApi["abortResume"]>(),
     end: vi.fn<LedgerApi["end"]>(async () => ({ ...c, status: "ended" })),
   };
   const scope = new ConversationAccounting({ api, budget: store, autoDelivery: false });
@@ -952,10 +960,24 @@ describe("controller-owned conversation accounting", () => {
     await second.abandon("cancelled"); await f.scope.outbox.flush(); await f.budget.close();
   });
   it("cancels an in-flight policy lookup before any provider can be created", async () => {
-    const f = fixture(); let resolve!: (value: { usageLedgerEnabled: boolean }) => void;
+    const f = fixture(); let resolve!: (value: { usageLedgerEnabled: boolean; backgroundSessionCloseEnabled: boolean }) => void;
     f.api.policy.mockImplementation(() => new Promise(ok => { resolve = ok; })); const a = f.scope.newAttempt(); const create = a.create("offer").catch((e: unknown) => e);
-    await vi.waitFor(() => expect(resolve).toBeDefined()); await a.abandon("cancelled"); resolve({ usageLedgerEnabled: true }); await create;
+    await vi.waitFor(() => expect(resolve).toBeDefined()); await a.abandon("cancelled"); resolve({ usageLedgerEnabled: true, backgroundSessionCloseEnabled: false }); await create;
     expect(f.api.createSession).not.toHaveBeenCalled(); await f.budget.close();
+  });
+  it("rejects background close policy when the ledger is disabled", async () => {
+    const f = fixture();
+    f.api.policy.mockResolvedValue({ usageLedgerEnabled: false, backgroundSessionCloseEnabled: true });
+    await expect(f.scope.prepare(f.scope.newAttempt())).rejects.toThrow("ledger");
+    expect(f.api.createConversation).not.toHaveBeenCalled();
+    await f.budget.close();
+  });
+  it("exposes the conversation's retained background policy to its owner", async () => {
+    const f = fixture();
+    f.c.policy.backgroundSessionCloseEnabled = true;
+    await f.scope.prepare(f.scope.newAttempt());
+    expect(f.scope.backgroundSessionCloseEnabled).toBe(true);
+    await f.budget.close();
   });
   it("recovers a lost handoff ACK from read-back without creating a second provider", async () => {
     const f = fixture(); const a = f.scope.newAttempt(); await a.create("offer"); const receipt = await f.api.handoff(a.localId);
