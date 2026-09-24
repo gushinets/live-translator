@@ -339,6 +339,22 @@ describe("stage 5 hidden boundary", () => {
     await reloadAfterPause(f, false, true);
     await f.budget.close();
   });
+  it("blocks a new UI start when the End intent survives but its identity pointer is lost", async () => {
+    const f = fixture(40, true);
+    await f.controller.startContextCapture();
+    f.api.end.mockRejectedValue(new Error("offline"));
+    const ending = f.controller.endConversation();
+    f.clients[0]!.peer.channel.emit({ type: "session.closed" });
+    await ending;
+    expect(await f.budget.ends()).toHaveLength(1);
+    sessionStorage.removeItem("live-translator-retained-conversation-v1");
+
+    await expect(f.controller.startContextCapture()).rejects.toThrow("End is pending");
+    expect(f.api.createConversation).toHaveBeenCalledTimes(1);
+    expect(f.api.createSession).toHaveBeenCalledTimes(1);
+    await (await f.snapshotStore).dispose();
+    await f.budget.close();
+  });
   it("does not clear the pointer for a higher active version without confirmed End", async () => {
     const f = fixture(40, true);
     await f.controller.startContextCapture();

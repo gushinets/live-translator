@@ -988,6 +988,47 @@ describe("controller-owned conversation accounting", () => {
 });
 
 describe("stage 4 durable lifecycle boundary", () => {
+  it("blocks provider dispatch while the current conversation has a staged End", async () => {
+    const f = fixture();
+    await f.scope.prepare(f.scope.newAttempt());
+    f.api.end.mockRejectedValue(new Error("offline"));
+    await f.scope.stageEnd("user_end");
+
+    await expect(f.scope.newAttempt().create("offer")).rejects.toThrow("End is pending");
+    expect(f.api.createConversation).toHaveBeenCalledTimes(1);
+    expect(f.api.createSession).not.toHaveBeenCalled();
+    await f.budget.close();
+  });
+
+  it("blocks a fresh scope with a lost identity pointer until its durable End is confirmed", async () => {
+    const indexedDB = new IDBFactory(), name = crypto.randomUUID();
+    const originalBudget = new MetadataDeliveryBudget({ indexedDB, name });
+    const original = fixture(originalBudget);
+    await original.scope.prepare(original.scope.newAttempt());
+    sessionStorage.setItem("live-translator-retained-conversation-v1", original.c.conversationId);
+    original.api.end.mockRejectedValue(new Error("offline"));
+    await original.scope.stageEnd("user_end");
+    await expect(original.scope.end("user_end")).rejects.toThrow("offline");
+    expect(await originalBudget.ends()).toHaveLength(1);
+    sessionStorage.removeItem("live-translator-retained-conversation-v1");
+    expect(sessionStorage.getItem("live-translator-retained-conversation-v1")).toBeNull();
+    await originalBudget.close();
+
+    const reloadedBudget = new MetadataDeliveryBudget({ indexedDB, name });
+    const reloaded = new ConversationAccounting({ api: original.api, budget: reloadedBudget, autoDelivery: false });
+    await expect(reloaded.newAttempt().create("offer")).rejects.toThrow("End is pending");
+    expect(original.api.createConversation).toHaveBeenCalledTimes(1);
+    expect(original.api.createSession).not.toHaveBeenCalled();
+    expect(await reloadedBudget.ends()).toHaveLength(1);
+
+    original.api.end.mockResolvedValue({ ...original.c, status: "ended" });
+    await reloaded.newAttempt().create("offer");
+    expect(await reloadedBudget.ends()).toHaveLength(0);
+    expect(original.api.createConversation).toHaveBeenCalledTimes(2);
+    expect(original.api.createSession).toHaveBeenCalledTimes(1);
+    await reloadedBudget.close();
+  });
+
   it("reruns pending no-provider finalization when its wake coalesces with an in-flight flush", async () => {
     const f = fixture();
     await f.budget.reserve("attempt", f.c.conversationId);
