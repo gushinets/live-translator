@@ -11,7 +11,7 @@ export interface MetadataEnvelope {
 }
 export interface EndIntent { conversationId: string; expectedVersion: number; reason: "user_end" | "setup_cancel"; expiresAt: number; cleanupLocalIds?: string[]; }
 export const METADATA_TTL_MS = 7 * 86400000;
-const LEGACY_PRODUCER_CLOSE_GRACE_MS = 30000;
+const MAX_SESSION_CLOSE_TIMEOUT_MS = 2_147_483_647;
 
 /** One origin-wide envelope per localId. Every pre-dispatch mutation waits for IDB commit. */
 export class MetadataDeliveryBudget {
@@ -47,8 +47,7 @@ export class MetadataDeliveryBudget {
               const row = cursor.value as MetadataEnvelope;
               if (!row.producerCloseDeadlineAt && row.cleanup) {
                 const stagedByPr19 = row.producerFinalized && row.producerOutcome === "lost";
-                // ponytail: fixed 30s grace for PR19 rows; persist a per-attempt deadline if policy needs to vary.
-                const deadline = stagedByPr19 ? Date.now() + LEGACY_PRODUCER_CLOSE_GRACE_MS : Math.max(row.cleanup.createdAt, row.cleanup.expiresAt - METADATA_TTL_MS);
+                const deadline = stagedByPr19 ? Date.now() + MAX_SESSION_CLOSE_TIMEOUT_MS : Math.max(row.cleanup.createdAt, row.cleanup.expiresAt - METADATA_TTL_MS);
                 if (stagedByPr19) { row.producerFinalized = false; row.producerOutcome = null; }
                 row.producerCloseDeadlineAt = deadline;
                 row.cleanup.expiresAt = Math.max(row.cleanup.expiresAt, deadline + METADATA_TTL_MS);

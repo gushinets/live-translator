@@ -84,7 +84,7 @@ describe("cleanup and End delivery", () => {
       const migrated = await f.budget.get("legacy");
       expect(f.api.cleanup).not.toHaveBeenCalled();
       expect(migrated).toMatchObject({ producerFinalized: false, producerOutcome: null });
-      expect(migrated!.producerCloseDeadlineAt).toBeGreaterThan(now);
+      expect(migrated!.producerCloseDeadlineAt).toBeGreaterThanOrEqual(now + 2_147_483_647);
       expect(migrated!.cleanup!.expiresAt).toBeGreaterThan(migrated!.producerCloseDeadlineAt!);
       expect((await f.budget.ends())[0]!.expiresAt).toBeGreaterThanOrEqual(migrated!.cleanup!.expiresAt);
 
