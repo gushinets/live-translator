@@ -6,20 +6,28 @@ import type { UsageReport } from "../metrics/UsageTypes";
 import { LiveClient } from "../live/LiveClient";
 import { ConversationAccounting } from "./ConversationAccounting";
 import { MetadataDeliveryBudget } from "./MetadataDeliveryBudget";
+import { ResumeSnapshotStore } from "./ResumeSnapshotStore";
 import { AccountedSessionController } from "./createAccountedSessionController";
 import type { SessionControllerDeps } from "./SessionController";
+import { VisibilityController } from "../platform/VisibilityController";
+import type { OrientationController } from "../platform/OrientationController";
+import type { WakeLockController } from "../platform/WakeLockController";
 
 /** Only the network/media boundary is simulated; controller, accounting and IDB transactions are real. */
 class Channel extends EventTarget {
   readyState = "open";
   readonly sent: string[] = [];
+  autoAckMute = true;
+  readonly events: Array<{ type: string; event_id?: string }> = [];
   send(raw: string) {
     const event = JSON.parse(raw) as { type: string; event_id?: string };
     this.sent.push(event.type);
+    this.events.push(event);
     const type = event.type.endsWith(".append") ? event.type.replace(/\.append$/, ".appended")
-      : event.type === "input_audio.mute" ? "session.input_audio.muted"
-      : event.type === "input_audio.unmute" ? "session.input_audio.unmuted" : undefined;
-    if (type) queueMicrotask(() => this.emit({ type, client_event_id: event.event_id }));
+      : event.type === "session.input_audio.mute" ? "session.input_audio.muted"
+      : event.type === "session.input_audio.unmute" ? "session.input_audio.unmuted" : undefined;
+    if (type && (this.autoAckMute || !type.includes("input_audio")))
+      queueMicrotask(() => this.emit({ type, client_event_id: event.event_id }));
   }
   emit(payload: unknown) { this.dispatchEvent(new MessageEvent("message", { data: JSON.stringify(payload) })); }
   close() { this.readyState = "closed"; this.dispatchEvent(new Event("close")); }
@@ -36,17 +44,26 @@ class Peer extends EventTarget {
   async setLocalDescription(value: RTCSessionDescriptionInit) { this.localDescription = value; }
   async setRemoteDescription() { this.channel.emit({ type: "session.started", session: { id: "provider" } }); }
 }
-function fixture(closeTimeoutMs = 2000) {
+function fixture(closeTimeoutMs = 2000, background = false, initialHidden = false, snapshotGate?: Promise<void>) {
+  const doc = new EventTarget() as Document;
+  let hidden = initialHidden;
+  Object.defineProperty(doc, "visibilityState", { get: () => hidden ? "hidden" : "visible" });
+  const visibility = new VisibilityController(doc);
+  const setVisible = (value: boolean) => { hidden = !value; doc.dispatchEvent(new Event("visibilitychange")); };
+  sessionStorage.clear();
+  const snapshotStore = ResumeSnapshotStore.open({ indexedDB: new IDBFactory(), sessionStorage,
+    locks: { request: async (_name: string, _options: unknown, callback: (lock: object) => unknown) => callback({}) } as LockManager,
+    name: crypto.randomUUID() });
   const budget = new MetadataDeliveryBudget({ indexedDB: new IDBFactory(), name: crypto.randomUUID() });
   const c: ConversationMetadata = { conversationId: "conversation", version: 1, status: "active", productDeadlineAt: null,
     resumeExpiresAt: null, resumeAttemptId: null, serverTime: Date.now(), policy: { sessionCloseTimeoutMs: closeTimeoutMs,
-      backgroundSessionCloseEnabled: false, conversationRetentionMs: 300000, maxProviderSessionMs: 900000,
+      backgroundSessionCloseEnabled: background, conversationRetentionMs: 300000, maxProviderSessionMs: 900000,
       maxConversationElapsedMs: 900000, sessionHandoffAckTimeoutMs: 30000, resumeClaimTimeoutMs: 60000,
       policyVersion: "unit-economics-v1.1" } };
   const states = new Map<string, string>();
   const reports: Array<{ id: string; report: UsageReport }> = [];
   const api = {
-    policy: vi.fn<LedgerApi["policy"]>(async () => ({ usageLedgerEnabled: true, backgroundSessionCloseEnabled: false })),
+    policy: vi.fn<LedgerApi["policy"]>(async () => ({ usageLedgerEnabled: true, backgroundSessionCloseEnabled: background })),
     createConversation: vi.fn<LedgerApi["createConversation"]>(async () => c),
     createSession: vi.fn<LedgerApi["createSession"]>(async body => { states.set(body.liveSessionId, "creating"); return { session: { id: "provider" }, transport: { type: "webrtc", sdp: "answer" } }; }),
     handoff: vi.fn<LedgerApi["handoff"]>(async id => { states.set(id, "active"); return { liveSessionId: id, state: "active", handoffAcknowledgedAt: Date.now(), conversation: c }; }),
@@ -54,7 +71,9 @@ function fixture(closeTimeoutMs = 2000) {
     cleanup: vi.fn<LedgerApi["cleanup"]>(async id => { states.set(id, "unknown"); return { cleanupRequestedAt: Date.now() }; }),
     closed: vi.fn<LedgerApi["closed"]>(async id => { states.set(id, "closed"); return { state: "closed", closeConfirmed: true }; }),
     readConversation: vi.fn<LedgerApi["readConversation"]>(async () => c),
-    pause: vi.fn<LedgerApi["pause"]>(),
+    pause: vi.fn<LedgerApi["pause"]>(async (_id, version) => {
+      c.status = "paused"; c.version = version + 1; c.resumeExpiresAt = Date.now() + 300000; return { ...c };
+    }),
     claimResume: vi.fn<LedgerApi["claimResume"]>(),
     completeResume: vi.fn<LedgerApi["completeResume"]>(),
     abortResume: vi.fn<LedgerApi["abortResume"]>(),
@@ -81,10 +100,24 @@ function fixture(closeTimeoutMs = 2000) {
     const client = new LiveClient({ backend: {} as BackendClient, accounting: attempt,
       peerFactory: () => peer as unknown as RTCPeerConnection, onRemoteStream: (value, source) => controller.handleRemoteStream(value, source) });
     clients.push({ client, peer, id: attempt.localId }); return client;
-  } }, scope);
-  return { budget, scope, api, c, reports, track, audio, controller, clients };
+  }, visibility,
+    orientation: { onChange: null, start: () => {}, stop: () => {}, isPortrait: () => true,
+      lockPortrait: async () => {} } as unknown as OrientationController,
+    wakeLock: { request: async () => {}, reacquire: async () => {}, release: async () => {} } as WakeLockController,
+  }, scope, snapshotGate ? snapshotGate.then(() => snapshotStore) : snapshotStore);
+  return { budget, scope, api, c, reports, track, audio, controller, clients, setVisible, snapshotStore };
 }
 async function settle() { for (let i = 0; i < 15; i++) await Promise.resolve(); }
+async function enterInterpreter(f: ReturnType<typeof fixture>) {
+  await f.controller.startBootstrap();
+  await f.controller.acceptBootstrap("I speak English and would like to find the nearest station.");
+  const replacing = f.controller.startBootstrap();
+  await vi.waitFor(() => expect(f.clients[0]!.peer.channel.sent).toContain("session.close"));
+  f.clients[0]!.peer.channel.emit({ type: "session.closed" });
+  await replacing;
+  await f.controller.acceptBootstrap("Hablo español y quisiera encontrar la estación de tren.");
+  await f.controller.beginInterpreter();
+}
 afterEach(() => { vi.restoreAllMocks(); });
 
 describe("stage 4 transport/accounting integration", () => {
@@ -157,4 +190,305 @@ describe("stage 4 transport/accounting integration", () => {
     await f.budget.close();
   });
 
+});
+
+describe("stage 5 hidden boundary", () => {
+  it("samples an initially hidden document before creating a provider attempt", async () => {
+    const f = fixture(40, true, true);
+    await f.controller.startContextCapture();
+    expect(f.api.createSession).not.toHaveBeenCalled();
+    expect(f.audio.getCaptureStream()).toBeNull();
+    await f.budget.close();
+  });
+
+  it("does not enter setup when hidden arrives during snapshot inspection", async () => {
+    let release!: () => void;
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    const f = fixture(40, true, false, gate);
+    const startCapture = vi.spyOn(f.audio, "startCapture");
+    const starting = f.controller.startContextCapture().catch((error: unknown) => error);
+    await settle();
+    f.setVisible(false);
+    release();
+    await starting;
+    expect(startCapture).not.toHaveBeenCalled();
+    expect(f.api.createSession).not.toHaveBeenCalled();
+    await f.budget.close();
+  });
+
+  it("blocks a new provider attempt while a retained conversation is active or its status is uncertain", async () => {
+    const f = fixture(40, true);
+    const store = await f.snapshotStore;
+    await store.save({ conversationId: f.c.conversationId, conversationVersion: f.c.version,
+      policyVersion: f.c.policy.policyVersion, participantA: { hasAcceptedConversationSpeech: false },
+      participantB: { hasAcceptedConversationSpeech: false }, contextText: "Kept locally", setupStage: "context",
+      enteredInterpreter: false, interruptedUtterance: false, productDeadlineAt: null, counters: {} });
+    await store.markHidden(f.c.conversationId, Date.now(), 300000);
+    await expect(f.controller.startContextCapture()).rejects.toThrow("Retained conversation");
+    expect(f.api.createSession).not.toHaveBeenCalled();
+    f.api.readConversation.mockRejectedValueOnce(new Error("network uncertain"));
+    await expect(f.controller.startBootstrap()).rejects.toThrow("network uncertain");
+    expect(f.api.createSession).not.toHaveBeenCalled();
+    await f.budget.close();
+  });
+
+  it("continues setup in its already owned conversation when a checkpoint exists", async () => {
+    const f = fixture(40, true);
+    await f.controller.startContextCapture();
+    await (await f.snapshotStore).save({ conversationId: f.c.conversationId,
+      conversationVersion: f.c.version, policyVersion: f.c.policy.policyVersion,
+      participantA: { hasAcceptedConversationSpeech: false }, participantB: { hasAcceptedConversationSpeech: false },
+      contextText: "Confirmed", setupStage: "context", enteredInterpreter: false,
+      interruptedUtterance: false, productDeadlineAt: null, counters: {} });
+    await f.controller.startBootstrap();
+    expect(f.controller.session.state).toBe("bootstrap");
+    expect(f.api.createSession).toHaveBeenCalledTimes(1);
+    const cancelling = f.controller.cancel();
+    f.clients[0]!.peer.channel.emit({ type: "session.closed" });
+    await cancelling;
+    await f.budget.close();
+  });
+
+  it("closes a dispatched setup attempt before pause and fences its late result", async () => {
+    const f = fixture(40, true);
+    let respond!: (value: { session: { id: string }; transport: { type: "webrtc"; sdp: string } }) => void;
+    f.api.createSession.mockImplementation(() => new Promise(resolve => { respond = resolve; }));
+    const starting = f.controller.startContextCapture();
+    await vi.waitFor(() => expect(respond).toBeDefined());
+    const id = f.clients[0]!.id;
+    f.setVisible(false);
+    expect(f.track.enabled).toBe(false);
+    expect(f.audio.getCaptureStream()).toBeNull();
+    await vi.waitFor(() => expect(f.api.pause).toHaveBeenCalledTimes(1));
+    expect((await f.budget.get(id))?.cleanup?.reason).toBe("hidden");
+    respond({ session: { id: "late" }, transport: { type: "webrtc", sdp: "late answer" } });
+    await starting;
+    expect(f.api.handoff).not.toHaveBeenCalled();
+    expect(f.controller.session.state).toBe("suspended");
+    await f.budget.close();
+  });
+
+  it("waits for direct cleanup proof before pause when local cleanup storage fails", async () => {
+    const f = fixture(40, true);
+    let respond!: (value: { session: { id: string }; transport: { type: "webrtc"; sdp: string } }) => void;
+    f.api.createSession.mockImplementation(() => new Promise(resolve => { respond = resolve; }));
+    const starting = f.controller.startContextCapture();
+    await vi.waitFor(() => expect(respond).toBeDefined());
+    vi.spyOn(f.budget, "enqueueCleanup").mockRejectedValue(new Error("storage unavailable"));
+    f.api.pause.mockImplementation(async (_id, version) => {
+      expect(f.api.cleanup).toHaveBeenCalledWith(f.clients[0]!.id, "hidden");
+      f.c.status = "paused"; f.c.version = version + 1; f.c.resumeExpiresAt = Date.now() + 300000;
+      return { ...f.c };
+    });
+    f.setVisible(false);
+    await vi.waitFor(() => expect(f.api.pause).toHaveBeenCalledTimes(1));
+    respond({ session: { id: "late" }, transport: { type: "webrtc", sdp: "late answer" } });
+    await starting;
+    expect(f.api.handoff).not.toHaveBeenCalled();
+    await f.budget.close();
+  });
+
+  it("gracefully closes a ready provider before pause, retaining context and counters", async () => {
+    const f = fixture(2000, true);
+    await f.controller.startContextCapture();
+    f.controller.setContextText("Confirmed context");
+    f.controller.reportSourceTailClipping();
+    const client = f.clients[0]!;
+    f.setVisible(false);
+    expect(f.track.enabled).toBe(false);
+    expect(f.audio.getCaptureStream()).toBeNull();
+    expect(client.peer.channel.sent).toContain("session.close");
+    expect(f.api.pause).not.toHaveBeenCalled();
+    client.peer.channel.emit({ type: "session.closed", usage: { seconds: 4 } });
+    await vi.waitFor(() => expect(f.api.pause).toHaveBeenCalledTimes(1));
+    const snapshot = await (await f.snapshotStore).readForResume(async id => {
+      expect(id).toBe(f.c.conversationId); return f.c;
+    });
+    expect(snapshot).toMatchObject({ contextText: "Confirmed context", setupStage: "context",
+      counters: { sourceTailClippingReports: 1 } });
+    expect(f.controller.session.state).toBe("suspended");
+    expect(f.controller.contextText).toBe("Confirmed context");
+    f.controller.setContextText("Late edit");
+    expect(f.controller.contextText).toBe("Confirmed context");
+    expect(f.controller.metrics.snapshot().sourceTailClippingReports).toBe(1);
+    expect((await f.budget.get(client.id))?.cleanup).toBeNull();
+    await f.budget.close();
+  });
+
+  it("closes an already suspended provider once and never resumes it on visible", async () => {
+    const f = fixture(40, true);
+    await enterInterpreter(f);
+    f.controller.setContextText("Kept");
+    f.audio.onAudioInterruption?.();
+    await vi.waitFor(() => expect(f.controller.session.state).toBe("suspended"));
+    const client = f.clients[1]!;
+    f.setVisible(false);
+    f.setVisible(false);
+    await vi.waitFor(() => expect(f.api.pause).toHaveBeenCalledTimes(1));
+    expect(client.peer.close).toHaveBeenCalledTimes(1);
+    f.setVisible(true);
+    f.audio.onAudioRestored?.();
+    await settle();
+    await expect(f.controller.resumeFromSourceTimeout()).resolves.toBeUndefined();
+    expect(f.controller.session.state).toBe("suspended");
+    expect(f.api.createSession).toHaveBeenCalledTimes(2);
+    expect(f.controller.hasEnteredInterpreter).toBe(true);
+    expect(f.controller.session.recentTurns).toEqual([]);
+    const snapshot = await (await f.snapshotStore).readForResume(async () => f.c);
+    expect(snapshot).toMatchObject({ setupStage: "interpreter", contextText: "Kept",
+      participantA: { language: "en" }, participantB: { language: "es" } });
+    await f.budget.close();
+  });
+
+  it("keeps the retained identity and refuses a fresh create when pause delivery fails", async () => {
+    const f = fixture(40, true);
+    await f.controller.startContextCapture();
+    f.api.pause.mockRejectedValueOnce(new Error("offline"));
+    f.setVisible(false);
+    await vi.waitFor(() => expect(f.api.pause).toHaveBeenCalledTimes(1));
+    f.setVisible(true);
+    await f.controller.startContextCapture();
+    expect(f.scope.conversationId).toBe(f.c.conversationId);
+    expect(f.api.createSession).toHaveBeenCalledTimes(1);
+    expect(f.controller.session.state).toBe("suspended");
+    await f.budget.close();
+  });
+
+  it("still closes and pauses when the normal capture gate throws", async () => {
+    const f = fixture(40, true);
+    await f.controller.startContextCapture();
+    f.audio.setCaptureEnabled = value => { if (!value) throw new Error("capture gate failed"); f.track.enabled = value; };
+    f.setVisible(false);
+    expect(f.track.enabled).toBe(false);
+    await vi.waitFor(() => expect(f.api.pause).toHaveBeenCalledTimes(1));
+    expect(f.clients[0]!.peer.close).toHaveBeenCalledTimes(1);
+    await f.budget.close();
+  });
+
+  it("closes before a queued mute and resume can reopen audio", async () => {
+    const f = fixture(40, true);
+    await enterInterpreter(f);
+    const client = f.clients[1]!;
+    client.peer.channel.autoAckMute = false;
+    const unmuteBefore = client.peer.channel.sent.filter(type => type === "session.input_audio.unmute").length;
+    f.audio.onAudioInterruption?.();
+    await vi.waitFor(() => expect(client.peer.channel.sent).toContain("session.input_audio.mute"));
+    f.audio.onAudioRestored?.();
+    f.setVisible(false);
+    expect(f.audio.getCaptureStream()).toBeNull();
+    expect(f.track.enabled).toBe(false);
+    expect(client.peer.channel.sent).toContain("session.close");
+    await vi.waitFor(() => expect(f.api.pause).toHaveBeenCalledTimes(1));
+    const mute = client.peer.channel.events.find(event => event.type === "session.input_audio.mute")!;
+    client.peer.channel.emit({ type: "session.input_audio.muted", client_event_id: mute.event_id });
+    f.setVisible(true);
+    await settle();
+    expect(client.peer.channel.sent.filter(type => type === "session.input_audio.unmute")).toHaveLength(unmuteBefore);
+    expect(f.controller.session.state).toBe("suspended");
+    await f.budget.close();
+  });
+
+  it("does not let cleanup delivery race a live graceful close", async () => {
+    const f = fixture(2000, true);
+    await f.controller.startContextCapture();
+    const client = f.clients[0]!;
+    f.setVisible(false);
+    await f.scope.outbox.flush();
+    expect(f.api.cleanup).not.toHaveBeenCalled();
+    expect(f.api.pause).not.toHaveBeenCalled();
+    client.peer.channel.emit({ type: "session.closed", usage: { seconds: 9 } });
+    await vi.waitFor(() => expect(f.api.pause).toHaveBeenCalledTimes(1));
+    expect(f.api.cleanup).not.toHaveBeenCalled();
+    await f.budget.close();
+  });
+
+  it("keeps the first terminal reason when End starts before hidden", async () => {
+    const f = fixture(40, true);
+    await f.controller.startContextCapture();
+    const ending = f.controller.cancel();
+    f.setVisible(false);
+    await ending;
+    await f.scope.outbox.flush();
+    expect(f.api.pause).not.toHaveBeenCalled();
+    expect(f.api.end).toHaveBeenCalledTimes(1);
+    await f.budget.close();
+  });
+
+  it("orders an explicit End after a hidden pause already in flight", async () => {
+    const f = fixture(2000, true);
+    await f.controller.startContextCapture();
+    let confirmPause!: () => void;
+    f.api.pause.mockImplementation(async (_id, version) => {
+      await new Promise<void>(resolve => { confirmPause = resolve; });
+      f.c.status = "paused"; f.c.version = version + 1; f.c.resumeExpiresAt = Date.now() + 300000;
+      return { ...f.c };
+    });
+    f.api.end.mockImplementation(async (_id, version) => {
+      expect(version).toBe(2);
+      return { ...f.c, status: "ended" };
+    });
+    f.setVisible(false);
+    const ending = f.controller.endConversation();
+    f.clients[0]!.peer.channel.emit({ type: "session.closed" });
+    await vi.waitFor(() => expect(f.api.pause).toHaveBeenCalledTimes(1));
+    await f.scope.outbox.flush();
+    expect(f.api.end).not.toHaveBeenCalled();
+    confirmPause();
+    await ending;
+    await f.scope.outbox.flush();
+    expect(f.api.end).toHaveBeenCalledTimes(1);
+    await f.budget.close();
+  });
+
+  it("publishes the hidden boundary before a suspended-state observer can reenter End", async () => {
+    const f = fixture(40, true);
+    await f.controller.startContextCapture();
+    let ending: Promise<void> | undefined;
+    const unsubscribe = f.controller.subscribe(() => {
+      if (f.controller.session.state === "suspended" && !ending) ending = f.controller.endConversation();
+    });
+    f.api.end.mockImplementation(async (_id, version) => {
+      expect(version).toBe(2);
+      return { ...f.c, status: "ended" };
+    });
+    f.setVisible(false);
+    f.clients[0]!.peer.channel.emit({ type: "session.closed" });
+    await vi.waitFor(() => expect(f.api.pause).toHaveBeenCalledTimes(1));
+    await ending;
+    expect(f.api.end).toHaveBeenCalledTimes(1);
+    unsubscribe();
+    await f.budget.close();
+  });
+
+  it("leaves flag-off setup and visibility behavior on the legacy path", async () => {
+    const f = fixture(40, false);
+    await f.controller.startContextCapture();
+    f.setVisible(false);
+    await settle();
+    expect(f.controller.session.state).toBe("context");
+    expect(f.api.pause).not.toHaveBeenCalled();
+    const ending = f.controller.cancel();
+    f.clients[0]!.peer.channel.emit({ type: "session.closed" });
+    await ending;
+    await f.budget.close();
+  });
+
+  it("uses a newly disabled policy after End for the next conversation", async () => {
+    const f = fixture(40, true);
+    await f.controller.startContextCapture();
+    const ending = f.controller.cancel();
+    f.clients[0]!.peer.channel.emit({ type: "session.closed" });
+    await ending;
+    await f.scope.outbox.flush();
+    f.api.policy.mockResolvedValue({ usageLedgerEnabled: true, backgroundSessionCloseEnabled: false });
+    f.c.policy.backgroundSessionCloseEnabled = false;
+    f.setVisible(false);
+    await f.controller.startContextCapture();
+    expect(f.api.createSession).toHaveBeenCalledTimes(2);
+    expect(f.api.pause).not.toHaveBeenCalled();
+    const cancelNew = f.controller.cancel();
+    f.clients[1]!.peer.channel.emit({ type: "session.closed" });
+    await cancelNew;
+    await f.budget.close();
+  });
 });

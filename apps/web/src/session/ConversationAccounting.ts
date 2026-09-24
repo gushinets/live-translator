@@ -40,6 +40,8 @@ export class ConversationAccounting {
   readonly outbox: CleanupIntentOutbox;
   readonly usageOutbox: UsageOutbox | undefined;
   private enabled: Promise<boolean> | undefined;
+  private backgroundPolicy = false;
+  private pausing = false;
   private creating: Promise<ConversationMetadata> | undefined;
   private current: ConversationMetadata | undefined;
   private last: ProviderAccounting | undefined;
@@ -66,8 +68,34 @@ export class ConversationAccounting {
     if (this.autoDelivery) { this.outbox.start(); this.usageOutbox?.start(); }
   }
   get revision() { return this.epoch; }
+  get isPausing() { return this.pausing; }
   get conversationId(): string | null { return this.current?.conversationId ?? null; }
-  get backgroundSessionCloseEnabled(): boolean { return this.current?.policy.backgroundSessionCloseEnabled === true; }
+  async pendingConversation(): Promise<ConversationMetadata | null> { return this.current ?? await this.creating?.catch(() => undefined) ?? null; }
+  get backgroundSessionCloseEnabled(): boolean { return this.current?.policy.backgroundSessionCloseEnabled ?? this.backgroundPolicy; }
+  async loadPolicy(): Promise<void> {
+    this.enabled ??= this.api.policy().then(p => {
+      if (p.creationPaused) throw new Error("New sessions are temporarily paused");
+      if (typeof p.usageLedgerEnabled !== "boolean") throw new Error("Invalid accounting policy");
+      if (p.backgroundSessionCloseEnabled && !p.usageLedgerEnabled) throw new Error("Background close requires the usage ledger");
+      this.backgroundPolicy = p.backgroundSessionCloseEnabled;
+      return p.usageLedgerEnabled;
+    }).catch(error => { this.enabled = undefined; throw error; });
+    await this.enabled;
+  }
+  beginBackgroundPause(): void { this.pausing = true; }
+  async pause(close: Promise<unknown>): Promise<ConversationMetadata | null> {
+    const c = await this.pendingConversation();
+    await close.catch(() => undefined);
+    const attempts = [...this.attempts];
+    const results = await Promise.allSettled(attempts.map(a => a.finished ? a.waitForRetirement() : a.abandon("hidden")));
+    const failure = results.find((r, i) => r.status === "rejected" && attempts[i]!.dispatched);
+    if (failure?.status === "rejected") throw failure.reason;
+    if (!c) return null;
+    const paused = await this.api.pause(c.conversationId, c.version);
+    if (paused.status !== "paused" || paused.conversationId !== c.conversationId) throw new Error("Conversation pause was not confirmed");
+    this.current = paused;
+    return paused;
+  }
   newAttempt(): ProviderAccounting {
     const attempt = new ProviderAccounting(this, this.epoch); this.attempts.add(attempt); return attempt;
   }
@@ -102,12 +130,8 @@ export class ConversationAccounting {
     }
   }
   async prepare(attempt: ProviderAccounting): Promise<ConversationMetadata | null> {
-    this.enabled ??= this.api.policy().then(p => {
-      if (p.creationPaused) throw new Error("New sessions are temporarily paused");
-      if (typeof p.usageLedgerEnabled !== "boolean") throw new Error("Invalid accounting policy");
-      if (p.backgroundSessionCloseEnabled && !p.usageLedgerEnabled) throw new Error("Background close requires the usage ledger");
-      return p.usageLedgerEnabled;
-    }).catch(error => { this.enabled = undefined; throw error; });
+    await this.loadPolicy();
+    if (this.pausing) throw new Error("Provider attempt cancelled");
     if (!await this.enabled) return null;
     await this.flushPendingNoProviderFinalizations();
     for (const boundary of [...this.pendingEndBoundaries.values()]) await this.finishEndBoundary(boundary);
@@ -118,6 +142,7 @@ export class ConversationAccounting {
     await this.holdProducerLock();
     this.creating ??= this.api.createConversation(this.requestId).catch(error => { this.creating = undefined; throw error; });
     const c = await this.creating; attempt.assertCurrent(); this.current = c;
+    if (c.status !== "active") throw new Error("Conversation is not active");
     // close() only joins local media retirement; do not race its pending durable write.
     if (this.last && this.last !== attempt && this.last.dispatched) await this.last.waitForRetirement();
     await this.outbox.flush(); attempt.assertCurrent();
@@ -231,6 +256,7 @@ export class ConversationAccounting {
       boundary = { epoch: expectedEpoch, reason, attempts: [...this.attempts], conversation: this.current, creating: this.creating };
       this.pendingEndBoundaries.set(expectedEpoch, boundary);
       this.epoch++; this.current = undefined; this.creating = undefined; this.last = undefined;
+      this.pausing = false; this.enabled = undefined; this.backgroundPolicy = false;
       this.dispatchCount = 0; this.requestId = crypto.randomUUID(); this.attempts = new Set();
     }
     if (boundary) return this.finishEndBoundary(boundary); // First reason/version wins across retries.
@@ -298,7 +324,7 @@ export class ProviderAccounting {
   providerStarted(): void { this.reporter?.providerStarted(); }
   constructor(private readonly scope: ConversationAccounting, private readonly epoch: number) {}
   assertCurrent(): void {
-    if (this.cancelled || !this.scope.isCurrent(this.epoch) || (typeof document !== "undefined" && document.visibilityState === "hidden" && this.managed)) throw new Error("Provider attempt cancelled");
+    if (this.cancelled || this.scope.isPausing || !this.scope.isCurrent(this.epoch) || (typeof document !== "undefined" && document.visibilityState === "hidden" && this.managed)) throw new Error("Provider attempt cancelled");
   }
   async create(sdp: string, beforeManagedCreate?: () => void): Promise<CreateLiveSessionResponse> {
     const c = await this.scope.prepare(this); this.assertCurrent();

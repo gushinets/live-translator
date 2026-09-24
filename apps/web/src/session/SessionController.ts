@@ -8,6 +8,7 @@ import {
   evaluateTurnCompletion,
 } from "../conversation/TurnCompletion";
 import { canAssignUnresolvedSource, createTranscriptFragment } from "../conversation/TurnBuffer";
+import type { ResumeSnapshotInput } from "./ResumeSnapshotStore";
 import type { Side, Turn } from "../conversation/Turn";
 import { AckTimeoutError } from "../live/AckRegistry";
 import { LiveClient, type LiveClientErrorEvent } from "../live/LiveClient";
@@ -133,6 +134,9 @@ export class SessionController {
   private playbackIdleWaitResolve: (() => void) | null = null;
   private playbackIdleWaitTimer: number | null = null;
   private platformStarted = false;
+  private earlyVisibilityStarted = false;
+  private backgroundPaused = false;
+  private backgroundCloseWork: Promise<void> | null = null;
   private lifecycleSuspendReason: LifecycleSuspendReason | undefined;
   private discardedUnfinishedOnSuspend = false;
   private enteredInterpreter = false;
@@ -152,9 +156,11 @@ export class SessionController {
       void this.handleOrientationChange(orientation);
     };
     this.visibility.onHidden = () => {
+      if (!this.backgroundCloseEnabled && !this.platformStarted) return;
       void this.handleVisibilityHidden();
     };
     this.visibility.onVisible = () => {
+      if (!this.backgroundCloseEnabled && !this.platformStarted) return;
       void this.handleVisibilityVisible();
     };
     this.bindLive();
@@ -163,6 +169,26 @@ export class SessionController {
 
   get session(): TranslationSession {
     return this.currentSession;
+  }
+
+  protected get backgroundCloseEnabled(): boolean { return false; }
+  protected beginBackgroundPause(): void {}
+  protected pauseBackground(_state: Omit<ResumeSnapshotInput, "conversationId" | "conversationVersion" | "policyVersion" | "productDeadlineAt">,
+    _hiddenAt: number, _close: Promise<unknown>): Promise<void> {
+    void _state; void _hiddenAt; void _close;
+    return Promise.resolve();
+  }
+  protected startEarlyVisibility(): void {
+    if (this.earlyVisibilityStarted) return;
+    this.visibility.start();
+    this.earlyVisibilityStarted = true;
+  }
+  protected sampleInitialHidden(): boolean {
+    if (!this.backgroundCloseEnabled) return false;
+    if (this.backgroundPaused) return true;
+    if (!this.visibility.isHidden()) return false;
+    void this.handleVisibilityHidden();
+    return true;
   }
 
   get contextText(): string {
@@ -254,6 +280,7 @@ export class SessionController {
   }
 
   setContextText(text: string): void {
+    if (this.backgroundPaused) return;
     this.contextFrozenByUser = true;
     this.finishContextCapture();
     this.applyContextText(text);
@@ -370,6 +397,7 @@ export class SessionController {
   }
 
   async resumeFromSourceTimeout(): Promise<void> {
+    if (this.backgroundPaused) return;
     if (this.sourceTimeoutResumeWork !== null) {
       await this.sourceTimeoutResumeWork;
       return;
@@ -500,7 +528,9 @@ export class SessionController {
     const work = new Promise<void>((ok, fail) => { resolve = ok; reject = fail; });
     // Publish the shared operation before synchronous UI observers can re-enter End/cancel.
     if (kind === "end") this.endWork = work; else this.cancelWork = work;
-    const operation = kind === "end" ? this.runEndConversation() : this.runCancel();
+    const retire = () => kind === "end" ? this.runEndConversation() : this.runCancel();
+    const operation = this.backgroundPaused && this.backgroundCloseWork
+      ? this.backgroundCloseWork.catch(() => undefined).then(retire) : retire();
     void operation.then(resolve, reject);
     try { await work; }
     finally {
@@ -510,6 +540,7 @@ export class SessionController {
   }
 
   async acceptBootstrap(text: string): Promise<void> {
+    if (this.backgroundPaused) return;
     if (this.bootstrapAccepting) return;
     if (this.currentSession.state !== "bootstrap" || !this.capturingBootstrap) {
       throw new Error("Сначала запишите образец речи.");
@@ -551,6 +582,7 @@ export class SessionController {
   }
 
   async beginInterpreter(): Promise<void> {
+    if (this.backgroundPaused) return;
     if (this.interpreterWork !== null) {
       await this.interpreterWork;
       return;
@@ -1055,6 +1087,7 @@ export class SessionController {
   }
 
   private async handleVoiceActivity(event: AudioActivityEvent): Promise<void> {
+    if (this.backgroundPaused) return;
     if (this.turnClosing) {
       return;
     }
@@ -1159,6 +1192,7 @@ export class SessionController {
   }
 
   private async handlePlaybackActivity(event: AudioActivityEvent): Promise<void> {
+    if (this.backgroundPaused) return;
     if (!this.acceptRemotePlaybackActivity(event)) {
       return;
     }
@@ -2112,7 +2146,7 @@ export class SessionController {
     }
     this.platformStarted = true;
     this.orientation.start();
-    this.visibility.start();
+    if (!this.earlyVisibilityStarted) this.visibility.start();
     try {
       if (!this.orientation.isPortrait()) {
         await this.suspendFromLifecycle("orientation");
@@ -2129,7 +2163,7 @@ export class SessionController {
 
   private stopPlatformLifecycle(): void {
     this.orientation.stop();
-    this.visibility.stop();
+    if (!this.earlyVisibilityStarted) this.visibility.stop();
     void this.wakeLock.release();
     this.platformStarted = false;
     this.lifecycleSuspendReason = undefined;
@@ -2143,6 +2177,7 @@ export class SessionController {
   }
 
   private async handleOrientationChange(orientation: "portrait" | "landscape"): Promise<void> {
+    if (this.backgroundPaused) return;
     if (orientation === "landscape") {
       this.bumpLifecycleEpoch();
       await this.enqueueLifecycle(() => this.suspendFromLifecycle("orientation"));
@@ -2152,11 +2187,64 @@ export class SessionController {
   }
 
   private async handleVisibilityHidden(): Promise<void> {
+    if (this.backgroundCloseEnabled) {
+      if (this.backgroundPaused || this.endWork !== null || this.cancelWork !== null) return;
+      this.backgroundPaused = true;
+      this.beginBackgroundPause();
+      let resolveClose!: () => void;
+      let rejectClose!: (error: unknown) => void;
+      this.backgroundCloseWork = new Promise<void>((resolve, reject) => {
+        resolveClose = resolve; rejectClose = reject;
+      });
+      const state = this.currentSession;
+      const hiddenAt = Date.now();
+      const snapshot = this.conversationMetrics.snapshot();
+      const counters: MetricCounters = {};
+      for (const name of COUNTER_NAMES) if (name in snapshot) counters[name] = snapshot[name as keyof typeof snapshot] as number;
+      const retained = {
+        participantA: { language: state.participantA.language, hasAcceptedConversationSpeech: state.participantA.hasAcceptedConversationSpeech },
+        participantB: { language: state.participantB.language, hasAcceptedConversationSpeech: state.participantB.hasAcceptedConversationSpeech },
+        contextText: this.contextBuffer,
+        setupStage: (this.enteredInterpreter ? "interpreter" : state.state === "bootstrap" ? "bootstrap" : "context") as ResumeSnapshotInput["setupStage"],
+        enteredInterpreter: this.enteredInterpreter,
+        interruptedUtterance: state.activeTurn !== undefined && state.activeTurn.turnCompletedAtMs === undefined && !state.activeTurn.corrected,
+        counters,
+      };
+      this.sessionGeneration += 1;
+      this.bumpLifecycleEpoch();
+      this.clearIdleTimer(); this.clearMaxSessionTimer(); this.clearTurnEngineTimers();
+      this.capturingContext = false; this.capturingBootstrap = false; this.bootstrapAccepting = false;
+      this.speechInputReady = false; this.turnClosing = false; this.recoveryPromptKind = undefined;
+      try { this.stopLocalMedia(); }
+      catch (error) {
+        console.error("Background local media stop failed", { error });
+        this.closeGateAForSafety("Background Gate A close failed");
+        try { this.audio.setOutputAudible(false); } catch { /* Provider close still proceeds. */ }
+        try { this.audio.audioElement.srcObject = null; } catch { /* Provider close still proceeds. */ }
+        try { this.audio.stopCapture(); } catch { /* Disabled tracks remain the safety boundary. */ }
+      }
+      if (this.platformStarted) this.stopPlatformLifecycle();
+      if (!["idle", "ended", "ending", "error", "suspended"].includes(state.state)) this.dispatch({ type: "SUSPEND" });
+      else if (state.state === "suspended") this.notify();
+      this.currentSession = { ...this.currentSession, recentTurns: [], activeTurn: undefined };
+      this.lifecycleSuspendReason = "visibility";
+      this.authoritativeContextSent = false;
+      this.gateBMuted = false;
+      this.hasConnected = false; this.liveConnectStarted = false;
+      try {
+        const close = this.live.close("hidden");
+        void this.pauseBackground(retained, hiddenAt, close).then(resolveClose, rejectClose);
+      } catch (error) { rejectClose(error); }
+      try { await this.backgroundCloseWork; }
+      catch (error) { console.error("Background pause incomplete", { error }); }
+      return;
+    }
     this.bumpLifecycleEpoch();
     await this.enqueueLifecycle(() => this.suspendFromLifecycle("visibility"));
   }
 
   private async handleVisibilityVisible(): Promise<void> {
+    if (this.backgroundPaused) return;
     await this.enqueueLifecycle(async () => {
       await this.wakeLock.reacquire();
       await this.resumeFromLifecycle();
@@ -2164,11 +2252,13 @@ export class SessionController {
   }
 
   private async handleAudioInterruption(): Promise<void> {
+    if (this.backgroundPaused) return;
     this.bumpLifecycleEpoch();
     await this.enqueueLifecycle(() => this.suspendFromLifecycle("audio"));
   }
 
   private async handleAudioRestored(): Promise<void> {
+    if (this.backgroundPaused) return;
     await this.enqueueLifecycle(async () => {
       await this.wakeLock.reacquire();
       await this.resumeFromLifecycle();
@@ -2176,6 +2266,7 @@ export class SessionController {
   }
 
   private handleCaptureEnded(): void {
+    if (this.backgroundPaused) return;
     const state = this.currentSession.state;
     if (state === "idle" || state === "ending" || state === "ended" || state === "error") {
       return;
@@ -2229,6 +2320,7 @@ export class SessionController {
   }
 
   private async suspendFromLifecycle(reason: LifecycleSuspendReason): Promise<void> {
+    if (this.backgroundPaused) return;
     if (this.currentSession.state === "suspended") {
       if (this.recoveryPromptKind !== "resume-repeat") {
         this.lifecycleSuspendReason = reason;
@@ -2290,6 +2382,7 @@ export class SessionController {
   }
 
   private async resumeFromLifecycle(): Promise<void> {
+    if (this.backgroundPaused) return;
     if (this.currentSession.state !== "suspended") {
       return;
     }
@@ -2472,6 +2565,8 @@ export class SessionController {
     this.audio.setOutputAudible(false);
     this.audio.audioElement.srcObject = null;
     this.hasConnected = false;
+    this.backgroundPaused = false;
+    this.backgroundCloseWork = null;
     this.contextBuffer = "";
     this.bootstrapBuffer = "";
     this.ownerErrorMessage = preservedError;
