@@ -40,21 +40,43 @@ export class AccountedSessionController extends SessionController {
     this.stopEarlyVisibility();
     try {
       await this.awaitBackgroundPause();
-      if (!this.accounting.isPausing && this.session.state !== "idle") {
-        const id = this.accounting.conversationId;
+      this.accounting.beginBackgroundPause();
+      if (this.accounting.conversationId || this.accounting.isCreating) {
         let store: ResumeSnapshotStore | undefined;
         try {
           store = await this.snapshotStore;
-          if (id) store.retainIdentity(id);
+          if (this.accounting.isCreating && !this.accounting.conversationId) store.retainPendingCreate();
         } catch { console.error("Conversation identity storage unavailable during disposal"); }
-        await this.endConversation();
-        if (id) {
-          await this.accounting.outbox.flush();
-          const ended = await this.accounting.api.readConversation(id);
-          if (typeof ended !== "object" || ended === null || !("status" in ended) || ended.status !== "ended")
-            throw new Error("Conversation End was not confirmed during disposal");
-          await store?.discard(id);
-        }
+        const conversation = await this.accounting.pendingConversation();
+        if (!conversation) return;
+        const id = conversation.conversationId;
+        // ponytail: if both local stores reject writes and End fails, crash recovery needs an owner-scoped server lookup.
+        try { store?.retainIdentity(id, conversation.version); }
+        catch { console.error("Conversation identity storage unavailable during disposal"); }
+        if (conversation.status === "paused") return;
+        if (this.session.state === "idle" || this.session.state === "ended")
+          await this.accounting.end("setup_cancel", this.accounting.revision);
+        else await this.endConversation();
+        try { store?.retainIdentity(id, conversation.version); }
+        catch { console.error("Conversation identity storage unavailable during disposal"); }
+        await this.accounting.outbox.flush();
+        const ended = await this.accounting.api.readConversation(id);
+        if (typeof ended !== "object" || ended === null || !("status" in ended) || ended.status !== "ended")
+          throw new Error("Conversation End was not confirmed during disposal");
+        await store?.discard(id);
+        return;
+      }
+      for (const intent of await this.accounting.budget.ends()) {
+        let store: ResumeSnapshotStore | undefined;
+        try {
+          store = await this.snapshotStore;
+          store.retainIdentity(intent.conversationId, intent.expectedVersion);
+        } catch { console.error("Conversation identity storage unavailable during disposal"); }
+        await this.accounting.outbox.flush();
+        const ended = await this.accounting.api.readConversation(intent.conversationId);
+        if (typeof ended !== "object" || ended === null || !("status" in ended) || ended.status !== "ended")
+          throw new Error("Conversation End was not confirmed during disposal");
+        await store?.discard(intent.conversationId);
       }
     } finally {
       this.accounting.outbox.stop();
@@ -69,13 +91,13 @@ export class AccountedSessionController extends SessionController {
     await this.accounting.loadPolicy();
     await this.awaitBackgroundPause();
     if (this.sampleInitialHidden()) return false;
-    if (!this.backgroundCloseEnabled) return true;
     if (this.accounting.conversationId !== null) return true;
     const store = await this.snapshotStore;
     if (store.hasRetainedIdentity()) {
       const retained = await store.inspectReload(id => this.accounting.api.readConversation(id) as Promise<ConversationMetadata>);
       if (retained || store.hasRetainedIdentity()) throw new Error("Retained conversation requires explicit recovery");
     }
+    if (!this.backgroundCloseEnabled) return true;
     return !this.sampleInitialHidden();
   }
   override async startContextCapture(): Promise<void> {
@@ -101,7 +123,7 @@ export class AccountedSessionController extends SessionController {
       let retainedIdentity = false;
       try {
         const store = await this.snapshotStore;
-        store.retainIdentity(conversation.conversationId);
+        store.retainIdentity(conversation.conversationId, conversation.version);
         retainedIdentity = true;
         await store.save({ ...state, conversationId: conversation.conversationId,
           conversationVersion: conversation.version, policyVersion: conversation.policy.policyVersion,
@@ -126,11 +148,22 @@ export class AccountedSessionController extends SessionController {
       catch { console.error("Retained conversation pause snapshot unavailable"); }
     }
   }
-  protected override prepareConversationRetirement(reason: "user_end" | "setup_cancel"): Promise<void> {
-    return this.accounting.stageEnd(reason, this.accounting.revision);
+  protected override async prepareConversationRetirement(reason: "user_end" | "setup_cancel"): Promise<void> {
+    const conversation = await this.accounting.pendingConversation();
+    if (conversation) {
+      try { (await this.snapshotStore).retainIdentity(conversation.conversationId, conversation.version); }
+      catch { console.error("Conversation identity storage unavailable before End"); }
+    }
+    await this.accounting.stageEnd(reason, this.accounting.revision);
   }
-  protected override finishConversationRetirement(reason: "user_end" | "setup_cancel"): Promise<void> {
-    return this.accounting.end(reason, this.accounting.revision);
+  protected override async finishConversationRetirement(reason: "user_end" | "setup_cancel"): Promise<void> {
+    const conversation = await this.accounting.pendingConversation();
+    await this.accounting.end(reason, this.accounting.revision);
+    if (!conversation) return;
+    try {
+      await this.accounting.outbox.flush();
+      await (await this.snapshotStore).inspectReload(id => this.accounting.api.readConversation(id) as Promise<ConversationMetadata>);
+    } catch { /* Keep the pointer until a later server read confirms termination. */ }
   }
 }
 export function createAccountedSessionController(): AccountedSessionController {

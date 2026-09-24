@@ -70,6 +70,7 @@ export class ConversationAccounting {
   get revision() { return this.epoch; }
   get isPausing() { return this.pausing; }
   get conversationId(): string | null { return this.current?.conversationId ?? null; }
+  get isCreating(): boolean { return this.creating !== undefined; }
   clearIdleBackgroundPause(): boolean {
     if (this.current || this.creating) return false;
     this.pausing = false;

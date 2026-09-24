@@ -1,7 +1,7 @@
 import { IDBFactory } from "fake-indexeddb";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { BackendClient } from "../api/BackendClient";
-import type { ConversationMetadata, LedgerApi, ProviderCreateBody } from "../api/AccountingBackend";
+import { AccountingRequestError, type ConversationMetadata, type LedgerApi, type ProviderCreateBody } from "../api/AccountingBackend";
 import type { UsageReport } from "../metrics/UsageTypes";
 import { LiveClient } from "../live/LiveClient";
 import { ConversationAccounting } from "./ConversationAccounting";
@@ -119,8 +119,8 @@ function fixture(closeTimeoutMs = 2000, background = false, initialHidden = fals
 let restoreDocumentVisibility = () => {};
 const fixtureVisibilities: VisibilityController[] = [];
 async function settle() { for (let i = 0; i < 15; i++) await Promise.resolve(); }
-async function reloadAfterPause(f: ReturnType<typeof fixture>) {
-  await f.controller.dispose();
+async function reloadAfterPause(f: ReturnType<typeof fixture>, dispose = true, pendingEnd = false) {
+  if (dispose) await f.controller.dispose();
   const store = ResumeSnapshotStore.open({ indexedDB: f.snapshotDb, sessionStorage,
     locks: f.snapshotLocks, name: f.snapshotName });
   const scope = new ConversationAccounting({ api: f.api, budget: f.budget, autoDelivery: false });
@@ -137,7 +137,8 @@ async function reloadAfterPause(f: ReturnType<typeof fixture>) {
   await expect(controller.startContextCapture()).rejects.toThrow("Retained conversation");
   expect(f.api.createConversation).toHaveBeenCalledTimes(1);
   expect(f.api.createSession).toHaveBeenCalledTimes(1);
-  await controller.dispose();
+  if (pendingEnd) await expect(controller.dispose()).rejects.toThrow("Conversation End was not confirmed");
+  else await controller.dispose();
 }
 async function enterInterpreter(f: ReturnType<typeof fixture>) {
   await f.controller.startBootstrap();
@@ -228,6 +229,138 @@ describe("stage 4 transport/accounting integration", () => {
 });
 
 describe("stage 5 hidden boundary", () => {
+  it("ends accounting ownership on disposal after legacy hidden resets the UI to idle", async () => {
+    const f = fixture(40, true);
+    let create!: (value: ConversationMetadata) => void;
+    f.api.createConversation.mockImplementation(() => new Promise(resolve => { create = resolve; }));
+    const starting = f.controller.startContextCapture();
+    await vi.waitFor(() => expect(create).toBeDefined());
+    f.setVisible(false);
+    await vi.waitFor(() => expect(f.clients[0]!.peer.channel.sent).toContain("session.close"));
+    f.clients[0]!.peer.channel.emit({ type: "session.closed" });
+    f.c.policy.backgroundSessionCloseEnabled = false;
+    create(f.c);
+    await starting;
+    await vi.waitFor(() => expect(f.controller.session.state).toBe("idle"));
+    expect(f.scope.conversationId).toBe(f.c.conversationId);
+    f.api.end.mockImplementation(async () => { f.c.status = "ended"; return { ...f.c }; });
+    await f.controller.dispose();
+    expect(f.api.end).toHaveBeenCalled();
+    expect(f.api.createSession).not.toHaveBeenCalled();
+    await f.budget.close();
+  });
+  it("holds a pending create through disposal and ends its late identity without provider dispatch", async () => {
+    const f = fixture(40, true);
+    let create!: (value: ConversationMetadata) => void;
+    f.api.createConversation.mockImplementation(() => new Promise(resolve => { create = resolve; }));
+    const starting = f.controller.startContextCapture();
+    await vi.waitFor(() => expect(create).toBeDefined());
+    const disposing = f.controller.dispose();
+    await vi.waitFor(() => expect(sessionStorage.getItem("live-translator-retained-conversation-v1")).toBe("pending-create"));
+    f.clients[0]!.peer.channel.emit({ type: "session.closed" });
+    f.api.end.mockImplementation(async () => { f.c.status = "ended"; return { ...f.c }; });
+    create(f.c);
+    await starting;
+    await disposing;
+    expect(f.api.end).toHaveBeenCalled();
+    expect(f.api.createSession).not.toHaveBeenCalled();
+    expect(f.api.handoff).not.toHaveBeenCalled();
+    expect(sessionStorage.getItem("live-translator-retained-conversation-v1")).toBeNull();
+    await f.budget.close();
+  });
+  it("retains a late created identity when disposal End fails and blocks reload", async () => {
+    const f = fixture(40, true);
+    let create!: (value: ConversationMetadata) => void;
+    f.api.createConversation.mockImplementation(() => new Promise(resolve => { create = resolve; }));
+    const starting = f.controller.startContextCapture();
+    await vi.waitFor(() => expect(create).toBeDefined());
+    const disposing = f.controller.dispose();
+    f.clients[0]!.peer.channel.emit({ type: "session.closed" });
+    f.api.end.mockRejectedValue(new Error("offline"));
+    create(f.c);
+    await starting;
+    await expect(disposing).rejects.toThrow();
+    expect(sessionStorage.getItem("live-translator-retained-conversation-v1")).toBe(f.c.conversationId);
+    expect(f.api.createSession).not.toHaveBeenCalled();
+    const reload = await ResumeSnapshotStore.open({ indexedDB: f.snapshotDb, sessionStorage,
+      locks: f.snapshotLocks, name: f.snapshotName });
+    await expect(reload.inspectReload(id => f.api.readConversation(id) as Promise<ConversationMetadata>)).rejects.toThrow("Retained conversation");
+    expect(reload.hasRetainedIdentity()).toBe(true);
+    await reload.dispose();
+    await f.budget.close();
+  });
+  it("blocks remount after flag-off disposal cannot confirm End", async () => {
+    const f = fixture(40, false);
+    await f.controller.startContextCapture();
+    f.api.end.mockRejectedValue(new Error("offline"));
+    const disposing = f.controller.dispose();
+    f.clients[0]!.peer.channel.emit({ type: "session.closed" });
+    await expect(disposing).rejects.toThrow();
+    await reloadAfterPause(f, false, true);
+    await f.budget.close();
+  });
+  it("keeps the live scope fenced if pointer, IDB End intent and server End all fail", async () => {
+    const f = fixture(40, true);
+    await f.controller.startContextCapture();
+    vi.spyOn(await f.snapshotStore, "retainIdentity").mockImplementation(() => { throw new Error("sessionStorage denied"); });
+    vi.spyOn(f.budget, "enqueueEnd").mockRejectedValue(new Error("IDB denied"));
+    f.api.end.mockRejectedValue(new Error("offline"));
+    const disposing = f.controller.dispose();
+    f.clients[0]!.peer.channel.emit({ type: "session.closed" });
+    await expect(disposing).rejects.toThrow();
+    await expect(f.scope.newAttempt().create("sdp")).rejects.toThrow();
+    expect(f.api.createConversation).toHaveBeenCalledTimes(1);
+    expect(f.api.createSession).toHaveBeenCalledTimes(1);
+    await f.budget.close();
+  });
+  it("retains a pending durable End after the UI and accounting reset to idle", async () => {
+    const f = fixture(40, true);
+    await f.controller.startContextCapture();
+    f.api.end.mockRejectedValue(new Error("offline"));
+    const ending = f.controller.endConversation();
+    f.clients[0]!.peer.channel.emit({ type: "session.closed" });
+    await ending;
+    expect(f.controller.session.state).toBe("idle");
+    expect(f.scope.conversationId).toBeNull();
+    expect(await f.budget.ends()).toHaveLength(1);
+    await expect(f.controller.dispose()).rejects.toThrow();
+    expect(sessionStorage.getItem("live-translator-retained-conversation-v1")).toBe(f.c.conversationId);
+    await f.budget.close();
+  });
+  it("blocks reload after a crash with a pending IDB End", async () => {
+    const f = fixture(40, true);
+    await f.controller.startContextCapture();
+    f.api.end.mockRejectedValue(new Error("offline"));
+    const ending = f.controller.endConversation();
+    f.clients[0]!.peer.channel.emit({ type: "session.closed" });
+    await ending;
+    expect(sessionStorage.getItem("live-translator-retained-conversation-v1")).toBe(f.c.conversationId);
+    await (await f.snapshotStore).dispose(); // Simulate termination without an unmount callback.
+    await reloadAfterPause(f, false, true);
+    await f.budget.close();
+  });
+  it("does not clear the pointer for a higher active version without confirmed End", async () => {
+    const f = fixture(40, true);
+    await f.controller.startContextCapture();
+    f.api.end.mockRejectedValue(new AccountingRequestError(409, "conversation_version_conflict"));
+    f.c.version = 2;
+    const ending = f.controller.endConversation();
+    f.clients[0]!.peer.channel.emit({ type: "session.closed" });
+    await ending;
+    expect(sessionStorage.getItem("live-translator-retained-conversation-v1")).toBe(f.c.conversationId);
+    await expect(f.controller.startContextCapture()).rejects.toThrow("Retained conversation");
+    await f.budget.close();
+  });
+  it("retains an explicit End pointer until a server read confirms termination", async () => {
+    const f = fixture(40, true);
+    await f.controller.startContextCapture();
+    const ending = f.controller.endConversation();
+    f.clients[0]!.peer.channel.emit({ type: "session.closed" });
+    await ending;
+    expect(sessionStorage.getItem("live-translator-retained-conversation-v1")).toBe(f.c.conversationId);
+    await expect(f.controller.startContextCapture()).rejects.toThrow("Retained conversation");
+    await f.budget.close();
+  });
   it("removes its visibility listener on disposal", async () => {
     const f = fixture(40, true);
     await f.controller.dispose();
@@ -618,6 +751,7 @@ describe("stage 5 hidden boundary", () => {
   it("uses a newly disabled policy after End for the next conversation", async () => {
     const f = fixture(40, true);
     await f.controller.startContextCapture();
+    f.api.readConversation.mockImplementation(async () => ({ ...f.c, status: "ended" }));
     const ending = f.controller.cancel();
     f.clients[0]!.peer.channel.emit({ type: "session.closed" });
     await ending;

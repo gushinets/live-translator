@@ -84,6 +84,39 @@ describe("retained conversation snapshot", () => {
     await expect(reload.inspectReload(async () => paused())).rejects.toThrow("Retained conversation");
     expect(f.tab.getItem("live-translator-retained-conversation-v1")).toBe(input.conversationId);
   });
+  it("clears a missing-row pointer after verified End or identity loss", async () => {
+    for (const read of [async () => paused({ status: "ended", resumeExpiresAt: null }),
+      async () => { throw new AccountingRequestError(401, "identity_required"); },
+      async () => { throw new AccountingRequestError(403, "forbidden"); },
+      async () => { throw new AccountingRequestError(404, "not_found"); }]) {
+      const f = fixture(), store = await f.open();
+      await store.save(input);
+      await store.dispose();
+      const reload = await f.open();
+      expect(await reload.inspectReload(read)).toBeNull();
+      expect(reload.hasRetainedIdentity()).toBe(false);
+      await reload.dispose();
+    }
+  });
+  it("keeps a corrupt-row pointer when the server cannot confirm termination", async () => {
+    const f = fixture(), store = await f.open(); await seed(store);
+    await rawRow(f.indexedDB, f.name, [store.clientInstanceId, input.conversationId], row => ({ ...row, schemaVersion: 99 }));
+    await expect(store.inspectReload(async () => paused())).rejects.toThrow("Retained conversation snapshot unavailable");
+    await expect(store.inspectReload(async () => { throw new AccountingRequestError(503, "unavailable"); })).rejects.toThrow();
+    expect(store.hasRetainedIdentity()).toBe(true);
+  });
+  it("clears a corrupt snapshot row only after matching server End", async () => {
+    const f = fixture(), store = await f.open(); await seed(store);
+    await rawRow(f.indexedDB, f.name, [store.clientInstanceId, input.conversationId], row => ({ ...row, schemaVersion: 99 }));
+    expect(await store.inspectReload(async () => paused({ status: "ended", resumeExpiresAt: null }))).toBeNull();
+    expect(store.hasRetainedIdentity()).toBe(false);
+  });
+  it("keeps a missing-row pointer when server identity or version does not match", async () => {
+    const f = fixture(), store = await f.open(); await store.save(input);
+    await expect(store.inspectReload(async () => paused({ conversationId: "someone-else", status: "ended" }))).rejects.toThrow();
+    await expect(store.inspectReload(async () => paused({ version: 2, status: "ended" }))).rejects.toThrow();
+    expect(store.hasRetainedIdentity()).toBe(true);
+  });
   it("keeps a saved identity fail closed after a pause ACK cannot be persisted", async () => {
     const f = fixture(), store = await f.open();
     await store.save(input);
@@ -126,22 +159,21 @@ describe("retained conversation snapshot", () => {
     expect(f.tab.getItem("live-translator-retained-conversation-v1")).toBe(input.conversationId);
   });
 
-  it("blocks corrupt and unknown-version rows before server lookup", async () => {
+  it("blocks corrupt and unknown-version rows when the server remains active", async () => {
     for (const mutate of [(row: Record<string, unknown>) => ({ ...row, schemaVersion: 99 }),
       (row: Record<string, unknown>) => ({ ...row, contextText: { text: "wrong shape" } })]) {
       const f = fixture(), store = await f.open(); await seed(store);
       const key: [string, string] = [store.clientInstanceId, input.conversationId];
       await rawRow(f.indexedDB, f.name, key, mutate);
-      await expect(store.readForResume(async () => { throw new Error("should not reach server"); }))
+      await expect(store.readForResume(async () => paused({ status: "active", resumeExpiresAt: null })))
         .rejects.toThrow("Retained conversation snapshot unavailable");
       expect(f.tab.getItem("live-translator-retained-conversation-v1")).toBe(input.conversationId);
     }
   });
 
-  it("rejects changed-version, lost-cookie and mismatched-identity records", async () => {
+  it("rejects changed-version and mismatched-identity records", async () => {
     for (const read of [
       async () => paused({ version: 4 }),
-      async () => { throw new AccountingRequestError(401, "identity_required"); },
       async () => paused({ conversationId: "someone-else" }),
       async () => ({ conversationId: input.conversationId, status: "paused", version: 3 } as ConversationMetadata),
     ]) {

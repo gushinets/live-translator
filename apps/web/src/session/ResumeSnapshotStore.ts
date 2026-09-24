@@ -1,10 +1,12 @@
-import type { ConversationMetadata } from "../api/AccountingBackend";
+import { AccountingRequestError, type ConversationMetadata } from "../api/AccountingBackend";
 import { APPEND_CHAR_BUDGET, assertAppendWithinBudget } from "../live/LiveEvents";
 import { buildAuthoritativeContext } from "../live/LivePrompts";
 import { COUNTER_NAMES, type MetricCounters } from "../metrics/UsageTypes";
 
 const TAB_KEY = "live-translator-client-instance-v1";
 const CONVERSATION_KEY = "live-translator-retained-conversation-v1";
+const CONVERSATION_VERSION_KEY = "live-translator-retained-conversation-version-v1";
+const PENDING_CREATE = "pending-create";
 const PROMPT_VERSION = "fixed-language-interpreter-v1";
 const ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
@@ -137,7 +139,10 @@ export class ResumeSnapshotStore {
       id = crypto.randomUUID();
     }
     try {
-      if (collided || existing !== id) storage?.removeItem(CONVERSATION_KEY);
+      if (collided || existing !== id) {
+        storage?.removeItem(CONVERSATION_KEY);
+        storage?.removeItem(CONVERSATION_VERSION_KEY);
+      }
       storage?.setItem(TAB_KEY, id);
     } catch (error) {
       store.releaseLock?.();
@@ -156,9 +161,20 @@ export class ResumeSnapshotStore {
     return this.storage.getItem(CONVERSATION_KEY) !== null;
   }
 
-  retainIdentity(conversationId: string): void {
+  retainIdentity(conversationId: string, version?: number): void {
     if (!this.storage) throw new Error("Retained conversation storage unavailable");
+    const previous = this.storage.getItem(CONVERSATION_KEY);
     this.storage.setItem(CONVERSATION_KEY, conversationId);
+    if (Number.isSafeInteger(version) && version! > 0) {
+      const old = previous === conversationId ? Number(this.storage.getItem(CONVERSATION_VERSION_KEY)) : 0;
+      this.storage.setItem(CONVERSATION_VERSION_KEY, String(Math.max(version!, old)));
+    } else if (previous !== conversationId) this.storage.removeItem(CONVERSATION_VERSION_KEY);
+  }
+
+  retainPendingCreate(): void {
+    if (!this.storage) throw new Error("Retained conversation storage unavailable");
+    this.storage.setItem(CONVERSATION_KEY, PENDING_CREATE);
+    this.storage.removeItem(CONVERSATION_VERSION_KEY);
   }
 
   async dispose(): Promise<void> {
@@ -209,7 +225,7 @@ export class ResumeSnapshotStore {
   async save(input: ResumeSnapshotInput): Promise<void> {
     if (!this.storage) throw new Error("Retained conversation storage unavailable");
     const previous = this.storage.getItem(CONVERSATION_KEY);
-    this.retainIdentity(input.conversationId);
+    this.retainIdentity(input.conversationId, input.conversationVersion);
     if (!this.available) throw new Error("Retained conversation storage unavailable");
     const counters: MetricCounters = {};
     for (const name of COUNTER_NAMES) if (name in input.counters) counters[name] = input.counters[name];
@@ -254,6 +270,8 @@ export class ResumeSnapshotStore {
       return { ...row, conversationVersion: conversation.version, serverResumeExpiresAt: conversation.resumeExpiresAt,
         productDeadlineAt: conversation.productDeadlineAt };
     });
+    if (this.storage?.getItem(CONVERSATION_KEY) === conversation.conversationId)
+      this.retainIdentity(conversation.conversationId, conversation.version);
   }
 
   async confirmResume(conversation: ConversationMetadata, attemptId: string): Promise<void> {
@@ -264,6 +282,8 @@ export class ResumeSnapshotStore {
       return { ...row, conversationVersion: conversation.version, productDeadlineAt: conversation.productDeadlineAt,
         localResumeDeadlineAt: null, serverResumeExpiresAt: null, resumeAttemptId: null };
     });
+    if (this.storage?.getItem(CONVERSATION_KEY) === conversation.conversationId)
+      this.retainIdentity(conversation.conversationId, conversation.version);
   }
 
   async rememberResumeAttempt(conversationId: string, attemptId: string): Promise<void> {
@@ -308,17 +328,31 @@ export class ResumeSnapshotStore {
     }
     const conversationId = this.storage?.getItem(CONVERSATION_KEY);
     if (!conversationId) return null;
+    if (conversationId === PENDING_CREATE) throw new Error("Retained conversation create remains unresolved");
     const row = await this.get(conversationId);
-    if (!validSnapshot(row, this.clientInstanceId, conversationId)) {
-      throw new Error("Retained conversation snapshot unavailable");
+    let server: ConversationMetadata;
+    try { server = await read(conversationId); }
+    catch (error) {
+      if (error instanceof AccountingRequestError && [401, 403, 404].includes(error.status)) {
+        await this.discard(conversationId);
+        return null;
+      }
+      throw error;
     }
-    const server = await read(conversationId);
+    const retainedVersion = Number(this.storage?.getItem(CONVERSATION_VERSION_KEY));
+    if (record(server) && server.conversationId === conversationId && server.status === "ended" &&
+      Number.isSafeInteger(server.version) && server.version >= Math.max(1, retainedVersion,
+        validSnapshot(row, this.clientInstanceId, conversationId) ? row.conversationVersion : 0) &&
+      timestamp(server.serverTime)) {
+      await this.discard(conversationId); return null;
+    }
+    if (!validSnapshot(row, this.clientInstanceId, conversationId))
+      throw new Error("Retained conversation snapshot unavailable");
     if (!record(server) || server.conversationId !== conversationId || !Number.isSafeInteger(server.version) ||
       server.version < row.conversationVersion || !record(server.policy) ||
       server.policy.policyVersion !== row.policyVersion || !timestamp(server.serverTime)) {
       throw new Error("Retained conversation status unavailable");
     }
-    if (server.status === "ended") { await this.discard(conversationId); return null; }
     if (server.status === "active") return {
       kind: "active", conversationId, conversationVersion: server.version,
     };
@@ -352,6 +386,9 @@ export class ResumeSnapshotStore {
     if (this.owned) await this.transaction("readwrite", (store, done) => {
       store.delete([this.clientInstanceId, conversationId]); done(undefined);
     });
-    if (this.storage?.getItem(CONVERSATION_KEY) === conversationId) this.storage.removeItem(CONVERSATION_KEY);
+    if (this.storage?.getItem(CONVERSATION_KEY) === conversationId) {
+      this.storage.removeItem(CONVERSATION_KEY);
+      this.storage.removeItem(CONVERSATION_VERSION_KEY);
+    }
   }
 }
