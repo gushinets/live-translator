@@ -6,10 +6,11 @@ export interface MetadataEnvelope {
   localId: string; conversationId: string; producerId: string; reservedAt: number;
   dispatchStartedAt: number | null; producerFinalized: boolean; producerOutcome: ProducerOutcome | null; producerCloseDeadlineAt?: number;
   cleanup: { reason: CleanupReason; createdAt: number; expiresAt: number } | null;
+  cleanupAcknowledged?: boolean;
   closeObservation: CloseMetadata | null; usagePending: boolean; usage?: QueuedUsage | null; usageRevision?: number; usageProducerFinalized?: boolean;
 }
 export interface EndIntent { conversationId: string; expectedVersion: number; reason: "user_end" | "setup_cancel"; expiresAt: number; cleanupLocalIds?: string[]; }
-const TTL = 7 * 86400000;
+export const METADATA_TTL_MS = 7 * 86400000;
 
 /** One origin-wide envelope per localId. Every pre-dispatch mutation waits for IDB commit. */
 export class MetadataDeliveryBudget {
@@ -90,12 +91,12 @@ export class MetadataDeliveryBudget {
   }
   enqueueCleanup(localId: string, reason: CleanupReason): Promise<void> {
     return this.change(localId, row => ({ ...row, producerCloseDeadlineAt: row.producerCloseDeadlineAt ?? Date.now(),
-      cleanup: row.cleanup ?? { reason, createdAt: Date.now(), expiresAt: Date.now() + TTL } }));
+      cleanupAcknowledged: false, cleanup: row.cleanup ?? { reason, createdAt: Date.now(), expiresAt: Date.now() + METADATA_TTL_MS } }));
   }
   enqueueClose(localId: string, observation: CloseMetadata): Promise<void> {
     return this.change(localId, row => ({ ...row, closeObservation: row.closeObservation ?? observation, producerFinalized: true, producerOutcome: "provider_closed" }));
   }
-  acknowledgeCleanup(localId: string): Promise<void> { return this.change(localId, row => ({ ...row, cleanup: null })); }
+  acknowledgeCleanup(localId: string): Promise<void> { return this.change(localId, row => ({ ...row, cleanup: null, cleanupAcknowledged: true })); }
   acknowledgeClose(localId: string): Promise<void> { return this.change(localId, row => ({ ...row, cleanup: null, closeObservation: null })); }
   finishProducer(localId: string, outcome: ProducerOutcome): Promise<void> { return this.change(localId, row => ({ ...row, producerFinalized: true, producerOutcome: outcome })); }
   private releasable(row: MetadataEnvelope): boolean {
@@ -122,10 +123,10 @@ export class MetadataDeliveryBudget {
     }, ["envelopes", "lifecycle"]);
   }
   acknowledgeCleanupAndRelease(localId: string): Promise<void> {
-    return this.releaseAndRemoveEndDependency(localId, row => ({ ...row, cleanup: null }));
+    return this.releaseAndRemoveEndDependency(localId, row => ({ ...row, cleanup: null, cleanupAcknowledged: true }));
   }
   acknowledgeDirectCleanupAndRelease(localId: string): Promise<void> {
-    return this.releaseAndRemoveEndDependency(localId, row => ({ ...row, cleanup: null, producerFinalized: true, producerOutcome: "lost" }));
+    return this.releaseAndRemoveEndDependency(localId, row => ({ ...row, cleanup: null, cleanupAcknowledged: true, producerFinalized: true, producerOutcome: "lost" }));
   }
   acknowledgeCloseAndRelease(localId: string): Promise<void> {
     return this.releaseAndRemoveEndDependency(localId, row => ({ ...row, cleanup: null, closeObservation: null, producerFinalized: true, producerOutcome: "provider_closed" }));
@@ -155,7 +156,7 @@ export class MetadataDeliveryBudget {
   }
   enqueueUsage(localId: string, report: UsageReport): Promise<void> {
     return this.change(localId, row => ({ ...row, usagePending: true, usageRevision: (row.usageRevision ?? 0) + 1,
-      usage: { revision: (row.usageRevision ?? 0) + 1, expiresAt: row.usage?.expiresAt ?? row.reservedAt + TTL,
+      usage: { revision: (row.usageRevision ?? 0) + 1, expiresAt: row.usage?.expiresAt ?? row.reservedAt + METADATA_TTL_MS,
         report: coalesceUsage(row.usage?.report, report) } }));
   }
   acknowledgeUsage(localId: string, revision: number): Promise<void> {
@@ -191,20 +192,24 @@ export class MetadataDeliveryBudget {
     const safeTimeout = Number.isFinite(closeTimeoutMs) ? Math.min(2_147_483_647, Math.max(0, closeTimeoutMs)) : 2_147_483_647;
     return this.transaction("readwrite", (store, result, fail, tx) => {
       const now = Date.now(), requestedCloseDeadlineAt = now + safeTimeout;
-      let expiresAt = now + TTL;
+      let expiresAt = now + METADATA_TTL_MS;
       const envelopes = tx.objectStore("envelopes");
       const rows = envelopes.getAll(); rows.onsuccess = () => {
         const byId = new Map((rows.result as MetadataEnvelope[]).map(row => [row.localId, row]));
         const applicable = [...new Set(cleanupLocalIds)].filter(id => {
           const row = byId.get(id);
           return row?.conversationId === conversationId && row.dispatchStartedAt !== null && !row.closeObservation &&
+            !row.cleanupAcknowledged &&
             !(row.producerFinalized && row.producerOutcome === "lost" && !row.cleanup) &&
             row.producerOutcome !== "provider_closed" && row.producerOutcome !== "no_provider";
         });
         for (const id of applicable) {
           const row = byId.get(id)!;
-          const producerCloseDeadlineAt = row.producerFinalized ? (row.producerCloseDeadlineAt ?? now) : Math.max(row.producerCloseDeadlineAt ?? 0, requestedCloseDeadlineAt);
-          const cleanupExpiresAt = Math.max(row.cleanup?.expiresAt ?? 0, now + TTL, producerCloseDeadlineAt + TTL);
+          const legacyDeadline = row.cleanup ? Math.max(row.cleanup.createdAt, row.cleanup.expiresAt - METADATA_TTL_MS) : 0;
+          const producerCloseDeadlineAt = row.producerFinalized
+            ? (row.producerCloseDeadlineAt ?? (row.cleanup ? legacyDeadline : now))
+            : Math.max(row.producerCloseDeadlineAt ?? legacyDeadline, requestedCloseDeadlineAt);
+          const cleanupExpiresAt = Math.max(row.cleanup?.expiresAt ?? 0, now + METADATA_TTL_MS, producerCloseDeadlineAt + METADATA_TTL_MS);
           expiresAt = Math.max(expiresAt, cleanupExpiresAt);
           envelopes.put({ ...row, producerCloseDeadlineAt,
             cleanup: row.cleanup ? { ...row.cleanup, expiresAt: cleanupExpiresAt } : { reason: reason === "setup_cancel" ? "cancelled" : "user_end", createdAt: now, expiresAt: cleanupExpiresAt } });

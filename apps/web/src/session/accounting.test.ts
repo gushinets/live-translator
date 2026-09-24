@@ -95,6 +95,68 @@ describe("cleanup and End delivery", () => {
     }
   });
 
+  it("honors the legacy End close grace when its producer was marked lost", async () => {
+    const indexedDB = new IDBFactory(), name = crypto.randomUUID();
+    const owner = fixture(new MetadataDeliveryBudget({ indexedDB, name }));
+    const follower = fixture(new MetadataDeliveryBudget({ indexedDB, name }));
+    const attempt = owner.scope.newAttempt();
+    const locks = Object.getOwnPropertyDescriptor(navigator, "locks");
+    await attempt.create("offer"); await owner.scope.stageEnd("user_end");
+    const row = await owner.budget.get(attempt.localId);
+    await updateEnvelope(indexedDB, name, attempt.localId, {
+      producerCloseDeadlineAt: undefined, producerFinalized: true, producerOutcome: "lost",
+      cleanup: { ...row!.cleanup!, createdAt: Date.now(), expiresAt: Date.now() + 7 * 86400000 + 120000 },
+    });
+    Reflect.deleteProperty(navigator, "locks");
+
+    try {
+      await follower.scope.outbox.flush();
+      expect(follower.api.cleanup).not.toHaveBeenCalled();
+    } finally {
+      if (locks) Object.defineProperty(navigator, "locks", locks); else Reflect.deleteProperty(navigator, "locks");
+      await owner.budget.close(); await follower.budget.close();
+    }
+  });
+
+  it("drops a legacy cleanup envelope at its seven-day expiry", async () => {
+    const indexedDB = new IDBFactory(), name = crypto.randomUUID();
+    const f = fixture(new MetadataDeliveryBudget({ indexedDB, name }));
+    const locks = Object.getOwnPropertyDescriptor(navigator, "locks");
+    await f.budget.reserve("old", "c"); await f.budget.markDispatchStarted("old"); await f.budget.enqueueCleanup("old", "user_end");
+    const old = Date.now() - 8 * 86400000;
+    await updateEnvelope(indexedDB, name, "old", {
+      producerCloseDeadlineAt: undefined, reservedAt: old, producerFinalized: false, producerOutcome: null,
+      cleanup: { reason: "user_end", createdAt: old, expiresAt: old + 7 * 86400000 },
+    });
+
+    Reflect.deleteProperty(navigator, "locks");
+    try {
+      await f.scope.outbox.flush();
+
+      expect(await f.budget.get("old")).toBeNull();
+      expect(f.api.cleanup).not.toHaveBeenCalled();
+    } finally {
+      if (locks) Object.defineProperty(navigator, "locks", locks); else Reflect.deleteProperty(navigator, "locks");
+      await f.budget.close();
+    }
+  });
+
+  it("does not restage cleanup after its proof on a later End enqueue", async () => {
+    const f = fixture();
+    await f.budget.reserve("attempt", f.c.conversationId);
+    await f.budget.markDispatchStarted("attempt");
+    await f.scope.outbox.enqueueEnd(f.c.conversationId, f.c.version, "setup_cancel", ["attempt"]);
+    await f.scope.outbox.flush();
+    expect((await f.budget.get("attempt"))?.cleanup).toBeNull();
+
+    await f.scope.outbox.enqueueEnd(f.c.conversationId, f.c.version, "setup_cancel", ["attempt"]);
+
+    expect((await f.budget.get("attempt"))?.cleanup).toBeNull();
+    expect((await f.budget.ends())[0]?.cleanupLocalIds).toEqual([]);
+    expect(f.api.cleanup).toHaveBeenCalledTimes(1);
+    await f.budget.close();
+  });
+
   it("delivers a persisted close observation even while its foreign producer lock is held", async () => {
     const indexedDB = new IDBFactory(), name = crypto.randomUUID();
     const ownerBudget = new MetadataDeliveryBudget({ indexedDB, name }), followerBudget = new MetadataDeliveryBudget({ indexedDB, name });
@@ -648,6 +710,24 @@ describe("controller-owned conversation accounting", () => {
 });
 
 describe("stage 4 durable lifecycle boundary", () => {
+  it("schedules a retry after an outbox wake cannot read IndexedDB", async () => {
+    const f = fixture();
+    try {
+      await f.budget.reserve("attempt", f.c.conversationId);
+      f.scope.outbox.start();
+      await f.scope.outbox.flush();
+      const release = vi.spyOn(f.budget, "finishProducerAndRelease").mockRejectedValue(new Error("IDB unavailable"));
+      const finalize = vi.spyOn(f.budget, "finishProducer").mockRejectedValue(new Error("IDB unavailable"));
+      vi.spyOn(f.budget, "entries").mockRejectedValueOnce(new Error("IDB unavailable"));
+
+      await expect(f.scope.finalizeNoProvider("attempt")).rejects.toThrow("IDB unavailable");
+      release.mockRestore(); finalize.mockRestore();
+      await vi.waitFor(async () => expect(await f.budget.get("attempt")).toBeNull(), { timeout: 7000, interval: 50 });
+    } finally {
+      f.scope.outbox.stop(); await f.budget.close();
+    }
+  }, 9000);
+
   it("wakes the idle outbox to retry failed no-provider finalization", async () => {
     const f = fixture();
     await f.budget.reserve("attempt", f.c.conversationId);

@@ -1,4 +1,4 @@
-import { MetadataDeliveryBudget, type CleanupReason, type CloseMetadata, type EndIntent } from "./MetadataDeliveryBudget";
+import { MetadataDeliveryBudget, METADATA_TTL_MS, type CleanupReason, type CloseMetadata, type EndIntent } from "./MetadataDeliveryBudget";
 export const producerLeaseKey = (id: string) => `live-metadata-producer:${id}`;
 export interface AttemptProof {
   cleanupRequestedAt?: number | null; closeConfirmed?: boolean; state?: string; openaiSessionId?: string | null; leaseReleasedAt?: number | null;
@@ -47,7 +47,7 @@ export class CleanupIntentOutbox {
     this.started = false; if (this.timer) clearTimeout(this.timer);
     globalThis.removeEventListener?.("online", this.onWake); globalThis.document?.removeEventListener("visibilitychange", this.onWake);
   }
-  private readonly onWake = () => { void this.flush().catch(() => this.anomaly("storage_unavailable")); };
+  private readonly onWake = () => { void this.flush().catch(() => { this.anomaly("storage_unavailable"); this.retries++; this.schedule(); }); };
   private schedule(): void {
     if (!this.started || this.timer) return;
     this.timer = setTimeout(() => { this.timer = undefined; this.onWake(); }, Math.min(30000, 1000 * 2 ** Math.min(this.retries, 5)));
@@ -103,7 +103,7 @@ export class CleanupIntentOutbox {
               await deliverRow();
             });
           } catch { pending = true; }
-        } else if (!row.producerFinalized && Date.now() < (row.producerCloseDeadlineAt ?? row.cleanup.createdAt + 2_147_483_647)) pending = true;
+        } else if (Date.now() < (row.producerCloseDeadlineAt ?? Math.max(row.cleanup.createdAt, row.cleanup.expiresAt - METADATA_TTL_MS))) pending = true;
         else await deliverRow();
       } else await deliverRow();
     }
