@@ -239,6 +239,11 @@ export class MetadataDeliveryBudget {
               !(row.producerFinalized && row.producerOutcome === "lost" && !row.cleanup) &&
               row.producerOutcome !== "provider_closed" && row.producerOutcome !== "no_provider";
           });
+          const retained = sameEnd ? (old?.cleanupLocalIds ?? []).filter(id => {
+            const row = byId.get(id);
+            return Boolean(row && (row.cleanup || row.closeObservation));
+          }) : [];
+          const dependencies = [...new Set([...retained, ...applicable])];
           for (const id of applicable) {
             const row = byId.get(id)!;
             const legacyDeadline = row.cleanup ? Math.max(row.cleanup.createdAt, row.cleanup.expiresAt - METADATA_TTL_MS) : 0;
@@ -251,10 +256,10 @@ export class MetadataDeliveryBudget {
             envelopes.put({ ...row, producerCloseDeadlineAt,
               cleanup: row.cleanup ? { ...row.cleanup, expiresAt: cleanupExpiresAt } : { reason: reason === "setup_cancel" ? "cancelled" : "user_end", createdAt: now, expiresAt: cleanupExpiresAt } });
           }
-          if (old) { if (old.expectedVersion <= expectedVersion) store.put({ conversationId, expectedVersion, reason: old.expectedVersion === expectedVersion ? old.reason : reason, expiresAt, cleanupLocalIds: applicable }); result(undefined); return; }
+          if (old) { if (old.expectedVersion <= expectedVersion) store.put({ conversationId, expectedVersion, reason: sameEnd ? old.reason : reason, expiresAt, cleanupLocalIds: dependencies }); result(undefined); return; }
           const count = store.count(); count.onsuccess = () => {
             if (count.result >= 1000) { fail(new Error("Lifecycle metadata storage is full")); return; }
-            store.put({ conversationId, expectedVersion, reason, expiresAt, cleanupLocalIds: applicable }); result(undefined);
+            store.put({ conversationId, expectedVersion, reason, expiresAt, cleanupLocalIds: dependencies }); result(undefined);
           };
         };
       };

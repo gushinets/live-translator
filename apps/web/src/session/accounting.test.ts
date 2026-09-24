@@ -230,6 +230,22 @@ describe("cleanup and End delivery", () => {
     }
   });
 
+  it("keeps a pending close observation as a dependency when the same End is persisted again", async () => {
+    const f = fixture();
+    await f.budget.reserve("attempt", f.c.conversationId);
+    await f.budget.markDispatchStarted("attempt");
+    await f.scope.outbox.enqueueEnd(f.c.conversationId, f.c.version, "user_end", ["attempt"]);
+    await f.scope.outbox.observeClosed("attempt", { seconds: 7 });
+    await f.scope.outbox.enqueueEnd(f.c.conversationId, f.c.version, "user_end", ["attempt"]);
+    f.api.closed.mockRejectedValue(new Error("offline"));
+
+    await f.scope.outbox.flush();
+
+    expect((await f.budget.ends())[0]?.cleanupLocalIds).toEqual(["attempt"]);
+    expect(f.api.end).not.toHaveBeenCalled();
+    await f.budget.close();
+  });
+
   it("delivers a persisted close observation even while its foreign producer lock is held", async () => {
     const indexedDB = new IDBFactory(), name = crypto.randomUUID();
     const ownerBudget = new MetadataDeliveryBudget({ indexedDB, name }), followerBudget = new MetadataDeliveryBudget({ indexedDB, name });
