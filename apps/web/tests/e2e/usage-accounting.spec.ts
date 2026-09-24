@@ -46,7 +46,7 @@ test("ledger-enabled browser retains final metadata across an HTTP outage withou
   });
   await harness.sessionClosed("user_requested", 46);
   await expect.poll(() => page.evaluate(async localId => {
-    const db = await new Promise<IDBDatabase>((resolve, reject) => { const r = indexedDB.open("live-translator-metadata-v1", 1); r.onsuccess = () => resolve(r.result); r.onerror = reject; });
+    const db = await new Promise<IDBDatabase>((resolve, reject) => { const r = indexedDB.open("live-translator-metadata-v1"); r.onsuccess = () => resolve(r.result); r.onerror = reject; });
     try { return await new Promise<boolean>((resolve, reject) => { const tx = db.transaction("envelopes"), r = tx.objectStore("envelopes").get(localId); r.onsuccess = () => resolve(r.result?.usage?.report?.providerClosed?.seconds === 46); r.onerror = reject; }); }
     finally { db.close(); }
   }, id)).toBe(true);
