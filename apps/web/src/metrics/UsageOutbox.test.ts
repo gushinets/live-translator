@@ -7,7 +7,7 @@ describe("shared usage delivery envelope", () => {
   it("retains the envelope across cleanup ACK until the usage producer and final delivery finish", async () => {
     const b = new MetadataDeliveryBudget({ indexedDB: new IDBFactory(), capacity: 1 });
     await b.reserve("id", "c", true); await b.markDispatchStarted("id");
-    await b.enqueueCleanup("id", "user_end"); await b.acknowledgeCleanupAndRelease("id");
+    await b.enqueueCleanup("id", "user_end"); await b.finishProducer("id", "lost"); await b.acknowledgeCleanupAndRelease("id");
     expect(await b.get("id")).not.toBeNull();
     await b.enqueueUsage("id", closed(46)); await b.finishUsageProducer("id");
     await expect(b.reserve("other", "c", true)).rejects.toThrow("full");
@@ -106,6 +106,20 @@ describe("usage transport retries", () => {
     expect(await b.get("id")).not.toBeNull();
     await out.flush();
     expect(discard).toHaveBeenCalledTimes(2); expect(await b.get("id")).toBeNull(); await b.close();
+  });
+  it("keeps retrying a no-provider discard while IndexedDB remains unavailable", async () => {
+    const b = new MetadataDeliveryBudget({ indexedDB: new IDBFactory() }); await b.reserve("id", "c", true);
+    await b.enqueueUsage("id", closed(46));
+    const discard = vi.spyOn(b, "discardUsage").mockRejectedValueOnce(new Error("IDB unavailable")).mockRejectedValueOnce(new Error("IDB unavailable"))
+      .mockImplementation((id, revision) => MetadataDeliveryBudget.prototype.discardUsage.call(b, id, revision));
+    const out = new UsageOutbox(b, { usage: vi.fn().mockResolvedValue(ack), readConversation: vi.fn() });
+    out.start(); await out.flush();
+    await out.noProvider("id");
+    await b.finishProducerAndRelease("id", "no_provider");
+    await vi.waitFor(() => expect(discard.mock.calls.length).toBeGreaterThan(2), { timeout: 5000 });
+    expect(discard.mock.calls.length).toBeGreaterThan(1);
+    expect(await b.get("id")).toBeNull();
+    out.stop(); await b.close();
   });
   it("discards a persisted no-provider report after the outbox is recreated", async () => {
     const indexedDB = new IDBFactory(), name = "no-provider-reload";
@@ -224,5 +238,4 @@ describe("usage transport retries", () => {
   });
 
 });
-
 

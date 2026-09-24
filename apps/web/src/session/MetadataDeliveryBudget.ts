@@ -4,12 +4,13 @@ export type ProducerOutcome = "no_provider" | "provider_closed" | "lost";
 export interface CloseMetadata { seconds?: number; reason?: string; }
 export interface MetadataEnvelope {
   localId: string; conversationId: string; producerId: string; reservedAt: number;
-  dispatchStartedAt: number | null; producerFinalized: boolean; producerOutcome: ProducerOutcome | null;
+  dispatchStartedAt: number | null; producerFinalized: boolean; producerOutcome: ProducerOutcome | null; producerCloseDeadlineAt?: number;
   cleanup: { reason: CleanupReason; createdAt: number; expiresAt: number } | null;
+  cleanupAcknowledged?: boolean;
   closeObservation: CloseMetadata | null; usagePending: boolean; usage?: QueuedUsage | null; usageRevision?: number; usageProducerFinalized?: boolean;
 }
 export interface EndIntent { conversationId: string; expectedVersion: number; reason: "user_end" | "setup_cancel"; expiresAt: number; cleanupLocalIds?: string[]; }
-const TTL = 7 * 86400000;
+export const METADATA_TTL_MS = 7 * 86400000;
 
 /** One origin-wide envelope per localId. Every pre-dispatch mutation waits for IDB commit. */
 export class MetadataDeliveryBudget {
@@ -24,16 +25,18 @@ export class MetadataDeliveryBudget {
     this.name = options.name ?? "live-translator-metadata-v1"; this.capacity = options.capacity ?? 1000;
     this.producerId = options.producerId ?? crypto.randomUUID(); this.timeoutMs = options.timeoutMs ?? 5000;
   }
+  get ownerProducerId(): string { return this.producerId; }
   private database(): Promise<IDBDatabase> {
     if (!this.factory) return Promise.reject(new Error("Metadata storage unavailable"));
     this.opening ??= new Promise<IDBDatabase>((resolve, reject) => {
       let settled = false;
-      const request = this.factory!.open(this.name, 1);
+      const request = this.factory!.open(this.name, 2);
       const fail = () => { if (!settled) { settled = true; clearTimeout(timer); reject(new Error("Metadata storage unavailable")); } };
       const timer = setTimeout(fail, this.timeoutMs);
       request.onupgradeneeded = () => {
-        request.result.createObjectStore("envelopes", { keyPath: "localId" });
-        request.result.createObjectStore("lifecycle", { keyPath: "conversationId" });
+        const db = request.result;
+        if (!db.objectStoreNames.contains("envelopes")) db.createObjectStore("envelopes", { keyPath: "localId" });
+        if (!db.objectStoreNames.contains("lifecycle")) db.createObjectStore("lifecycle", { keyPath: "conversationId" });
       };
       request.onsuccess = () => {
         if (settled) { request.result.close(); return; }
@@ -88,12 +91,13 @@ export class MetadataDeliveryBudget {
     });
   }
   enqueueCleanup(localId: string, reason: CleanupReason): Promise<void> {
-    return this.change(localId, row => ({ ...row, cleanup: row.cleanup ?? { reason, createdAt: Date.now(), expiresAt: Date.now() + TTL } }));
+    return this.change(localId, row => ({ ...row, producerCloseDeadlineAt: row.producerCloseDeadlineAt ?? Date.now(),
+      cleanupAcknowledged: false, cleanup: row.cleanup ?? { reason, createdAt: Date.now(), expiresAt: Date.now() + METADATA_TTL_MS } }));
   }
   enqueueClose(localId: string, observation: CloseMetadata): Promise<void> {
     return this.change(localId, row => ({ ...row, closeObservation: row.closeObservation ?? observation, producerFinalized: true, producerOutcome: "provider_closed" }));
   }
-  acknowledgeCleanup(localId: string): Promise<void> { return this.change(localId, row => ({ ...row, cleanup: null })); }
+  acknowledgeCleanup(localId: string): Promise<void> { return this.change(localId, row => ({ ...row, cleanup: null, cleanupAcknowledged: true })); }
   acknowledgeClose(localId: string): Promise<void> { return this.change(localId, row => ({ ...row, cleanup: null, closeObservation: null })); }
   finishProducer(localId: string, outcome: ProducerOutcome): Promise<void> { return this.change(localId, row => ({ ...row, producerFinalized: true, producerOutcome: outcome })); }
   private releasable(row: MetadataEnvelope): boolean {
@@ -120,26 +124,33 @@ export class MetadataDeliveryBudget {
     }, ["envelopes", "lifecycle"]);
   }
   acknowledgeCleanupAndRelease(localId: string): Promise<void> {
-    return this.releaseAndRemoveEndDependency(localId, row => ({ ...row, cleanup: null, producerFinalized: true, producerOutcome: row.producerOutcome ?? "lost" as const }));
+    return this.releaseAndRemoveEndDependency(localId, row => ({ ...row, cleanup: null, cleanupAcknowledged: true }));
+  }
+  acknowledgeForeignCleanupFence(localId: string): Promise<void> {
+    return this.releaseAndRemoveEndDependency(localId, row => {
+      const next: MetadataEnvelope = { ...row, cleanup: null, cleanupAcknowledged: true };
+      if (!row.closeObservation && row.producerOutcome !== "provider_closed" && row.producerOutcome !== "no_provider") {
+        next.producerFinalized = false; next.producerOutcome = null;
+      }
+      return next;
+    });
   }
   acknowledgeDirectCleanupAndRelease(localId: string): Promise<void> {
-    return this.releaseAndRemoveEndDependency(localId, row => ({ ...row, cleanup: null, producerFinalized: true, producerOutcome: "lost" }));
+    return this.releaseAndRemoveEndDependency(localId, row => ({ ...row, cleanup: null, cleanupAcknowledged: true, producerFinalized: true, producerOutcome: "lost" }));
   }
   acknowledgeCloseAndRelease(localId: string): Promise<void> {
     return this.releaseAndRemoveEndDependency(localId, row => ({ ...row, cleanup: null, closeObservation: null, producerFinalized: true, producerOutcome: "provider_closed" }));
   }
   finishProducerAndRelease(localId: string, outcome: ProducerOutcome): Promise<void> {
     if (outcome === "provider_closed") return this.acknowledgeCloseAndRelease(localId);
+    if (outcome === "no_provider") return this.releaseAndRemoveEndDependency(localId, row => ({ ...row, cleanup: null, producerFinalized: true, producerOutcome: outcome }));
     return this.change(localId, row => {
       const next = { ...row, producerFinalized: true, producerOutcome: outcome };
       return this.releasable(next) ? null : next;
     });
   }
   discardDelivery(localId: string): Promise<void> {
-    return this.change(localId, row => {
-      const next: MetadataEnvelope = { ...row, cleanup: null, closeObservation: null, producerFinalized: true, producerOutcome: "lost" };
-      return this.releasable(next) ? null : next;
-    });
+    return this.releaseAndRemoveEndDependency(localId, row => ({ ...row, cleanup: null, closeObservation: null, producerFinalized: true, producerOutcome: "lost" }));
   }
   releaseIfSafe(localId: string): Promise<void> {
     return this.change(localId, row => this.releasable(row) ? null : row);
@@ -155,7 +166,7 @@ export class MetadataDeliveryBudget {
   }
   enqueueUsage(localId: string, report: UsageReport): Promise<void> {
     return this.change(localId, row => ({ ...row, usagePending: true, usageRevision: (row.usageRevision ?? 0) + 1,
-      usage: { revision: (row.usageRevision ?? 0) + 1, expiresAt: row.usage?.expiresAt ?? row.reservedAt + TTL,
+      usage: { revision: (row.usageRevision ?? 0) + 1, expiresAt: row.usage?.expiresAt ?? row.reservedAt + METADATA_TTL_MS,
         report: coalesceUsage(row.usage?.report, report) } }));
   }
   acknowledgeUsage(localId: string, revision: number): Promise<void> {
@@ -185,30 +196,48 @@ export class MetadataDeliveryBudget {
   entries(): Promise<MetadataEnvelope[]> {
     return this.transaction("readonly", (store, result) => { const r = store.getAll(); r.onsuccess = () => result(r.result as MetadataEnvelope[]); });
   }
-  enqueueEnd(conversationId: string, expectedVersion: number, reason: EndIntent["reason"], cleanupLocalIds: readonly string[] = []): Promise<void> {
+  enqueueEnd(conversationId: string, expectedVersion: number, reason: EndIntent["reason"], cleanupLocalIds: readonly string[] = [], closeTimeoutMs = 0): Promise<void> {
     // One transaction removes the crash gap between saving cleanup and saving user intent.
     // Cleanup remains first-reason-wins, and no usage/close obligation is removed here.
+    const safeTimeout = Number.isFinite(closeTimeoutMs) ? Math.min(2_147_483_647, Math.max(0, closeTimeoutMs)) : 2_147_483_647;
     return this.transaction("readwrite", (store, result, fail, tx) => {
+      const now = Date.now(), requestedCloseDeadlineAt = now + safeTimeout;
+      let expiresAt = now + METADATA_TTL_MS;
       const envelopes = tx.objectStore("envelopes");
       const rows = envelopes.getAll(); rows.onsuccess = () => {
         const byId = new Map((rows.result as MetadataEnvelope[]).map(row => [row.localId, row]));
-        const applicable = [...new Set(cleanupLocalIds)].filter(id => {
-          const row = byId.get(id);
-          return row?.conversationId === conversationId && row.dispatchStartedAt !== null && !row.closeObservation &&
-            !(row.producerFinalized && row.producerOutcome === "lost" && !row.cleanup) &&
-            row.producerOutcome !== "provider_closed" && row.producerOutcome !== "no_provider";
-        });
-        for (const id of applicable) {
-          const row = byId.get(id)!;
-          envelopes.put({ ...row, producerFinalized: true, producerOutcome: row.producerOutcome ?? "lost",
-            cleanup: row.cleanup ?? { reason: reason === "setup_cancel" ? "cancelled" : "user_end", createdAt: Date.now(), expiresAt: Date.now() + TTL } });
-        }
         const get = store.get(conversationId); get.onsuccess = () => {
           const old = get.result as EndIntent | undefined;
-          if (old) { if (old.expectedVersion < expectedVersion) store.put({ conversationId, expectedVersion, reason, expiresAt: Date.now() + TTL, cleanupLocalIds: applicable }); result(undefined); return; }
+          const sameEnd = old?.expectedVersion === expectedVersion;
+          const applicable = [...new Set(cleanupLocalIds)].filter(id => {
+            const row = byId.get(id);
+            return row?.conversationId === conversationId && row.dispatchStartedAt !== null && (row.closeObservation || (
+              !row.cleanupAcknowledged &&
+              !(row.producerFinalized && row.producerOutcome === "lost" && !row.cleanup) &&
+              row.producerOutcome !== "provider_closed" && row.producerOutcome !== "no_provider"));
+          });
+          const retained = sameEnd ? (old?.cleanupLocalIds ?? []).filter(id => {
+            const row = byId.get(id);
+            return Boolean(row && (row.cleanup || row.closeObservation));
+          }) : [];
+          const dependencies = [...new Set([...retained, ...applicable])];
+          for (const id of applicable) {
+            const row = byId.get(id)!;
+            if (row.closeObservation) continue;
+            const legacyDeadline = row.cleanup ? Math.max(row.cleanup.createdAt, row.cleanup.expiresAt - METADATA_TTL_MS) : 0;
+            const existingDeadline = row.producerCloseDeadlineAt ?? (row.cleanup ? legacyDeadline : requestedCloseDeadlineAt);
+            const producerCloseDeadlineAt = sameEnd ? existingDeadline : row.producerFinalized
+              ? (row.producerCloseDeadlineAt ?? (row.cleanup ? legacyDeadline : now))
+              : Math.max(row.producerCloseDeadlineAt ?? legacyDeadline, requestedCloseDeadlineAt);
+            const cleanupExpiresAt = Math.max(row.cleanup?.expiresAt ?? 0, now + METADATA_TTL_MS, producerCloseDeadlineAt + METADATA_TTL_MS);
+            expiresAt = Math.max(expiresAt, cleanupExpiresAt);
+            envelopes.put({ ...row, producerCloseDeadlineAt,
+              cleanup: row.cleanup ? { ...row.cleanup, expiresAt: cleanupExpiresAt } : { reason: reason === "setup_cancel" ? "cancelled" : "user_end", createdAt: now, expiresAt: cleanupExpiresAt } });
+          }
+          if (old) { if (old.expectedVersion <= expectedVersion) store.put({ conversationId, expectedVersion, reason: sameEnd ? old.reason : reason, expiresAt, cleanupLocalIds: dependencies }); result(undefined); return; }
           const count = store.count(); count.onsuccess = () => {
             if (count.result >= 1000) { fail(new Error("Lifecycle metadata storage is full")); return; }
-            store.put({ conversationId, expectedVersion, reason, expiresAt: Date.now() + TTL, cleanupLocalIds: applicable }); result(undefined);
+            store.put({ conversationId, expectedVersion, reason, expiresAt, cleanupLocalIds: dependencies }); result(undefined);
           };
         };
       };

@@ -3,7 +3,7 @@ import { UsageOutbox } from "../metrics/UsageOutbox";
 import type { UsageObservation } from "../metrics/UsageTypes";
 import { AccountingBackend, AccountingRequestError, type LedgerApi, type ConversationMetadata } from "../api/AccountingBackend";
 import { BackendClient, type CreateLiveSessionResponse } from "../api/BackendClient";
-import { CleanupIntentOutbox, cleanupProofReceived } from "./CleanupIntentOutbox";
+import { CleanupIntentOutbox, cleanupProofReceived, producerLeaseKey } from "./CleanupIntentOutbox";
 import { MetadataDeliveryBudget, type CleanupReason } from "./MetadataDeliveryBudget";
 import type { LiveCloseResult } from "../live/LiveClient";
 
@@ -49,16 +49,19 @@ export class ConversationAccounting {
   private dispatchCount = 0;
   private requestId = crypto.randomUUID();
   private readonly autoDelivery: boolean;
-  private readonly producerId = crypto.randomUUID();
+  private readonly producerId: string;
   private producerLock: Promise<void> | undefined;
   private readonly pendingEndBoundaries = new Map<number, PendingEndBoundary>();
   private readonly pendingDirectEnds = new Map<number, PendingDirectEnd>();
   private readonly pendingDirectCleanupAcks = new Set<string>();
   private readonly pendingDirectCloseAcks = new Set<string>();
+  private readonly pendingNoProviderFinalizations = new Set<string>();
+  private readonly directRetirementProofs = new Set<string>();
   constructor(options: { api?: LedgerApi; budget?: MetadataDeliveryBudget; autoDelivery?: boolean } = {}) {
     this.api = options.api ?? new AccountingBackend();
+    this.producerId = options.budget?.ownerProducerId ?? crypto.randomUUID();
     this.budget = options.budget ?? new MetadataDeliveryBudget({ producerId: this.producerId });
-    this.outbox = new CleanupIntentOutbox(this.budget, this.api); this.autoDelivery = options.autoDelivery ?? true;
+    this.outbox = new CleanupIntentOutbox(this.budget, this.api, () => this.flushPendingNoProviderFinalizations()); this.autoDelivery = options.autoDelivery ?? true;
     if (this.api.usage) this.usageOutbox = new UsageOutbox(this.budget, { usage: this.api.usage.bind(this.api), readConversation: this.api.readConversation.bind(this.api) });
     if (this.autoDelivery) { this.outbox.start(); this.usageOutbox?.start(); }
   }
@@ -71,7 +74,7 @@ export class ConversationAccounting {
   private async holdProducerLock(): Promise<void> {
     if (this.producerLock || !globalThis.navigator?.locks) return this.producerLock;
     const lock = this.producerLock = new Promise((resolve, reject) => {
-      void navigator.locks.request(`live-metadata-producer:${this.producerId}`, { ifAvailable: true }, lock => {
+      void navigator.locks.request(producerLeaseKey(this.producerId), { ifAvailable: true }, lock => {
         if (!lock) { reject(new Error("Metadata producer ownership unavailable")); return; }
         resolve(); return new Promise<void>(() => {});
       }).catch(reject);
@@ -104,6 +107,7 @@ export class ConversationAccounting {
       return p.usageLedgerEnabled;
     }).catch(error => { this.enabled = undefined; throw error; });
     if (!await this.enabled) return null;
+    await this.flushPendingNoProviderFinalizations();
     for (const boundary of [...this.pendingEndBoundaries.values()]) await this.finishEndBoundary(boundary);
     await this.flushPendingDirectEnds();
     await this.flushPendingDirectCleanupAcks();
@@ -141,8 +145,9 @@ export class ConversationAccounting {
   private async deliverDirectEnd(intent: PendingDirectEnd): Promise<void> {
     if (intent.inFlight) return intent.inFlight;
     const operation = (async () => {
-      await this.outbox.flush();
-      for (const localId of intent.cleanupLocalIds) {
+      const pending = intent.cleanupLocalIds.filter(localId => !this.directRetirementProofs.has(localId));
+      if (pending.length) await this.outbox.flush();
+      for (const localId of pending) {
         const row = await this.budget.get(localId);
         if (row?.cleanup || row?.closeObservation) throw new Error("Provider cleanup delivery is pending");
       }
@@ -158,6 +163,8 @@ export class ConversationAccounting {
     for (const intent of [...this.pendingDirectEnds.values()]) await this.deliverDirectEnd(intent);
   }
   async acknowledgeDirectCleanup(localId: string): Promise<void> {
+    this.directRetirementProofs.add(localId);
+    this.outbox.confirmRetirement(localId);
     try {
       await this.budget.acknowledgeDirectCleanupAndRelease(localId);
       this.pendingDirectCleanupAcks.delete(localId);
@@ -172,6 +179,8 @@ export class ConversationAccounting {
     }
   }
   async acknowledgeDirectClose(localId: string): Promise<void> {
+    this.directRetirementProofs.add(localId);
+    this.outbox.confirmRetirement(localId);
     try {
       await this.budget.finishProducerAndRelease(localId, "provider_closed");
       this.pendingDirectCloseAcks.delete(localId);
@@ -185,6 +194,23 @@ export class ConversationAccounting {
       this.pendingDirectCloseAcks.delete(localId);
     }
   }
+  async finalizeNoProvider(localId: string): Promise<void> {
+    this.directRetirementProofs.add(localId);
+    this.pendingNoProviderFinalizations.add(localId);
+    try { await this.flushPendingNoProviderFinalizations(); }
+    catch (error) { this.outbox.wake(); throw error; }
+  }
+  private async flushPendingNoProviderFinalizations(): Promise<void> {
+    for (const localId of [...this.pendingNoProviderFinalizations]) {
+      try { await this.budget.finishProducerAndRelease(localId, "no_provider"); }
+      catch (error) {
+        try { await this.budget.finishProducer(localId, "no_provider"); } catch { /* Preserve the confirmed outcome if IDB permits. */ }
+        throw error;
+      }
+      this.outbox.confirmRetirement(localId);
+      this.pendingNoProviderFinalizations.delete(localId);
+    }
+  }
   async stageEnd(reason: "user_end" | "setup_cancel", expectedEpoch = this.epoch): Promise<void> {
     if (expectedEpoch !== this.epoch) return;
     const attempts = [...this.attempts];
@@ -192,8 +218,9 @@ export class ConversationAccounting {
     if (!c) return;
     // Persist intent before waiting for provider final. Do not terminate the usage producer
     // or enqueue HTTP here: a crash can replay both stores, and a late final remains valid.
-    await this.budget.enqueueEnd(c.conversationId, c.version, reason,
-      attempts.filter(a => a.dispatched).map(a => a.localId));
+    const dispatched = attempts.filter(a => a.dispatched);
+    this.outbox.deferCleanup(dispatched.filter(a => !a.finished).map(a => a.localId));
+    await this.outbox.enqueueEnd(c.conversationId, c.version, reason, dispatched.map(a => a.localId), c.policy.sessionCloseTimeoutMs);
   }
 
   async end(reason: "user_end" | "setup_cancel", expectedEpoch = this.epoch): Promise<void> {
@@ -218,12 +245,14 @@ export class ConversationAccounting {
   }
 
   private async deliverEndBoundary(boundary: PendingEndBoundary): Promise<void> {
+    try { await this.flushPendingNoProviderFinalizations(); }
+    catch { console.error("No-provider finalization storage degraded"); }
     const c = boundary.conversation ?? await boundary.creating?.catch(() => undefined);
     let persisted = false;
     if (c) {
       try {
         await this.outbox.enqueueEnd(c.conversationId, c.version, boundary.reason,
-          boundary.attempts.filter(a => a.dispatched).map(a => a.localId));
+          boundary.attempts.filter(a => a.dispatched && !this.directRetirementProofs.has(a.localId)).map(a => a.localId), c.policy.sessionCloseTimeoutMs);
         persisted = true;
       } catch { console.error("Conversation end storage degraded", { conversationId: c.conversationId }); }
     }
@@ -232,15 +261,15 @@ export class ConversationAccounting {
     const dispatchedFailure = results.find((r, i) => r.status === "rejected" && boundary.attempts[i]!.dispatched);
     if (!persisted && dispatchedFailure?.status === "rejected") throw dispatchedFailure.reason;
     if (c) {
-      if (persisted) void this.outbox.flush().catch(() => console.error("Conversation end delivery pending"));
-      else {
+      const dispatched = boundary.attempts.filter(a => a.dispatched);
+      if (!persisted || dispatched.every(a => this.directRetirementProofs.has(a.localId))) {
         const intent = this.pendingDirectEnds.get(boundary.epoch) ?? {
           conversationId: c.conversationId, version: c.version, reason: boundary.reason, epoch: boundary.epoch,
-          cleanupLocalIds: boundary.attempts.filter(a => a.dispatched).map(a => a.localId),
+          cleanupLocalIds: dispatched.map(a => a.localId),
         };
         this.pendingDirectEnds.set(boundary.epoch, intent);
         await this.deliverDirectEnd(intent);
-      }
+      } else void this.outbox.flush().catch(() => console.error("Conversation end delivery pending"));
     }
     this.pendingEndBoundaries.delete(boundary.epoch);
     const failure = results.find(r => r.status === "rejected");
@@ -286,9 +315,9 @@ export class ProviderAccounting {
         this.cancelled = true;
         await this.reporter?.noProvider();
         if (!this.reporter && this.scope.usageOutbox) await this.scope.usageOutbox.noProvider(this.localId);
-        await this.scope.budget.finishProducerAndRelease(this.localId, "no_provider");
         this.scope.noteNoProvider(this);
         this.finished = true;
+        await this.scope.finalizeNoProvider(this.localId);
       } else {
         await this.abandon("response_not_received");
       }
@@ -322,7 +351,7 @@ export class ProviderAccounting {
         if (this.dispatched) { await this.scope.outbox.enqueue(this.localId, committedReason); this.controller?.abort(); }
         else {
           await this.scope.usageOutbox?.noProvider(this.localId);
-          await this.scope.budget.finishProducerAndRelease(this.localId, "no_provider");
+          await this.scope.finalizeNoProvider(this.localId);
         }
         this.finished = true;
       } catch (error) {
@@ -355,7 +384,10 @@ export class ProviderAccounting {
         await this.scope.outbox.observeClosed(this.localId, observation);
       } catch {
         console.error("Provider close metadata storage degraded", { localId: this.localId });
-        await this.scope.api.closed(this.localId, observation);
+        const proof = await this.scope.api.closed(this.localId, observation);
+        if (proof.closeConfirmed !== true && proof.state !== "closed" && !(proof.state === "failed" && !proof.openaiSessionId)) {
+          throw new Error("Provider close was not confirmed");
+        }
         await this.scope.acknowledgeDirectClose(this.localId);
       }
       this.finished = true;

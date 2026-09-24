@@ -74,6 +74,14 @@ export class LedgerRuntime {
     this.network.get(id)?.controller.abort(); // Only AFTER durable fence commit.
     this.syncAdmission(); this.wake();
   }
+  recover(owner: string, conversationId: string, id: string, reason: CleanupReason) {
+    const result = this.ledger.fenceRecovery(owner, conversationId, id, reason);
+    if (result.attempt) {
+      this.network.get(id)?.controller.abort(); // The SQL cleanup fence is committed before abort.
+      this.syncAdmission(); this.wake();
+    }
+    return result;
+  }
   create(owner: string, input: AttemptInput, sdp: string, disconnected: () => boolean): Promise<LiveSessionResponse> {
     if (!this.accepting) throw new LedgerError("server_shutting_down_before_dispatch", 503);
     let row;

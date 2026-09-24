@@ -52,6 +52,16 @@ export function createManagedSessionRouter(runtime: LedgerRuntime, identity: Ano
       res.once("finish", () => { res.removeListener("close", onDisconnect); res.removeListener("finish", onFinish); });
     }
   });
+  router.post("/:id/recover", (req, res) => {
+    const body = parseBody(z.object({ conversationId: uuidSchema, reason: z.enum(CLIENT_CLEANUP_REASONS) }).strict(), req.body);
+    const owner = identity.require(req), result = runtime.recover(owner, body.conversationId, req.params.id, body.reason);
+    identity.renew(res, owner);
+    if (result.attempt) {
+      res.json(publicAttempt(result.attempt)); return;
+    }
+    res.json({ liveSessionId: req.params.id, conversationId: body.conversationId, state: "failed", openaiSessionId: null,
+      cleanupRequestedAt: null, closeConfirmed: false, leaseReleasedAt: null, recoveryFenced: true });
+  });
   router.get("/:id", (req, res) => {
     const owner = identity.require(req), row = ledger.getAttempt(owner, req.params.id), c = ledger.getConversation(owner, row.conversation_id);
     identity.renew(res, owner); runtime.syncAdmission(); runtime.wake();
