@@ -111,9 +111,8 @@ describe("retained conversation snapshot", () => {
     }
   });
 
-  it("rejects active, changed-version, lost-cookie and mismatched-identity records", async () => {
+  it("rejects changed-version, lost-cookie and mismatched-identity records", async () => {
     for (const read of [
-      async () => paused({ status: "active" }),
       async () => paused({ version: 4 }),
       async () => { throw new AccountingRequestError(401, "identity_required"); },
       async () => paused({ conversationId: "someone-else" }),
@@ -155,6 +154,59 @@ describe("retained conversation snapshot", () => {
     await store.save({ ...input, contextText: "Latest confirmed edit" });
     expect(await store.readForResume(async () => paused())).toMatchObject({ localResumeDeadlineAt: 400_000,
       conversationVersion: 3, contextText: "Latest confirmed edit" });
+  });
+
+  it("starts fresh retention after each confirmed resume and fences old completion", async () => {
+    const f = fixture(), store = await f.open(); await seed(store);
+    const firstAttemptId = crypto.randomUUID();
+    await store.rememberResumeAttempt(input.conversationId, firstAttemptId);
+    await store.confirmResume(paused({ status: "active", version: 5, resumeExpiresAt: null }), firstAttemptId);
+    await store.save({ ...input, conversationVersion: 5 });
+    f.at(200_000);
+    await store.markHidden(input.conversationId, 200_000, 300_000);
+    await store.confirmPause(paused({ version: 6, resumeExpiresAt: 500_000 }));
+    expect(await store.readForResume(async () => paused({ version: 6, resumeExpiresAt: 500_000 })))
+      .toMatchObject({ conversationVersion: 6, localResumeDeadlineAt: 500_000 });
+
+    const secondAttemptId = crypto.randomUUID();
+    await store.rememberResumeAttempt(input.conversationId, secondAttemptId);
+    await store.confirmResume(paused({ status: "active", version: 8, resumeExpiresAt: null }), secondAttemptId);
+    await store.save({ ...input, conversationVersion: 8 });
+    f.at(300_000);
+    await store.markHidden(input.conversationId, 300_000, 300_000);
+    await store.confirmPause(paused({ version: 9, resumeExpiresAt: 600_000 }));
+    await store.confirmResume(paused({ status: "active", version: 5, resumeExpiresAt: null }), firstAttemptId);
+    expect(await store.readForResume(async () => paused({ version: 9, resumeExpiresAt: 600_000 })))
+      .toMatchObject({ conversationVersion: 9, localResumeDeadlineAt: 600_000, serverResumeExpiresAt: 600_000 });
+  });
+
+  it("preserves its pointer and snapshot when conversation GET is unverified", async () => {
+    for (const error of [new Error("timeout"), new AccountingRequestError(503, "unavailable")]) {
+      const f = fixture(), store = await f.open(); await seed(store);
+      const key: [string, string] = [store.clientInstanceId, input.conversationId];
+      await expect(store.inspectReload(async () => { throw error; })).rejects.toBe(error);
+      await expect(store.readForResume(async () => { throw error; })).rejects.toBe(error);
+      expect(f.tab.getItem("live-translator-retained-conversation-v1")).toBe(input.conversationId);
+      expect(await rawRow(f.indexedDB, f.name, key)).toBeDefined();
+      expect(await store.inspectReload(async () => paused())).toMatchObject({ kind: "paused" });
+    }
+  });
+
+  it("retains an active reload's ID and current version for an explicit user choice", async () => {
+    const f = fixture(), store = await f.open(); await seed(store);
+    f.at(400_000);
+    const active = paused({ status: "active", version: 5, resumeExpiresAt: null, resumeAttemptId: null });
+    expect(await store.inspectReload(async () => active)).toEqual({
+      kind: "active", conversationId: input.conversationId, conversationVersion: 5,
+    });
+    expect(f.tab.getItem("live-translator-retained-conversation-v1")).toBe(input.conversationId);
+    expect(await rawRow(f.indexedDB, f.name, [store.clientInstanceId, input.conversationId])).toBeDefined();
+    expect(await store.readForResume(async () => active)).toBeNull();
+
+    const fresh = fixture(), unpaused = await fresh.open();
+    await unpaused.save(input);
+    expect(await unpaused.inspectReload(async () => paused({ status: "active", resumeExpiresAt: null })))
+      .toEqual({ kind: "active", conversationId: input.conversationId, conversationVersion: 3 });
   });
 
   it("does not let a late confirmed-state write roll back the pause version", async () => {

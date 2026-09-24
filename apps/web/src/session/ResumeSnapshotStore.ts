@@ -39,11 +39,9 @@ export interface ResumeSnapshotOptions {
   now?: () => number;
 }
 
-export interface ReloadInspection {
-  kind: "paused" | "pending";
-  snapshot: ResumeSnapshot;
-  conversation: ConversationMetadata;
-}
+export type ReloadInspection =
+  | { kind: "paused" | "pending"; snapshot: ResumeSnapshot; conversation: ConversationMetadata }
+  | { kind: "active"; conversationId: string; conversationVersion: number };
 
 function timestamp(value: unknown): value is number {
   return typeof value === "number" && Number.isSafeInteger(value) && value > 0;
@@ -221,6 +219,16 @@ export class ResumeSnapshotStore {
     });
   }
 
+  async confirmResume(conversation: ConversationMetadata, attemptId: string): Promise<void> {
+    if (conversation.status !== "active" || conversation.resumeExpiresAt !== null || conversation.resumeAttemptId !== null) return;
+    await this.update(conversation.conversationId, row => {
+      if (row.resumeAttemptId !== attemptId || conversation.version <= row.conversationVersion ||
+        conversation.policy.policyVersion !== row.policyVersion) return row;
+      return { ...row, conversationVersion: conversation.version, productDeadlineAt: conversation.productDeadlineAt,
+        localResumeDeadlineAt: null, serverResumeExpiresAt: null, resumeAttemptId: null };
+    });
+  }
+
   async rememberResumeAttempt(conversationId: string, attemptId: string): Promise<void> {
     if (!ID.test(attemptId) || !this.owned || this.storage?.getItem(CONVERSATION_KEY) !== conversationId)
       throw new Error("Retained conversation ownership unavailable");
@@ -261,19 +269,27 @@ export class ResumeSnapshotStore {
     const conversationId = this.storage?.getItem(CONVERSATION_KEY);
     if (!conversationId) return null;
     const row = await this.get(conversationId);
-    if (!validSnapshot(row, this.clientInstanceId, conversationId) || row.localResumeDeadlineAt === null ||
-      row.serverResumeExpiresAt === null || this.now() >= row.localResumeDeadlineAt ||
-      this.now() >= row.serverResumeExpiresAt || (row.productDeadlineAt !== null && this.now() >= row.productDeadlineAt)) {
+    if (!validSnapshot(row, this.clientInstanceId, conversationId)) {
       await this.discard(conversationId); return null;
     }
     let server: ConversationMetadata;
     try { server = await read(conversationId); }
     catch (error) {
       if (record(error) && "status" in error && [401, 403, 404].includes(error.status as number)) await this.discard(conversationId);
+      else throw error;
       return null;
     }
-    if (!record(server) || server.conversationId !== conversationId ||
-      !record(server.policy) || server.policy.policyVersion !== row.policyVersion || !timestamp(server.serverTime) ||
+    if (!record(server) || server.conversationId !== conversationId || !Number.isSafeInteger(server.version) ||
+      server.version < row.conversationVersion || !record(server.policy) ||
+      server.policy.policyVersion !== row.policyVersion || !timestamp(server.serverTime)) {
+      await this.discard(conversationId); return null;
+    }
+    if (server.status === "active") return {
+      kind: "active", conversationId, conversationVersion: server.version,
+    };
+    if (row.localResumeDeadlineAt === null || row.serverResumeExpiresAt === null ||
+      this.now() >= row.localResumeDeadlineAt || this.now() >= row.serverResumeExpiresAt ||
+      (row.productDeadlineAt !== null && this.now() >= row.productDeadlineAt) ||
       !timestamp(server.resumeExpiresAt) ||
       server.resumeExpiresAt !== row.serverResumeExpiresAt || server.productDeadlineAt !== row.productDeadlineAt ||
       this.now() >= server.resumeExpiresAt || server.serverTime >= server.resumeExpiresAt ||
