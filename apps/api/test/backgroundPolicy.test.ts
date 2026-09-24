@@ -1,4 +1,7 @@
 import { randomUUID } from "node:crypto";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import request from "supertest";
 import { apiConfig } from "../src/config.js";
@@ -31,6 +34,40 @@ describe("background close policy", () => {
       const runtime = app.locals.ledgerRuntime;
       await runtime.shutdown({ drainMs: 0, timeoutMs: 100 });
       runtime.ledger.db.close();
+    }
+  });
+
+  it("keeps each conversation's stored policy when the server flag changes", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "translator-background-policy-"));
+    const apps: ReturnType<typeof createApp>[] = [];
+    try {
+      Object.assign(apiConfig, { usageLedgerEnabled: true, backgroundSessionCloseEnabled: true, usageDbPath: join(dir, "usage.sqlite") });
+      const before = createApp({ startWorker: false });
+      apps.push(before);
+      const created = await request(before).post("/api/conversations").set("Origin", "http://localhost:5173")
+        .send({ createRequestId: randomUUID(), appVersion: "test" }).expect(201);
+      expect(created.body.policy.backgroundSessionCloseEnabled).toBe(true);
+      const cookie = created.headers["set-cookie"]![0]!.split(";")[0]!;
+
+      apiConfig.backgroundSessionCloseEnabled = false;
+      const after = createApp({ startWorker: false });
+      apps.push(after);
+      const policy = await request(after).get("/api/policy").expect(200);
+      expect(policy.body).toMatchObject({ usageLedgerEnabled: true, backgroundSessionCloseEnabled: false });
+      const existing = await request(after).get(`/api/conversations/${created.body.conversationId}`).set("Cookie", cookie).expect(200);
+      expect(existing.body.policy.backgroundSessionCloseEnabled).toBe(true);
+      const newer = await request(after).post("/api/conversations").set("Origin", "http://localhost:5173")
+        .set("Cookie", cookie).send({ createRequestId: randomUUID(), appVersion: "test" }).expect(201);
+      expect(newer.body.policy.backgroundSessionCloseEnabled).toBe(false);
+      const reread = await request(after).get(`/api/conversations/${newer.body.conversationId}`).set("Cookie", cookie).expect(200);
+      expect(reread.body.policy.backgroundSessionCloseEnabled).toBe(false);
+    } finally {
+      for (const app of apps) {
+        const runtime = app.locals.ledgerRuntime;
+        await runtime.shutdown({ drainMs: 0, timeoutMs: 100 });
+        runtime.ledger.db.close();
+      }
+      rmSync(dir, { recursive: true, force: true });
     }
   });
 });
