@@ -3,7 +3,7 @@ import { UsageOutbox } from "../metrics/UsageOutbox";
 import type { UsageObservation } from "../metrics/UsageTypes";
 import { AccountingBackend, AccountingRequestError, type LedgerApi, type ConversationMetadata } from "../api/AccountingBackend";
 import { BackendClient, type CreateLiveSessionResponse } from "../api/BackendClient";
-import { CleanupIntentOutbox, cleanupProofReceived } from "./CleanupIntentOutbox";
+import { CleanupIntentOutbox, cleanupProofReceived, producerLeaseKey } from "./CleanupIntentOutbox";
 import { MetadataDeliveryBudget, type CleanupReason } from "./MetadataDeliveryBudget";
 import type { LiveCloseResult } from "../live/LiveClient";
 
@@ -51,6 +51,7 @@ export class ConversationAccounting {
   private readonly autoDelivery: boolean;
   private readonly producerId: string;
   private producerLock: Promise<void> | undefined;
+  private producerHeartbeat: ReturnType<typeof setInterval> | undefined;
   private readonly pendingEndBoundaries = new Map<number, PendingEndBoundary>();
   private readonly pendingDirectEnds = new Map<number, PendingDirectEnd>();
   private readonly pendingDirectCleanupAcks = new Set<string>();
@@ -72,9 +73,13 @@ export class ConversationAccounting {
   }
   isCurrent(epoch: number) { return epoch === this.epoch; }
   private async holdProducerLock(): Promise<void> {
+    if (!this.producerHeartbeat) {
+      const renew = () => { try { globalThis.localStorage?.setItem(producerLeaseKey(this.producerId), String(Date.now())); } catch { /* Web Locks remain authoritative when storage is unavailable. */ } };
+      renew(); this.producerHeartbeat = setInterval(renew, 30_000);
+    }
     if (this.producerLock || !globalThis.navigator?.locks) return this.producerLock;
     const lock = this.producerLock = new Promise((resolve, reject) => {
-      void navigator.locks.request(`live-metadata-producer:${this.producerId}`, { ifAvailable: true }, lock => {
+      void navigator.locks.request(producerLeaseKey(this.producerId), { ifAvailable: true }, lock => {
         if (!lock) { reject(new Error("Metadata producer ownership unavailable")); return; }
         resolve(); return new Promise<void>(() => {});
       }).catch(reject);

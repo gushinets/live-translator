@@ -1,4 +1,13 @@
 import { MetadataDeliveryBudget, type CleanupReason, type CloseMetadata, type EndIntent } from "./MetadataDeliveryBudget";
+export const producerLeaseKey = (id: string) => `live-metadata-producer:${id}`;
+// ponytail: a suspended tab may outlive this lease; Web Locks remain authoritative where supported.
+const PRODUCER_LEASE_MS = 2 * 60_000;
+export const producerLeaseIsLive = (id: string, now = Date.now()) => {
+  try {
+    const heartbeat = Number(globalThis.localStorage?.getItem(producerLeaseKey(id)));
+    return Number.isFinite(heartbeat) && now - heartbeat < PRODUCER_LEASE_MS;
+  } catch { return false; }
+};
 export interface AttemptProof {
   cleanupRequestedAt?: number | null; closeConfirmed?: boolean; state?: string; openaiSessionId?: string | null; leaseReleasedAt?: number | null;
 }
@@ -87,12 +96,13 @@ export class CleanupIntentOutbox {
         const locks = globalThis.navigator?.locks;
         if (locks) {
           try {
-            await locks.request(`live-metadata-producer:${row.producerId}`, { ifAvailable: true }, async lock => {
+            await locks.request(producerLeaseKey(row.producerId), { ifAvailable: true }, async lock => {
               if (!lock) { pending = true; return; }
               await deliverRow();
             });
           } catch { pending = true; }
-        } else pending = true;
+        } else if (producerLeaseIsLive(row.producerId)) pending = true;
+        else await deliverRow();
       } else {
         await deliverRow();
       }

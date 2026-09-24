@@ -45,7 +45,7 @@ describe("shared IndexedDB metadata budget", () => {
   });
 });
 describe("cleanup and End delivery", () => {
-  it("does not replay another producer's cleanup when Web Locks are unavailable", async () => {
+  it("waits for a live producer then replays its cleanup after the lease expires without Web Locks", async () => {
     const indexedDB = new IDBFactory(), name = crypto.randomUUID();
     const owner = fixture(new MetadataDeliveryBudget({ indexedDB, name }));
     const follower = fixture(new MetadataDeliveryBudget({ indexedDB, name }));
@@ -58,8 +58,11 @@ describe("cleanup and End delivery", () => {
       await follower.scope.outbox.flush();
 
       expect(follower.api.cleanup).not.toHaveBeenCalled();
-      await attempt.finish({ finalized: true }); await owner.scope.outbox.flush();
+      localStorage.setItem(`live-metadata-producer:${owner.budget.ownerProducerId}`, String(Date.now() - 120_000));
+      await follower.scope.outbox.flush();
+      expect(follower.api.cleanup).toHaveBeenCalledWith(attempt.localId, "user_end");
     } finally {
+      localStorage.removeItem(`live-metadata-producer:${owner.budget.ownerProducerId}`);
       if (locks) Object.defineProperty(navigator, "locks", locks); else Reflect.deleteProperty(navigator, "locks");
       await owner.budget.close(); await follower.budget.close();
     }
