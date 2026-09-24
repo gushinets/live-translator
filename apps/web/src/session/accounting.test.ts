@@ -427,7 +427,7 @@ describe("cleanup and End delivery", () => {
       await ownerBudget.enqueueCleanup("orphan", "cancelled"); await ownerBudget.finishProducer("orphan", "lost");
       held.delete(ownerLock);
       await follower.scope.outbox.flush();
-      expect(follower.api.cleanup).toHaveBeenLastCalledWith("orphan", "cancelled");
+      expect(follower.api.recover).toHaveBeenLastCalledWith("orphan", "conversation", "cancelled");
     } finally {
       Reflect.deleteProperty(navigator, "locks");
       await ownerBudget.close(); await followerBudget.close();
@@ -991,9 +991,9 @@ describe("stage 4 durable lifecycle boundary", () => {
 
     const recoveredBudget = new MetadataDeliveryBudget({ indexedDB, name });
     const order: string[] = [];
-    original.api.cleanup.mockImplementation(async () => {
-      order.push("cleanup");
-      return { cleanupRequestedAt: Date.now() };
+    original.api.recover.mockImplementation(async () => {
+      order.push("recover");
+      return { cleanupRequestedAt: Date.now(), state: "closing", openaiSessionId: "provider" };
     });
     original.api.end.mockImplementation(async () => {
       order.push("end");
@@ -1002,7 +1002,7 @@ describe("stage 4 durable lifecycle boundary", () => {
     Object.defineProperty(navigator, "locks", { configurable: true, value: { request: vi.fn((_key: string, _options: { ifAvailable: boolean }, callback: (lock: object | null) => unknown) => Promise.resolve(callback({}))) } });
     const recovered = new ConversationAccounting({ api: original.api, budget: recoveredBudget });
 
-    await vi.waitFor(() => expect(order).toEqual(["cleanup", "end"]));
+    await vi.waitFor(() => expect(order).toEqual(["recover", "end"]));
     recovered.outbox.stop();
     recovered.usageOutbox?.stop();
     await recoveredBudget.close();
@@ -1131,10 +1131,12 @@ describe("stage 4 durable lifecycle boundary", () => {
     expect((await reloaded.get("attempt"))?.usage?.report.checkpointSeconds).toBe(43);
     expect(await reloaded.ends()).toMatchObject([{ conversationId: "c", expectedVersion: 1 }]);
     const f = fixture(reloaded), order: string[] = [];
-    f.api.cleanup.mockImplementation(async () => { order.push("cleanup"); return { cleanupRequestedAt: 1 }; });
+    f.api.recover.mockImplementation(async () => {
+      order.push("recover"); return { cleanupRequestedAt: 1, state: "closing", openaiSessionId: "provider" };
+    });
     f.api.end.mockImplementation(async () => { order.push("end"); return { ...f.c, status: "ended" }; });
     Object.defineProperty(navigator, "locks", { configurable: true, value: { request: vi.fn((_key: string, _options: { ifAvailable: boolean }, callback: (lock: object | null) => unknown) => Promise.resolve(callback({}))) } });
-    await f.scope.outbox.flush(); expect(order).toEqual(["cleanup", "end"]);
+    await f.scope.outbox.flush(); expect(order).toEqual(["recover", "end"]);
     expect((await reloaded.get("attempt"))?.usage?.report.checkpointSeconds).toBe(43); await reloaded.close();
   });
   it("holds a legacy End until its matching cleanup receives proof", async () => {
