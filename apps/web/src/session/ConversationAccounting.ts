@@ -70,6 +70,17 @@ export class ConversationAccounting {
   get revision() { return this.epoch; }
   get isPausing() { return this.pausing; }
   get conversationId(): string | null { return this.current?.conversationId ?? null; }
+  clearIdleBackgroundPause(): boolean {
+    if (this.current || this.creating) return false;
+    this.pausing = false;
+    return true;
+  }
+  keepUnpausedConversation(conversation: ConversationMetadata): void {
+    if (conversation.status !== "active" || conversation.policy.backgroundSessionCloseEnabled)
+      throw new Error("Conversation policy does not permit legacy continuation");
+    this.current = conversation;
+    this.pausing = false;
+  }
   async pendingConversation(): Promise<ConversationMetadata | null> { return this.current ?? await this.creating?.catch(() => undefined) ?? null; }
   get backgroundSessionCloseEnabled(): boolean { return this.current?.policy.backgroundSessionCloseEnabled ?? this.backgroundPolicy; }
   async loadPolicy(): Promise<void> {

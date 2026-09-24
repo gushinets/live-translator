@@ -173,6 +173,7 @@ export class SessionController {
 
   protected get backgroundCloseEnabled(): boolean { return false; }
   protected beginBackgroundPause(): void {}
+  protected clearIdleBackgroundPause(): boolean { return true; }
   protected pauseBackground(_state: Omit<ResumeSnapshotInput, "conversationId" | "conversationVersion" | "policyVersion" | "productDeadlineAt">,
     _hiddenAt: number, _close: Promise<unknown>): Promise<void> {
     void _state; void _hiddenAt; void _close;
@@ -183,8 +184,25 @@ export class SessionController {
     this.visibility.start();
     this.earlyVisibilityStarted = true;
   }
+  protected stopEarlyVisibility(): void {
+    if (!this.earlyVisibilityStarted) return;
+    this.visibility.stop();
+    this.earlyVisibilityStarted = false;
+  }
+  protected async awaitBackgroundPause(): Promise<void> {
+    await this.backgroundCloseWork?.catch(() => undefined);
+  }
+  protected resetAfterUnpausedBackground(): void { this.resetToIdle(); }
   protected sampleInitialHidden(): boolean {
     if (!this.backgroundCloseEnabled) return false;
+    if (this.backgroundPaused && !this.visibility.isHidden() && this.currentSession.state === "idle" &&
+      this.clearIdleBackgroundPause()) {
+      this.backgroundPaused = false;
+      this.backgroundCloseWork = null;
+      this.sessionGeneration++;
+      this.live = this.deps.createLive();
+      this.bindLive();
+    }
     if (this.backgroundPaused) return true;
     if (!this.visibility.isHidden()) return false;
     void this.handleVisibilityHidden();
@@ -2197,6 +2215,7 @@ export class SessionController {
         resolveClose = resolve; rejectClose = reject;
       });
       const state = this.currentSession;
+      const hadLive = this.hasConnected || this.liveConnectStarted;
       const hiddenAt = Date.now();
       const snapshot = this.conversationMetrics.snapshot();
       const counters: MetricCounters = {};
@@ -2232,7 +2251,7 @@ export class SessionController {
       this.gateBMuted = false;
       this.hasConnected = false; this.liveConnectStarted = false;
       try {
-        const close = this.live.close("hidden");
+        const close = !hadLive && state.state === "idle" ? Promise.resolve() : this.live.close("hidden");
         void this.pauseBackground(retained, hiddenAt, close).then(resolveClose, rejectClose);
       } catch (error) { rejectClose(error); }
       try { await this.backgroundCloseWork; }

@@ -76,6 +76,31 @@ async function rawRow(factory: IDBFactory, name: string, key: [string, string], 
 }
 
 describe("retained conversation snapshot", () => {
+  it("does not report an empty reload when the identity survived but its row did not", async () => {
+    const f = fixture(), store = await f.open();
+    store.retainIdentity(input.conversationId);
+    await store.dispose();
+    const reload = await f.open();
+    await expect(reload.inspectReload(async () => paused())).rejects.toThrow("Retained conversation");
+    expect(f.tab.getItem("live-translator-retained-conversation-v1")).toBe(input.conversationId);
+  });
+  it("keeps a saved identity fail closed after a pause ACK cannot be persisted", async () => {
+    const f = fixture(), store = await f.open();
+    await store.save(input);
+    await store.markHidden(input.conversationId, 100_000, 300_000);
+    await store.dispose();
+    const reload = await f.open();
+    expect(reload.clientInstanceId).toBe(store.clientInstanceId);
+    await expect(reload.inspectReload(async () => paused())).rejects.toThrow("Retained conversation");
+    expect(f.tab.getItem("live-translator-retained-conversation-v1")).toBe(input.conversationId);
+  });
+
+  it("releases the document lock on idempotent disposal", async () => {
+    const f = fixture(), owner = await f.open();
+    await owner.dispose(); await owner.dispose();
+    const next = await f.open();
+    expect(next.clientInstanceId).toBe(owner.clientInstanceId);
+  });
   it("reloads its own paused conversation and persists only the allowlist", async () => {
     const f = fixture(), first = await f.open();
     await first.save({ ...input, secretToken: "never", transcript: "private speech" } as ResumeSnapshotInput);
@@ -92,22 +117,24 @@ describe("retained conversation snapshot", () => {
     });
   });
 
-  it("uses the hidden timestamp, never the later pause ACK, and rejects the exact TTL boundary", async () => {
+  it("uses the hidden timestamp, never the later pause ACK, and blocks the exact TTL boundary", async () => {
     const f = fixture(), store = await f.open(); await seed(store);
     await store.confirmPause(paused({ resumeExpiresAt: 900_000 }));
     f.at(399_999); expect(await store.readForResume(async () => paused({ resumeExpiresAt: 900_000 }))).not.toBeNull();
-    f.at(400_000); expect(await store.readForResume(async () => paused({ resumeExpiresAt: 900_000 }))).toBeNull();
-    expect(await rawRow(f.indexedDB, f.name, [store.clientInstanceId, input.conversationId])).toBeUndefined();
+    f.at(400_000);
+    await expect(store.readForResume(async () => paused({ resumeExpiresAt: 900_000 }))).rejects.toThrow();
+    expect(f.tab.getItem("live-translator-retained-conversation-v1")).toBe(input.conversationId);
   });
 
-  it("discards corrupt and unknown-version rows before server lookup", async () => {
+  it("blocks corrupt and unknown-version rows before server lookup", async () => {
     for (const mutate of [(row: Record<string, unknown>) => ({ ...row, schemaVersion: 99 }),
       (row: Record<string, unknown>) => ({ ...row, contextText: { text: "wrong shape" } })]) {
       const f = fixture(), store = await f.open(); await seed(store);
       const key: [string, string] = [store.clientInstanceId, input.conversationId];
       await rawRow(f.indexedDB, f.name, key, mutate);
-      expect(await store.readForResume(async () => { throw new Error("should not reach server"); })).toBeNull();
-      expect(await rawRow(f.indexedDB, f.name, key)).toBeUndefined();
+      await expect(store.readForResume(async () => { throw new Error("should not reach server"); }))
+        .rejects.toThrow("Retained conversation snapshot unavailable");
+      expect(f.tab.getItem("live-translator-retained-conversation-v1")).toBe(input.conversationId);
     }
   });
 
@@ -119,8 +146,8 @@ describe("retained conversation snapshot", () => {
       async () => ({ conversationId: input.conversationId, status: "paused", version: 3 } as ConversationMetadata),
     ]) {
       const f = fixture(), store = await f.open(); await seed(store);
-      expect(await store.readForResume(read)).toBeNull();
-      expect(await rawRow(f.indexedDB, f.name, [store.clientInstanceId, input.conversationId])).toBeUndefined();
+      await expect(store.readForResume(read)).rejects.toThrow();
+      expect(f.tab.getItem("live-translator-retained-conversation-v1")).toBe(input.conversationId);
     }
   });
 
@@ -136,15 +163,17 @@ describe("retained conversation snapshot", () => {
     const f = fixture(), owner = await f.open(); await seed(owner);
     const unsupported = await f.open(f.tab.clone(), null);
     expect(unsupported.clientInstanceId).not.toBe(owner.clientInstanceId);
-    expect(await unsupported.readForResume(async () => paused())).toBeNull();
-    await expect(unsupported.save(input)).resolves.toBeUndefined();
+    await expect(unsupported.readForResume(async () => paused())).rejects.toThrow("ownership unavailable");
+    await expect(unsupported.save(input)).rejects.toThrow("storage unavailable");
+    expect(unsupported.hasRetainedIdentity()).toBe(true);
     expect(await rawRow(f.indexedDB, f.name, [unsupported.clientInstanceId, input.conversationId])).toBeUndefined();
   });
 
   it("treats a rejected Web Locks probe as unavailable instead of rotating into a retry loop", async () => {
     const f = fixture(), store = await f.open(f.tab, new RejectOnceLocks());
     expect(store.available).toBe(false);
-    await expect(store.save(input)).resolves.toBeUndefined();
+    await expect(store.save(input)).rejects.toThrow("storage unavailable");
+    expect(store.hasRetainedIdentity()).toBe(true);
   });
 
   it("keeps the first local deadline and rejects a stale pause ACK", async () => {
@@ -209,6 +238,12 @@ describe("retained conversation snapshot", () => {
       .toEqual({ kind: "active", conversationId: input.conversationId, conversationVersion: 3 });
   });
 
+  it("clears the retained identity only after the server confirms End", async () => {
+    const f = fixture(), store = await f.open(); await seed(store);
+    expect(await store.inspectReload(async () => paused({ status: "ended", resumeExpiresAt: null }))).toBeNull();
+    expect(f.tab.getItem("live-translator-retained-conversation-v1")).toBeNull();
+  });
+
   it("does not let a late confirmed-state write roll back the pause version", async () => {
     const f = fixture(), store = await f.open(); await seed(store);
     await store.confirmPause(paused({ version: 4 }));
@@ -242,10 +277,10 @@ describe("retained conversation snapshot", () => {
     expect(await rawRow(f.indexedDB, f.name, [store.clientInstanceId, input.conversationId])).toBeDefined();
   });
 
-  it("discards an impossible interpreter stage instead of restoring invented language assignments", async () => {
+  it("blocks an impossible interpreter stage instead of restoring invented language assignments", async () => {
     const f = fixture(), store = await f.open(); await seed(store);
     const key: [string, string] = [store.clientInstanceId, input.conversationId];
     await rawRow(f.indexedDB, f.name, key, row => ({ ...row, participantB: { hasAcceptedConversationSpeech: false } }));
-    expect(await store.readForResume(async () => paused())).toBeNull();
+    await expect(store.readForResume(async () => paused())).rejects.toThrow("Retained conversation snapshot unavailable");
   });
 });

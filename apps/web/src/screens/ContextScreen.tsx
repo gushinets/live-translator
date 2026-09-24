@@ -1,4 +1,4 @@
-import { createAccountedSessionController } from "../session/createAccountedSessionController";
+import { createAccountedSessionController, type AccountedSessionController } from "../session/createAccountedSessionController";
 import { useEffect, useReducer, useRef, useState } from "react";
 import { ErrorOverlay } from "../components/ErrorOverlay";
 import { BootstrapPrompt } from "../components/BootstrapPrompt";
@@ -49,26 +49,72 @@ export interface ContextScreenController {
   resumeFromSourceTimeout(): Promise<void>;
 }
 
+let documentController: AccountedSessionController | null = null;
+let documentOwners = 0;
+let disposalToken = 0;
+let pendingDisposal: Promise<void> | null = null;
+let documentDisposalFailed = false;
+
+function acquireDocumentController(): AccountedSessionController {
+  disposalToken++;
+  documentController ??= createAccountedSessionController();
+  documentOwners++;
+  documentController.start();
+  return documentController;
+}
+
+function releaseDocumentController(): void {
+  documentOwners--;
+  const token = ++disposalToken;
+  queueMicrotask(() => {
+    if (documentOwners !== 0 || token !== disposalToken) return;
+    const controller = documentController;
+    documentController = null;
+    if (controller) {
+      const work = controller.dispose().catch(error => {
+        documentDisposalFailed = true;
+        console.error("Session disposal incomplete", { error });
+      });
+      const settled = work.finally(() => {
+        if (pendingDisposal === settled) pendingDisposal = null;
+      });
+      pendingDisposal = settled;
+    }
+  });
+}
+
 export function ContextScreen({
   controller: injectedController,
 }: {
   controller?: ContextScreenController;
 } = {}) {
-  const [ownedController] = useState<SessionController | null>(() =>
-    injectedController === undefined ? createAccountedSessionController() : null,
-  );
+  const [ownedController, setOwnedController] = useState<SessionController | null>(null);
+  const [ownerFailed, setOwnerFailed] = useState(false);
+  useEffect(() => {
+    if (injectedController !== undefined) return;
+    let mounted = true, acquired = false;
+    const attach = () => {
+      if (!mounted) return;
+      if (documentDisposalFailed) { setOwnerFailed(true); return; }
+      setOwnedController(acquireDocumentController());
+      acquired = true;
+    };
+    if (pendingDisposal) void pendingDisposal.then(attach);
+    else attach();
+    return () => {
+      mounted = false;
+      if (acquired) releaseDocumentController();
+    };
+  }, [injectedController]);
   const resolvedController = injectedController ?? ownedController;
-  if (resolvedController === null) {
-    throw new Error("ContextScreen controller is missing");
-  }
-  const controller: ContextScreenController = resolvedController;
+  const controller: ContextScreenController | null = resolvedController;
 
   const [, rerender] = useReducer((count: number) => count + 1, 0);
   const audioHostRef = useRef<HTMLDivElement>(null);
-  useEffect(() => controller.subscribe(rerender), [controller]);
+  useEffect(() => controller?.subscribe(rerender), [controller]);
   useEffect(() => {
     const host = audioHostRef.current;
-    const element = controller.audioElement;
+    const element = controller?.audioElement;
     if (host === null || element === undefined) {
       return;
     }
@@ -78,31 +124,35 @@ export function ContextScreen({
         host.removeChild(element);
       }
     };
-  }, [controller.audioElement]);
+  }, [controller?.audioElement]);
+
+  if (ownerFailed) return <main role="alert">Не удалось завершить предыдущий разговор.</main>;
+  if (controller === null) return <main aria-busy="true">Подготовка сеанса…</main>;
+  const activeController = controller;
 
   async function handleStart(): Promise<void> {
-    if (controller.session.state === "context") {
-      controller.finishContextCapture();
+    if (activeController.session.state === "context") {
+      activeController.finishContextCapture();
     }
     try {
-      await controller.startBootstrap();
+      await activeController.startBootstrap();
     } catch (error) {
       console.error("Failed to enter language bootstrap", {
         error,
-        state: controller.session.state,
+        state: activeController.session.state,
       });
     }
   }
 
   async function handleBegin(): Promise<void> {
-    if (controller.isInterpreterStarting === true) return;
+    if (activeController.isInterpreterStarting === true) return;
     traceBootstrapAction("accept", {
-      state: controller.session.state,
+      state: activeController.session.state,
       isInterpreterStarting: false,
-      enteredInterpreter: controller.hasEnteredInterpreter === true,
+      enteredInterpreter: activeController.hasEnteredInterpreter === true,
     });
     try {
-      await controller.beginInterpreter();
+      await activeController.beginInterpreter();
     } catch (error) {
       if (!(error instanceof ContextTooLongError)) {
         console.error("Failed to begin interpreter", { error });
@@ -111,9 +161,9 @@ export function ContextScreen({
   }
 
   async function handleAccept(): Promise<void> {
-    if (controller.isInterpreterStarting === true) return;
+    if (activeController.isInterpreterStarting === true) return;
     try {
-      await controller.acceptBootstrap(controller.bootstrapText.trim());
+      await activeController.acceptBootstrap(activeController.bootstrapText.trim());
     } catch (error) {
       console.error("Failed to save language sample", { error });
     }

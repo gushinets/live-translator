@@ -34,18 +34,48 @@ export class AccountedSessionController extends SessionController {
   constructor(deps: SessionControllerDeps, private readonly accounting: ConversationAccounting,
     private readonly snapshotStore: Promise<ResumeSnapshotStore> = ResumeSnapshotStore.open()) {
     super(deps);
-    this.startEarlyVisibility();
+  }
+  start(): void { this.startEarlyVisibility(); }
+  async dispose(): Promise<void> {
+    this.stopEarlyVisibility();
+    try {
+      await this.awaitBackgroundPause();
+      if (!this.accounting.isPausing && this.session.state !== "idle") {
+        const id = this.accounting.conversationId;
+        let store: ResumeSnapshotStore | undefined;
+        try {
+          store = await this.snapshotStore;
+          if (id) store.retainIdentity(id);
+        } catch { console.error("Conversation identity storage unavailable during disposal"); }
+        await this.endConversation();
+        if (id) {
+          await this.accounting.outbox.flush();
+          const ended = await this.accounting.api.readConversation(id);
+          if (typeof ended !== "object" || ended === null || !("status" in ended) || ended.status !== "ended")
+            throw new Error("Conversation End was not confirmed during disposal");
+          await store?.discard(id);
+        }
+      }
+    } finally {
+      this.accounting.outbox.stop();
+      this.accounting.usageOutbox?.stop();
+      await this.snapshotStore.then(store => store.dispose(), () => undefined);
+    }
   }
   get conversationId() { return this.accounting.conversationId; }
   protected override get backgroundCloseEnabled() { return this.accounting.backgroundSessionCloseEnabled; }
+  protected override clearIdleBackgroundPause() { return this.accounting.clearIdleBackgroundPause(); }
   private async mayStart(): Promise<boolean> {
     await this.accounting.loadPolicy();
+    await this.awaitBackgroundPause();
     if (this.sampleInitialHidden()) return false;
     if (!this.backgroundCloseEnabled) return true;
     if (this.accounting.conversationId !== null) return true;
-    const retained = await (await this.snapshotStore).inspectReload(id =>
-      this.accounting.api.readConversation(id) as Promise<ConversationMetadata>);
-    if (retained) throw new Error("Retained conversation requires explicit recovery");
+    const store = await this.snapshotStore;
+    if (store.hasRetainedIdentity()) {
+      const retained = await store.inspectReload(id => this.accounting.api.readConversation(id) as Promise<ConversationMetadata>);
+      if (retained || store.hasRetainedIdentity()) throw new Error("Retained conversation requires explicit recovery");
+    }
     return !this.sampleInitialHidden();
   }
   override async startContextCapture(): Promise<void> {
@@ -62,13 +92,33 @@ export class AccountedSessionController extends SessionController {
   hiddenAt: number, close: Promise<unknown>): Promise<void> {
     const conversation = await this.accounting.pendingConversation();
     if (conversation) {
+      if (!conversation.policy.backgroundSessionCloseEnabled) {
+        await close.catch(() => undefined);
+        this.accounting.keepUnpausedConversation(conversation);
+        this.resetAfterUnpausedBackground();
+        return;
+      }
+      let retainedIdentity = false;
       try {
         const store = await this.snapshotStore;
+        store.retainIdentity(conversation.conversationId);
+        retainedIdentity = true;
         await store.save({ ...state, conversationId: conversation.conversationId,
           conversationVersion: conversation.version, policyVersion: conversation.policy.policyVersion,
           productDeadlineAt: conversation.productDeadlineAt });
         await store.markHidden(conversation.conversationId, hiddenAt, conversation.policy.conversationRetentionMs);
-      } catch { console.error("Retained conversation snapshot unavailable"); }
+      } catch (error) {
+        if (!retainedIdentity) {
+          await close.catch(() => undefined);
+          await this.accounting.end("setup_cancel", this.accounting.revision);
+          await this.accounting.outbox.flush();
+          const ended = await this.accounting.api.readConversation(conversation.conversationId);
+          if (typeof ended !== "object" || ended === null || !("status" in ended) || ended.status !== "ended")
+            throw new Error("Retained conversation could not be safely ended", { cause: error });
+          return;
+        }
+        console.error("Retained conversation snapshot unavailable", { error });
+      }
     }
     const paused = await this.accounting.pause(close);
     if (paused) {
@@ -83,7 +133,7 @@ export class AccountedSessionController extends SessionController {
     return this.accounting.end(reason, this.accounting.revision);
   }
 }
-export function createAccountedSessionController(): SessionController {
+export function createAccountedSessionController(): AccountedSessionController {
   const audio = new AudioController(), scope = new ConversationAccounting();
   const controller = new AccountedSessionController({
     createLive: () => new LiveClient({ backend: new BackendClient(), accounting: new LazyAccounting(scope),

@@ -93,6 +93,8 @@ function validSnapshot(value: unknown, clientInstanceId: string, conversationId:
 export class ResumeSnapshotStore {
   private databasePromise: Promise<IDBDatabase> | undefined;
   private owned = false;
+  private releaseLock: (() => void) | undefined;
+  private lockLifetime: Promise<unknown> | undefined;
   get available(): boolean { return this.owned && this.storage !== null && this.factory !== null; }
   private constructor(readonly clientInstanceId: string, private readonly storage: Storage | null,
     private readonly factory: IDBFactory | null, private readonly name: string, private readonly now: () => number) {}
@@ -106,32 +108,66 @@ export class ResumeSnapshotStore {
       options.name ?? "live-translator-resume-v1", options.now ?? Date.now);
     const disabled = () => {
       id = crypto.randomUUID();
-      storage?.setItem(TAB_KEY, id); storage?.removeItem(CONVERSATION_KEY);
+      storage?.setItem(TAB_KEY, id);
       return new ResumeSnapshotStore(id, storage, store.factory, store.name, store.now);
     };
     if (!locks) return disabled();
     let collided = false;
     while (true) {
+      let releaseLock: (() => void) | undefined;
+      let lockLifetime: Promise<unknown> | undefined;
       const acquired = await new Promise<boolean | null>(resolve => {
         try {
-          void locks.request(`client-instance:${id}`, { mode: "exclusive", ifAvailable: true }, lock => {
+          lockLifetime = locks.request(`client-instance:${id}`, { mode: "exclusive", ifAvailable: true }, lock => {
             if (!lock) { resolve(false); return; }
+            const lifetime = new Promise<void>(release => { releaseLock = release; });
             resolve(true);
-            // The browser releases this when the document dies. A hidden/frozen page remains owner.
-            return new Promise<void>(() => {});
-          }).catch(() => resolve(null));
+            return lifetime;
+          });
+          void lockLifetime.catch(() => resolve(null));
         } catch { resolve(null); }
       });
       if (acquired === null) return disabled();
-      if (acquired) break;
+      if (acquired) {
+        store.releaseLock = releaseLock;
+        store.lockLifetime = lockLifetime;
+        break;
+      }
       collided = true;
       id = crypto.randomUUID();
     }
-    if (collided || existing !== id) storage?.removeItem(CONVERSATION_KEY);
-    storage?.setItem(TAB_KEY, id);
+    try {
+      if (collided || existing !== id) storage?.removeItem(CONVERSATION_KEY);
+      storage?.setItem(TAB_KEY, id);
+    } catch (error) {
+      store.releaseLock?.();
+      await store.lockLifetime?.catch(() => undefined);
+      throw error;
+    }
     const owner = new ResumeSnapshotStore(id, storage, store.factory, store.name, store.now);
     owner.owned = true;
+    owner.releaseLock = store.releaseLock;
+    owner.lockLifetime = store.lockLifetime;
     return owner;
+  }
+
+  hasRetainedIdentity(): boolean {
+    if (!this.storage) throw new Error("Retained conversation storage unavailable");
+    return this.storage.getItem(CONVERSATION_KEY) !== null;
+  }
+
+  retainIdentity(conversationId: string): void {
+    if (!this.storage) throw new Error("Retained conversation storage unavailable");
+    this.storage.setItem(CONVERSATION_KEY, conversationId);
+  }
+
+  async dispose(): Promise<void> {
+    if (!this.owned) return;
+    this.owned = false;
+    this.releaseLock?.();
+    this.releaseLock = undefined;
+    await this.lockLifetime?.catch(() => undefined);
+    void this.databasePromise?.then(db => db.close(), () => undefined);
   }
 
   private database(): Promise<IDBDatabase> {
@@ -171,8 +207,10 @@ export class ResumeSnapshotStore {
   }
 
   async save(input: ResumeSnapshotInput): Promise<void> {
-    if (!this.available || !this.storage) return;
+    if (!this.storage) throw new Error("Retained conversation storage unavailable");
     const previous = this.storage.getItem(CONVERSATION_KEY);
+    this.retainIdentity(input.conversationId);
+    if (!this.available) throw new Error("Retained conversation storage unavailable");
     const counters: MetricCounters = {};
     for (const name of COUNTER_NAMES) if (name in input.counters) counters[name] = input.counters[name];
     const base: ResumeSnapshot = {
@@ -201,7 +239,6 @@ export class ResumeSnapshotStore {
         done(undefined);
       };
     });
-    this.storage.setItem(CONVERSATION_KEY, input.conversationId);
   }
 
   async markHidden(conversationId: string, at: number, retentionMs: number): Promise<void> {
@@ -265,28 +302,28 @@ export class ResumeSnapshotStore {
   }
 
   async inspectReload(read: (id: string) => Promise<ConversationMetadata>): Promise<ReloadInspection | null> {
-    if (!this.owned) return null;
+    if (!this.owned) {
+      if (this.hasRetainedIdentity()) throw new Error("Retained conversation ownership unavailable");
+      return null;
+    }
     const conversationId = this.storage?.getItem(CONVERSATION_KEY);
     if (!conversationId) return null;
     const row = await this.get(conversationId);
     if (!validSnapshot(row, this.clientInstanceId, conversationId)) {
-      await this.discard(conversationId); return null;
+      throw new Error("Retained conversation snapshot unavailable");
     }
-    let server: ConversationMetadata;
-    try { server = await read(conversationId); }
-    catch (error) {
-      if (record(error) && "status" in error && [401, 403, 404].includes(error.status as number)) await this.discard(conversationId);
-      else throw error;
-      return null;
-    }
+    const server = await read(conversationId);
     if (!record(server) || server.conversationId !== conversationId || !Number.isSafeInteger(server.version) ||
       server.version < row.conversationVersion || !record(server.policy) ||
       server.policy.policyVersion !== row.policyVersion || !timestamp(server.serverTime)) {
-      await this.discard(conversationId); return null;
+      throw new Error("Retained conversation status unavailable");
     }
+    if (server.status === "ended") { await this.discard(conversationId); return null; }
     if (server.status === "active") return {
       kind: "active", conversationId, conversationVersion: server.version,
     };
+    if (server.status === "paused" && row.serverResumeExpiresAt === null)
+      throw new Error("Retained conversation pause snapshot unavailable");
     if (row.localResumeDeadlineAt === null || row.serverResumeExpiresAt === null ||
       this.now() >= row.localResumeDeadlineAt || this.now() >= row.serverResumeExpiresAt ||
       (row.productDeadlineAt !== null && this.now() >= row.productDeadlineAt) ||
@@ -294,7 +331,7 @@ export class ResumeSnapshotStore {
       server.resumeExpiresAt !== row.serverResumeExpiresAt || server.productDeadlineAt !== row.productDeadlineAt ||
       this.now() >= server.resumeExpiresAt || server.serverTime >= server.resumeExpiresAt ||
       (server.productDeadlineAt !== null && (this.now() >= server.productDeadlineAt || server.serverTime >= server.productDeadlineAt))) {
-      await this.discard(conversationId); return null;
+      throw new Error("Retained conversation is not eligible for automatic resume");
     }
     if (server.status === "paused" && server.version === row.conversationVersion) {
       return { kind: "paused", snapshot: row, conversation: server };
@@ -303,7 +340,7 @@ export class ResumeSnapshotStore {
       server.resumeAttemptId === row.resumeAttemptId && server.version === row.conversationVersion + 1) {
       return { kind: "pending", snapshot: row, conversation: server };
     }
-    await this.discard(conversationId); return null;
+    throw new Error("Retained conversation status requires explicit recovery");
   }
 
   async readForResume(read: (id: string) => Promise<ConversationMetadata>): Promise<ResumeSnapshot | null> {
@@ -312,8 +349,9 @@ export class ResumeSnapshotStore {
   }
 
   async discard(conversationId: string): Promise<void> {
-    if (!this.owned) return;
-    await this.transaction("readwrite", (store, done) => { store.delete([this.clientInstanceId, conversationId]); done(undefined); });
+    if (this.owned) await this.transaction("readwrite", (store, done) => {
+      store.delete([this.clientInstanceId, conversationId]); done(undefined);
+    });
     if (this.storage?.getItem(CONVERSATION_KEY) === conversationId) this.storage.removeItem(CONVERSATION_KEY);
   }
 }

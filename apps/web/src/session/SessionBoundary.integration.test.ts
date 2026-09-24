@@ -45,15 +45,22 @@ class Peer extends EventTarget {
   async setRemoteDescription() { this.channel.emit({ type: "session.started", session: { id: "provider" } }); }
 }
 function fixture(closeTimeoutMs = 2000, background = false, initialHidden = false, snapshotGate?: Promise<void>) {
-  const doc = new EventTarget() as Document;
+  const doc = document;
   let hidden = initialHidden;
-  Object.defineProperty(doc, "visibilityState", { get: () => hidden ? "hidden" : "visible" });
+  const previousVisibility = Object.getOwnPropertyDescriptor(doc, "visibilityState");
+  Object.defineProperty(doc, "visibilityState", { configurable: true, get: () => hidden ? "hidden" : "visible" });
+  restoreDocumentVisibility = () => {
+    if (previousVisibility) Object.defineProperty(doc, "visibilityState", previousVisibility);
+    else Reflect.deleteProperty(doc, "visibilityState");
+  };
   const visibility = new VisibilityController(doc);
+  fixtureVisibilities.push(visibility);
   const setVisible = (value: boolean) => { hidden = !value; doc.dispatchEvent(new Event("visibilitychange")); };
   sessionStorage.clear();
-  const snapshotStore = ResumeSnapshotStore.open({ indexedDB: new IDBFactory(), sessionStorage,
-    locks: { request: async (_name: string, _options: unknown, callback: (lock: object) => unknown) => callback({}) } as LockManager,
-    name: crypto.randomUUID() });
+  const snapshotDb = new IDBFactory(), snapshotName = crypto.randomUUID();
+  const snapshotLocks = { request: async (_name: string, _options: unknown, callback: (lock: object) => unknown) => callback({}) } as LockManager;
+  const snapshotStore = ResumeSnapshotStore.open({ indexedDB: snapshotDb, sessionStorage,
+    locks: snapshotLocks, name: snapshotName });
   const budget = new MetadataDeliveryBudget({ indexedDB: new IDBFactory(), name: crypto.randomUUID() });
   const c: ConversationMetadata = { conversationId: "conversation", version: 1, status: "active", productDeadlineAt: null,
     resumeExpiresAt: null, resumeAttemptId: null, serverTime: Date.now(), policy: { sessionCloseTimeoutMs: closeTimeoutMs,
@@ -105,9 +112,33 @@ function fixture(closeTimeoutMs = 2000, background = false, initialHidden = fals
       lockPortrait: async () => {} } as unknown as OrientationController,
     wakeLock: { request: async () => {}, reacquire: async () => {}, release: async () => {} } as WakeLockController,
   }, scope, snapshotGate ? snapshotGate.then(() => snapshotStore) : snapshotStore);
-  return { budget, scope, api, c, reports, track, audio, controller, clients, setVisible, snapshotStore };
+  controller.start();
+  return { budget, scope, api, c, reports, track, audio, controller, clients, setVisible, snapshotStore,
+    snapshotDb, snapshotName, snapshotLocks };
 }
+let restoreDocumentVisibility = () => {};
+const fixtureVisibilities: VisibilityController[] = [];
 async function settle() { for (let i = 0; i < 15; i++) await Promise.resolve(); }
+async function reloadAfterPause(f: ReturnType<typeof fixture>) {
+  await f.controller.dispose();
+  const store = ResumeSnapshotStore.open({ indexedDB: f.snapshotDb, sessionStorage,
+    locks: f.snapshotLocks, name: f.snapshotName });
+  const scope = new ConversationAccounting({ api: f.api, budget: f.budget, autoDelivery: false });
+  const controller = new AccountedSessionController({ audio: f.audio,
+    createLive: () => new LiveClient({ backend: {} as BackendClient,
+      peerFactory: () => new Peer() as unknown as RTCPeerConnection, onRemoteStream: () => {} }),
+    visibility: new VisibilityController(document),
+    orientation: { onChange: null, start: () => {}, stop: () => {}, isPortrait: () => true,
+      lockPortrait: async () => {} } as unknown as OrientationController,
+    wakeLock: { request: async () => {}, reacquire: async () => {}, release: async () => {} } as WakeLockController,
+  }, scope, store);
+  controller.start();
+  f.setVisible(true);
+  await expect(controller.startContextCapture()).rejects.toThrow("Retained conversation");
+  expect(f.api.createConversation).toHaveBeenCalledTimes(1);
+  expect(f.api.createSession).toHaveBeenCalledTimes(1);
+  await controller.dispose();
+}
 async function enterInterpreter(f: ReturnType<typeof fixture>) {
   await f.controller.startBootstrap();
   await f.controller.acceptBootstrap("I speak English and would like to find the nearest station.");
@@ -118,7 +149,11 @@ async function enterInterpreter(f: ReturnType<typeof fixture>) {
   await f.controller.acceptBootstrap("Hablo español y quisiera encontrar la estación de tren.");
   await f.controller.beginInterpreter();
 }
-afterEach(() => { vi.restoreAllMocks(); });
+afterEach(() => {
+  for (const visibility of fixtureVisibilities.splice(0)) visibility.stop();
+  restoreDocumentVisibility();
+  vi.restoreAllMocks();
+});
 
 describe("stage 4 transport/accounting integration", () => {
   it("A4.1/#18 replaces two real clients while retaining the old final during IDB and HTTP failure", async () => {
@@ -193,6 +228,113 @@ describe("stage 4 transport/accounting integration", () => {
 });
 
 describe("stage 5 hidden boundary", () => {
+  it("removes its visibility listener on disposal", async () => {
+    const f = fixture(40, true);
+    await f.controller.dispose();
+    await f.controller.dispose();
+    f.setVisible(false);
+    await settle();
+    expect(f.api.pause).not.toHaveBeenCalled();
+    await f.budget.close();
+  });
+  it("retains its identity if an active owner unmounts before End is confirmed", async () => {
+    const f = fixture(40, true);
+    await f.controller.startContextCapture();
+    f.api.end.mockRejectedValue(new Error("offline"));
+    const disposing = f.controller.dispose();
+    f.clients[0]!.peer.channel.emit({ type: "session.closed" });
+    await expect(disposing).rejects.toThrow();
+    expect(sessionStorage.getItem("live-translator-retained-conversation-v1")).toBe(f.c.conversationId);
+    await f.budget.close();
+  });
+  it("releases a retained identity after a confirmed End on unmount", async () => {
+    const f = fixture(40, true);
+    await f.controller.startContextCapture();
+    f.api.end.mockImplementation(async () => { f.c.status = "ended"; f.c.version++; return { ...f.c }; });
+    const disposing = f.controller.dispose();
+    f.clients[0]!.peer.channel.emit({ type: "session.closed" });
+    await disposing;
+    expect(f.api.end).toHaveBeenCalledTimes(1);
+    expect(sessionStorage.getItem("live-translator-retained-conversation-v1")).toBeNull();
+    await f.budget.close();
+  });
+  it("permits explicit setup after an initially hidden idle document becomes visible", async () => {
+    const f = fixture(40, true, true);
+    await f.controller.startContextCapture();
+    expect(f.api.createSession).not.toHaveBeenCalled();
+    f.setVisible(true);
+    await f.controller.startContextCapture();
+    expect(f.api.createSession).toHaveBeenCalledTimes(1);
+    await f.budget.close();
+  });
+
+  it("uses the created conversation policy when the global flag changes during creation", async () => {
+    const f = fixture(40, true);
+    let create!: (value: ConversationMetadata) => void;
+    f.api.createConversation.mockImplementation(() => new Promise(resolve => { create = resolve; }));
+    const starting = f.controller.startContextCapture();
+    await vi.waitFor(() => expect(create).toBeDefined());
+    f.setVisible(false);
+    await vi.waitFor(() => expect(f.clients[0]!.peer.channel.sent).toContain("session.close"));
+    f.clients[0]!.peer.channel.emit({ type: "session.closed" });
+    f.c.policy.backgroundSessionCloseEnabled = false;
+    create(f.c);
+    await starting;
+    await vi.waitFor(() => expect(f.controller.session.state).toBe("idle"));
+    expect(f.api.pause).not.toHaveBeenCalled();
+    f.setVisible(true);
+    await f.controller.startContextCapture();
+    expect(f.api.createConversation).toHaveBeenCalledTimes(1);
+    expect(f.api.createSession).toHaveBeenCalledTimes(1);
+    await f.budget.close();
+  });
+
+  it("does not pause without a durable retained identity when snapshot storage fails", async () => {
+    const f = fixture(40, true);
+    await f.controller.startContextCapture();
+    const store = await f.snapshotStore;
+    vi.spyOn(store, "save").mockRejectedValue(new Error("IDB unavailable"));
+    f.setVisible(false);
+    await vi.waitFor(() => expect(f.api.pause).toHaveBeenCalledTimes(1));
+    expect(sessionStorage.getItem("live-translator-retained-conversation-v1")).toBe(f.c.conversationId);
+    await reloadAfterPause(f);
+    await f.budget.close();
+  });
+
+  it("keeps the identity after a confirmed pause when its snapshot ACK write fails", async () => {
+    const f = fixture(40, true);
+    await f.controller.startContextCapture();
+    const store = await f.snapshotStore;
+    vi.spyOn(store, "confirmPause").mockRejectedValue(new Error("IDB unavailable"));
+    f.setVisible(false);
+    await vi.waitFor(() => expect(f.api.pause).toHaveBeenCalledTimes(1));
+    expect(sessionStorage.getItem("live-translator-retained-conversation-v1")).toBe(f.c.conversationId);
+    await reloadAfterPause(f);
+    await f.budget.close();
+  });
+
+  it("blocks a fresh create after the hidden deadline write fails", async () => {
+    const f = fixture(40, true);
+    await f.controller.startContextCapture();
+    vi.spyOn(await f.snapshotStore, "markHidden").mockRejectedValue(new Error("IDB unavailable"));
+    f.setVisible(false);
+    await vi.waitFor(() => expect(f.api.pause).toHaveBeenCalledTimes(1));
+    await reloadAfterPause(f);
+    await f.budget.close();
+  });
+
+  it("ends the old conversation instead of pausing when the tab identity cannot be written", async () => {
+    const f = fixture(40, true);
+    await f.controller.startContextCapture();
+    vi.spyOn(await f.snapshotStore, "retainIdentity").mockImplementation(() => { throw new Error("sessionStorage denied"); });
+    f.api.end.mockImplementation(async () => { f.c.status = "ended"; f.c.version++; return { ...f.c }; });
+    f.setVisible(false);
+    await vi.waitFor(() => expect(f.api.end).toHaveBeenCalledTimes(1));
+    expect(f.api.pause).not.toHaveBeenCalled();
+    expect(f.c.status).toBe("ended");
+    expect(sessionStorage.getItem("live-translator-retained-conversation-v1")).toBeNull();
+    await f.budget.close();
+  });
   it("samples an initially hidden document before creating a provider attempt", async () => {
     const f = fixture(40, true, true);
     await f.controller.startContextCapture();
@@ -482,9 +624,9 @@ describe("stage 5 hidden boundary", () => {
     await f.scope.outbox.flush();
     f.api.policy.mockResolvedValue({ usageLedgerEnabled: true, backgroundSessionCloseEnabled: false });
     f.c.policy.backgroundSessionCloseEnabled = false;
-    f.setVisible(false);
     await f.controller.startContextCapture();
     expect(f.api.createSession).toHaveBeenCalledTimes(2);
+    f.setVisible(false);
     expect(f.api.pause).not.toHaveBeenCalled();
     const cancelNew = f.controller.cancel();
     f.clients[1]!.peer.channel.emit({ type: "session.closed" });
