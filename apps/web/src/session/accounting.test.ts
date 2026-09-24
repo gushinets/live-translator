@@ -45,6 +45,51 @@ describe("shared IndexedDB metadata budget", () => {
   });
 });
 describe("cleanup and End delivery", () => {
+  it("does not replay another producer's cleanup when Web Locks are unavailable", async () => {
+    const indexedDB = new IDBFactory(), name = crypto.randomUUID();
+    const owner = fixture(new MetadataDeliveryBudget({ indexedDB, name }));
+    const follower = fixture(new MetadataDeliveryBudget({ indexedDB, name }));
+    const attempt = owner.scope.newAttempt();
+    const locks = Object.getOwnPropertyDescriptor(navigator, "locks");
+    await attempt.create("offer"); await owner.scope.stageEnd("user_end");
+    Reflect.deleteProperty(navigator, "locks");
+
+    try {
+      await follower.scope.outbox.flush();
+
+      expect(follower.api.cleanup).not.toHaveBeenCalled();
+      await attempt.finish({ finalized: true }); await owner.scope.outbox.flush();
+    } finally {
+      if (locks) Object.defineProperty(navigator, "locks", locks); else Reflect.deleteProperty(navigator, "locks");
+      await owner.budget.close(); await follower.budget.close();
+    }
+  });
+
+  it("delivers a persisted close observation even while its foreign producer lock is held", async () => {
+    const indexedDB = new IDBFactory(), name = crypto.randomUUID();
+    const ownerBudget = new MetadataDeliveryBudget({ indexedDB, name }), followerBudget = new MetadataDeliveryBudget({ indexedDB, name });
+    const owner = fixture(ownerBudget), follower = fixture(followerBudget), held = new Set<string>();
+    let ownerHasLock = false;
+    Object.defineProperty(navigator, "locks", { configurable: true, value: { request: vi.fn((key: string, _options: { ifAvailable: boolean }, callback: (lock: object | null) => unknown) => {
+      if (held.has(key)) return Promise.resolve(callback(null));
+      held.add(key); const result = callback({});
+      if (key === `live-metadata-producer:${ownerBudget.ownerProducerId}` && !ownerHasLock) { ownerHasLock = true; return new Promise(() => {}); }
+      return Promise.resolve(result).finally(() => held.delete(key));
+    }) } });
+    try {
+      const attempt = owner.scope.newAttempt(); await attempt.create("offer"); await owner.scope.stageEnd("user_end");
+      await attempt.finish({ finalized: true, usageSeconds: 7 });
+
+      await follower.scope.outbox.flush();
+
+      expect(follower.api.closed).toHaveBeenCalledWith(attempt.localId, { seconds: 7 });
+      expect(await follower.budget.get(attempt.localId)).toBeNull();
+    } finally {
+      Reflect.deleteProperty(navigator, "locks");
+      await ownerBudget.close(); await followerBudget.close();
+    }
+  });
+
   it("does not replay another live scope's staged cleanup", async () => {
     const indexedDB = new IDBFactory(), name = crypto.randomUUID();
     const ownerBudget = new MetadataDeliveryBudget({ indexedDB, name }), followerBudget = new MetadataDeliveryBudget({ indexedDB, name });
@@ -415,17 +460,54 @@ describe("controller-owned conversation accounting", () => {
     await vi.waitFor(() => expect(rejectCreate).toBeDefined());
     await f.scope.stageEnd("setup_cancel");
     f.api.cleanup.mockRejectedValue({ status: 404 });
-    vi.spyOn(f.budget, "finishProducerAndRelease").mockRejectedValueOnce(new Error("finalization storage failed"));
+    const finalize = vi.spyOn(f.budget, "finishProducerAndRelease").mockRejectedValueOnce(new Error("finalization storage failed"));
 
     rejectCreate(new AccountingRequestError(404, "attempt_not_found"));
     await expect(creating).resolves.toMatchObject({ message: "finalization storage failed" });
     await f.scope.end("setup_cancel", f.scope.revision);
     await f.scope.outbox.flush();
 
+    expect(finalize).toHaveBeenCalledTimes(2);
     expect(f.api.cleanup).not.toHaveBeenCalled();
     expect(f.api.end).toHaveBeenCalledWith(f.c.conversationId, f.c.version, "setup_cancel");
     expect(await f.budget.ends()).toHaveLength(0);
+    expect(await f.budget.get(attempt.localId)).toBeNull();
     await f.budget.close();
+  });
+  it("recovers a persisted no-provider outcome without replaying cleanup or usage", async () => {
+    const indexedDB = new IDBFactory(), name = crypto.randomUUID();
+    const locks = Object.getOwnPropertyDescriptor(navigator, "locks");
+    const originalBudget = new MetadataDeliveryBudget({ indexedDB, name });
+    const f = fixture(originalBudget), attempt = f.scope.newAttempt();
+    let rejectCreate!: (error: Error) => void;
+    f.api.createSession.mockImplementationOnce(() => new Promise((_resolve, reject) => { rejectCreate = reject; }));
+    const creating = attempt.create("offer").catch(error => error);
+    await vi.waitFor(() => expect(rejectCreate).toBeDefined());
+    await f.scope.stageEnd("setup_cancel");
+    await originalBudget.enqueueUsage(attempt.localId, { schemaVersion: 1, checkpointSeconds: 12 });
+    vi.spyOn(originalBudget, "finishProducerAndRelease").mockRejectedValueOnce(new Error("finalization storage failed"));
+    rejectCreate(new AccountingRequestError(404, "attempt_not_found"));
+    await expect(creating).resolves.toMatchObject({ message: "finalization storage failed" });
+    await originalBudget.close();
+
+    const usage = vi.fn(async () => ({ schemaVersion: 1 as const, appAccepted: true, activityReportSeq: null, appMetricsFinalized: true }));
+    const api = f.api as LedgerApi;
+    api.usage = usage;
+    const recoveredBudget = new MetadataDeliveryBudget({ indexedDB, name });
+    Object.defineProperty(navigator, "locks", { configurable: true, value: { request: vi.fn((_key: string, _options: { ifAvailable: boolean }, callback: (lock: object | null) => unknown) => Promise.resolve(callback({}))) } });
+    try {
+      const recovered = new ConversationAccounting({ api, budget: recoveredBudget, autoDelivery: false });
+      await recovered.outbox.flush();
+      await recovered.usageOutbox?.flush();
+
+      expect(f.api.cleanup).not.toHaveBeenCalled();
+      expect(usage).not.toHaveBeenCalled();
+      expect(f.api.end).toHaveBeenCalledWith(f.c.conversationId, f.c.version, "setup_cancel");
+      expect(await recoveredBudget.get(attempt.localId)).toBeNull();
+    } finally {
+      if (locks) Object.defineProperty(navigator, "locks", locks); else Reflect.deleteProperty(navigator, "locks");
+      await recoveredBudget.close();
+    }
   });
 
   it("does not cache an unavailable producer lock", async () => {
@@ -488,6 +570,7 @@ describe("stage 4 durable lifecycle boundary", () => {
       order.push("end");
       return { ...original.c, status: "ended" };
     });
+    Object.defineProperty(navigator, "locks", { configurable: true, value: { request: vi.fn((_key: string, _options: { ifAvailable: boolean }, callback: (lock: object | null) => unknown) => Promise.resolve(callback({}))) } });
     const recovered = new ConversationAccounting({ api: original.api, budget: recoveredBudget });
 
     await vi.waitFor(() => expect(order).toEqual(["cleanup", "end"]));
@@ -621,6 +704,7 @@ describe("stage 4 durable lifecycle boundary", () => {
     const f = fixture(reloaded), order: string[] = [];
     f.api.cleanup.mockImplementation(async () => { order.push("cleanup"); return { cleanupRequestedAt: 1 }; });
     f.api.end.mockImplementation(async () => { order.push("end"); return { ...f.c, status: "ended" }; });
+    Object.defineProperty(navigator, "locks", { configurable: true, value: { request: vi.fn((_key: string, _options: { ifAvailable: boolean }, callback: (lock: object | null) => unknown) => Promise.resolve(callback({}))) } });
     await f.scope.outbox.flush(); expect(order).toEqual(["cleanup", "end"]);
     expect((await reloaded.get("attempt"))?.usage?.report.checkpointSeconds).toBe(43); await reloaded.close();
   });

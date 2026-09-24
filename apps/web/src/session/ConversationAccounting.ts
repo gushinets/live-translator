@@ -55,6 +55,7 @@ export class ConversationAccounting {
   private readonly pendingDirectEnds = new Map<number, PendingDirectEnd>();
   private readonly pendingDirectCleanupAcks = new Set<string>();
   private readonly pendingDirectCloseAcks = new Set<string>();
+  private readonly pendingNoProviderFinalizations = new Set<string>();
   private readonly directRetirementProofs = new Set<string>();
   constructor(options: { api?: LedgerApi; budget?: MetadataDeliveryBudget; autoDelivery?: boolean } = {}) {
     this.api = options.api ?? new AccountingBackend();
@@ -106,6 +107,7 @@ export class ConversationAccounting {
       return p.usageLedgerEnabled;
     }).catch(error => { this.enabled = undefined; throw error; });
     if (!await this.enabled) return null;
+    await this.flushPendingNoProviderFinalizations();
     for (const boundary of [...this.pendingEndBoundaries.values()]) await this.finishEndBoundary(boundary);
     await this.flushPendingDirectEnds();
     await this.flushPendingDirectCleanupAcks();
@@ -192,8 +194,21 @@ export class ConversationAccounting {
       this.pendingDirectCloseAcks.delete(localId);
     }
   }
-  noteNoProviderRetirement(localId: string): void {
+  async finalizeNoProvider(localId: string): Promise<void> {
     this.directRetirementProofs.add(localId);
+    this.pendingNoProviderFinalizations.add(localId);
+    await this.flushPendingNoProviderFinalizations();
+  }
+  private async flushPendingNoProviderFinalizations(): Promise<void> {
+    for (const localId of [...this.pendingNoProviderFinalizations]) {
+      try { await this.budget.finishProducerAndRelease(localId, "no_provider"); }
+      catch (error) {
+        try { await this.budget.finishProducer(localId, "no_provider"); } catch { /* Preserve the confirmed outcome if IDB permits. */ }
+        throw error;
+      }
+      this.outbox.confirmRetirement(localId);
+      this.pendingNoProviderFinalizations.delete(localId);
+    }
   }
   async stageEnd(reason: "user_end" | "setup_cancel", expectedEpoch = this.epoch): Promise<void> {
     if (expectedEpoch !== this.epoch) return;
@@ -229,6 +244,8 @@ export class ConversationAccounting {
   }
 
   private async deliverEndBoundary(boundary: PendingEndBoundary): Promise<void> {
+    try { await this.flushPendingNoProviderFinalizations(); }
+    catch { console.error("No-provider finalization storage degraded"); }
     const c = boundary.conversation ?? await boundary.creating?.catch(() => undefined);
     let persisted = false;
     if (c) {
@@ -297,11 +314,9 @@ export class ProviderAccounting {
         this.cancelled = true;
         await this.reporter?.noProvider();
         if (!this.reporter && this.scope.usageOutbox) await this.scope.usageOutbox.noProvider(this.localId);
-        this.scope.noteNoProviderRetirement(this.localId);
         this.scope.noteNoProvider(this);
         this.finished = true;
-        await this.scope.budget.finishProducerAndRelease(this.localId, "no_provider");
-        this.scope.outbox.confirmRetirement(this.localId);
+        await this.scope.finalizeNoProvider(this.localId);
       } else {
         await this.abandon("response_not_received");
       }
@@ -335,7 +350,7 @@ export class ProviderAccounting {
         if (this.dispatched) { await this.scope.outbox.enqueue(this.localId, committedReason); this.controller?.abort(); }
         else {
           await this.scope.usageOutbox?.noProvider(this.localId);
-          await this.scope.budget.finishProducerAndRelease(this.localId, "no_provider");
+          await this.scope.finalizeNoProvider(this.localId);
         }
         this.finished = true;
       } catch (error) {

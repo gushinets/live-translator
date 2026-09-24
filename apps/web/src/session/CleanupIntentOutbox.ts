@@ -55,6 +55,10 @@ export class CleanupIntentOutbox {
   private async deliver(): Promise<void> {
     let pending = false;
     for (const row of await this.budget.entries()) {
+      if (row.producerOutcome === "no_provider") {
+        await this.budget.finishProducerAndRelease(row.localId, "no_provider");
+        continue;
+      }
       if (!row.cleanup && !row.closeObservation) continue;
       if (!row.closeObservation && this.deferredCleanup.has(row.localId)) { pending = true; continue; }
       const deliverRow = async () => {
@@ -77,7 +81,7 @@ export class CleanupIntentOutbox {
           pending = true;
         }
       };
-      if (row.cleanup && row.producerId !== this.budget.ownerProducerId) {
+      if (row.cleanup && !row.closeObservation && row.producerId !== this.budget.ownerProducerId) {
         const locks = globalThis.navigator?.locks;
         if (locks) {
           try {
@@ -86,7 +90,7 @@ export class CleanupIntentOutbox {
               await deliverRow();
             });
           } catch { pending = true; }
-        } else await deliverRow();
+        } else pending = true;
       } else {
         await deliverRow();
       }
