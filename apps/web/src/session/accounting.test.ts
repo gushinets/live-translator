@@ -15,7 +15,9 @@ function fixture(store = budget()) {
     handoff: vi.fn<LedgerApi["handoff"]>(async id => ({ liveSessionId: id, state: "active", handoffAcknowledgedAt: Date.now(), cleanupRequestedAt: null, conversation: c })),
     readAttempt: vi.fn<LedgerApi["readAttempt"]>(async id => ({ liveSessionId: id, state: "closed", handoffAcknowledgedAt: Date.now(), conversation: c })),
     cleanup: vi.fn<CleanupTransport["cleanup"]>(async () => ({ cleanupRequestedAt: Date.now() })),
-    recover: vi.fn(async (...args: [string, string, string]) => { void args; return { cleanupRequestedAt: Date.now(), state: "closing", openaiSessionId: "provider" }; }),
+    recover: vi.fn(async (...args: [string, string, string]): Promise<{ cleanupRequestedAt?: number; state: string; openaiSessionId: string | null }> => {
+      void args; return { cleanupRequestedAt: Date.now(), state: "closing", openaiSessionId: "provider" };
+    }),
     closed: vi.fn<CleanupTransport["closed"]>(async () => ({ state: "closed", closeConfirmed: true })),
     readConversation: vi.fn<LedgerApi["readConversation"]>(async () => c),
     end: vi.fn<LedgerApi["end"]>(async () => ({ ...c, status: "ended" })),
