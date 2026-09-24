@@ -57,23 +57,38 @@ export class CleanupIntentOutbox {
     for (const row of await this.budget.entries()) {
       if (!row.cleanup && !row.closeObservation) continue;
       if (!row.closeObservation && this.deferredCleanup.has(row.localId)) { pending = true; continue; }
-      if (Date.now() >= (row.cleanup?.expiresAt ?? row.reservedAt + 7 * 86400000)) {
-        this.anomaly("metadata_delivery_expired"); await this.discard(row.localId); continue;
-      }
-      try {
-        const proof = row.closeObservation ? await this.transport.closed(row.localId, row.closeObservation) : await this.transport.cleanup(row.localId, row.cleanup!.reason);
-        if (!cleanupProofReceived(proof)) { pending = true; continue; }
-        if (row.closeObservation) await this.budget.acknowledgeCloseAndRelease(row.localId);
-        else await this.budget.acknowledgeCleanupAndRelease(row.localId);
-      } catch (error) {
-        // A registration race 404 is retried unless a separate owner/conversation read proves identity loss.
-        if ([401, 403, 404].includes(Number(statusOf(error)))) {
-          try { await this.transport.readConversation(row.conversationId); }
-          catch (readError) {
-            if (statusOf(readError) === 401 || statusOf(readError) === 404) { this.anomaly("metadata_identity_lost"); await this.discard(row.localId); continue; }
-          }
+      const deliverRow = async () => {
+        if (Date.now() >= (row.cleanup?.expiresAt ?? row.reservedAt + 7 * 86400000)) {
+          this.anomaly("metadata_delivery_expired"); await this.discard(row.localId); return;
         }
-        pending = true;
+        try {
+          const proof = row.closeObservation ? await this.transport.closed(row.localId, row.closeObservation) : await this.transport.cleanup(row.localId, row.cleanup!.reason);
+          if (!cleanupProofReceived(proof)) { pending = true; return; }
+          if (row.closeObservation) await this.budget.acknowledgeCloseAndRelease(row.localId);
+          else await this.budget.acknowledgeCleanupAndRelease(row.localId);
+        } catch (error) {
+          // A registration race 404 is retried unless a separate owner/conversation read proves identity loss.
+          if ([401, 403, 404].includes(Number(statusOf(error)))) {
+            try { await this.transport.readConversation(row.conversationId); }
+            catch (readError) {
+              if (statusOf(readError) === 401 || statusOf(readError) === 404) { this.anomaly("metadata_identity_lost"); await this.discard(row.localId); return; }
+            }
+          }
+          pending = true;
+        }
+      };
+      if (row.cleanup && row.producerId !== this.budget.ownerProducerId) {
+        const locks = globalThis.navigator?.locks;
+        if (locks) {
+          try {
+            await locks.request(`live-metadata-producer:${row.producerId}`, { ifAvailable: true }, async lock => {
+              if (!lock) { pending = true; return; }
+              await deliverRow();
+            });
+          } catch { pending = true; }
+        } else await deliverRow();
+      } else {
+        await deliverRow();
       }
     }
     for (const intent of await this.budget.ends()) {

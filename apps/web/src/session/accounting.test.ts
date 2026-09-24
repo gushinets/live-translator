@@ -45,6 +45,41 @@ describe("shared IndexedDB metadata budget", () => {
   });
 });
 describe("cleanup and End delivery", () => {
+  it("does not replay another live scope's staged cleanup", async () => {
+    const indexedDB = new IDBFactory(), name = crypto.randomUUID();
+    const ownerBudget = new MetadataDeliveryBudget({ indexedDB, name }), followerBudget = new MetadataDeliveryBudget({ indexedDB, name });
+    const owner = fixture(ownerBudget), follower = fixture(followerBudget), held = new Set<string>(), ownerLock = `live-metadata-producer:${ownerBudget.ownerProducerId}`;
+    let ownerHasLock = false;
+    Object.defineProperty(navigator, "locks", { configurable: true, value: { request: vi.fn((key: string, _options: { ifAvailable: boolean }, callback: (lock: object | null) => unknown) => {
+      if (held.has(key)) return Promise.resolve(callback(null));
+      held.add(key);
+      const result = callback({});
+      if (key === ownerLock && !ownerHasLock) { ownerHasLock = true; return new Promise(() => {}); }
+      return Promise.resolve(result).finally(() => held.delete(key));
+    }) } });
+    try {
+      const attempt = owner.scope.newAttempt(); await attempt.create("offer");
+      await owner.scope.stageEnd("setup_cancel");
+      expect(held.has(ownerLock)).toBe(true);
+
+      await follower.scope.outbox.flush();
+      expect(follower.api.cleanup).not.toHaveBeenCalled();
+
+      await attempt.abandon("cancelled"); await owner.scope.outbox.flush();
+      expect(owner.api.cleanup).toHaveBeenCalledOnce();
+      expect(follower.api.cleanup).not.toHaveBeenCalled();
+
+      await ownerBudget.reserve("orphan", "conversation"); await ownerBudget.markDispatchStarted("orphan");
+      await ownerBudget.enqueueCleanup("orphan", "cancelled"); await ownerBudget.finishProducer("orphan", "lost");
+      held.delete(ownerLock);
+      await follower.scope.outbox.flush();
+      expect(follower.api.cleanup).toHaveBeenCalledWith("orphan", "cancelled");
+    } finally {
+      Reflect.deleteProperty(navigator, "locks");
+      await ownerBudget.close(); await followerBudget.close();
+    }
+  });
+
   it("persists before HTTP, and admission release alone is not a cleanup ACK", async () => {
     const f = fixture(); await f.budget.reserve("id", "c"); await f.budget.markDispatchStarted("id");
     f.api.cleanup.mockImplementation(async () => {

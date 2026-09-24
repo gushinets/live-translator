@@ -24,6 +24,7 @@ export class MetadataDeliveryBudget {
     this.name = options.name ?? "live-translator-metadata-v1"; this.capacity = options.capacity ?? 1000;
     this.producerId = options.producerId ?? crypto.randomUUID(); this.timeoutMs = options.timeoutMs ?? 5000;
   }
+  get ownerProducerId(): string { return this.producerId; }
   private database(): Promise<IDBDatabase> {
     if (!this.factory) return Promise.reject(new Error("Metadata storage unavailable"));
     this.opening ??= new Promise<IDBDatabase>((resolve, reject) => {

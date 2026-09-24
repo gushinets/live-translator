@@ -49,7 +49,7 @@ export class ConversationAccounting {
   private dispatchCount = 0;
   private requestId = crypto.randomUUID();
   private readonly autoDelivery: boolean;
-  private readonly producerId = crypto.randomUUID();
+  private readonly producerId: string;
   private producerLock: Promise<void> | undefined;
   private readonly pendingEndBoundaries = new Map<number, PendingEndBoundary>();
   private readonly pendingDirectEnds = new Map<number, PendingDirectEnd>();
@@ -58,6 +58,7 @@ export class ConversationAccounting {
   private readonly directRetirementProofs = new Set<string>();
   constructor(options: { api?: LedgerApi; budget?: MetadataDeliveryBudget; autoDelivery?: boolean } = {}) {
     this.api = options.api ?? new AccountingBackend();
+    this.producerId = options.budget?.ownerProducerId ?? crypto.randomUUID();
     this.budget = options.budget ?? new MetadataDeliveryBudget({ producerId: this.producerId });
     this.outbox = new CleanupIntentOutbox(this.budget, this.api); this.autoDelivery = options.autoDelivery ?? true;
     if (this.api.usage) this.usageOutbox = new UsageOutbox(this.budget, { usage: this.api.usage.bind(this.api), readConversation: this.api.readConversation.bind(this.api) });
