@@ -82,7 +82,8 @@ export class CleanupIntentOutbox {
         continue;
       }
       if (!row.cleanup && !row.closeObservation) {
-        if (row.producerId !== this.budget.ownerProducerId && row.dispatchStartedAt !== null && !row.producerFinalized && !globalThis.navigator?.locks) {
+        if (row.producerId !== this.budget.ownerProducerId && row.dispatchStartedAt !== null && !row.producerFinalized &&
+            (row.cleanupAcknowledged || !globalThis.navigator?.locks)) {
           try {
             const proof = await this.transport.readAttempt?.(row.localId);
             if (!proof || !(await this.finishForeignRetirement(row.localId, proof))) { pending = true; continue; }
@@ -117,23 +118,17 @@ export class CleanupIntentOutbox {
           pending = true;
         }
       };
-      // The durable marker is an explicit retirement request; replay is safe if its producer tab is frozen or gone.
+      // A foreign cleanup marker is replayed through the authoritative server fence.
+      // Web Locks only prove the old document is gone; the server fence orders recovery against a late create.
       if (row.cleanup && !row.closeObservation && row.producerId !== this.budget.ownerProducerId) {
         if (Date.now() >= row.cleanup.expiresAt) {
           this.anomaly("metadata_delivery_expired"); await this.discard(row.localId); continue;
         }
-        const locks = globalThis.navigator?.locks;
-        if (locks) {
+        const recoverForeignCleanup = async () => {
+          if (!this.transport.recover) { pending = true; return; }
           try {
-            await locks.request(producerLeaseKey(row.producerId), { ifAvailable: true }, async lock => {
-              if (!lock) { pending = true; return; }
-              await deliverRow();
-            });
-          } catch { pending = true; }
-        } else if (this.transport.recover) {
-          try {
-            const proof = await this.transport.recover(row.localId, row.conversationId, row.cleanup.reason);
-            if (!cleanupProofReceived(proof)) { pending = true; continue; }
+            const proof = await this.transport.recover(row.localId, row.conversationId, row.cleanup!.reason);
+            if (!cleanupProofReceived(proof)) { pending = true; return; }
             await this.budget.acknowledgeForeignCleanupFence(row.localId);
             if (!(await this.finishForeignRetirement(row.localId, proof))) pending = true;
           } catch (error) {
@@ -141,13 +136,22 @@ export class CleanupIntentOutbox {
               try { await this.transport.readConversation(row.conversationId); }
               catch (readError) {
                 if (statusOf(readError) === 401 || statusOf(readError) === 404) {
-                  this.anomaly("metadata_identity_lost"); await this.discard(row.localId); continue;
+                  this.anomaly("metadata_identity_lost"); await this.discard(row.localId); return;
                 }
               }
             }
             pending = true;
           }
-        } else pending = true;
+        };
+        const locks = globalThis.navigator?.locks;
+        if (locks) {
+          try {
+            await locks.request(producerLeaseKey(row.producerId), { ifAvailable: true }, async lock => {
+              if (!lock) { pending = true; return; }
+              await recoverForeignCleanup();
+            });
+          } catch { pending = true; }
+        } else await recoverForeignCleanup();
       } else await deliverRow();
     }
     for (const intent of await this.budget.ends()) {

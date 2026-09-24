@@ -236,7 +236,12 @@ export class UsageLedger {
       const s = this.attempt(id);
       if (terminal(s) || s.creation_completed_at !== null) return s;
       if (definitive && s.openai_session_id === null) this.updateAttempt(id, { state: "failed", lease_released_at: s.lease_released_at ?? this.now(), cleanup_next_attempt_at: null });
-      else this.updateAttempt(id, { state: s.cleanup_requested_at !== null && !this.progressing(s.conversation_id, id) ? "closing" : "unknown" });
+      else {
+        const providerExpiresAt = s.provider_request_dispatched_at === null ? s.provider_expires_at :
+          s.provider_expires_at ?? s.provider_request_dispatched_at + this.policyFor(this.conversation(s.conversation_id)).maxProviderSessionMs;
+        this.updateAttempt(id, { state: s.cleanup_requested_at !== null && !this.progressing(s.conversation_id, id) ? "closing" : "unknown",
+          provider_expires_at: providerExpiresAt });
+      }
       return this.attempt(id);
     });
   }
@@ -417,6 +422,15 @@ export class UsageLedger {
     if (elapsed(c.product_deadline_at, now)) this.endInternal(c, "max_duration", now);
     else if (c.status === "paused" && elapsed(c.resume_expires_at, now)) this.endInternal(c, "background_timeout", now);
   }
+  private expireAmbiguousCreateInternal(id: string, now: number): void {
+    const s = this.attempt(id);
+    if (terminal(s) || s.cleanup_requested_at === null || s.openai_session_id !== null || s.creation_completed_at !== null ||
+        !elapsed(s.provider_expires_at, now)) return;
+    // The local create has already settled ambiguously (or the process restarted), and the
+    // persisted provider lifetime bound has elapsed. This is terminal-not-live proof, not an observed close.
+    this.updateAttempt(id, { state: "closed", lease_released_at: s.lease_released_at ?? now,
+      cleanup_next_attempt_at: null, cleanup_blocked_at: null });
+  }
   private expireProviderSessionInternal(id: string, now: number): void {
     const s = this.attempt(id);
     if (terminal(s) || s.provider_request_dispatched_at === null || s.cleanup_requested_at !== null) return;
@@ -431,6 +445,7 @@ export class UsageLedger {
       const now = this.now();
       for (const c of this.db.prepare("SELECT id FROM conversations WHERE status='resuming' OR (status<>'ended' AND product_deadline_at IS NOT NULL AND product_deadline_at<=?) OR (status='paused' AND resume_expires_at<=?)").all(now, now)) this.expireConversationInternal(String(c.id), now);
       for (const s of this.db.prepare("SELECT id FROM live_sessions WHERE provider_request_dispatched_at IS NOT NULL AND state NOT IN ('closed','failed') AND cleanup_requested_at IS NULL").all()) this.expireProviderSessionInternal(String(s.id), now);
+      for (const s of this.db.prepare("SELECT id FROM live_sessions WHERE cleanup_requested_at IS NOT NULL AND openai_session_id IS NULL AND creation_completed_at IS NULL AND provider_expires_at IS NOT NULL AND provider_expires_at<=? AND state NOT IN ('closed','failed')").all(now)) this.expireAmbiguousCreateInternal(String(s.id), now);
       for (const s of this.db.prepare("SELECT id FROM live_sessions WHERE creation_completed_at IS NOT NULL AND handoff_acknowledged_at IS NULL AND state NOT IN ('closed','failed') AND cleanup_requested_at IS NULL").all()) this.guardHandoffInternal(String(s.id), now);
     });
   }
@@ -442,8 +457,12 @@ export class UsageLedger {
           if (s.start_reason === "resume") this.rollbackResume(this.conversation(s.conversation_id), s, now, "aborted", "interrupted_by_restart");
           else this.cleanupInternal(s, "server_shutdown", now);
         } else if (s.creation_completed_at === null) {
-          this.updateAttempt(s.id, { state: s.cleanup_requested_at !== null && !this.progressing(s.conversation_id, s.id) ? "closing" : "unknown" });
+          const providerExpiresAt = s.provider_expires_at ??
+            s.provider_request_dispatched_at + this.policyFor(this.conversation(s.conversation_id)).maxProviderSessionMs;
+          this.updateAttempt(s.id, { state: s.cleanup_requested_at !== null && !this.progressing(s.conversation_id, s.id) ? "closing" : "unknown",
+            provider_expires_at: providerExpiresAt });
           if (s.resume_outcome === "pending") this.rollbackResume(this.conversation(s.conversation_id), this.attempt(s.id), now, "aborted", "interrupted_by_restart");
+          this.expireAmbiguousCreateInternal(s.id, now);
         } else if (s.handoff_acknowledged_at === null) this.guardHandoffInternal(s.id, now);
       }
       for (const c of this.db.prepare("SELECT id FROM conversations WHERE status IN ('paused','resuming')").all()) this.expireConversationInternal(String(c.id), now);
