@@ -196,26 +196,28 @@ export class MetadataDeliveryBudget {
       const envelopes = tx.objectStore("envelopes");
       const rows = envelopes.getAll(); rows.onsuccess = () => {
         const byId = new Map((rows.result as MetadataEnvelope[]).map(row => [row.localId, row]));
-        const applicable = [...new Set(cleanupLocalIds)].filter(id => {
-          const row = byId.get(id);
-          return row?.conversationId === conversationId && row.dispatchStartedAt !== null && !row.closeObservation &&
-            !row.cleanupAcknowledged &&
-            !(row.producerFinalized && row.producerOutcome === "lost" && !row.cleanup) &&
-            row.producerOutcome !== "provider_closed" && row.producerOutcome !== "no_provider";
-        });
-        for (const id of applicable) {
-          const row = byId.get(id)!;
-          const legacyDeadline = row.cleanup ? Math.max(row.cleanup.createdAt, row.cleanup.expiresAt - METADATA_TTL_MS) : 0;
-          const producerCloseDeadlineAt = row.producerFinalized
-            ? (row.producerCloseDeadlineAt ?? (row.cleanup ? legacyDeadline : now))
-            : Math.max(row.producerCloseDeadlineAt ?? legacyDeadline, requestedCloseDeadlineAt);
-          const cleanupExpiresAt = Math.max(row.cleanup?.expiresAt ?? 0, now + METADATA_TTL_MS, producerCloseDeadlineAt + METADATA_TTL_MS);
-          expiresAt = Math.max(expiresAt, cleanupExpiresAt);
-          envelopes.put({ ...row, producerCloseDeadlineAt,
-            cleanup: row.cleanup ? { ...row.cleanup, expiresAt: cleanupExpiresAt } : { reason: reason === "setup_cancel" ? "cancelled" : "user_end", createdAt: now, expiresAt: cleanupExpiresAt } });
-        }
         const get = store.get(conversationId); get.onsuccess = () => {
           const old = get.result as EndIntent | undefined;
+          const sameEnd = old?.expectedVersion === expectedVersion;
+          const applicable = [...new Set(cleanupLocalIds)].filter(id => {
+            const row = byId.get(id);
+            return row?.conversationId === conversationId && row.dispatchStartedAt !== null && !row.closeObservation &&
+              !row.cleanupAcknowledged &&
+              !(row.producerFinalized && row.producerOutcome === "lost" && !row.cleanup) &&
+              row.producerOutcome !== "provider_closed" && row.producerOutcome !== "no_provider";
+          });
+          for (const id of applicable) {
+            const row = byId.get(id)!;
+            const legacyDeadline = row.cleanup ? Math.max(row.cleanup.createdAt, row.cleanup.expiresAt - METADATA_TTL_MS) : 0;
+            const existingDeadline = row.producerCloseDeadlineAt ?? (row.cleanup ? legacyDeadline : requestedCloseDeadlineAt);
+            const producerCloseDeadlineAt = sameEnd ? existingDeadline : row.producerFinalized
+              ? (row.producerCloseDeadlineAt ?? (row.cleanup ? legacyDeadline : now))
+              : Math.max(row.producerCloseDeadlineAt ?? legacyDeadline, requestedCloseDeadlineAt);
+            const cleanupExpiresAt = Math.max(row.cleanup?.expiresAt ?? 0, now + METADATA_TTL_MS, producerCloseDeadlineAt + METADATA_TTL_MS);
+            expiresAt = Math.max(expiresAt, cleanupExpiresAt);
+            envelopes.put({ ...row, producerCloseDeadlineAt,
+              cleanup: row.cleanup ? { ...row.cleanup, expiresAt: cleanupExpiresAt } : { reason: reason === "setup_cancel" ? "cancelled" : "user_end", createdAt: now, expiresAt: cleanupExpiresAt } });
+          }
           if (old) { if (old.expectedVersion <= expectedVersion) store.put({ conversationId, expectedVersion, reason: old.expectedVersion === expectedVersion ? old.reason : reason, expiresAt, cleanupLocalIds: applicable }); result(undefined); return; }
           const count = store.count(); count.onsuccess = () => {
             if (count.result >= 1000) { fail(new Error("Lifecycle metadata storage is full")); return; }

@@ -63,8 +63,8 @@ export class CleanupIntentOutbox {
     let pending = false;
     try { await this.retryPendingFinalizations?.(); } catch { pending = true; }
     for (const row of await this.budget.entries()) {
-      if (!row.producerFinalized && !row.cleanup && !row.closeObservation && Date.now() >= row.reservedAt + 7 * 86400000) {
-        await this.budget.finishProducerAndRelease(row.localId, "lost");
+      if (!row.producerFinalized && (row.dispatchStartedAt === null || row.cleanupAcknowledged) && !row.cleanup && !row.closeObservation && Date.now() >= row.reservedAt + METADATA_TTL_MS) {
+        await this.budget.finishProducerAndRelease(row.localId, row.dispatchStartedAt === null ? "no_provider" : "lost");
         continue;
       }
       if (row.producerOutcome === "no_provider") {

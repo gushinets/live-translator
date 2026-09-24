@@ -141,6 +141,18 @@ describe("cleanup and End delivery", () => {
     }
   });
 
+  it("retains an unfinalized dispatched producer after the metadata retention window", async () => {
+    const indexedDB = new IDBFactory(), name = crypto.randomUUID();
+    const f = fixture(new MetadataDeliveryBudget({ indexedDB, name }));
+    await f.budget.reserve("active", "c"); await f.budget.markDispatchStarted("active");
+    await updateEnvelope(indexedDB, name, "active", { reservedAt: Date.now() - 8 * 86400000 });
+
+    await f.scope.outbox.flush();
+
+    expect(await f.budget.get("active")).toMatchObject({ producerFinalized: false, producerOutcome: null });
+    await f.budget.close();
+  });
+
   it("does not restage cleanup after its proof on a later End enqueue", async () => {
     const f = fixture();
     await f.budget.reserve("attempt", f.c.conversationId);
@@ -155,6 +167,26 @@ describe("cleanup and End delivery", () => {
     expect((await f.budget.ends())[0]?.cleanupLocalIds).toEqual([]);
     expect(f.api.cleanup).toHaveBeenCalledTimes(1);
     await f.budget.close();
+  });
+
+  it("preserves the first graceful-close deadline when End is persisted again", async () => {
+    let now = 1000;
+    vi.spyOn(Date, "now").mockImplementation(() => now);
+    const f = fixture();
+    try {
+      await f.budget.reserve("attempt", f.c.conversationId);
+      await f.budget.markDispatchStarted("attempt");
+      await f.budget.enqueueEnd(f.c.conversationId, f.c.version, "user_end", ["attempt"], 100);
+      const firstDeadline = (await f.budget.get("attempt"))?.producerCloseDeadlineAt;
+
+      now += 101;
+      await f.budget.enqueueEnd(f.c.conversationId, f.c.version, "user_end", ["attempt"], 100);
+
+      expect((await f.budget.get("attempt"))?.producerCloseDeadlineAt).toBe(firstDeadline);
+    } finally {
+      vi.restoreAllMocks();
+      await f.budget.close();
+    }
   });
 
   it("delivers a persisted close observation even while its foreign producer lock is held", async () => {
@@ -251,7 +283,7 @@ describe("cleanup and End delivery", () => {
     await f.budget.reserve("id", f.c.conversationId); await f.budget.markDispatchStarted("id");
     await f.budget.enqueueEnd(f.c.conversationId, f.c.version, "user_end", ["id"]);
     await f.scope.outbox.flush();
-    expect(await f.budget.get("id")).toMatchObject({ cleanup: null, producerFinalized: false });
+    expect(await f.budget.get("id")).toMatchObject({ cleanup: null, cleanupAcknowledged: true, producerFinalized: false });
 
     const db = await new Promise<IDBDatabase>((resolve, reject) => {
       const request = indexedDB.open(name); request.onsuccess = () => resolve(request.result); request.onerror = () => reject(request.error);
