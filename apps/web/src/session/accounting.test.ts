@@ -22,6 +22,17 @@ function fixture(store = budget()) {
   const scope = new ConversationAccounting({ api, budget: store, autoDelivery: false });
   return { budget: store, scope, api, c };
 }
+async function updateEnvelope(indexedDB: IDBFactory, name: string, id: string, patch: Record<string, unknown>) {
+  const db = await new Promise<IDBDatabase>((resolve, reject) => {
+    const request = indexedDB.open(name); request.onsuccess = () => resolve(request.result); request.onerror = () => reject(request.error);
+  });
+  await new Promise<void>((resolve, reject) => {
+    const tx = db.transaction("envelopes", "readwrite"), store = tx.objectStore("envelopes"), get = store.get(id);
+    get.onsuccess = () => store.put({ ...get.result, ...patch });
+    tx.oncomplete = () => resolve(); tx.onerror = () => reject(tx.error);
+  });
+  db.close();
+}
 
 describe("shared IndexedDB metadata budget", () => {
   it("serializes two connections reserving the last slot and deduplicates IDs", async () => {
@@ -45,7 +56,7 @@ describe("shared IndexedDB metadata budget", () => {
   });
 });
 describe("cleanup and End delivery", () => {
-  it("does not replay staged cleanup on a stale or unreadable lease without Web Locks", async () => {
+  it("waits for the persisted close deadline before replaying without Web Locks", async () => {
     const indexedDB = new IDBFactory(), name = crypto.randomUUID();
     const owner = fixture(new MetadataDeliveryBudget({ indexedDB, name }));
     const follower = fixture(new MetadataDeliveryBudget({ indexedDB, name }));
@@ -53,6 +64,7 @@ describe("cleanup and End delivery", () => {
     const locks = Object.getOwnPropertyDescriptor(navigator, "locks");
     const storage = Object.getOwnPropertyDescriptor(globalThis, "localStorage");
     await attempt.create("offer"); await owner.scope.stageEnd("user_end");
+    await updateEnvelope(indexedDB, name, attempt.localId, { producerCloseDeadlineAt: Date.now() + 120000 });
     Reflect.deleteProperty(navigator, "locks");
 
     try {
@@ -68,10 +80,13 @@ describe("cleanup and End delivery", () => {
       expect(follower.api.cleanup).not.toHaveBeenCalled();
 
       if (storage) Object.defineProperty(globalThis, "localStorage", storage); else Reflect.deleteProperty(globalThis, "localStorage");
+      await updateEnvelope(indexedDB, name, attempt.localId, { producerCloseDeadlineAt: Date.now() - 1 });
+      await follower.scope.outbox.flush();
+      expect(follower.api.cleanup).toHaveBeenCalledWith(attempt.localId, "user_end");
       await attempt.finish({ finalized: true, usageSeconds: 9 });
       await follower.scope.outbox.flush();
       expect(follower.api.closed).toHaveBeenCalledWith(attempt.localId, { seconds: 9 });
-      expect(follower.api.cleanup).not.toHaveBeenCalled();
+      expect(follower.api.cleanup).toHaveBeenCalledTimes(1);
     } finally {
       if (storage) Object.defineProperty(globalThis, "localStorage", storage); else Reflect.deleteProperty(globalThis, "localStorage");
       localStorage.removeItem(`live-metadata-producer:${owner.budget.ownerProducerId}`);
@@ -105,7 +120,7 @@ describe("cleanup and End delivery", () => {
     }
   });
 
-  it("does not replay another live scope's staged cleanup", async () => {
+  it("waits for a live producer lock before replaying staged cleanup", async () => {
     const indexedDB = new IDBFactory(), name = crypto.randomUUID();
     const ownerBudget = new MetadataDeliveryBudget({ indexedDB, name }), followerBudget = new MetadataDeliveryBudget({ indexedDB, name });
     const owner = fixture(ownerBudget), follower = fixture(followerBudget), held = new Set<string>(), ownerLock = `live-metadata-producer:${ownerBudget.ownerProducerId}`;
@@ -126,7 +141,7 @@ describe("cleanup and End delivery", () => {
       expect(follower.api.cleanup).not.toHaveBeenCalled();
 
       await attempt.finish({ finalized: true, usageSeconds: 7 }); await owner.scope.outbox.flush();
-      expect(owner.api.closed).toHaveBeenCalledOnce();
+      expect(owner.api.closed).toHaveBeenCalledWith(attempt.localId, { seconds: 7 });
       expect(owner.api.cleanup).not.toHaveBeenCalled();
       expect(follower.api.cleanup).not.toHaveBeenCalled();
 
@@ -134,7 +149,7 @@ describe("cleanup and End delivery", () => {
       await ownerBudget.enqueueCleanup("orphan", "cancelled"); await ownerBudget.finishProducer("orphan", "lost");
       held.delete(ownerLock);
       await follower.scope.outbox.flush();
-      expect(follower.api.cleanup).toHaveBeenCalledWith("orphan", "cancelled");
+      expect(follower.api.cleanup).toHaveBeenLastCalledWith("orphan", "cancelled");
     } finally {
       Reflect.deleteProperty(navigator, "locks");
       await ownerBudget.close(); await followerBudget.close();
@@ -159,14 +174,34 @@ describe("cleanup and End delivery", () => {
     expect(await f.budget.entries()).toHaveLength(0);
     await f.budget.close();
   });
-  it("releases a cleanup-only envelope when producer finalization was lost", async () => {
+  it("retains a cleanup-only envelope until producer finalization is recovered", async () => {
     const f = fixture(); await f.budget.reserve("id", "c"); await f.budget.markDispatchStarted("id");
     await f.budget.enqueueCleanup("id", "hidden");
     f.api.cleanup.mockResolvedValue({ cleanupRequestedAt: 123 });
 
     await f.scope.outbox.flush();
 
-    expect(await f.budget.entries()).toHaveLength(0); await f.budget.close();
+    expect(await f.budget.get("id")).toMatchObject({ cleanup: null, producerFinalized: false }); await f.budget.close();
+  });
+  it("releases a reconciled suspended producer after the metadata retention window", async () => {
+    const indexedDB = new IDBFactory(), name = crypto.randomUUID();
+    const f = fixture(new MetadataDeliveryBudget({ indexedDB, name }));
+    await f.budget.reserve("id", f.c.conversationId); await f.budget.markDispatchStarted("id");
+    await f.budget.enqueueEnd(f.c.conversationId, f.c.version, "user_end", ["id"]);
+    await f.scope.outbox.flush();
+    expect(await f.budget.get("id")).toMatchObject({ cleanup: null, producerFinalized: false });
+
+    const db = await new Promise<IDBDatabase>((resolve, reject) => {
+      const request = indexedDB.open(name); request.onsuccess = () => resolve(request.result); request.onerror = () => reject(request.error);
+    });
+    await new Promise<void>((resolve, reject) => {
+      const tx = db.transaction("envelopes", "readwrite"), store = tx.objectStore("envelopes"), get = store.get("id");
+      get.onsuccess = () => store.put({ ...get.result, reservedAt: Date.now() - 8 * 86400000 });
+      tx.oncomplete = () => resolve(); tx.onerror = () => reject(tx.error);
+    });
+    db.close();
+    await f.scope.outbox.flush();
+    expect(await f.budget.get("id")).toBeNull(); await f.budget.close();
   });
 
   it("keeps registration-race 404 retryable while owner conversation still exists", async () => {
@@ -467,6 +502,22 @@ describe("controller-owned conversation accounting", () => {
     await retry.abandon("cancelled"); await f.scope.outbox.flush(); await f.budget.close();
   });
 
+  it("delivers a cleanup marker if producer finalization and direct cleanup both fail", async () => {
+    const f = fixture(); const attempt = f.scope.newAttempt(); await attempt.create("offer");
+    await f.scope.stageEnd("user_end");
+    vi.spyOn(f.budget, "finishProducer").mockRejectedValueOnce(new Error("IDB finalize failed"));
+    f.api.cleanup.mockRejectedValueOnce(new Error("offline"));
+
+    await expect(attempt.abandon("user_end")).rejects.toThrow("offline");
+    expect((await f.budget.get(attempt.localId))?.cleanup?.reason).toBe("user_end");
+    await f.scope.outbox.flush();
+
+    expect(f.api.cleanup).toHaveBeenCalledTimes(2);
+    expect(attempt.finished).toBe(false);
+    expect(await f.budget.get(attempt.localId)).not.toBeNull();
+    await f.budget.close();
+  });
+
   it("ends without cleanup when no-provider finalization storage fails", async () => {
     const f = fixture(), attempt = f.scope.newAttempt();
     let rejectCreate!: (error: Error) => void;
@@ -539,7 +590,7 @@ describe("controller-owned conversation accounting", () => {
 
     rejectCreate(new AccountingRequestError(404, "attempt_not_found"));
     await expect(creating).resolves.toMatchObject({ message: "storage unavailable" });
-    expect(await store.get(attempt.localId)).toMatchObject({ producerOutcome: "lost", cleanup: { reason: "cancelled" } });
+    expect(await store.get(attempt.localId)).toMatchObject({ producerOutcome: null, producerFinalized: false, cleanup: { reason: "cancelled" } });
     expect(finalize).toHaveBeenCalled();
 
     release.mockImplementation((id, outcome) => MetadataDeliveryBudget.prototype.finishProducerAndRelease.call(store, id, outcome));

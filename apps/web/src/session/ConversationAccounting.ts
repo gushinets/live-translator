@@ -220,7 +220,7 @@ export class ConversationAccounting {
     // or enqueue HTTP here: a crash can replay both stores, and a late final remains valid.
     const dispatched = attempts.filter(a => a.dispatched);
     this.outbox.deferCleanup(dispatched.filter(a => !a.finished).map(a => a.localId));
-    await this.outbox.enqueueEnd(c.conversationId, c.version, reason, dispatched.map(a => a.localId));
+    await this.outbox.enqueueEnd(c.conversationId, c.version, reason, dispatched.map(a => a.localId), c.policy.sessionCloseTimeoutMs);
   }
 
   async end(reason: "user_end" | "setup_cancel", expectedEpoch = this.epoch): Promise<void> {
@@ -252,7 +252,7 @@ export class ConversationAccounting {
     if (c) {
       try {
         await this.outbox.enqueueEnd(c.conversationId, c.version, boundary.reason,
-          boundary.attempts.filter(a => a.dispatched && !this.directRetirementProofs.has(a.localId)).map(a => a.localId));
+          boundary.attempts.filter(a => a.dispatched && !this.directRetirementProofs.has(a.localId)).map(a => a.localId), c.policy.sessionCloseTimeoutMs);
         persisted = true;
       } catch { console.error("Conversation end storage degraded", { conversationId: c.conversationId }); }
     }

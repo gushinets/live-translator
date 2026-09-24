@@ -53,7 +53,7 @@ export class UsageOutbox {
     this.volatile.delete(localId);
     this.pendingDiscard.add(localId);
     try { await this.budget.discardUsage(localId); this.pendingDiscard.delete(localId); }
-    catch { this.anomaly("usage_no_provider_storage_degraded"); this.revision++; if (this.started) this.onWake(); }
+    catch { this.anomaly("usage_no_provider_storage_degraded"); this.revision++; if (this.started) { this.onWake(); this.schedule(); } }
   }
   start(): void {
     if (this.started) return; this.started = true;
@@ -185,5 +185,4 @@ export class UsageOutbox {
     else { this.failures = 0; if (this.timer !== undefined) clearTimeout(this.timer); this.timer = undefined; }
   }
 }
-
 

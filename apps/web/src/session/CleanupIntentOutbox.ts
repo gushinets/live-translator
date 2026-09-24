@@ -24,13 +24,17 @@ export class CleanupIntentOutbox {
     private readonly retryPendingFinalizations?: () => Promise<void>,
     private readonly anomaly: (code: string) => void = code => console.error("Metadata delivery anomaly", { code })) {}
   async enqueue(localId: string, reason: CleanupReason): Promise<void> {
-    await this.budget.enqueueCleanup(localId, reason); await this.budget.finishProducer(localId, "lost"); this.deferredCleanup.delete(localId); this.revision++; this.schedule();
+    await this.budget.enqueueCleanup(localId, reason);
+    this.deferredCleanup.delete(localId);
+    try { await this.budget.finishProducer(localId, "lost"); }
+    catch (error) { this.revision++; this.schedule(); throw error; }
+    this.revision++; this.schedule();
   }
   async observeClosed(localId: string, observation: CloseMetadata): Promise<void> {
     await this.budget.enqueueClose(localId, observation); this.deferredCleanup.delete(localId); this.revision++; this.schedule();
   }
-  async enqueueEnd(id: string, version: number, reason: EndIntent["reason"], cleanupLocalIds: readonly string[] = []): Promise<void> {
-    await this.budget.enqueueEnd(id, version, reason, cleanupLocalIds); this.revision++; this.schedule();
+  async enqueueEnd(id: string, version: number, reason: EndIntent["reason"], cleanupLocalIds: readonly string[] = [], closeTimeoutMs = 0): Promise<void> {
+    await this.budget.enqueueEnd(id, version, reason, cleanupLocalIds, closeTimeoutMs); this.revision++; this.schedule();
   }
   deferCleanup(localIds: readonly string[]): void { for (const id of localIds) this.deferredCleanup.add(id); }
   confirmRetirement(localId: string): void { this.deferredCleanup.delete(localId); }
@@ -59,6 +63,10 @@ export class CleanupIntentOutbox {
     let pending = false;
     try { await this.retryPendingFinalizations?.(); } catch { pending = true; }
     for (const row of await this.budget.entries()) {
+      if (!row.producerFinalized && !row.cleanup && !row.closeObservation && Date.now() >= row.reservedAt + 7 * 86400000) {
+        await this.budget.finishProducerAndRelease(row.localId, "lost");
+        continue;
+      }
       if (row.producerOutcome === "no_provider") {
         await this.budget.finishProducerAndRelease(row.localId, "no_provider");
         continue;
@@ -85,6 +93,7 @@ export class CleanupIntentOutbox {
           pending = true;
         }
       };
+      // The durable marker is an explicit retirement request; replay is safe if its producer tab is frozen or gone.
       if (row.cleanup && !row.closeObservation && row.producerId !== this.budget.ownerProducerId) {
         const locks = globalThis.navigator?.locks;
         if (locks) {
@@ -94,10 +103,9 @@ export class CleanupIntentOutbox {
               await deliverRow();
             });
           } catch { pending = true; }
-        } else pending = true; // ponytail: defer forever without Web Locks; safe takeover needs a trustworthy death signal.
-      } else {
-        await deliverRow();
-      }
+        } else if (!row.producerFinalized && Date.now() < (row.producerCloseDeadlineAt ?? row.cleanup.createdAt + 2_147_483_647)) pending = true;
+        else await deliverRow();
+      } else await deliverRow();
     }
     for (const intent of await this.budget.ends()) {
       if (Date.now() >= intent.expiresAt) { this.anomaly("conversation_end_expired"); await this.budget.acknowledgeEnd(intent.conversationId, intent.expectedVersion); continue; }
