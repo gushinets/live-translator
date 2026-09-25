@@ -124,6 +124,7 @@ export class SessionController {
   private remotePlaybackGeneration = 0;
   private remotePlaybackState: RemotePlaybackState = "ready";
   private remotePlaybackWork: Promise<void> | null = null;
+  private remotePlaybackTrack: MediaStreamTrack | null = null;
   private remoteTrackArrived: (() => void) | null = null;
   private retainedProductDeadlineAt: number | null = null;
   private retainedPlaybackCommitted = false;
@@ -193,6 +194,7 @@ export class SessionController {
     this.lifecycleSuspendReason = "visibility";
     this.notify();
   }
+  protected clearRetainedAfterEnd(): void { this.resetToIdle(); }
   protected backgroundResumeCurrent(generation: number): boolean {
     return this.backgroundPaused && this.sessionGeneration === generation && !this.visibility.isHidden() &&
       this.orientation.isPortrait() && this.endWork === null && this.cancelWork === null;
@@ -307,6 +309,12 @@ export class SessionController {
     this.bumpLifecycleEpoch();
     try { this.stopLocalMedia(); } catch { this.closeGateAForSafety("Resume disposal capture gate failed"); }
     void this.live.disconnectImmediately("cancelled").catch(() => console.error("Resume disposal cleanup incomplete"));
+  }
+  protected fenceRetainedRecoveryForEnd(): void {
+    this.sessionGeneration++;
+    this.bumpLifecycleEpoch();
+    this.stopLocalMedia();
+    void this.live.disconnectImmediately("user_end").catch(() => console.error("Retained End transport cleanup incomplete"));
   }
   protected clearIdleBackgroundPause(): boolean { return true; }
   protected pauseBackground(_state: Omit<ResumeSnapshotInput, "conversationId" | "conversationVersion" | "policyVersion" | "productDeadlineAt">,
@@ -490,19 +498,25 @@ export class SessionController {
   handleRemoteStream(stream: MediaStream, source: LiveClient): void {
     // Validate origin BEFORE attaching. A generation captured after a stale callback is too late.
     if (source !== this.live || this.liveProductGeneration !== this.sessionGeneration) return;
-    if (this.remoteTrackArrived && !stream.getAudioTracks().some(track => track.readyState === "live")) return;
+    const track = stream.getAudioTracks().find(track => track.readyState === "live");
+    if (!track || this.remotePlaybackTrack) return;
+    this.remotePlaybackTrack = track;
     const sessionGeneration = this.sessionGeneration;
     const playbackGeneration = this.remotePlaybackGeneration + 1;
     this.remotePlaybackGeneration = playbackGeneration;
     this.remotePlaybackState = "pending";
     this.pendingRemotePlaybackActivity = null;
+    track.addEventListener("ended", () => {
+      if (this.remotePlaybackTrack === track) this.failRemotePlayback(source, sessionGeneration, playbackGeneration,
+        new Error("Remote audio track ended"));
+    }, { once: true });
     this.audio.attachRemoteStream(stream);
     this.remotePlaybackWork = this.audio.audioElement
       .play()
       .then(() => {
         if (
           source !== this.live || this.sessionGeneration !== sessionGeneration ||
-          this.remotePlaybackGeneration !== playbackGeneration
+          this.remotePlaybackGeneration !== playbackGeneration || this.remotePlaybackState !== "pending"
         ) {
           return;
         }
@@ -520,18 +534,22 @@ export class SessionController {
         ) {
           return;
         }
-        this.remotePlaybackState = "failed";
-        this.pendingRemotePlaybackActivity = null;
-        if (this.playbackActive) {
-          this.playbackActive = false;
-          this.finishPlaybackIdleWait();
-        }
-        console.error("Remote audio play failed", { error });
-        if (this.retainedPlaybackCommitted) void this.endConversation().catch(retireError => {
-          console.error("Remote playback retirement failed", { error: retireError });
-        });
+        this.failRemotePlayback(source, sessionGeneration, playbackGeneration, error);
       });
     this.remoteTrackArrived?.();
+  }
+
+  private failRemotePlayback(source: LiveClient, sessionGeneration: number, playbackGeneration: number, error: unknown): void {
+    if (source !== this.live || this.sessionGeneration !== sessionGeneration ||
+      this.remotePlaybackGeneration !== playbackGeneration || this.remotePlaybackState === "failed") return;
+    this.remotePlaybackState = "failed";
+    this.pendingRemotePlaybackActivity = null;
+    if (this.playbackActive) { this.playbackActive = false; this.finishPlaybackIdleWait(); }
+    console.error("Remote audio playback failed", { error });
+    if (this.retainedPlaybackCommitted) void (async () => {
+      await this.live.disconnectImmediately("abandoned_connect");
+      await this.endConversation();
+    })().catch(retireError => console.error("Remote playback retirement failed", { error: retireError }));
   }
 
   private acceptRemotePlaybackActivity(event: AudioActivityEvent): boolean {
@@ -551,6 +569,7 @@ export class SessionController {
     this.remotePlaybackGeneration += 1;
     this.remotePlaybackState = "ready";
     this.remotePlaybackWork = null;
+    this.remotePlaybackTrack = null;
     this.pendingRemotePlaybackActivity = null;
     if (this.playbackActive) {
       this.playbackActive = false;

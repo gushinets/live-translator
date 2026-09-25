@@ -106,6 +106,12 @@ export class ConversationAccounting {
     this.resume = { id: claim.attempt.liveSessionId, version: claim.attempt.resumeClaimVersion, mode: claim.attempt.initialMode };
     this.pausing = false;
   }
+  adoptRetained(conversation: ConversationMetadata): void {
+    if (this.current || this.creating || [...this.attempts].some(attempt => attempt.dispatched) || conversation.status === "ended")
+      throw new Error("Retained conversation cannot be adopted for End");
+    this.current = conversation;
+    this.pausing = true;
+  }
   isResumeAttempt(attempt: ProviderAccounting): boolean { return this.resume?.id === attempt.localId; }
   resumeMode(attempt: ProviderAccounting): ProviderCreateBody["initialMode"] {
     return this.isResumeAttempt(attempt) ? this.resume!.mode : "setup";

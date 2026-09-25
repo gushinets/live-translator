@@ -36,6 +36,8 @@ export class AccountedSessionController extends SessionController {
   private recoveryChecking = false;
   private started = false;
   private resumeFailed = false;
+  private retainedActive = false;
+  private retainedEndWork: Promise<void> | null = null;
   constructor(deps: SessionControllerDeps, private readonly accounting: ConversationAccounting,
     private readonly snapshotStore: Promise<ResumeSnapshotStore> = ResumeSnapshotStore.open()) {
     super(deps);
@@ -50,8 +52,9 @@ export class AccountedSessionController extends SessionController {
       this.recoveryChecking = true;
       this.notify();
       const result = await store.inspectReload(id => this.accounting.api.readConversation(id) as Promise<ConversationMetadata>);
-      if (result?.kind === "paused") this.adoptRetainedPause();
-      else if (result) this.resumeFailed = true;
+      if (result?.kind === "paused" || result?.kind === "pending") this.adoptRetainedPause();
+      if (result?.kind === "pending") this.resumeFailed = true;
+      if (result?.kind === "active") this.retainedActive = true;
     })().catch(error => {
       this.resumeFailed = true;
       console.error("Retained conversation inspection failed", { error });
@@ -62,9 +65,11 @@ export class AccountedSessionController extends SessionController {
     });
     this.recoveryProbe = probe;
   }
-  get retainedRecoveryState(): "checking" | "paused" | "resuming" | "failed" | undefined {
+  get retainedRecoveryState(): "checking" | "paused" | "resuming" | "failed" | "active" | undefined {
     if (this.recoveryChecking) return "checking";
+    if (this.retainedEndWork) return "resuming";
     if (this.resumeWork) return "resuming";
+    if (this.retainedActive) return "active";
     if (this.resumeFailed) return "failed";
     return this.retainedPaused ? "paused" : undefined;
   }
@@ -127,6 +132,7 @@ export class AccountedSessionController extends SessionController {
     catch (error) { console.error("Retained conversation resume failed", { error }); }
   }
   async resumeRetainedConversation(explicit = true): Promise<void> {
+    if (this.retainedEndWork) return this.retainedEndWork;
     if (this.resumeWork) return this.resumeWork;
     if (explicit) this.resumeFailed = false;
     const work = (async () => {
@@ -145,14 +151,62 @@ export class AccountedSessionController extends SessionController {
       this.notify();
     }
   }
+  override endConversation(): Promise<void> {
+    if (this.retainedEndWork) return this.retainedEndWork;
+    if (this.resumeWork && this.accounting.conversationId) return super.endConversation();
+    if (!this.resumeWork && (this.accounting.conversationId ||
+      !this.retainedPaused && !this.retainedActive && !this.resumeFailed && !this.recoveryChecking))
+      return super.endConversation();
+    const resume = this.resumeWork;
+    if (resume) this.fenceRetainedRecoveryForEnd();
+    const work = (async () => {
+      await resume?.catch(() => undefined);
+      await this.runRetainedEnd();
+    })();
+    this.retainedEndWork = work;
+    this.notify();
+    void work.finally(() => {
+      if (this.retainedEndWork === work) this.retainedEndWork = null;
+      this.notify();
+    }).catch(() => undefined);
+    return work;
+  }
+  private async runRetainedEnd(): Promise<void> {
+    await this.recoveryProbe;
+    const store = await this.snapshotStore;
+    const inspected = await store.inspectReload(id => this.accounting.api.readConversation(id) as Promise<ConversationMetadata>);
+    if (inspected) {
+      const conversation = inspected.kind === "active"
+        ? await this.accounting.api.readConversation(inspected.conversationId) as ConversationMetadata
+        : inspected.conversation;
+      if (conversation.conversationId !== (inspected.kind === "active" ? inspected.conversationId : inspected.conversation.conversationId) ||
+        conversation.version !== (inspected.kind === "active" ? inspected.conversationVersion : inspected.conversation.version) ||
+        conversation.status !== (inspected.kind === "active" ? "active" : inspected.conversation.status))
+        throw new Error("Retained conversation changed before End");
+      const local = await this.accounting.pendingConversation();
+      if (local) {
+        if (local.conversationId !== conversation.conversationId || local.version !== conversation.version ||
+          local.status !== conversation.status) throw new Error("Retained End version changed");
+      } else this.accounting.adoptRetained(conversation);
+      await this.accounting.stageEnd("user_end", this.accounting.revision);
+      await this.accounting.end("user_end", this.accounting.revision);
+      await this.accounting.outbox.flush();
+      await store.inspectReload(id => this.accounting.api.readConversation(id) as Promise<ConversationMetadata>);
+    }
+    if (store.hasRetainedIdentity()) throw new Error("Conversation End is not confirmed");
+    this.retainedActive = false;
+    this.resumeFailed = false;
+    this.clearRetainedAfterEnd();
+  }
   private pausedOrUnloaded(): boolean {
     return this.accounting.conversationStatus === null || this.accounting.conversationStatus === "paused";
   }
   private async runRetainedResume(explicit: boolean): Promise<void> {
+    if (this.retainedActive) throw new Error("Active retained conversation must be ended before a new conversation");
     if (explicit && this.session.state === "idle" && this.accounting.conversationStatus === null) {
       const store = await this.snapshotStore;
       const result = await store.inspectReload(id => this.accounting.api.readConversation(id) as Promise<ConversationMetadata>);
-      if (result?.kind !== "paused") return;
+      if (!result || result.kind === "active") throw new Error("Retained conversation requires explicit End");
       this.adoptRetainedPause();
     }
     const generation = this.backgroundResumeGeneration;
@@ -160,7 +214,36 @@ export class AccountedSessionController extends SessionController {
     if (!this.backgroundResumeCurrent(generation)) return;
     if (!this.pausedOrUnloaded()) return;
     const store = await this.snapshotStore;
-    const inspected = await store.inspectReload(id => this.accounting.api.readConversation(id) as Promise<ConversationMetadata>);
+    let inspected = await store.inspectReload(id => this.accounting.api.readConversation(id) as Promise<ConversationMetadata>);
+    if (inspected?.kind === "pending" && explicit) {
+      const { snapshot, conversation } = inspected;
+      const attemptId = snapshot.resumeAttemptId!;
+      const claimVersion = snapshot.conversationVersion + 1;
+      const reason = "interrupted_by_restart";
+      let aborted: ConversationMetadata;
+      try { aborted = await this.accounting.api.abortResume(conversation.conversationId, claimVersion, attemptId, reason); }
+      catch (error) {
+        aborted = await this.accounting.api.abortResume(conversation.conversationId, claimVersion, attemptId, reason)
+          .catch(() => { throw error; });
+      }
+      if (aborted.conversationId !== conversation.conversationId || aborted.version < claimVersion + 1 ||
+        !["paused", "ended"].includes(aborted.status) || aborted.resumeAttemptId !== null)
+        throw new Error("Previous resume abort was not confirmed");
+      const receipt = await this.accounting.api.readAttempt(attemptId);
+      if (receipt.liveSessionId !== attemptId || receipt.conversation.conversationId !== conversation.conversationId ||
+        !["failed", "closed"].includes(receipt.state ?? "") || receipt.cleanupRequestedAt == null)
+        throw new Error("Previous resume cleanup is still pending");
+      if (aborted.status === "paused") {
+        await store.confirmPause(aborted);
+        await store.clearResumeAttempt(conversation.conversationId, attemptId);
+      }
+      inspected = await store.inspectReload(id => this.accounting.api.readConversation(id) as Promise<ConversationMetadata>);
+    }
+    if (!inspected && !store.hasRetainedIdentity()) {
+      this.resumeFailed = false;
+      this.clearRetainedAfterEnd();
+      return;
+    }
     if (!inspected || inspected.kind === "active" || inspected.kind === "pending") {
       if (explicit && inspected) throw new Error("Retained conversation status requires explicit recovery");
       return;

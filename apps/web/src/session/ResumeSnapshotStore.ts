@@ -1,4 +1,4 @@
-import { AccountingRequestError, type ConversationMetadata } from "../api/AccountingBackend";
+import type { ConversationMetadata } from "../api/AccountingBackend";
 import { APPEND_CHAR_BUDGET, assertAppendWithinBudget } from "../live/LiveEvents";
 import { buildAuthoritativeContext } from "../live/LivePrompts";
 import { COUNTER_NAMES, type MetricCounters } from "../metrics/UsageTypes";
@@ -330,15 +330,7 @@ export class ResumeSnapshotStore {
     if (!conversationId) return null;
     if (conversationId === PENDING_CREATE) throw new Error("Retained conversation create remains unresolved");
     const row = await this.get(conversationId);
-    let server: ConversationMetadata;
-    try { server = await read(conversationId); }
-    catch (error) {
-      if (error instanceof AccountingRequestError && [401, 403, 404].includes(error.status)) {
-        await this.discard(conversationId);
-        return null;
-      }
-      throw error;
-    }
+    const server = await read(conversationId);
     const retainedVersion = Number(this.storage?.getItem(CONVERSATION_VERSION_KEY));
     if (record(server) && server.conversationId === conversationId && server.status === "ended" &&
       Number.isSafeInteger(server.version) && server.version >= Math.max(1, retainedVersion,
@@ -372,6 +364,10 @@ export class ResumeSnapshotStore {
     }
     if (server.status === "resuming" && row.resumeAttemptId !== null &&
       server.resumeAttemptId === row.resumeAttemptId && server.version === row.conversationVersion + 1) {
+      return { kind: "pending", snapshot: row, conversation: server };
+    }
+    if (server.status === "paused" && row.resumeAttemptId !== null && server.resumeAttemptId === null &&
+      server.version === row.conversationVersion + 2) {
       return { kind: "pending", snapshot: row, conversation: server };
     }
     throw new Error("Retained conversation status requires explicit recovery");

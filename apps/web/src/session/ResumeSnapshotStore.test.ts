@@ -84,11 +84,8 @@ describe("retained conversation snapshot", () => {
     await expect(reload.inspectReload(async () => paused())).rejects.toThrow("Retained conversation");
     expect(f.tab.getItem("live-translator-retained-conversation-v1")).toBe(input.conversationId);
   });
-  it("clears a missing-row pointer after verified End or identity loss", async () => {
-    for (const read of [async () => paused({ status: "ended", resumeExpiresAt: null }),
-      async () => { throw new AccountingRequestError(401, "identity_required"); },
-      async () => { throw new AccountingRequestError(403, "forbidden"); },
-      async () => { throw new AccountingRequestError(404, "not_found"); }]) {
+  it("clears a missing-row pointer after verified End", async () => {
+    for (const read of [async () => paused({ status: "ended", resumeExpiresAt: null })]) {
       const f = fixture(), store = await f.open();
       await store.save(input);
       await store.dispose();
@@ -96,6 +93,15 @@ describe("retained conversation snapshot", () => {
       expect(await reload.inspectReload(read)).toBeNull();
       expect(reload.hasRetainedIdentity()).toBe(false);
       await reload.dispose();
+    }
+  });
+  it("keeps a retained identity blocked when the owner cookie or server status is unavailable", async () => {
+    for (const error of [new AccountingRequestError(401, "identity_required"),
+      new AccountingRequestError(403, "forbidden"), new AccountingRequestError(404, "not_found")]) {
+      const f = fixture(), store = await f.open(); await seed(store);
+      await expect(store.inspectReload(async () => { throw error; })).rejects.toBe(error);
+      expect(store.hasRetainedIdentity()).toBe(true);
+      await store.dispose();
     }
   });
   it("keeps a corrupt-row pointer when the server cannot confirm termination", async () => {
@@ -307,6 +313,14 @@ describe("retained conversation snapshot", () => {
       conversation: { version: 4, status: "resuming" } });
     expect(await store.readForResume(async () => server)).toBeNull();
     expect(await rawRow(f.indexedDB, f.name, [store.clientInstanceId, input.conversationId])).toBeDefined();
+  });
+  it("keeps an uncertain abort tied to the same claim after the server returns to paused", async () => {
+    const f = fixture(), store = await f.open(); await seed(store);
+    const id = crypto.randomUUID();
+    await store.rememberResumeAttempt(input.conversationId, id);
+    const server = paused({ version: 5, status: "paused", resumeAttemptId: null });
+    expect(await store.inspectReload(async () => server)).toMatchObject({ kind: "pending", snapshot: { resumeAttemptId: id } });
+    expect(await store.readForResume(async () => server)).toBeNull();
   });
 
   it("blocks an impossible interpreter stage instead of restoring invented language assignments", async () => {

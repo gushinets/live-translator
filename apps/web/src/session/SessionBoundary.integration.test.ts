@@ -149,6 +149,36 @@ async function reloadAfterPause(f: ReturnType<typeof fixture>, dispose = true, p
   if (pendingEnd) await expect(controller.dispose()).rejects.toThrow("Conversation End was not confirmed");
   else await controller.dispose();
 }
+async function reloadedController(f: ReturnType<typeof fixture>) {
+  const store = ResumeSnapshotStore.open({ indexedDB: f.snapshotDb, sessionStorage,
+    locks: f.snapshotLocks, name: f.snapshotName });
+  const scope = new ConversationAccounting({ api: f.api, budget: f.budget, autoDelivery: false });
+  const clients: Array<{ client: LiveClient; peer: Peer }> = [];
+  const controller = new AccountedSessionController({ audio: f.audio, createLive: () => {
+    const peer = new Peer(f.stream), attempt = scope.newAttempt();
+    const client = new LiveClient({ backend: {} as BackendClient, accounting: attempt,
+      peerFactory: () => peer as unknown as RTCPeerConnection,
+      onRemoteStream: (value, source) => controller.handleRemoteStream(value, source) });
+    clients.push({ client, peer }); return client;
+  }, visibility: new VisibilityController(document),
+    orientation: { onChange: null, start: () => {}, stop: () => {}, isPortrait: () => true,
+      lockPortrait: async () => {} } as unknown as OrientationController,
+    wakeLock: { request: async () => {}, reacquire: async () => {}, release: async () => {} } as WakeLockController,
+  }, scope, store);
+  controller.start();
+  return { controller, scope, store, clients };
+}
+async function pausedReloadFixture() {
+  const f = fixture(40, true); configureResume(f);
+  await f.controller.startBootstrap();
+  f.setVisible(false);
+  await vi.waitFor(() => expect(f.clients[0]!.peer.channel.sent).toContain("session.close"));
+  f.clients[0]!.peer.channel.emit({ type: "session.closed" });
+  await vi.waitFor(() => expect(f.c.status).toBe("paused"));
+  await f.controller.dispose();
+  f.setVisible(true);
+  return f;
+}
 async function enterInterpreter(f: ReturnType<typeof fixture>) {
   await f.controller.startBootstrap();
   await f.controller.acceptBootstrap("I speak English and would like to find the nearest station.");
@@ -558,7 +588,45 @@ describe("stage 5 hidden boundary", () => {
     expect(f.track.enabled).toBe(false);
     await f.controller.dispose(); await f.budget.close();
   });
-  it("A5.9 closes resumed input when a later remote play fails", async () => {
+  it("waits for the accepted remote track when another track arrives before the first play settles", async () => {
+    const f = fixture(40, true); configureResume(f);
+    await f.controller.startBootstrap();
+    f.setVisible(false);
+    await vi.waitFor(() => expect(f.clients[0]!.peer.channel.sent).toContain("session.close"));
+    f.clients[0]!.peer.channel.emit({ type: "session.closed" });
+    await vi.waitFor(() => expect(f.c.status).toBe("paused"));
+    let finishFirst!: () => void;
+    const firstPlay = new Promise<void>(resolve => { finishFirst = resolve; });
+    f.audio.audioElement.play = vi.fn().mockImplementationOnce(() => firstPlay)
+      .mockImplementationOnce(() => new Promise<void>(() => {}));
+    f.setVisible(true);
+    await vi.waitFor(() => expect(f.audio.audioElement.play).toHaveBeenCalledTimes(1));
+    f.clients.at(-1)!.peer.emitRemoteTrack(f.stream);
+    await settle();
+    expect(f.audio.audioElement.play).toHaveBeenCalledTimes(1);
+    finishFirst();
+    await vi.waitFor(() => expect(f.api.completeResume).toHaveBeenCalledTimes(1));
+    await f.controller.endConversation(); await f.budget.close();
+  });
+  it("retires a committed remote track ending with a media cleanup reason", async () => {
+    const f = fixture(40, true); configureResume(f);
+    await f.controller.startBootstrap();
+    f.setVisible(false);
+    await vi.waitFor(() => expect(f.clients[0]!.peer.channel.sent).toContain("session.close"));
+    f.clients[0]!.peer.channel.emit({ type: "session.closed" });
+    await vi.waitFor(() => expect(f.c.status).toBe("paused"));
+    f.setVisible(true);
+    await vi.waitFor(() => expect(f.controller.session.state).toBe("bootstrap"));
+    const resumed = f.clients.at(-1)!;
+    const ended = f.track.addEventListener.mock.calls.at(-1)?.[1] as EventListener;
+    ended(new Event("ended"));
+    await vi.waitFor(() => expect(f.api.end).toHaveBeenCalled());
+    const reason = (await f.budget.get(resumed.id))?.cleanup?.reason ??
+      f.api.cleanup.mock.calls.find(([id]) => id === resumed.id)?.[1];
+    expect(reason).toBe("abandoned_connect");
+    await f.controller.dispose(); await f.budget.close();
+  });
+  it("A5.9 ignores a second remote track whose play would reject after commit", async () => {
     const f = fixture(40, true); configureResume(f);
     await enterInterpreter(f);
     const old = f.clients.at(-1)!;
@@ -569,11 +637,15 @@ describe("stage 5 hidden boundary", () => {
     f.setVisible(true);
     await vi.waitFor(() => expect(f.controller.session.state).toBe("listening"));
     expect(f.track.enabled).toBe(true);
-    f.audio.audioElement.play = vi.fn().mockRejectedValueOnce(new Error("playback stopped"));
+    const play = f.audio.audioElement.play = vi.fn().mockRejectedValueOnce(new Error("playback stopped"));
     f.clients.at(-1)!.peer.emitRemoteTrack(f.stream);
-    await vi.waitFor(() => expect(f.api.end).toHaveBeenCalled());
-    expect(f.track.enabled).toBe(false);
-    expect(f.audio.audioElement.srcObject).toBeNull();
+    await settle();
+    expect(play).not.toHaveBeenCalled();
+    expect(f.api.end).not.toHaveBeenCalled();
+    expect(f.track.enabled).toBe(true);
+    const ending = f.controller.endConversation();
+    f.clients.at(-1)!.peer.channel.emit({ type: "session.closed" });
+    await ending;
     await f.controller.dispose(); await f.budget.close();
   });
   it("A5.9 waits for delayed remote play before completing resume", async () => {
@@ -777,6 +849,117 @@ describe("stage 5 hidden boundary", () => {
     expect(f.api.createSession).toHaveBeenCalledTimes(2);
     expect(resumedClients.at(-1)!.peer).not.toBe(f.clients[0]!.peer);
     await controller.dispose(); await f.budget.close();
+  });
+  it("reconciles a claimed reload before dispatch, then retries with one new provider", async () => {
+    const f = await pausedReloadFixture();
+    const oldId = crypto.randomUUID();
+    const stagingStore = await ResumeSnapshotStore.open({ indexedDB: f.snapshotDb, sessionStorage,
+      locks: f.snapshotLocks, name: f.snapshotName });
+    await stagingStore.rememberResumeAttempt(f.c.conversationId, oldId);
+    await stagingStore.dispose();
+    f.c.status = "resuming"; f.c.version++; f.c.resumeAttemptId = oldId;
+    const oldVersion = f.c.version;
+    f.api.readAttempt.mockImplementation(async id => ({ liveSessionId: id, state: id === oldId ? "failed" : "active",
+      cleanupRequestedAt: Date.now(), handoffAcknowledgedAt: null, conversation: { ...f.c } }));
+    const reloaded = await reloadedController(f);
+    await vi.waitFor(() => expect(reloaded.controller.retainedRecoveryState).toBe("failed"));
+    await reloaded.controller.resumeRetainedConversation();
+    expect(f.api.abortResume).toHaveBeenCalledWith(f.c.conversationId, oldVersion, oldId, "interrupted_by_restart");
+    expect(f.api.claimResume.mock.calls.at(-1)![2]).not.toBe(oldId);
+    expect(f.api.createSession).toHaveBeenCalledTimes(2);
+    expect(reloaded.controller.session.state).toBe("bootstrap");
+    await reloaded.controller.dispose(); await f.budget.close();
+  });
+  it("keeps a claimed reload blocked when abort response and receipt are uncertain", async () => {
+    const f = await pausedReloadFixture();
+    const oldId = crypto.randomUUID();
+    const stagingStore = await ResumeSnapshotStore.open({ indexedDB: f.snapshotDb, sessionStorage,
+      locks: f.snapshotLocks, name: f.snapshotName });
+    await stagingStore.rememberResumeAttempt(f.c.conversationId, oldId);
+    await stagingStore.dispose();
+    f.c.status = "resuming"; f.c.version++; f.c.resumeAttemptId = oldId;
+    f.api.abortResume.mockRejectedValue(new Error("abort response lost"));
+    const reloaded = await reloadedController(f);
+    await vi.waitFor(() => expect(reloaded.controller.retainedRecoveryState).toBe("failed"));
+    await expect(reloaded.controller.resumeRetainedConversation()).rejects.toThrow();
+    expect(f.api.claimResume).not.toHaveBeenCalled();
+    expect(f.api.createSession).toHaveBeenCalledTimes(1);
+    await reloaded.controller.startContextCapture();
+    expect(f.api.createSession).toHaveBeenCalledTimes(1);
+    await reloaded.controller.dispose().catch(() => undefined); await f.budget.close();
+  });
+  it("retries an ambiguous abort with the same claim before opening a new provider", async () => {
+    const f = await pausedReloadFixture();
+    const oldId = crypto.randomUUID();
+    const stagingStore = await ResumeSnapshotStore.open({ indexedDB: f.snapshotDb, sessionStorage,
+      locks: f.snapshotLocks, name: f.snapshotName });
+    await stagingStore.rememberResumeAttempt(f.c.conversationId, oldId);
+    await stagingStore.dispose();
+    f.c.status = "resuming"; f.c.version++; f.c.resumeAttemptId = oldId;
+    const abort = f.api.abortResume.getMockImplementation()!;
+    f.api.abortResume.mockImplementationOnce(async (...args) => { await abort(...args); throw new Error("response lost"); });
+    f.api.readAttempt.mockImplementation(async id => ({ liveSessionId: id, state: "failed", cleanupRequestedAt: Date.now(),
+      handoffAcknowledgedAt: null, conversation: { ...f.c } }));
+    const reloaded = await reloadedController(f);
+    await vi.waitFor(() => expect(reloaded.controller.retainedRecoveryState).toBe("failed"));
+    await reloaded.controller.resumeRetainedConversation();
+    expect(f.api.abortResume.mock.calls).toHaveLength(2);
+    expect(f.api.abortResume.mock.calls[0]).toEqual(f.api.abortResume.mock.calls[1]);
+    expect(f.api.createSession).toHaveBeenCalledTimes(2);
+    await reloaded.controller.dispose(); await f.budget.close();
+  });
+  it("ends an active reload with server proof before releasing the retained identity", async () => {
+    const f = await pausedReloadFixture();
+    f.c.status = "active"; f.c.version++; f.c.resumeExpiresAt = null;
+    const reloaded = await reloadedController(f);
+    await vi.waitFor(() => expect(reloaded.controller.retainedRecoveryState).toBe("active"));
+    await reloaded.controller.endConversation();
+    expect(f.api.end).toHaveBeenCalledWith(f.c.conversationId, 3, "user_end");
+    expect(sessionStorage.getItem("live-translator-retained-conversation-v1")).toBeNull();
+    expect(f.api.createSession).toHaveBeenCalledTimes(1);
+    await reloaded.controller.dispose(); await f.budget.close();
+  });
+  it("keeps an active reload blocked when End cannot be confirmed", async () => {
+    const f = await pausedReloadFixture();
+    f.c.status = "active"; f.c.version++; f.c.resumeExpiresAt = null;
+    f.api.end.mockRejectedValue(new Error("offline"));
+    const reloaded = await reloadedController(f);
+    await vi.waitFor(() => expect(reloaded.controller.retainedRecoveryState).toBe("active"));
+    await expect(reloaded.controller.endConversation()).rejects.toThrow();
+    expect(sessionStorage.getItem("live-translator-retained-conversation-v1")).toBe(f.c.conversationId);
+    await expect(reloaded.controller.startContextCapture()).rejects.toThrow("Retained conversation");
+    await reloaded.controller.dispose().catch(() => undefined); await f.budget.close();
+  });
+  it("ends a paused reload without resetting only its local UI", async () => {
+    const f = await pausedReloadFixture();
+    const reloaded = await reloadedController(f);
+    await vi.waitFor(() => expect(reloaded.controller.retainedRecoveryState).toBe("paused"));
+    await reloaded.controller.endConversation();
+    expect(f.api.end).toHaveBeenCalledWith(f.c.conversationId, 2, "user_end");
+    expect(sessionStorage.getItem("live-translator-retained-conversation-v1")).toBeNull();
+    expect(f.api.createSession).toHaveBeenCalledTimes(1);
+    await reloaded.controller.dispose(); await f.budget.close();
+  });
+  it("serializes Retry and repeated End while a reloaded claim is pending", async () => {
+    const f = await pausedReloadFixture();
+    const reloaded = await reloadedController(f);
+    await vi.waitFor(() => expect(reloaded.controller.retainedRecoveryState).toBe("paused"));
+    const claim = f.api.claimResume.getMockImplementation()!;
+    let release!: () => void;
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    f.api.claimResume.mockImplementation(async (...args) => { await gate; return claim(...args); });
+    const retry = reloaded.controller.resumeRetainedConversation();
+    await vi.waitFor(() => expect(f.api.claimResume).toHaveBeenCalledTimes(1));
+    const firstEnd = reloaded.controller.endConversation();
+    const secondEnd = reloaded.controller.endConversation();
+    expect(secondEnd).toBe(firstEnd);
+    release();
+    await retry.catch(() => undefined);
+    await Promise.all([firstEnd, secondEnd]);
+    expect(f.api.createSession).toHaveBeenCalledTimes(1);
+    expect(f.c.status).toBe("ended");
+    expect(sessionStorage.getItem("live-translator-retained-conversation-v1")).toBeNull();
+    await reloaded.controller.dispose(); await f.budget.close();
   });
   it("ends accounting ownership on disposal after legacy hidden resets the UI to idle", async () => {
     const f = fixture(40, true);

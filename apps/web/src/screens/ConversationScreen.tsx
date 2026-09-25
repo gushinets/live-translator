@@ -14,7 +14,7 @@ export interface ConversationScreenController {
   readonly recoveryPrompt?: RecoveryPrompt;
   readonly ownerError?: string;
   readonly suspendReason?: LifecycleSuspendReason;
-  readonly retainedRecoveryState?: "checking" | "paused" | "resuming" | "failed";
+  readonly retainedRecoveryState?: "checking" | "paused" | "resuming" | "failed" | "active";
   subscribe(listener: () => void): () => void;
   correctLastTurn(side: Side): Promise<void>;
   endConversation(): Promise<void>;
@@ -101,10 +101,11 @@ export function ConversationScreen({
       />
       <div className="conversation-center">
         {controller.retainedRecoveryState !== undefined ? (
-          <p role="status">{controller.retainedRecoveryState === "failed" ? "Не удалось восстановить разговор." :
+          <p role="status">{controller.retainedRecoveryState === "failed" ? "Не удалось проверить или восстановить разговор. Проверьте соединение и повторите или завершите его." :
+            controller.retainedRecoveryState === "active" ? "Сохранённый разговор ещё активен. Завершите его перед новым разговором." :
             controller.retainedRecoveryState === "paused" ? "Разговор приостановлен." : "Восстанавливаем разговор…"}</p>
         ) : null}
-        {controller.retainedRecoveryState !== undefined && controller.retainedRecoveryState !== "checking" ? (
+        {controller.retainedRecoveryState !== undefined && !["checking", "active"].includes(controller.retainedRecoveryState) ? (
           <button type="button" disabled={controller.retainedRecoveryState === "resuming"} onClick={() => {
             void controller.resumeRetainedConversation?.().catch(error => {
               console.error("Retained conversation recovery failed", { error });
