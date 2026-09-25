@@ -143,7 +143,8 @@ export class SessionController {
   private earlyVisibilityStarted = false;
   private backgroundPaused = false;
   private backgroundCloseWork: Promise<void> | null = null;
-  private retainedResumeInFlight = false;
+  protected retainedResumeInFlight = false;
+  protected retainedResumeCaptureEnded = false;
   private visibleAgainDuringResume = false;
   private providerStartedObservedAt = 0;
   protected retainedResumePhase: "media" | "create" | "restore" | "complete" = "media";
@@ -201,6 +202,7 @@ export class SessionController {
   }
   protected async restoreRetained(snapshot: ResumeSnapshot, complete: (startedAt: number) => Promise<void>): Promise<void> {
     const generation = this.sessionGeneration;
+    this.retainedResumeCaptureEnded = false;
     this.retainedResumePhase = "media";
     const current = () => this.backgroundResumeCurrent(generation);
     if (!current()) throw new Error("Resume cancelled");
@@ -261,6 +263,7 @@ export class SessionController {
       Date.now() >= (snapshot.serverResumeExpiresAt ?? 0) ||
       (snapshot.productDeadlineAt !== null && Date.now() >= snapshot.productDeadlineAt))
       throw new Error("Resume readiness or deadline expired");
+    this.assertCaptureStreamLive(stream);
     this.assertRemotePlaybackReady();
     this.retainedResumePhase = "complete";
     await complete(this.providerStartedObservedAt);
@@ -268,6 +271,7 @@ export class SessionController {
       Date.now() >= (snapshot.serverResumeExpiresAt ?? 0) ||
       (snapshot.productDeadlineAt !== null && Date.now() >= snapshot.productDeadlineAt))
       throw new Error("Resume cancelled after commit");
+    this.assertCaptureStreamLive(stream);
     this.assertRemotePlaybackReady();
     this.contextBuffer = snapshot.contextText;
     this.contextFrozenByUser = true;
@@ -285,9 +289,11 @@ export class SessionController {
     this.discardedUnfinishedOnSuspend = snapshot.interruptedUtterance;
     this.recoveryPromptKind = snapshot.interruptedUtterance ? "repeat" : undefined;
     if (snapshot.setupStage === "interpreter") {
+      this.assertCaptureStreamLive(stream);
       this.assertRemotePlaybackReady();
       if (!(await this.unmuteGateB(generation)) || this.sessionGeneration !== generation || this.visibility.isHidden())
         throw new Error("Resume cancelled before input opened");
+      this.assertCaptureStreamLive(stream);
       this.assertRemotePlaybackReady();
       this.audio.resetVoiceActivityBaseline();
       this.audio.setCaptureEnabled(true);
@@ -296,8 +302,10 @@ export class SessionController {
       this.speechInputReady = true;
       await this.startPlatformLifecycle();
     } else {
+      this.assertCaptureStreamLive(stream);
       this.assertRemotePlaybackReady();
       if (!(await this.unmuteGateB(generation))) throw new Error("Resume cancelled before setup input opened");
+      this.assertCaptureStreamLive(stream);
       this.assertRemotePlaybackReady();
     }
     if (!current()) throw new Error("Resume cancelled after commit");
@@ -326,6 +334,18 @@ export class SessionController {
     this.bumpLifecycleEpoch();
     this.stopLocalMedia();
     void this.live.disconnectImmediately("user_end").catch(() => console.error("Retained End transport cleanup incomplete"));
+  }
+  protected beginRetainedResume(): boolean {
+    if (this.retainedResumeInFlight) return false;
+    this.retainedResumeInFlight = true;
+    return true;
+  }
+  protected finishRetainedResume(): void {
+    this.retainedResumeInFlight = false;
+    if (this.visibleAgainDuringResume) {
+      this.visibleAgainDuringResume = false;
+      if (this.backgroundPaused && !this.visibility.isHidden()) void this.handleVisibilityVisible();
+    }
   }
   protected clearIdleBackgroundPause(): boolean { return true; }
   protected pauseBackground(_state: Omit<ResumeSnapshotInput, "conversationId" | "conversationVersion" | "policyVersion" | "productDeadlineAt">,
@@ -2221,6 +2241,7 @@ export class SessionController {
       throw new Error("Microphone capture stream has no audio track");
     }
     if (track.readyState !== "live") {
+      if (this.backgroundPaused && this.retainedResumeInFlight) this.retainedResumeCaptureEnded = true;
       throw new Error(MICROPHONE_CAPTURE_ENDED_MESSAGE);
     }
   }
@@ -2478,15 +2499,9 @@ export class SessionController {
   private async handleVisibilityVisible(): Promise<void> {
     if (this.backgroundPaused) {
       if (this.retainedResumeInFlight) { this.visibleAgainDuringResume = true; return; }
-      this.retainedResumeInFlight = true;
+      this.beginRetainedResume();
       try { await this.resumeBackground(); }
-      finally {
-        this.retainedResumeInFlight = false;
-        if (this.visibleAgainDuringResume) {
-          this.visibleAgainDuringResume = false;
-          if (this.backgroundPaused && !this.visibility.isHidden()) void this.handleVisibilityVisible();
-        }
-      }
+      finally { this.finishRetainedResume(); }
       return;
     }
     await this.enqueueLifecycle(async () => {
@@ -2510,7 +2525,16 @@ export class SessionController {
   }
 
   private handleCaptureEnded(): void {
-    if (this.backgroundPaused) return;
+    if (this.backgroundPaused) {
+      if (this.retainedResumeInFlight) {
+        this.retainedResumeCaptureEnded = true;
+        this.sessionGeneration++;
+        this.bumpLifecycleEpoch();
+        this.stopLocalMedia();
+        void this.live.disconnectImmediately("abandoned_connect").catch(() => console.error("Resume cleanup incomplete"));
+      }
+      return;
+    }
     const state = this.currentSession.state;
     if (state === "idle" || state === "ending" || state === "ended" || state === "error") {
       return;

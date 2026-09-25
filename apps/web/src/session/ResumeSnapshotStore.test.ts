@@ -1,5 +1,5 @@
 import { IDBFactory } from "fake-indexeddb";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { AccountingRequestError, type ConversationMetadata } from "../api/AccountingBackend";
 import { ResumeSnapshotStore, type ResumeSnapshotInput } from "./ResumeSnapshotStore";
 
@@ -163,6 +163,56 @@ describe("retained conversation snapshot", () => {
     f.at(400_000);
     await expect(store.readForResume(async () => paused({ resumeExpiresAt: 900_000 }))).rejects.toThrow();
     expect(f.tab.getItem("live-translator-retained-conversation-v1")).toBe(input.conversationId);
+    expect(await rawRow(f.indexedDB, f.name, [store.clientInstanceId, input.conversationId])).toBeUndefined();
+    expect(store.retainedConversationVersion()).toBe(3);
+    await store.dispose();
+    const reload = await f.open();
+    await expect(reload.readForResume(async () => paused({ resumeExpiresAt: 900_000 }))).rejects.toThrow();
+    expect(reload.hasRetainedIdentity()).toBe(true);
+    expect(await reload.inspectReload(async () => paused({ status: "ended", version: 4, resumeExpiresAt: null }))).toBeNull();
+    expect(reload.hasRetainedIdentity()).toBe(false);
+  });
+
+  it("fails closed if deleting expired runtime content fails", async () => {
+    const f = fixture(), store = await f.open(); await seed(store);
+    const key: [string, string] = [store.clientInstanceId, input.conversationId];
+    const db = await (store as unknown as { database(): Promise<IDBDatabase> }).database();
+    const transaction = db.transaction.bind(db);
+    const fault = vi.spyOn(db, "transaction").mockImplementation((name, mode) => {
+      if (mode === "readwrite") throw new Error("storage unavailable");
+      return transaction(name, mode);
+    });
+    f.at(400_000);
+    await expect(store.inspectReload(async () => paused({ resumeExpiresAt: 900_000 }))).rejects.toThrow("storage unavailable");
+    expect(await rawRow(f.indexedDB, f.name, key)).toBeDefined();
+    expect(store.hasRetainedIdentity()).toBe(true);
+    fault.mockRestore();
+    await expect(store.inspectReload(async () => paused({ resumeExpiresAt: 900_000 }))).rejects.toThrow();
+    expect(await rawRow(f.indexedDB, f.name, key)).toBeUndefined();
+  });
+
+  it("purges runtime content if the local deadline passes during the server read", async () => {
+    const f = fixture(), store = await f.open(); await seed(store);
+    await store.confirmPause(paused({ resumeExpiresAt: 900_000 }));
+    const key: [string, string] = [store.clientInstanceId, input.conversationId];
+    f.at(399_999);
+    await expect(store.inspectReload(async () => {
+      f.at(400_000);
+      return paused({ resumeExpiresAt: 900_000 });
+    })).rejects.toThrow("not eligible");
+    expect(await rawRow(f.indexedDB, f.name, key)).toBeUndefined();
+    expect(store.hasRetainedIdentity()).toBe(true);
+  });
+  it("purges at the deadline even if the server read then fails", async () => {
+    const f = fixture(), store = await f.open(); await seed(store);
+    const key: [string, string] = [store.clientInstanceId, input.conversationId];
+    f.at(399_999);
+    await expect(store.inspectReload(async () => {
+      f.at(400_000);
+      throw new Error("offline");
+    })).rejects.toThrow("offline");
+    expect(await rawRow(f.indexedDB, f.name, key)).toBeUndefined();
+    expect(store.hasRetainedIdentity()).toBe(true);
   });
 
   it("blocks corrupt and unknown-version rows when the server remains active", async () => {
@@ -267,8 +317,9 @@ describe("retained conversation snapshot", () => {
       kind: "active", conversationId: input.conversationId, conversationVersion: 5,
     });
     expect(f.tab.getItem("live-translator-retained-conversation-v1")).toBe(input.conversationId);
-    expect(await rawRow(f.indexedDB, f.name, [store.clientInstanceId, input.conversationId])).toBeDefined();
-    expect(await store.readForResume(async () => active)).toBeNull();
+    expect(await rawRow(f.indexedDB, f.name, [store.clientInstanceId, input.conversationId])).toBeUndefined();
+    expect(store.retainedConversationVersion()).toBe(5);
+    await expect(store.readForResume(async () => active)).rejects.toThrow("snapshot unavailable");
 
     const fresh = fixture(), unpaused = await fresh.open();
     await unpaused.save(input);

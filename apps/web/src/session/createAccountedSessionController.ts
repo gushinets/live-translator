@@ -184,6 +184,7 @@ export class AccountedSessionController extends SessionController {
     if (this.retainedEndWork) return this.retainedEndWork;
     if (this.resumeWork) return this.resumeWork;
     if (explicit) { this.resumeFailed = false; this.pendingClaim = false; }
+    const ownsFence = explicit && this.beginRetainedResume();
     const work = (async () => {
       await this.recoveryProbe;
       await this.runRetainedResume(explicit);
@@ -197,6 +198,7 @@ export class AccountedSessionController extends SessionController {
     }
     finally {
       if (this.resumeWork === work) this.resumeWork = null;
+      if (ownsFence) this.finishRetainedResume();
       this.notify();
     }
   }
@@ -347,8 +349,10 @@ export class AccountedSessionController extends SessionController {
       this.resumeFailed = !cancelled;
       this.notify();
       if (claimed) {
-        const cleanup = this.abandonRetainedMedia(this.backgroundResumeCurrent(generation) ? "abandoned_connect" : "hidden");
-        const reason: ResumeAbortReason = cancelled && document.visibilityState === "hidden" ? "hidden" :
+        const cleanup = this.abandonRetainedMedia(this.retainedResumeCaptureEnded ||
+          this.backgroundResumeCurrent(generation) ? "abandoned_connect" : "hidden");
+        const reason: ResumeAbortReason = this.retainedResumeCaptureEnded ? "media_not_ready" :
+          cancelled && document.visibilityState === "hidden" ? "hidden" :
           this.retainedResumePhase === "media" || !this.accounting.resumeDispatched ||
           error instanceof Error && /Microphone|audio|playback|media/i.test(error.message) ? "media_not_ready" :
           this.retainedResumePhase === "create" ? "provider_creation_failed" : "restore_ack_failed";

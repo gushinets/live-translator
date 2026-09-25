@@ -347,7 +347,19 @@ export class ResumeSnapshotStore {
     if (!conversationId) return null;
     if (conversationId === PENDING_CREATE) throw new Error("Retained conversation create remains unresolved");
     const row = await this.get(conversationId);
-    const server = await read(conversationId);
+    let purged = false;
+    const purgeExpired = async () => {
+      if (purged || !validSnapshot(row, this.clientInstanceId, conversationId) ||
+        !(row.localResumeDeadlineAt !== null && this.now() >= row.localResumeDeadlineAt ||
+          row.serverResumeExpiresAt !== null && this.now() >= row.serverResumeExpiresAt ||
+          row.productDeadlineAt !== null && this.now() >= row.productDeadlineAt)) return;
+      await this.transaction("readwrite", (store, done) => {
+        store.delete([this.clientInstanceId, conversationId]); done(undefined);
+      });
+      purged = true;
+    };
+    await purgeExpired();
+    const server = await read(conversationId).finally(purgeExpired);
     const retainedVersion = Number(this.storage?.getItem(CONVERSATION_VERSION_KEY));
     if (record(server) && server.conversationId === conversationId && server.status === "ended" &&
       Number.isSafeInteger(server.version) && server.version >= Math.max(1, retainedVersion,
@@ -362,9 +374,10 @@ export class ResumeSnapshotStore {
       server.policy.policyVersion !== row.policyVersion || !timestamp(server.serverTime)) {
       throw new Error("Retained conversation status unavailable");
     }
-    if (server.status === "active") return {
-      kind: "active", conversationId, conversationVersion: server.version,
-    };
+    if (server.status === "active") {
+      this.retainIdentity(conversationId, server.version);
+      return { kind: "active", conversationId, conversationVersion: server.version };
+    }
     if (server.status === "paused" && row.serverResumeExpiresAt === null)
       throw new Error("Retained conversation pause snapshot unavailable");
     if (row.localResumeDeadlineAt === null || row.serverResumeExpiresAt === null ||

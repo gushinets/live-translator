@@ -559,6 +559,125 @@ describe("stage 5 hidden boundary", () => {
     expect(f.track.enabled).toBe(false);
     await f.controller.dispose(); await f.budget.close();
   });
+  it("hides an explicit retry immediately while complete is pending", async () => {
+    const f = await pausedReloadFixture();
+    const reloaded = await reloadedController(f);
+    await vi.waitFor(() => expect(reloaded.controller.retainedRecoveryState).toBe("paused"));
+    const complete = f.api.completeResume.getMockImplementation()!;
+    let release!: () => void;
+    f.api.completeResume.mockImplementation(async (...args) => {
+      await new Promise<void>(resolve => { release = resolve; });
+      return complete(...args);
+    });
+    const retry = reloaded.controller.resumeRetainedConversation().catch(() => undefined);
+    await vi.waitFor(() => expect(release).toBeDefined());
+    const resumed = reloaded.clients.at(-1)!;
+    f.setVisible(false);
+    expect(resumed.peer.close).toHaveBeenCalledTimes(1);
+    expect(f.track.enabled).toBe(false);
+    release();
+    await retry;
+    await vi.waitFor(() => expect(f.api.end).toHaveBeenCalled());
+    const id = f.api.claimResume.mock.calls[0]![2];
+    expect((await f.budget.get(id))?.cleanup?.reason ?? f.api.cleanup.mock.calls.find(([value]) => value === id)?.[1]).toBe("hidden");
+    expect(resumed.peer.channel.sent).not.toContain("session.input_audio.unmute");
+    await reloaded.controller.dispose(); await f.budget.close();
+  });
+  it("aborts automatic resume when capture ends during restore ACK", async () => {
+    const f = fixture(40, true); configureResume(f);
+    await f.controller.startBootstrap();
+    f.setVisible(false);
+    await vi.waitFor(() => expect(f.clients[0]!.peer.channel.sent).toContain("session.close"));
+    f.clients[0]!.peer.channel.emit({ type: "session.closed" });
+    await vi.waitFor(() => expect(f.c.status).toBe("paused"));
+    const handoff = f.api.handoff.getMockImplementation()!;
+    f.api.handoff.mockImplementation(async id => {
+      f.clients.at(-1)!.peer.channel.autoAckMute = false;
+      return handoff(id);
+    });
+    f.setVisible(true);
+    await vi.waitFor(() => expect(f.clients.at(-1)!.peer.channel.sent).toContain("session.input_audio.mute"));
+    const resumed = f.clients.at(-1)!;
+    f.track.readyState = "ended";
+    f.audio.onCaptureEnded?.();
+    expect(resumed.peer.close).toHaveBeenCalledTimes(1);
+    await vi.waitFor(() => expect(f.api.abortResume).toHaveBeenCalledWith("conversation", 3, resumed.id, "media_not_ready"));
+    expect((await f.budget.get(resumed.id))?.cleanup?.reason).toBe("abandoned_connect");
+    expect(f.api.completeResume).not.toHaveBeenCalled();
+    expect(f.track.enabled).toBe(false);
+    await f.controller.dispose(); await f.budget.close();
+  });
+  it("checks capture liveness before complete even without an ended event", async () => {
+    const f = fixture(40, true); configureResume(f);
+    await f.controller.startBootstrap();
+    f.setVisible(false);
+    await vi.waitFor(() => expect(f.clients[0]!.peer.channel.sent).toContain("session.close"));
+    f.clients[0]!.peer.channel.emit({ type: "session.closed" });
+    await vi.waitFor(() => expect(f.c.status).toBe("paused"));
+    const handoff = f.api.handoff.getMockImplementation()!;
+    f.api.handoff.mockImplementation(async id => {
+      f.clients.at(-1)!.peer.channel.autoAckMute = false;
+      return handoff(id);
+    });
+    f.setVisible(true);
+    await vi.waitFor(() => expect(f.clients.at(-1)!.peer.channel.events.some(event => event.type === "session.input_audio.mute")).toBe(true));
+    const resumed = f.clients.at(-1)!;
+    const mute = resumed.peer.channel.events.find(event => event.type === "session.input_audio.mute")!;
+    f.track.readyState = "ended";
+    resumed.peer.channel.emit({ type: "session.input_audio.muted", client_event_id: mute.event_id });
+    await vi.waitFor(() => expect(f.api.abortResume).toHaveBeenCalledWith("conversation", 3, resumed.id, "media_not_ready"));
+    expect(f.api.completeResume).not.toHaveBeenCalled();
+    expect(f.track.enabled).toBe(false);
+    await f.controller.dispose(); await f.budget.close();
+  });
+  it("retires a committed automatic resume when capture ends during complete", async () => {
+    const f = fixture(40, true); configureResume(f);
+    await f.controller.startBootstrap();
+    f.setVisible(false);
+    await vi.waitFor(() => expect(f.clients[0]!.peer.channel.sent).toContain("session.close"));
+    f.clients[0]!.peer.channel.emit({ type: "session.closed" });
+    await vi.waitFor(() => expect(f.c.status).toBe("paused"));
+    const complete = f.api.completeResume.getMockImplementation()!;
+    let release!: () => void;
+    f.api.completeResume.mockImplementation(async (...args) => {
+      await new Promise<void>(resolve => { release = resolve; });
+      return complete(...args);
+    });
+    f.setVisible(true);
+    await vi.waitFor(() => expect(release).toBeDefined());
+    const resumed = f.clients.at(-1)!;
+    f.track.readyState = "ended";
+    f.audio.onCaptureEnded?.();
+    expect(resumed.peer.close).toHaveBeenCalledTimes(1);
+    release();
+    await vi.waitFor(() => expect(f.api.end).toHaveBeenCalled());
+    expect(resumed.peer.channel.sent).not.toContain("session.input_audio.unmute");
+    expect(f.track.enabled).toBe(false);
+    await f.controller.dispose(); await f.budget.close();
+  });
+  it("checks capture liveness before opening the post-complete input gate", async () => {
+    const f = fixture(40, true); configureResume(f);
+    await f.controller.startBootstrap();
+    f.setVisible(false);
+    await vi.waitFor(() => expect(f.clients[0]!.peer.channel.sent).toContain("session.close"));
+    f.clients[0]!.peer.channel.emit({ type: "session.closed" });
+    await vi.waitFor(() => expect(f.c.status).toBe("paused"));
+    const complete = f.api.completeResume.getMockImplementation()!;
+    let release!: () => void;
+    f.api.completeResume.mockImplementation(async (...args) => {
+      await new Promise<void>(resolve => { release = resolve; });
+      return complete(...args);
+    });
+    f.setVisible(true);
+    await vi.waitFor(() => expect(release).toBeDefined());
+    const resumed = f.clients.at(-1)!;
+    f.track.readyState = "ended";
+    release();
+    await vi.waitFor(() => expect(f.api.end).toHaveBeenCalled());
+    expect(resumed.peer.channel.sent).not.toContain("session.input_audio.unmute");
+    expect(f.track.enabled).toBe(false);
+    await f.controller.dispose(); await f.budget.close();
+  });
   it("A5.9 autoplay refusal keeps output closed and a gesture retry uses a fresh claim", async () => {
     const f = fixture(40, true); configureResume(f);
     await f.controller.startBootstrap();
