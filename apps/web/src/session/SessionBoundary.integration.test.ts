@@ -1164,6 +1164,117 @@ describe("stage 5 hidden boundary", () => {
     await f.controller.dispose(); await f.budget.close();
   });
 
+  it.each(["startContextCapture", "startBootstrap"] as const)(
+    "joins repeated %s clicks while policy is pending", async action => {
+      const f = fixture(40, true);
+      let release!: () => void;
+      f.api.policy.mockImplementation(() => new Promise(resolve => {
+        release = () => resolve({ usageLedgerEnabled: true, backgroundSessionCloseEnabled: true });
+      }));
+      const prime = vi.spyOn(f.audio, "primeOutput");
+
+      const first = f.controller[action]();
+      const second = f.controller[action]();
+      expect(prime).toHaveBeenCalledTimes(1);
+      release();
+      await Promise.all([first, second]);
+      expect(f.api.createSession).toHaveBeenCalledTimes(1);
+      f.api.end.mockImplementation(async (_id, version) => {
+        f.c.status = "ended"; f.c.version = version + 1; return { ...f.c };
+      });
+      await f.controller.dispose(); await f.budget.close();
+    },
+  );
+
+  it("does not start after disposal while policy is pending", async () => {
+    const f = fixture(40, true);
+    let release!: () => void;
+    f.api.policy.mockImplementationOnce(() => new Promise(resolve => {
+      release = () => resolve({ usageLedgerEnabled: true, backgroundSessionCloseEnabled: true });
+    }));
+    const starting = f.controller.startContextCapture();
+    const disposing = f.controller.dispose();
+    release();
+    await Promise.all([starting, disposing]);
+    expect(f.api.createConversation).not.toHaveBeenCalled();
+    expect(f.api.createSession).not.toHaveBeenCalled();
+    await f.budget.close();
+  });
+
+  it("does not start after End is requested while policy is pending", async () => {
+    const f = fixture(40, true);
+    await f.controller.verifyRetainedConversation();
+    let release!: () => void;
+    f.api.policy.mockImplementationOnce(() => new Promise(resolve => {
+      release = () => resolve({ usageLedgerEnabled: true, backgroundSessionCloseEnabled: true });
+    }));
+    const starting = f.controller.startContextCapture();
+    await expect(f.controller.endConversation()).rejects.toThrow('Cannot end a session in state "idle"');
+    release();
+    await starting;
+    expect(f.api.createSession).not.toHaveBeenCalled();
+    await f.controller.dispose(); await f.budget.close();
+  });
+
+  it("cancels a pending Start and permits a fresh click", async () => {
+    const f = fixture(40, true);
+    let release!: () => void;
+    f.api.policy.mockImplementationOnce(() => new Promise(resolve => {
+      release = () => resolve({ usageLedgerEnabled: true, backgroundSessionCloseEnabled: true });
+    }));
+    const prime = vi.spyOn(f.audio, "primeOutput");
+    const starting = f.controller.startContextCapture();
+    const cancelling = f.controller.cancel();
+    release();
+    await Promise.all([starting, cancelling]);
+    expect(f.api.createSession).not.toHaveBeenCalled();
+    await f.controller.startContextCapture();
+    expect(prime).toHaveBeenCalledTimes(2);
+    expect(f.api.createSession).toHaveBeenCalledTimes(1);
+    f.api.end.mockImplementation(async (_id, version) => {
+      f.c.status = "ended"; f.c.version = version + 1; return { ...f.c };
+    });
+    await f.controller.dispose(); await f.budget.close();
+  });
+
+  it("abandons a pending Start after a transient hide with background close enabled", async () => {
+    const f = fixture(40, true);
+    let release!: () => void;
+    f.api.policy.mockImplementation(() => new Promise(resolve => {
+      release = () => resolve({ usageLedgerEnabled: true, backgroundSessionCloseEnabled: true });
+    }));
+    const starting = f.controller.startBootstrap();
+    f.setVisible(false);
+    f.setVisible(true);
+    release();
+    await starting;
+    expect(f.api.createSession).not.toHaveBeenCalled();
+    await f.controller.startBootstrap();
+    expect(f.api.createSession).toHaveBeenCalledTimes(1);
+    f.api.end.mockImplementation(async (_id, version) => {
+      f.c.status = "ended"; f.c.version = version + 1; return { ...f.c };
+    });
+    await f.controller.dispose(); await f.budget.close();
+  });
+
+  it("keeps a pending Start after a transient hide with background close disabled", async () => {
+    const f = fixture(40, false);
+    let release!: () => void;
+    f.api.policy.mockImplementation(() => new Promise(resolve => {
+      release = () => resolve({ usageLedgerEnabled: true, backgroundSessionCloseEnabled: false });
+    }));
+    const starting = f.controller.startContextCapture();
+    f.setVisible(false);
+    f.setVisible(true);
+    release();
+    await starting;
+    expect(f.api.createSession).toHaveBeenCalledTimes(1);
+    f.api.end.mockImplementation(async (_id, version) => {
+      f.c.status = "ended"; f.c.version = version + 1; return { ...f.c };
+    });
+    await f.controller.dispose(); await f.budget.close();
+  });
+
   it("contains a failed Start prime while policy is pending and never creates a provider", async () => {
     const f = fixture(40, true);
     let release!: () => void;

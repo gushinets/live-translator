@@ -31,6 +31,10 @@ class LazyAccounting implements NonNullable<LiveClientDeps["accounting"]> {
   async abandon(reason: CleanupReason) { this.cancelled = true; await this.attempt?.abandon(reason); }
 }
 export class AccountedSessionController extends SessionController {
+  private startWork: Promise<void> | null = null;
+  private startGeneration = 0;
+  private hiddenDuringStart = false;
+  private disposed = false;
   private resumeWork: Promise<void> | null = null;
   private recoveryProbe: Promise<void> | null = null;
   private verificationWork: Promise<void> | null = null;
@@ -122,6 +126,8 @@ export class AccountedSessionController extends SessionController {
     if (!result && this.retainedPaused) this.clearRetainedAfterEnd();
   }
   async dispose(): Promise<void> {
+    this.disposed = true;
+    this.invalidatePendingStart();
     this.fenceRetainedResumeForDisposal();
     this.stopEarlyVisibility();
     try {
@@ -204,6 +210,7 @@ export class AccountedSessionController extends SessionController {
     }
   }
   override endConversation(): Promise<void> {
+    this.invalidatePendingStart();
     if (this.unresolvedCreate) return Promise.reject(new Error("Retained conversation create remains unresolved"));
     if (this.retainedEndWork) return this.retainedEndWork;
     if (this.resumeWork && this.accounting.conversationId) return super.endConversation();
@@ -399,16 +406,27 @@ export class AccountedSessionController extends SessionController {
     if (!this.backgroundCloseEnabled) return true;
     return !this.sampleInitialHidden();
   }
-  override async startContextCapture(): Promise<void> {
+  protected override onVisibilityHidden(): void { if (this.startWork) this.hiddenDuringStart = true; }
+  private invalidatePendingStart(): void { this.startGeneration++; this.startWork = null; }
+  private startExplicit(action: (primedOutput: Promise<void>) => Promise<void>): Promise<void> {
+    if (this.disposed) return Promise.resolve();
+    if (this.startWork) return this.startWork;
+    const generation = this.startGeneration;
+    this.hiddenDuringStart = document.visibilityState === "hidden";
     const primedOutput = this.beginOutputPriming();
-    if (!await this.mayStart()) return;
-    await super.startContextCapture(primedOutput);
+    const work = (async () => {
+      if (!await this.mayStart()) return;
+      if (generation !== this.startGeneration || this.backgroundCloseEnabled && this.hiddenDuringStart) return;
+      await action(primedOutput);
+    })();
+    this.startWork = work;
+    const clear = () => { if (this.startWork === work) this.startWork = null; };
+    void work.then(clear, clear);
+    return work;
   }
-  override async startBootstrap(): Promise<void> {
-    const primedOutput = this.beginOutputPriming();
-    if (!await this.mayStart()) return;
-    await super.startBootstrap(primedOutput);
-  }
+  override startContextCapture(): Promise<void> { return this.startExplicit(primed => super.startContextCapture(primed)); }
+  override startBootstrap(): Promise<void> { return this.startExplicit(primed => super.startBootstrap(primed)); }
+  override cancel(): Promise<void> { this.invalidatePendingStart(); return super.cancel(); }
   protected override beginBackgroundPause(): void { this.accounting.beginBackgroundPause(); }
   protected override async pauseBackground(state: Omit<ResumeSnapshotInput,
     "conversationId" | "conversationVersion" | "policyVersion" | "productDeadlineAt">,

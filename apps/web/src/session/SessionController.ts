@@ -167,6 +167,7 @@ export class SessionController {
       void this.handleOrientationChange(orientation);
     };
     this.visibility.onHidden = () => {
+      this.onVisibilityHidden();
       if (!this.backgroundCloseEnabled && !this.platformStarted) return;
       void this.handleVisibilityHidden();
     };
@@ -183,6 +184,7 @@ export class SessionController {
   }
 
   protected get backgroundCloseEnabled(): boolean { return false; }
+  protected onVisibilityHidden(): void {}
   protected get retainedPaused(): boolean { return this.backgroundPaused; }
   protected beginBackgroundPause(): void {}
   protected resumeBackground(): Promise<void> { return Promise.resolve(); }
