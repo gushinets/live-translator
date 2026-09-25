@@ -607,6 +607,45 @@ describe("stage 5 hidden boundary", () => {
     expect(f.track.enabled).toBe(false);
     await f.controller.dispose(); await f.budget.close();
   });
+  it("uses hidden for a retry cancelled during claim after a prior capture-ended resume", async () => {
+    const f = fixture(40, true); configureResume(f);
+    await f.controller.startBootstrap();
+    f.setVisible(false);
+    await vi.waitFor(() => expect(f.clients[0]!.peer.channel.sent).toContain("session.close"));
+    f.clients[0]!.peer.channel.emit({ type: "session.closed" });
+    await vi.waitFor(() => expect(f.c.status).toBe("paused"));
+    const handoff = f.api.handoff.getMockImplementation()!;
+    f.api.handoff.mockImplementation(async id => {
+      f.clients.at(-1)!.peer.channel.autoAckMute = false;
+      return handoff(id);
+    });
+    f.setVisible(true);
+    await vi.waitFor(() => expect(f.clients.at(-1)!.peer.channel.sent).toContain("session.input_audio.mute"));
+    f.track.readyState = "ended";
+    f.audio.onCaptureEnded?.();
+    await vi.waitFor(() => expect(f.controller.retainedRecoveryState).toBe("failed"));
+    expect(f.api.abortResume.mock.calls[0]?.[3]).toBe("media_not_ready");
+
+    f.track.readyState = "live";
+    const claim = f.api.claimResume.getMockImplementation()!;
+    let release!: () => void;
+    f.api.claimResume.mockImplementation(async (...args) => {
+      await new Promise<void>(resolve => { release = resolve; });
+      return claim(...args);
+    });
+    const disconnect = vi.spyOn(f.clients.at(-1)!.client, "disconnectImmediately");
+    const retry = f.controller.resumeRetainedConversation().catch(() => undefined);
+    await vi.waitFor(() => expect(f.api.claimResume).toHaveBeenCalledTimes(2));
+    f.setVisible(false);
+    release();
+    await retry;
+    expect(f.api.abortResume.mock.calls.map(([, , , reason]) => reason)).toEqual(["media_not_ready", "hidden"]);
+    expect(disconnect.mock.calls.map(([reason]) => reason)).toEqual(["hidden", "hidden"]);
+    expect(f.api.createSession).toHaveBeenCalledTimes(2);
+    expect(f.api.completeResume).not.toHaveBeenCalled();
+    expect(f.track.enabled).toBe(false);
+    await f.controller.dispose(); await f.budget.close();
+  });
   it("checks capture liveness before complete even without an ended event", async () => {
     const f = fixture(40, true); configureResume(f);
     await f.controller.startBootstrap();

@@ -202,7 +202,6 @@ export class SessionController {
   }
   protected async restoreRetained(snapshot: ResumeSnapshot, complete: (startedAt: number) => Promise<void>): Promise<void> {
     const generation = this.sessionGeneration;
-    this.retainedResumeCaptureEnded = false;
     this.retainedResumePhase = "media";
     const current = () => this.backgroundResumeCurrent(generation);
     if (!current()) throw new Error("Resume cancelled");
@@ -337,11 +336,13 @@ export class SessionController {
   }
   protected beginRetainedResume(): boolean {
     if (this.retainedResumeInFlight) return false;
+    this.retainedResumeCaptureEnded = false;
     this.retainedResumeInFlight = true;
     return true;
   }
   protected finishRetainedResume(): void {
     this.retainedResumeInFlight = false;
+    this.retainedResumeCaptureEnded = false;
     if (this.visibleAgainDuringResume) {
       this.visibleAgainDuringResume = false;
       if (this.backgroundPaused && !this.visibility.isHidden()) void this.handleVisibilityVisible();
