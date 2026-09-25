@@ -1275,7 +1275,84 @@ describe("stage 5 hidden boundary", () => {
     expect(sessionStorage.getItem("live-translator-retained-conversation-v1")).toBeNull();
     await f.budget.close();
   });
-  it.each(["direct End", "verified End"] as const)("starts a new conversation after %s clears an unresolved local resume", async route => {
+  it.each(["End", "disposal"] as const)("%s reconciles a locally resuming conversation after its abort response was lost", async route => {
+    const f = fixture(40, true); configureResume(f);
+    await f.controller.startBootstrap();
+    f.setVisible(false);
+    await vi.waitFor(() => expect(f.clients[0]!.peer.channel.sent).toContain("session.close"));
+    f.clients[0]!.peer.channel.emit({ type: "session.closed" });
+    await vi.waitFor(() => expect(f.c.status).toBe("paused"));
+    f.api.createSession.mockRejectedValueOnce(new Error("provider response lost"));
+    const abort = f.api.abortResume.getMockImplementation()!;
+    f.api.abortResume.mockImplementation(async (...args) => { await abort(...args); throw new Error("abort response lost"); });
+    const readAttempt = f.api.readAttempt.getMockImplementation()!;
+    let cleanupRequestedAt: number | null = null;
+    f.api.readAttempt.mockImplementation(async id => id === f.api.claimResume.mock.calls[0]?.[2]
+      ? { liveSessionId: id, state: "failed", resumeOutcome: "aborted", resumeClaimVersion: 3,
+        cleanupRequestedAt, handoffAcknowledgedAt: null, conversation: { ...f.c } }
+      : readAttempt(id));
+    f.setVisible(true);
+    await vi.waitFor(() => expect(f.controller.retainedRecoveryState).toBe("failed"));
+    expect(f.scope.conversationStatus).toBe("resuming");
+    expect(f.c.status).toBe("paused");
+    expect(f.c.version).toBe(4);
+    if (route === "End") {
+      await expect(f.controller.endConversation()).rejects.toThrow("Recovered resume cleanup is still pending");
+      expect(f.api.end).not.toHaveBeenCalled();
+      expect(sessionStorage.getItem("live-translator-retained-conversation-v1")).toBe(f.c.conversationId);
+    }
+    cleanupRequestedAt = Date.now();
+    if (route === "End") await f.controller.endConversation();
+    else await f.controller.dispose();
+    expect(f.api.end).toHaveBeenCalledWith(f.c.conversationId, 4, "user_end");
+    expect(f.api.claimResume).toHaveBeenCalledTimes(1);
+    expect(f.api.abortResume).toHaveBeenCalledTimes(1);
+    expect(f.c.status).toBe("ended");
+    expect(sessionStorage.getItem("live-translator-retained-conversation-v1")).toBeNull();
+    if (route === "End") await f.controller.dispose();
+    await f.budget.close();
+  });
+  it("Verify releases local accounting after proving the retained conversation ended", async () => {
+    const f = fixture(40, true); configureResume(f);
+    await f.controller.startBootstrap();
+    f.setVisible(false);
+    await vi.waitFor(() => expect(f.clients[0]!.peer.channel.sent).toContain("session.close"));
+    f.clients[0]!.peer.channel.emit({ type: "session.closed" });
+    await vi.waitFor(() => expect(f.c.status).toBe("paused"));
+    const complete = f.api.completeResume.getMockImplementation()!;
+    f.api.completeResume.mockImplementation(async (...args) => { await complete(...args); throw new Error("complete response lost"); });
+    const claim = f.api.claimResume.getMockImplementation()!;
+    f.api.claimResume.mockImplementation(async (...args) => {
+      if (f.c.status === "active") throw new Error("claim receipt lost");
+      return claim(...args);
+    });
+    f.api.abortResume.mockRejectedValue(new AccountingRequestError(409, "resume_claim_conflict"));
+    f.setVisible(true);
+    await vi.waitFor(() => expect(f.controller.retainedRecoveryState).toBe("failed"));
+    expect(f.scope.conversationStatus).toBe("resuming");
+    f.api.readConversation.mockResolvedValueOnce({ ...f.c, status: "ended", version: 3 });
+    await expect(f.controller.verifyRetainedConversation()).rejects.toThrow("Recovered conversation End does not match local ownership");
+    expect(sessionStorage.getItem("live-translator-retained-conversation-v1")).toBe(f.c.conversationId);
+    expect(f.scope.conversationStatus).toBe("resuming");
+    f.c.status = "ended"; f.c.version = 5;
+    await f.controller.verifyRetainedConversation();
+    expect(f.controller.retainedRecoveryState).toBeUndefined();
+    expect(f.scope.conversationId).toBeNull();
+    const fresh: ConversationMetadata = { ...f.c, conversationId: "new-conversation", version: 1, status: "active" };
+    f.api.createConversation.mockResolvedValueOnce(fresh);
+    f.api.handoff.mockImplementation(async id => ({ liveSessionId: id, state: "active", handoffAcknowledgedAt: Date.now(),
+      cleanupRequestedAt: null, conversation: fresh }));
+    f.api.readConversation.mockImplementation(async id => id === fresh.conversationId ? fresh : f.c);
+    f.api.end.mockImplementation(async (id, version) => {
+      const row = id === fresh.conversationId ? fresh : f.c;
+      row.status = "ended"; row.version = version + 1; return { ...row };
+    });
+    await f.controller.startBootstrap();
+    expect(f.api.createConversation).toHaveBeenCalledTimes(2);
+    expect(f.api.createSession.mock.calls.at(-1)![0].conversationId).toBe(fresh.conversationId);
+    await f.controller.dispose(); await f.budget.close();
+  });
+  it.each(["direct End", "Verify"] as const)("starts a new conversation after %s clears an unresolved local resume", async route => {
     const f = fixture(40, true); configureResume(f);
     await f.controller.startBootstrap();
     f.setVisible(false);
@@ -1302,8 +1379,8 @@ describe("stage 5 hidden boundary", () => {
     await expect(f.controller.endConversation()).rejects.toThrow("Recovered conversation End does not match local ownership");
     expect(f.scope.conversationStatus).toBe("resuming");
     f.c.status = "ended"; f.c.version = 5;
-    if (route === "verified End") await f.controller.verifyRetainedConversation();
-    await f.controller.endConversation();
+    if (route === "Verify") await f.controller.verifyRetainedConversation();
+    else await f.controller.endConversation();
     expect(sessionStorage.getItem("live-translator-retained-conversation-v1")).toBeNull();
     const fresh: ConversationMetadata = { ...f.c, conversationId: "new-conversation", version: 1, status: "active" };
     f.api.createConversation.mockResolvedValueOnce(fresh);

@@ -131,12 +131,16 @@ export class AccountedSessionController extends SessionController {
       if (this.retainedPaused) this.clearRetainedAfterEnd();
       return;
     }
-    const result = await store.inspectReload(id => this.accounting.api.readConversation(id) as Promise<ConversationMetadata>);
+    const result = await store.inspectReload(id => this.accounting.api.readConversation(id) as Promise<ConversationMetadata>,
+      ended => this.accounting.confirmRecoveredEnd(ended));
     this.recoveryBlocked = false;
     this.retainedActive = result?.kind === "active";
     this.pendingClaim = result?.kind === "pending";
     if (result?.kind === "paused" || result?.kind === "pending") this.adoptRetainedPause();
-    if (!result && this.retainedPaused) this.clearRetainedAfterEnd();
+    if (!result) {
+      this.resumeFailed = false;
+      if (this.retainedPaused) this.clearRetainedAfterEnd();
+    }
   }
   async dispose(): Promise<void> {
     this.disposed = true;
@@ -272,6 +276,8 @@ export class AccountedSessionController extends SessionController {
         if (local) {
           if (local.status === "resuming" && conversation.status === "active")
             await store.confirmResume(conversation, this.accounting.confirmRecoveredCompletion(conversation));
+          else if (local.status === "resuming" && conversation.status === "paused")
+            await this.accounting.reconcileRecoveredAbort(conversation);
           else if (local.conversationId !== conversation.conversationId || local.version !== conversation.version ||
             local.status !== conversation.status) throw new Error("Retained End version changed");
         } else this.accounting.adoptRetained(conversation);

@@ -154,6 +154,19 @@ export class ConversationAccounting {
       throw new Error("Recovered resume abort does not match the local claim");
     this.current = result; this.resume = undefined; this.pausing = true;
   }
+  async reconcileRecoveredAbort(result: ConversationMetadata): Promise<void> {
+    const resume = this.resume;
+    if (!resume || result.version !== resume.version + 1 || result.status !== "paused")
+      throw new Error("Recovered resume abort does not match the local claim");
+    const receipt = await this.api.readAttempt(resume.id);
+    if (receipt.liveSessionId !== resume.id || receipt.conversation.conversationId !== result.conversationId ||
+      receipt.conversation.version !== result.version || receipt.conversation.status !== "paused" ||
+      receipt.conversation.resumeAttemptId !== null ||
+      receipt.resumeClaimVersion !== resume.version || !["aborted", "expired"].includes(receipt.resumeOutcome ?? "") ||
+      !["failed", "closed"].includes(receipt.state ?? "") || receipt.cleanupRequestedAt == null)
+      throw new Error("Recovered resume cleanup is still pending");
+    this.confirmRecoveredAbort(result, resume.id);
+  }
   confirmRecoveredCompletion(result: ConversationMetadata): string {
     const resume = this.resume, c = this.current;
     if (!resume || !c || c.status !== "resuming" || result.conversationId !== c.conversationId ||

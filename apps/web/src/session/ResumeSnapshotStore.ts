@@ -338,7 +338,8 @@ export class ResumeSnapshotStore {
     });
   }
 
-  async inspectReload(read: (id: string) => Promise<ConversationMetadata>): Promise<ReloadInspection | null> {
+  async inspectReload(read: (id: string) => Promise<ConversationMetadata>,
+    onEnded?: (conversation: ConversationMetadata) => void | Promise<void>): Promise<ReloadInspection | null> {
     if (!this.owned) {
       if (this.hasRetainedIdentity()) throw new Error("Retained conversation ownership unavailable");
       return null;
@@ -365,6 +366,7 @@ export class ResumeSnapshotStore {
       Number.isSafeInteger(server.version) && server.version >= Math.max(1, retainedVersion,
         validSnapshot(row, this.clientInstanceId, conversationId) ? row.conversationVersion : 0) &&
       timestamp(server.serverTime)) {
+      await onEnded?.(server as ConversationMetadata);
       await this.discard(conversationId); return null;
     }
     if (!validSnapshot(row, this.clientInstanceId, conversationId))
