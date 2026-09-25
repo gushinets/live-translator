@@ -19,7 +19,7 @@ try {
   ledger.recordProviderCreated(localId, "synthetic-provider-id");
   ledger.acknowledgeHandoff(owner, localId);
   now += 120000;
-  ledger.recordUsage(owner, localId, usageReportSchema.parse({ schemaVersion: 1, checkpointSeconds: 105,
+  ledger.recordUsage(owner, localId, conversation.id, usageReportSchema.parse({ schemaVersion: 1, checkpointSeconds: 105,
     providerClosed: { seconds: 120, reason: "user_requested" }, app: {
       activityReportSeq: 1, measurementVersion: "active-time-v1", observedWallMs: 120000,
       setupMs: 60000, activeInterpreterMs: 60000, visiblePausedMs: 0,
