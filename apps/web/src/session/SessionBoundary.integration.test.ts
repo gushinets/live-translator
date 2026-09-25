@@ -1,4 +1,6 @@
 import { IDBFactory } from "fake-indexeddb";
+import { cleanup, render, screen } from "@testing-library/react";
+import { jsx } from "react/jsx-runtime";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { BackendClient } from "../api/BackendClient";
 import { AccountingRequestError, type ConversationMetadata, type LedgerApi, type ProviderCreateBody } from "../api/AccountingBackend";
@@ -10,6 +12,7 @@ import { ResumeSnapshotStore } from "./ResumeSnapshotStore";
 import { AccountedSessionController } from "./createAccountedSessionController";
 import type { SessionControllerDeps } from "./SessionController";
 import { VisibilityController } from "../platform/VisibilityController";
+import { ContextScreen, type ContextScreenController } from "../screens/ContextScreen";
 import type { OrientationController } from "../platform/OrientationController";
 import type { WakeLockController } from "../platform/WakeLockController";
 
@@ -208,6 +211,7 @@ function configureResume(f: ReturnType<typeof fixture>) {
   f.api.end.mockImplementation(async (_id, version) => { f.c.status = "ended"; f.c.version = version + 1; return { ...f.c }; });
 }
 afterEach(() => {
+  cleanup();
   vi.useRealTimers();
   for (const visibility of fixtureVisibilities.splice(0)) visibility.stop();
   restoreDocumentVisibility();
@@ -870,9 +874,20 @@ describe("stage 5 hidden boundary", () => {
     f.setVisible(true);
     await vi.waitFor(() => expect(respond).toBeDefined());
     const id = f.api.createSession.mock.calls[1]![0].liveSessionId;
+    const end = f.api.end.getMockImplementation()!;
+    let release!: () => void;
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    f.api.end.mockImplementation(async (...args) => { await gate; return end(...args); });
     const ending = f.controller.endConversation();
-    expect(f.track.enabled).toBe(false);
     respond({ session: { id: "late" }, transport: { type: "webrtc", sdp: "late" } });
+    await vi.waitFor(() => expect(f.controller.session.state).toBe("ending"));
+    expect(f.controller.retainedRecoveryState).toBe("ending");
+    render(jsx(ContextScreen, { controller: f.controller satisfies ContextScreenController }));
+    expect(screen.getByRole("status")).toHaveTextContent("Завершаем…");
+    expect(screen.getByRole("button", { name: "Завершить" })).toBeDisabled();
+    expect(screen.queryByRole("button", { name: "Продолжить разговор" })).not.toBeInTheDocument();
+    expect(f.track.enabled).toBe(false);
+    release();
     await ending;
     await f.scope.outbox.flush();
     expect(f.c.status).toBe("ended");
@@ -1015,6 +1030,29 @@ describe("stage 5 hidden boundary", () => {
     release();
     await first;
     await reloaded.controller.dispose(); await f.budget.close();
+  });
+  it("reports same-tab paused End as ending until accounting confirms it", async () => {
+    const f = fixture(40, true); configureResume(f);
+    await f.controller.startBootstrap();
+    f.setVisible(false);
+    await vi.waitFor(() => expect(f.clients[0]!.peer.channel.sent).toContain("session.close"));
+    f.clients[0]!.peer.channel.emit({ type: "session.closed" });
+    await vi.waitFor(() => expect(f.controller.retainedRecoveryState).toBe("paused"));
+    expect(f.scope.conversationId).toBe(f.c.conversationId);
+    const end = f.api.end.getMockImplementation()!;
+    let release!: () => void;
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    f.api.end.mockImplementation(async (...args) => { await gate; return end(...args); });
+    const ending = f.controller.endConversation();
+    await vi.waitFor(() => expect(f.controller.session.state).toBe("ending"));
+    expect(f.controller.retainedRecoveryState).toBe("ending");
+    render(jsx(ContextScreen, { controller: f.controller satisfies ContextScreenController }));
+    expect(screen.getByRole("status")).toHaveTextContent("Завершаем…");
+    expect(screen.getByRole("button", { name: "Завершить" })).toBeDisabled();
+    expect(screen.queryByRole("button", { name: "Продолжить разговор" })).not.toBeInTheDocument();
+    release();
+    await ending;
+    await f.controller.dispose(); await f.budget.close();
   });
   it("keeps an active reload blocked when End cannot be confirmed", async () => {
     const f = await pausedReloadFixture();
