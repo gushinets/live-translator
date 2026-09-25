@@ -32,12 +32,42 @@ class LazyAccounting implements NonNullable<LiveClientDeps["accounting"]> {
 }
 export class AccountedSessionController extends SessionController {
   private resumeWork: Promise<void> | null = null;
+  private recoveryProbe: Promise<void> | null = null;
+  private recoveryChecking = false;
+  private started = false;
   private resumeFailed = false;
   constructor(deps: SessionControllerDeps, private readonly accounting: ConversationAccounting,
     private readonly snapshotStore: Promise<ResumeSnapshotStore> = ResumeSnapshotStore.open()) {
     super(deps);
   }
-  start(): void { this.startEarlyVisibility(); }
+  start(): void {
+    if (this.started) return;
+    this.started = true;
+    this.startEarlyVisibility();
+    const probe = (async () => {
+      const store = await this.snapshotStore;
+      if (!store.hasRetainedIdentity()) return;
+      this.recoveryChecking = true;
+      this.notify();
+      const result = await store.inspectReload(id => this.accounting.api.readConversation(id) as Promise<ConversationMetadata>);
+      if (result?.kind === "paused") this.adoptRetainedPause();
+      else if (result) this.resumeFailed = true;
+    })().catch(error => {
+      this.resumeFailed = true;
+      console.error("Retained conversation inspection failed", { error });
+    }).finally(() => {
+      this.recoveryChecking = false;
+      if (this.recoveryProbe === probe) this.recoveryProbe = null;
+      this.notify();
+    });
+    this.recoveryProbe = probe;
+  }
+  get retainedRecoveryState(): "checking" | "paused" | "resuming" | "failed" | undefined {
+    if (this.recoveryChecking) return "checking";
+    if (this.resumeWork) return "resuming";
+    if (this.resumeFailed) return "failed";
+    return this.retainedPaused ? "paused" : undefined;
+  }
   async dispose(): Promise<void> {
     this.fenceRetainedResumeForDisposal();
     this.stopEarlyVisibility();
@@ -99,10 +129,21 @@ export class AccountedSessionController extends SessionController {
   async resumeRetainedConversation(explicit = true): Promise<void> {
     if (this.resumeWork) return this.resumeWork;
     if (explicit) this.resumeFailed = false;
-    const work = this.runRetainedResume(explicit);
+    const work = (async () => {
+      await this.recoveryProbe;
+      await this.runRetainedResume(explicit);
+    })();
     this.resumeWork = work;
+    this.notify();
     try { await work; }
-    finally { if (this.resumeWork === work) this.resumeWork = null; }
+    catch (error) {
+      if (explicit || this.retainedPaused && document.visibilityState !== "hidden") this.resumeFailed = true;
+      throw error;
+    }
+    finally {
+      if (this.resumeWork === work) this.resumeWork = null;
+      this.notify();
+    }
   }
   private pausedOrUnloaded(): boolean {
     return this.accounting.conversationStatus === null || this.accounting.conversationStatus === "paused";
@@ -120,7 +161,10 @@ export class AccountedSessionController extends SessionController {
     if (!this.pausedOrUnloaded()) return;
     const store = await this.snapshotStore;
     const inspected = await store.inspectReload(id => this.accounting.api.readConversation(id) as Promise<ConversationMetadata>);
-    if (!inspected || inspected.kind === "active" || inspected.kind === "pending") return;
+    if (!inspected || inspected.kind === "active" || inspected.kind === "pending") {
+      if (explicit && inspected) throw new Error("Retained conversation status requires explicit recovery");
+      return;
+    }
     if (!this.backgroundResumeCurrent(generation)) return;
     const { snapshot, conversation } = inspected;
     if (snapshot.resumeAttemptId !== null) return; // An uncertain prior claim requires explicit server reconciliation.
@@ -152,6 +196,7 @@ export class AccountedSessionController extends SessionController {
     } catch (error) {
       const cancelled = !this.backgroundResumeCurrent(generation);
       this.resumeFailed = !cancelled;
+      this.notify();
       if (claimed) {
         try { await this.abandonRetainedMedia(this.backgroundResumeCurrent(generation) ? "abandoned_connect" : "hidden"); }
         catch { console.error("Retained transport cleanup incomplete"); }

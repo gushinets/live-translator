@@ -33,6 +33,7 @@ export interface ContextScreenController {
   readonly audioElement?: HTMLAudioElement;
   readonly recoveryPrompt?: RecoveryPrompt;
   readonly suspendReason?: LifecycleSuspendReason;
+  readonly retainedRecoveryState?: "checking" | "paused" | "resuming" | "failed";
   subscribe(listener: () => void): () => void;
   startContextCapture(): Promise<void>;
   finishContextCapture(): void;
@@ -47,6 +48,7 @@ export interface ContextScreenController {
   correctLastTurn(side: Side): Promise<void>;
   endConversation(): Promise<void>;
   resumeFromSourceTimeout(): Promise<void>;
+  resumeRetainedConversation?(): Promise<void>;
 }
 
 let documentController: AccountedSessionController | null = null;
@@ -182,7 +184,8 @@ export function ContextScreen({
   const isBusy =
     sessionState === "connecting" ||
     sessionState === "error" ||
-    controller.isConnectInFlight === true;
+    controller.isConnectInFlight === true || controller.retainedRecoveryState !== undefined;
+  const recovery = controller.retainedRecoveryState;
   const isContextListening = sessionState === "context";
   const showCancel =
     controller.session.state !== "idle" ||
@@ -215,8 +218,25 @@ export function ContextScreen({
             {controller.ownerError !== undefined ? (
               <ErrorOverlay message={controller.ownerError} />
             ) : null}
-
-            {isBootstrap ? (
+            {recovery !== undefined ? (
+              <>
+                <p className="setup-inline-status" role="status">
+                  {recovery === "checking" ? "Проверяем сохранённый разговор…" :
+                    recovery === "resuming" ? "Восстанавливаем разговор…" :
+                    recovery === "failed" ? "Не удалось восстановить разговор. Проверьте микрофон и звук и повторите." :
+                    "Разговор приостановлен."}
+                </p>
+                {recovery !== "checking" ? (
+                  <button className="setup-primary-action" type="button" disabled={recovery === "resuming"}
+                    onClick={() => { void controller.resumeRetainedConversation?.().catch(error => {
+                      console.error("Retained conversation recovery failed", { error });
+                    }); }}>
+                    {recovery === "failed" ? "Повторить восстановление" :
+                      recovery === "resuming" ? "Восстанавливаем…" : "Продолжить разговор"}
+                  </button>
+                ) : null}
+              </>
+            ) : isBootstrap ? (
               <BootstrapPrompt
                 transcript={controller.bootstrapText}
                 side={controller.bootstrapSide}

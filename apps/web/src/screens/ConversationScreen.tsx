@@ -14,10 +14,12 @@ export interface ConversationScreenController {
   readonly recoveryPrompt?: RecoveryPrompt;
   readonly ownerError?: string;
   readonly suspendReason?: LifecycleSuspendReason;
+  readonly retainedRecoveryState?: "checking" | "paused" | "resuming" | "failed";
   subscribe(listener: () => void): () => void;
   correctLastTurn(side: Side): Promise<void>;
   endConversation(): Promise<void>;
   resumeFromSourceTimeout(): Promise<void>;
+  resumeRetainedConversation?(): Promise<void>;
 }
 
 export function ConversationScreen({
@@ -98,6 +100,20 @@ export function ConversationScreen({
         }}
       />
       <div className="conversation-center">
+        {controller.retainedRecoveryState !== undefined ? (
+          <p role="status">{controller.retainedRecoveryState === "failed" ? "Не удалось восстановить разговор." :
+            controller.retainedRecoveryState === "paused" ? "Разговор приостановлен." : "Восстанавливаем разговор…"}</p>
+        ) : null}
+        {controller.retainedRecoveryState !== undefined && controller.retainedRecoveryState !== "checking" ? (
+          <button type="button" disabled={controller.retainedRecoveryState === "resuming"} onClick={() => {
+            void controller.resumeRetainedConversation?.().catch(error => {
+              console.error("Retained conversation recovery failed", { error });
+            });
+          }}>
+            {controller.retainedRecoveryState === "failed" ? "Повторить восстановление" :
+              controller.retainedRecoveryState === "resuming" ? "Восстанавливаем…" : "Продолжить разговор"}
+          </button>
+        ) : null}
         {canChooseSide ? (
           <p role="status">Сторона не определена. Для исправления нажмите свою половину экрана.</p>
         ) : null}

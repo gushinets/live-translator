@@ -50,9 +50,11 @@ class FakeConversationController implements ConversationScreenController {
   recoveryPrompt: RecoveryPrompt | undefined;
   ownerError: string | undefined;
   suspendReason: LifecycleSuspendReason | undefined;
+  retainedRecoveryState: "paused" | "resuming" | "failed" | undefined;
   readonly correctLastTurn = vi.fn<(side: Side) => Promise<void>>(async () => {});
   readonly endConversation = vi.fn(async () => {});
   readonly resumeFromSourceTimeout = vi.fn(async () => {});
+  readonly resumeRetainedConversation = vi.fn(async () => {});
   private readonly listeners = new Set<() => void>();
 
   constructor(initial: TranslationSession = session()) {
@@ -74,6 +76,13 @@ class FakeConversationController implements ConversationScreenController {
 }
 
 describe("ConversationScreen orientation and status", () => {
+  it("offers retained resume from a paused interpreter screen", () => {
+    const controller = new FakeConversationController(session({ state: "suspended" }));
+    controller.retainedRecoveryState = "paused";
+    render(<ConversationScreen controller={controller} />);
+    fireEvent.click(screen.getByRole("button", { name: "Продолжить разговор" }));
+    expect(controller.resumeRetainedConversation).toHaveBeenCalledOnce();
+  });
   it("keeps A LISTENING when A is still source-active and early GPT output exists, B TRANSLATING/SPEAKING, B rotated 180deg", () => {
     const controller = new FakeConversationController(
       session({

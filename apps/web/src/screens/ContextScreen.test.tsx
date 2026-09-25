@@ -29,6 +29,7 @@ class FakeOwnerController implements ContextScreenController {
   isConnectInFlight = false;
   isInterpreterStarting = false;
   audioElement: HTMLAudioElement | undefined;
+  retainedRecoveryState: "paused" | "resuming" | "failed" | undefined;
   private readonly listeners = new Set<() => void>();
 
   subscribe(listener: () => void): () => void {
@@ -72,6 +73,7 @@ class FakeOwnerController implements ContextScreenController {
   endConversation = vi.fn(async () => {});
 
   resumeFromSourceTimeout = vi.fn(async () => {});
+  resumeRetainedConversation = vi.fn(async () => {});
 
   setBootstrapText(text: string): void {
     this.bootstrapText = text;
@@ -91,6 +93,21 @@ class FakeOwnerController implements ContextScreenController {
 }
 
 describe("ContextScreen", () => {
+  it("offers a keyboard-accessible retained resume without starting a new conversation", async () => {
+    const controller = new FakeOwnerController();
+    controller.retainedRecoveryState = "failed";
+    const startBootstrap = vi.spyOn(controller, "startBootstrap");
+    render(<ContextScreen controller={controller} />);
+
+    const retry = screen.getByRole("button", { name: "Повторить восстановление" });
+    retry.focus();
+    fireEvent.keyDown(retry, { key: "Enter" });
+    fireEvent.click(retry);
+
+    expect(controller.resumeRetainedConversation).toHaveBeenCalledOnce();
+    expect(startBootstrap).not.toHaveBeenCalled();
+    expect(screen.queryByRole("button", { name: "Начать перевод" })).not.toBeInTheDocument();
+  });
   it("treats context as optional without extra footer copy", () => {
     render(<ContextScreen controller={new FakeOwnerController()} />);
 

@@ -124,6 +124,9 @@ export class SessionController {
   private remotePlaybackGeneration = 0;
   private remotePlaybackState: RemotePlaybackState = "ready";
   private remotePlaybackWork: Promise<void> | null = null;
+  private remoteTrackArrived: (() => void) | null = null;
+  private retainedProductDeadlineAt: number | null = null;
+  private retainedPlaybackCommitted = false;
   private pendingRemotePlaybackActivity: AudioActivityEvent | null = null;
   private turnClosing = false;
   private speechInputReady = false;
@@ -178,6 +181,7 @@ export class SessionController {
   }
 
   protected get backgroundCloseEnabled(): boolean { return false; }
+  protected get retainedPaused(): boolean { return this.backgroundPaused; }
   protected beginBackgroundPause(): void {}
   protected resumeBackground(): Promise<void> { return Promise.resolve(); }
   protected get backgroundResumeGeneration(): number { return this.sessionGeneration; }
@@ -209,12 +213,30 @@ export class SessionController {
     this.audio.setCaptureEnabled(false);
     const live = this.live = this.deps.createLive();
     this.bindLive();
+    this.retainedProductDeadlineAt = snapshot.productDeadlineAt;
+    const remoteTrack = new Promise<void>(resolve => { this.remoteTrackArrived = resolve; });
     this.liveConnectStarted = true;
     this.retainedResumePhase = "create";
     await live.connect(stream);
     this.retainedResumePhase = "restore";
     if (!current()) throw new Error("Resume cancelled");
-    await this.remotePlaybackWork;
+    const waitMs = Math.min(runtime.steeringAckTimeoutMs, (snapshot.localResumeDeadlineAt ?? 0) - Date.now(),
+      (snapshot.serverResumeExpiresAt ?? 0) - Date.now(),
+      (snapshot.productDeadlineAt ?? Infinity) - Date.now());
+    if (waitMs <= 0) throw new Error("Remote playback deadline expired");
+    let trackTimer: number | undefined;
+    try {
+      await Promise.race([remoteTrack.then(async () => {
+        if (!current() || !this.remotePlaybackWork) throw new Error("Remote playback is unavailable");
+        await this.remotePlaybackWork;
+      }), new Promise<never>((_, reject) => {
+        trackTimer = window.setTimeout(() => reject(new Error("Remote audio track unavailable")), waitMs);
+      })]);
+    } finally {
+      if (trackTimer !== undefined) window.clearTimeout(trackTimer);
+      this.remoteTrackArrived = null;
+    }
+    if (!current()) throw new Error("Resume cancelled");
     if (this.isRemotePlaybackFailed()) throw new Error("Remote playback is unavailable");
     await this.muteGateB(generation);
     if (!current()) throw new Error("Resume cancelled");
@@ -239,7 +261,7 @@ export class SessionController {
       throw new Error("Resume readiness or deadline expired");
     this.retainedResumePhase = "complete";
     await complete(this.providerStartedObservedAt);
-    if (!current() || Date.now() >= (snapshot.localResumeDeadlineAt ?? 0) ||
+    if (!current() || this.isRemotePlaybackFailed() || Date.now() >= (snapshot.localResumeDeadlineAt ?? 0) ||
       Date.now() >= (snapshot.serverResumeExpiresAt ?? 0) ||
       (snapshot.productDeadlineAt !== null && Date.now() >= snapshot.productDeadlineAt))
       throw new Error("Resume cancelled after commit");
@@ -254,6 +276,7 @@ export class SessionController {
     this.conversationMetrics = new ConversationMetrics();
     this.conversationMetrics.restoreCounters(snapshot.counters);
     this.hasConnected = true;
+    this.retainedPlaybackCommitted = true;
     this.lifecycleSuspendReason = undefined;
     this.discardedUnfinishedOnSuspend = snapshot.interruptedUtterance;
     this.recoveryPromptKind = snapshot.interruptedUtterance ? "repeat" : undefined;
@@ -467,6 +490,7 @@ export class SessionController {
   handleRemoteStream(stream: MediaStream, source: LiveClient): void {
     // Validate origin BEFORE attaching. A generation captured after a stale callback is too late.
     if (source !== this.live || this.liveProductGeneration !== this.sessionGeneration) return;
+    if (this.remoteTrackArrived && !stream.getAudioTracks().some(track => track.readyState === "live")) return;
     const sessionGeneration = this.sessionGeneration;
     const playbackGeneration = this.remotePlaybackGeneration + 1;
     this.remotePlaybackGeneration = playbackGeneration;
@@ -503,7 +527,11 @@ export class SessionController {
           this.finishPlaybackIdleWait();
         }
         console.error("Remote audio play failed", { error });
+        if (this.retainedPlaybackCommitted) void this.endConversation().catch(retireError => {
+          console.error("Remote playback retirement failed", { error: retireError });
+        });
       });
+    this.remoteTrackArrived?.();
   }
 
   private acceptRemotePlaybackActivity(event: AudioActivityEvent): boolean {
@@ -517,6 +545,9 @@ export class SessionController {
   }
 
   private resetRemotePlaybackTracking(): void {
+    this.remoteTrackArrived?.();
+    this.remoteTrackArrived = null;
+    this.retainedPlaybackCommitted = false;
     this.remotePlaybackGeneration += 1;
     this.remotePlaybackState = "ready";
     this.remotePlaybackWork = null;
@@ -2256,7 +2287,8 @@ export class SessionController {
     this.clearMaxSessionTimer();
     this.maxSessionTimer = window.setTimeout(() => {
       void this.endConversation();
-    }, runtime.maxSessionMs);
+    }, this.retainedProductDeadlineAt === null ? runtime.maxSessionMs :
+      Math.max(0, this.retainedProductDeadlineAt - Date.now()));
   }
 
   private clearMaxSessionTimer(): void {
@@ -2447,6 +2479,7 @@ export class SessionController {
     this.sessionGeneration += 1;
     this.clearIdleTimer();
     this.clearMaxSessionTimer();
+    this.retainedProductDeadlineAt = null;
     this.clearTurnEngineTimers();
     this.capturingContext = false;
     this.capturingBootstrap = false;
@@ -2730,6 +2763,7 @@ export class SessionController {
   }
 
   private resetToIdle(options: { preserveOwnerError?: boolean } = {}): void {
+    this.retainedProductDeadlineAt = null;
     const preservedError =
       options.preserveOwnerError === true ? this.ownerErrorMessage : undefined;
     this.audio.setOutputAudible(false);
@@ -2812,7 +2846,7 @@ export class SessionController {
     } catch { console.error("Product measurement unavailable"); }
   }
 
-  private notify(completedTurnId?: string): void {
+  protected notify(completedTurnId?: string): void {
     this.observeMetrics(completedTurnId);
     for (const listener of this.listeners) {
       listener();
