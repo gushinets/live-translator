@@ -1,6 +1,6 @@
 # PR 5 — immediate background close и retained conversation
 
-**Статус:** `in-progress` в `feat/background-close-and-resume`; PR ещё не создан, merge и Gate G2 не заявлены.
+**Статус:** `in-progress` в `feat/background-close-and-resume`; [draft PR #21](https://github.com/gushinets/live-translator/pull/21) открыт, merge и Gate G2 не заявлены.
 **Зависимости:** Зависит от PR 4. Отдельный feature flag; не меняет fixed-language routing.  
 **Спецификация:** [v1.1](../../specs/2026-09-21-unit-economics-and-session-lifecycle.md).\
 **Общие ограничения и проверки:** [README плана](README.md).
@@ -66,7 +66,7 @@ Resume: atomic server version claim (`paused → resuming`, durable local row/ID
 
 ## Локальная проверка feature branch
 
-На 2026-09-25: `pnpm test` — 956/956, `pnpm typecheck`, `pnpm lint`, `pnpm build` — exit 0; Playwright Chromium/WebKit с `--workers=4` — 35 passed, 1 skipped (Chromium-only real Web Locks clone test). G1 mock report воспроизведён скриптом `node apps/api/scripts/g1-mock-report.mjs`; это synthetic fixture без provider charges. Один запуск Playwright с 14 workers дал timing failure в прежнем mock clock harness (`clock.pauseAt: Cannot fast-forward to the past`); отдельный повтор этого теста и полный запуск с 4 workers прошли. Это локальные результаты ветки, не CI/device/provider evidence и не закрытие Gate G2. Новые server regression для provisional/handed-off resume на точной claim boundary и browser opener-clone lock находятся в `apps/api/test/UsageLedger.test.ts` и `apps/web/tests/e2e/recovery.spec.ts`.
+На 2026-09-25 после review round 3: `pnpm test` — 995/995, `pnpm typecheck`, `pnpm lint`, `pnpm build` — exit 0; Playwright Chromium/WebKit с `--workers=4` — 36/36. Предыдущий head draft PR `e702023` фиксировал 983/983. Текущие regression покрывают rejected/pending claims, lost pause ACK и недоступный storage через controller/accounting/snapshot/SQLite ledger с fake transport. G1 mock report воспроизведён ранее скриптом `node apps/api/scripts/g1-mock-report.mjs`; это synthetic fixture без provider charges. Это локальные результаты ветки, не CI/device/provider evidence и не закрытие Gate G2. Server regression для provisional/handed-off resume на точной claim boundary и browser opener-clone lock находятся в `apps/api/test/UsageLedger.test.ts` и `apps/web/tests/e2e/recovery.spec.ts`.
 
 ## Откат
 
@@ -74,4 +74,4 @@ Resume: atomic server version claim (`paused → resuming`, durable local row/ID
 
 ## Что приложить к PR
 
-Baseline SHA, связанные ADR/spec, список реально изменённых файлов, команды и вывод проверок, отмеченные критерии, новые известные ограничения и rollout/rollback policy. Не писать «все тесты прошли», если запускалась только часть. GitHub PR number появляется здесь только после фактического создания PR.
+Baseline SHA, связанные ADR/spec, список реально изменённых файлов, команды и вывод проверок, отмеченные критерии, новые известные ограничения и rollout/rollback policy. Не писать «все тесты прошли», если запускалась только часть. Draft PR #21 остаётся на review; открытый PR не означает принятие Gate G2.

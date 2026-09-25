@@ -346,7 +346,7 @@ export class ResumeSnapshotStore {
     const conversationId = this.storage?.getItem(CONVERSATION_KEY);
     if (!conversationId) return null;
     if (conversationId === PENDING_CREATE) throw new Error("Retained conversation create remains unresolved");
-    const row = await this.get(conversationId);
+    let row = await this.get(conversationId);
     let purged = false;
     const purgeExpired = async () => {
       if (purged || !validSnapshot(row, this.clientInstanceId, conversationId) ||
@@ -378,8 +378,19 @@ export class ResumeSnapshotStore {
       this.retainIdentity(conversationId, server.version);
       return { kind: "active", conversationId, conversationVersion: server.version };
     }
-    if (server.status === "paused" && row.serverResumeExpiresAt === null)
-      throw new Error("Retained conversation pause snapshot unavailable");
+    if (server.status === "paused" && row.serverResumeExpiresAt === null) {
+      if (row.resumeAttemptId !== null || row.localResumeDeadlineAt === null ||
+        this.now() >= row.localResumeDeadlineAt || server.version !== row.conversationVersion + 1 ||
+        server.resumeAttemptId !== null || !timestamp(server.resumeExpiresAt) ||
+        this.now() >= server.resumeExpiresAt || server.serverTime >= server.resumeExpiresAt ||
+        server.productDeadlineAt !== row.productDeadlineAt ||
+        (row.productDeadlineAt !== null && (this.now() >= row.productDeadlineAt || server.serverTime >= row.productDeadlineAt)))
+        throw new Error("Retained conversation pause snapshot unavailable");
+      await this.confirmPause(server);
+      row = await this.get(conversationId);
+      if (!validSnapshot(row, this.clientInstanceId, conversationId))
+        throw new Error("Retained conversation pause snapshot unavailable");
+    }
     if (row.localResumeDeadlineAt === null || row.serverResumeExpiresAt === null ||
       this.now() >= row.localResumeDeadlineAt || this.now() >= row.serverResumeExpiresAt ||
       (row.productDeadlineAt !== null && this.now() >= row.productDeadlineAt) ||

@@ -15,6 +15,8 @@ export interface ProviderCreateBody {
 }
 export interface AttemptMetadata extends AttemptProof {
   liveSessionId: string; handoffAcknowledgedAt: number | null; conversation: ConversationMetadata;
+  resumeOutcome?: "pending" | "committed" | "aborted" | "expired" | null;
+  resumeClaimVersion?: number | null;
 }
 export interface ResumeClaimMetadata extends ConversationMetadata {
   attempt: { liveSessionId: string; state: "creating" | "active" | "closing" | "closed" | "failed" | "unknown";

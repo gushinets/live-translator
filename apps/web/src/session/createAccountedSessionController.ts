@@ -9,6 +9,10 @@ import { ConversationAccounting, type ProviderAccounting } from "./ConversationA
 import type { CleanupReason } from "./MetadataDeliveryBudget";
 import { ResumeSnapshotStore, type ResumeSnapshotInput } from "./ResumeSnapshotStore";
 
+const DEFINITIVE_PRECLAIM_CODES = new Set(["invalid_request", "unexpected_origin", "identity_required",
+  "not_found", "conversation_expired", "conversation_version_conflict", "attempt_in_progress",
+  "resume_claim_conflict", "attempt_retired"]);
+
 /** Materialize the attempt at connect, not when resetToIdle preallocates its next LiveClient. */
 class LazyAccounting implements NonNullable<LiveClientDeps["accounting"]> {
   private attempt: ProviderAccounting | undefined;
@@ -50,6 +54,7 @@ export class AccountedSessionController extends SessionController {
   constructor(deps: SessionControllerDeps, private readonly accounting: ConversationAccounting,
     private readonly snapshotStore: Promise<ResumeSnapshotStore> = ResumeSnapshotStore.open()) {
     super(deps);
+    void this.snapshotStore.catch(() => undefined);
   }
   start(): void {
     if (this.started) return;
@@ -58,14 +63,22 @@ export class AccountedSessionController extends SessionController {
     this.recoveryChecking = true;
     this.notify();
     const probe = (async () => {
-      const store = await this.snapshotStore;
       if ((await this.accounting.budget.ends()).length) { this.pendingEnd = true; return; }
-      if (store.hasPendingCreate()) { this.unresolvedCreate = true; return; }
-      if (!store.hasRetainedIdentity()) return;
-      const result = await store.inspectReload(id => this.accounting.api.readConversation(id) as Promise<ConversationMetadata>);
-      if (result?.kind === "paused" || result?.kind === "pending") this.adoptRetainedPause();
-      if (result?.kind === "pending") this.pendingClaim = true;
-      if (result?.kind === "active") this.retainedActive = true;
+      let knownRetained = false;
+      try {
+        const store = await this.snapshotStore;
+        if (store.hasPendingCreate()) { this.unresolvedCreate = true; return; }
+        knownRetained = store.hasRetainedIdentity();
+        if (!knownRetained) return;
+        const result = await store.inspectReload(id => this.accounting.api.readConversation(id) as Promise<ConversationMetadata>);
+        if (result?.kind === "paused" || result?.kind === "pending") this.adoptRetainedPause();
+        if (result?.kind === "pending") this.pendingClaim = true;
+        if (result?.kind === "active") this.retainedActive = true;
+      } catch (error) {
+        await this.accounting.loadPolicy();
+        if (!this.backgroundCloseEnabled && !knownRetained) return;
+        throw error;
+      }
     })().catch(error => {
       this.recoveryBlocked = true;
       console.error("Retained conversation inspection failed", { error });
@@ -288,20 +301,25 @@ export class AccountedSessionController extends SessionController {
     let inspected = await store.inspectReload(id => this.accounting.api.readConversation(id) as Promise<ConversationMetadata>);
     if (inspected?.kind === "pending" && explicit) {
       const { snapshot, conversation } = inspected;
+      const alreadySettled = conversation.status === "paused";
       const attemptId = snapshot.resumeAttemptId!;
       const claimVersion = snapshot.conversationVersion + 1;
       const reason = "interrupted_by_restart";
-      let aborted: ConversationMetadata;
-      try { aborted = await this.accounting.api.abortResume(conversation.conversationId, claimVersion, attemptId, reason); }
-      catch (error) {
-        aborted = await this.accounting.api.abortResume(conversation.conversationId, claimVersion, attemptId, reason)
-          .catch(() => { throw error; });
+      let aborted: ConversationMetadata = conversation;
+      if (!alreadySettled) {
+        try { aborted = await this.accounting.api.abortResume(conversation.conversationId, claimVersion, attemptId, reason); }
+        catch (error) {
+          aborted = await this.accounting.api.abortResume(conversation.conversationId, claimVersion, attemptId, reason)
+            .catch(() => { throw error; });
+        }
       }
       if (aborted.conversationId !== conversation.conversationId || aborted.version < claimVersion + 1 ||
         !["paused", "ended"].includes(aborted.status) || aborted.resumeAttemptId !== null)
         throw new Error("Previous resume abort was not confirmed");
       const receipt = await this.accounting.api.readAttempt(attemptId);
       if (receipt.liveSessionId !== attemptId || receipt.conversation.conversationId !== conversation.conversationId ||
+        alreadySettled && (!["aborted", "expired"].includes(receipt.resumeOutcome ?? "") ||
+          receipt.resumeClaimVersion !== claimVersion) ||
         !["failed", "closed"].includes(receipt.state ?? "") || receipt.cleanupRequestedAt == null)
         throw new Error("Previous resume cleanup is still pending");
       if (aborted.status === "paused") {
@@ -341,7 +359,8 @@ export class AccountedSessionController extends SessionController {
       try { claim = await this.accounting.api.claimResume(conversation.conversationId, conversation.version, id, mode); }
       catch (error) {
         if (error instanceof AccountingRequestError) {
-          preClaimRejected = error.status === 503 && error.code === "new_creations_paused";
+          preClaimRejected = error.status >= 400 && error.status < 500 && DEFINITIVE_PRECLAIM_CODES.has(error.code) ||
+            error.status === 503 && error.code === "new_creations_paused";
           throw error;
         }
         claim = await this.accounting.api.claimResume(conversation.conversationId, conversation.version, id, mode)
@@ -398,8 +417,16 @@ export class AccountedSessionController extends SessionController {
     }
     if (this.sampleInitialHidden()) return false;
     if (this.accounting.conversationId !== null) return true;
-    const store = await this.snapshotStore;
-    if (store.hasRetainedIdentity()) {
+    let store: ResumeSnapshotStore | null;
+    let retained: boolean;
+    try {
+      store = await this.snapshotStore;
+      retained = store.hasRetainedIdentity();
+    } catch (error) {
+      if (!this.backgroundCloseEnabled) return true;
+      throw error;
+    }
+    if (retained) {
       const retained = await store.inspectReload(id => this.accounting.api.readConversation(id) as Promise<ConversationMetadata>);
       if (retained || store.hasRetainedIdentity()) throw new Error("Retained conversation requires explicit recovery");
     }

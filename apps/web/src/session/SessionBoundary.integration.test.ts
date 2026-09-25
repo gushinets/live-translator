@@ -15,6 +15,12 @@ import { VisibilityController } from "../platform/VisibilityController";
 import { ContextScreen, type ContextScreenController } from "../screens/ContextScreen";
 import type { OrientationController } from "../platform/OrientationController";
 import type { WakeLockController } from "../platform/WakeLockController";
+import { DatabaseSync } from "node:sqlite";
+import { UsageLedger } from "../../../api/src/accounting/UsageLedger";
+import { LedgerError } from "../../../api/src/accounting/types";
+import { publicAttempt, publicConversation } from "../../../api/src/accounting/publicMetadata";
+import usageSchema from "../../../api/src/persistence/migrations/001-usage-ledger.sql?raw";
+import recoveryFences from "../../../api/src/persistence/migrations/002-live-session-recovery-fences.sql?raw";
 
 /** Only the network/media boundary is simulated; controller, accounting and IDB transactions are real. */
 class Channel extends EventTarget {
@@ -56,7 +62,8 @@ class Peer extends EventTarget {
     this.dispatchEvent(event);
   }
 }
-function fixture(closeTimeoutMs = 2000, background = false, initialHidden = false, snapshotGate?: Promise<void>, remoteTrack = true) {
+function fixture(closeTimeoutMs = 2000, background = false, initialHidden = false, snapshotGate?: Promise<void>, remoteTrack = true,
+  storageDenied = false) {
   const doc = document;
   let hidden = initialHidden;
   const previousVisibility = Object.getOwnPropertyDescriptor(doc, "visibilityState");
@@ -69,9 +76,11 @@ function fixture(closeTimeoutMs = 2000, background = false, initialHidden = fals
   fixtureVisibilities.push(visibility);
   const setVisible = (value: boolean) => { hidden = !value; doc.dispatchEvent(new Event("visibilitychange")); };
   sessionStorage.clear();
+  const retainedStorage: Storage = storageDenied ? { length: 0, clear() {}, key() { return null; }, removeItem() {},
+    setItem() {}, getItem() { throw new Error("sessionStorage denied"); } } : sessionStorage;
   const snapshotDb = new IDBFactory(), snapshotName = crypto.randomUUID();
   const snapshotLocks = { request: async (_name: string, _options: unknown, callback: (lock: object) => unknown) => callback({}) } as LockManager;
-  const snapshotStore = ResumeSnapshotStore.open({ indexedDB: snapshotDb, sessionStorage,
+  const snapshotStore = ResumeSnapshotStore.open({ indexedDB: snapshotDb, sessionStorage: retainedStorage,
     locks: snapshotLocks, name: snapshotName });
   const budget = new MetadataDeliveryBudget({ indexedDB: new IDBFactory(), name: crypto.randomUUID() });
   const c: ConversationMetadata = { conversationId: "conversation", version: 1, status: "active", productDeadlineAt: null,
@@ -209,6 +218,77 @@ function configureResume(f: ReturnType<typeof fixture>) {
     return { ...f.c };
   });
   f.api.end.mockImplementation(async (_id, version) => { f.c.status = "ended"; f.c.version = version + 1; return { ...f.c }; });
+}
+function useRealLedger(f: ReturnType<typeof fixture>, background = true) {
+  const db = new DatabaseSync(":memory:"), owner = crypto.randomUUID();
+  db.exec(usageSchema); db.exec(recoveryFences);
+  let now = Date.now();
+  const ledger = new UsageLedger(db, { now: () => now,
+    policy: { ...f.c.policy, backgroundSessionCloseEnabled: background } });
+  const initial = ledger.createConversation(owner, crypto.randomUUID(), "test");
+  const metadata = () => {
+    Object.assign(f.c, publicConversation(ledger.getConversation(owner, initial.id), ledger.now()) as ConversationMetadata);
+    return { ...f.c, policy: { ...f.c.policy } };
+  };
+  const request = async <T,>(work: () => T): Promise<T> => {
+    try { return work(); }
+    catch (error) { throw error instanceof LedgerError ? new AccountingRequestError(error.status, error.code) : error; }
+  };
+  metadata();
+  f.api.policy.mockResolvedValue({ usageLedgerEnabled: true, backgroundSessionCloseEnabled: background });
+  f.api.createConversation.mockImplementation(async () => metadata());
+  f.api.readConversation.mockImplementation(id => request(() => {
+    expect(id).toBe(initial.id); return metadata();
+  }));
+  f.api.pause.mockImplementation((_id, version) => request(() => {
+    ledger.pauseConversation(owner, initial.id, version); return metadata();
+  }));
+  f.api.claimResume.mockImplementation((_id, version, id, mode) => request(() => {
+    const claimed = ledger.claimResume(owner, initial.id, version, id, mode);
+    const attempt = publicAttempt(claimed.attempt);
+    return { ...metadata(), attempt: { ...attempt, resumeOutcome: attempt.resumeOutcome!,
+      resumeClaimVersion: attempt.resumeClaimVersion!, resumeClaimExpiresAt: attempt.resumeClaimExpiresAt! } };
+  }));
+  f.api.abortResume.mockImplementation((_id, version, id, reason) => request(() => {
+    ledger.abortResume(owner, initial.id, version, id, reason); return metadata();
+  }));
+  f.api.completeResume.mockImplementation((_id, version, id, startedAt, mode) => request(() => {
+    ledger.completeResume(owner, initial.id, version, id, startedAt, mode); return metadata();
+  }));
+  f.api.createSession.mockImplementation(body => request(() => {
+    ledger.registerAttempt(owner, { liveSessionId: body.liveSessionId, conversationId: body.conversationId,
+      conversationVersion: body.conversationVersion, initialMode: body.initialMode, startReason: body.startReason,
+      fingerprint: "fixture-sdp" });
+    ledger.dispatchProviderAttempt(owner, body.liveSessionId, body.conversationVersion, crypto.randomUUID(), Date.now() + 900000);
+    ledger.recordProviderCreated(body.liveSessionId, "provider-" + body.liveSessionId);
+    return { session: { id: "provider-" + body.liveSessionId }, transport: { type: "webrtc" as const, sdp: "answer" } };
+  }));
+  f.api.handoff.mockImplementation(id => request(() => ({ ...publicAttempt(ledger.acknowledgeHandoff(owner, id)),
+    conversation: metadata() })));
+  f.api.readAttempt.mockImplementation(id => request(() => ({ ...publicAttempt(ledger.getAttempt(owner, id)),
+    conversation: metadata() })));
+  f.api.cleanup.mockImplementation((id, reason) => request(() => publicAttempt(ledger.requestCleanup(id, reason))));
+  f.api.closed.mockImplementation((id, observation) => request(() => publicAttempt(ledger.recordProviderClosed(id, observation, "browser"))));
+  f.api.end.mockImplementation((_id, version, reason) => request(() => {
+    ledger.endConversation(owner, initial.id, version, reason); return metadata();
+  }));
+  return { db, ledger, owner, conversationId: initial.id, metadata, advance: (ms: number) => { now += ms; } };
+}
+async function retainedLedgerFixture(confirmPause = true) {
+  const f = fixture(40, true), server = useRealLedger(f);
+  const store = await f.snapshotStore;
+  await store.save({ conversationId: server.conversationId, conversationVersion: f.c.version,
+    policyVersion: f.c.policy.policyVersion, participantA: { hasAcceptedConversationSpeech: false },
+    participantB: { hasAcceptedConversationSpeech: false }, contextText: "Kept locally", setupStage: "context",
+    enteredInterpreter: false, interruptedUtterance: false, productDeadlineAt: null, counters: {} });
+  const hiddenAt = Date.now();
+  await store.markHidden(server.conversationId, hiddenAt, f.c.policy.conversationRetentionMs);
+  return { f, server, store, localDeadline: hiddenAt + f.c.policy.conversationRetentionMs, confirmPause: async () => {
+    server.ledger.pauseConversation(server.owner, server.conversationId, f.c.version);
+    server.metadata();
+    if (confirmPause) await store.confirmPause(f.c);
+    await f.controller.dispose();
+  } };
 }
 afterEach(() => {
   cleanup();
@@ -1124,6 +1204,55 @@ describe("stage 5 hidden boundary", () => {
     expect(reloaded.controller.session.state).toBe("bootstrap");
     await reloaded.controller.dispose(); await f.budget.close();
   });
+  it("retries after a first claim is rejected because prior cleanup is progressing", async () => {
+    const f = await pausedReloadFixture();
+    const reloaded = await reloadedController(f);
+    await vi.waitFor(() => expect(reloaded.controller.retainedRecoveryState).toBe("paused"));
+    f.api.claimResume.mockRejectedValueOnce(new AccountingRequestError(409, "attempt_in_progress"));
+
+    await expect(reloaded.controller.resumeRetainedConversation()).rejects.toMatchObject({
+      status: 409, code: "attempt_in_progress",
+    });
+    expect(await (await reloaded.store).inspectReload(id => f.api.readConversation(id) as Promise<ConversationMetadata>))
+      .toMatchObject({ kind: "paused", snapshot: { resumeAttemptId: null } });
+    await reloaded.controller.resumeRetainedConversation();
+    expect(f.api.claimResume).toHaveBeenCalledTimes(2);
+    expect(f.api.createSession).toHaveBeenCalledTimes(2);
+    await reloaded.controller.dispose(); await f.budget.close();
+  });
+  it("uses ledger proof to retry 409 only after prior cleanup finishes", async () => {
+    const { f, server, confirmPause } = await retainedLedgerFixture();
+    const priorId = crypto.randomUUID();
+    server.ledger.registerAttempt(server.owner, { liveSessionId: priorId, conversationId: server.conversationId,
+      conversationVersion: 1, initialMode: "setup", startReason: "initial", fingerprint: "prior-sdp" });
+    server.ledger.dispatchProviderAttempt(server.owner, priorId, 1, crypto.randomUUID(), Date.now() + 900000);
+    server.ledger.recordProviderCreated(priorId, "prior-provider");
+    server.ledger.acknowledgeHandoff(server.owner, priorId);
+    await confirmPause();
+    const reloaded = await reloadedController(f);
+    await vi.waitFor(() => expect(reloaded.controller.retainedRecoveryState).toBe("paused"));
+    await expect(reloaded.controller.resumeRetainedConversation()).rejects.toMatchObject({ code: "attempt_in_progress" });
+    expect(server.ledger.listAttempts(server.owner, server.conversationId)).toHaveLength(1);
+    expect(await (await reloaded.store).readForResume(id => f.api.readConversation(id) as Promise<ConversationMetadata>))
+      .toMatchObject({ contextText: "Kept locally", resumeAttemptId: null });
+    server.ledger.recordProviderClosed(priorId, { seconds: 1 }, "sideband");
+    await reloaded.controller.resumeRetainedConversation();
+    expect(server.ledger.listAttempts(server.owner, server.conversationId)).toHaveLength(2);
+    expect(f.api.createSession).toHaveBeenCalledTimes(1);
+    await reloaded.controller.dispose(); await f.budget.close(); server.db.close();
+  });
+  it("keeps an uncertain claim marker when a 409 lacks a server rejection code", async () => {
+    const f = await pausedReloadFixture();
+    const reloaded = await reloadedController(f);
+    await vi.waitFor(() => expect(reloaded.controller.retainedRecoveryState).toBe("paused"));
+    f.api.claimResume.mockRejectedValueOnce(new AccountingRequestError(409, "accounting_request_failed"));
+    await expect(reloaded.controller.resumeRetainedConversation()).rejects.toMatchObject({ status: 409 });
+    const id = f.api.claimResume.mock.calls[0]![2];
+    expect(await (await reloaded.store).inspectReload(value => f.api.readConversation(value) as Promise<ConversationMetadata>))
+      .toMatchObject({ kind: "paused", snapshot: { resumeAttemptId: id } });
+    expect(f.api.createSession).toHaveBeenCalledTimes(1);
+    await reloaded.controller.dispose(); await f.budget.close();
+  });
   it("keeps an uncertain claim ID when the retry receives a pre-claim 503", async () => {
     const f = await pausedReloadFixture();
     const reloaded = await reloadedController(f);
@@ -1385,6 +1514,84 @@ describe("stage 5 hidden boundary", () => {
     await reloaded.controller.startContextCapture();
     expect(f.api.createSession).toHaveBeenCalledTimes(1);
     await reloaded.controller.dispose().catch(() => undefined); await f.budget.close();
+  });
+  it("reconciles a claim already aborted with its original reason", async () => {
+    const f = await pausedReloadFixture();
+    const oldId = crypto.randomUUID();
+    const stagingStore = await ResumeSnapshotStore.open({ indexedDB: f.snapshotDb, sessionStorage,
+      locks: f.snapshotLocks, name: f.snapshotName });
+    await stagingStore.rememberResumeAttempt(f.c.conversationId, oldId);
+    await stagingStore.dispose();
+    f.c.version += 2;
+    f.api.abortResume.mockRejectedValue(new AccountingRequestError(409, "resume_claim_conflict"));
+    f.api.readAttempt.mockImplementation(async id => ({ liveSessionId: id, state: "failed", resumeOutcome: "aborted",
+      resumeClaimVersion: f.c.version - 1, cleanupRequestedAt: Date.now(), handoffAcknowledgedAt: null,
+      conversation: { ...f.c } }));
+    const reloaded = await reloadedController(f);
+    await vi.waitFor(() => expect(reloaded.controller.retainedRecoveryState).toBe("pending_claim"));
+    await reloaded.controller.resumeRetainedConversation();
+    expect(f.api.abortResume).not.toHaveBeenCalled();
+    expect(f.api.claimResume.mock.calls.at(-1)![2]).not.toBe(oldId);
+    expect(f.api.createSession).toHaveBeenCalledTimes(2);
+    await reloaded.controller.dispose(); await f.budget.close();
+  });
+  it("reconciles the ledger's already aborted claim without changing its first reason", async () => {
+    const { f, server, confirmPause } = await retainedLedgerFixture();
+    await confirmPause();
+    const oldId = crypto.randomUUID();
+    const stagingStore = await ResumeSnapshotStore.open({ indexedDB: f.snapshotDb, sessionStorage,
+      locks: f.snapshotLocks, name: f.snapshotName });
+    await stagingStore.rememberResumeAttempt(server.conversationId, oldId);
+    await stagingStore.dispose();
+    server.ledger.claimResume(server.owner, server.conversationId, 2, oldId, "setup");
+    server.ledger.abortResume(server.owner, server.conversationId, 3, oldId, "hidden");
+    server.metadata();
+    expect(server.ledger.getAttempt(server.owner, oldId).app_end_reason).toBe("hidden");
+    expect(() => server.ledger.abortResume(server.owner, server.conversationId, 3, oldId, "interrupted_by_restart"))
+      .toThrow("resume_claim_conflict");
+    const reloaded = await reloadedController(f);
+    await vi.waitFor(() => expect(reloaded.controller.retainedRecoveryState).toBe("pending_claim"));
+    await reloaded.controller.resumeRetainedConversation();
+    expect(f.api.abortResume).not.toHaveBeenCalled();
+    expect(server.ledger.getAttempt(server.owner, oldId).app_end_reason).toBe("hidden");
+    expect(server.ledger.listAttempts(server.owner, server.conversationId)).toHaveLength(2);
+    expect(f.api.createSession).toHaveBeenCalledTimes(1);
+    await reloaded.controller.dispose(); await f.budget.close(); server.db.close();
+  });
+  it("reconciles a ledger-expired claim after cleanup without replacing its timeout reason", async () => {
+    const { f, server, confirmPause } = await retainedLedgerFixture();
+    await confirmPause();
+    const oldId = crypto.randomUUID();
+    const stagingStore = await ResumeSnapshotStore.open({ indexedDB: f.snapshotDb, sessionStorage,
+      locks: f.snapshotLocks, name: f.snapshotName });
+    await stagingStore.rememberResumeAttempt(server.conversationId, oldId);
+    await stagingStore.dispose();
+    server.ledger.claimResume(server.owner, server.conversationId, 2, oldId, "setup");
+    server.advance(60000);
+    server.metadata();
+    expect(server.ledger.getAttempt(server.owner, oldId).resume_outcome).toBe("expired");
+    expect(server.ledger.getAttempt(server.owner, oldId).app_end_reason).toBe("claim_timeout");
+    const reloaded = await reloadedController(f);
+    await vi.waitFor(() => expect(reloaded.controller.retainedRecoveryState).toBe("pending_claim"));
+    await reloaded.controller.resumeRetainedConversation();
+    expect(f.api.abortResume).not.toHaveBeenCalled();
+    expect(server.ledger.getAttempt(server.owner, oldId).app_end_reason).toBe("claim_timeout");
+    expect(f.api.createSession).toHaveBeenCalledTimes(1);
+    await reloaded.controller.dispose(); await f.budget.close(); server.db.close();
+  });
+  it("retries a lost claim response with the same ledger attempt ID", async () => {
+    const { f, server, confirmPause } = await retainedLedgerFixture();
+    await confirmPause();
+    const claim = f.api.claimResume.getMockImplementation()!;
+    f.api.claimResume.mockImplementationOnce(async (...args) => { await claim(...args); throw new Error("claim response lost"); });
+    const reloaded = await reloadedController(f);
+    await vi.waitFor(() => expect(reloaded.controller.retainedRecoveryState).toBe("paused"));
+    await reloaded.controller.resumeRetainedConversation();
+    expect(f.api.claimResume).toHaveBeenCalledTimes(2);
+    expect(f.api.claimResume.mock.calls[1]).toEqual(f.api.claimResume.mock.calls[0]);
+    expect(server.ledger.listAttempts(server.owner, server.conversationId)).toHaveLength(1);
+    expect(f.api.createSession).toHaveBeenCalledTimes(1);
+    await reloaded.controller.dispose(); await f.budget.close(); server.db.close();
   });
   it("retries an ambiguous abort with the same claim before opening a new provider", async () => {
     const f = await pausedReloadFixture();
@@ -1786,8 +1993,54 @@ describe("stage 5 hidden boundary", () => {
     f.setVisible(false);
     await vi.waitFor(() => expect(f.api.pause).toHaveBeenCalledTimes(1));
     expect(sessionStorage.getItem("live-translator-retained-conversation-v1")).toBe(f.c.conversationId);
-    await reloadAfterPause(f);
+    await f.controller.dispose();
+    f.setVisible(true);
+    const reloaded = await reloadedController(f);
+    await vi.waitFor(() => expect(reloaded.controller.retainedRecoveryState).toBe("paused"));
+    await reloaded.controller.dispose();
     await f.budget.close();
+  });
+  it("restores a valid paused snapshot after its local pause ACK was lost", async () => {
+    const f = fixture(40, true); configureResume(f);
+    await f.controller.startContextCapture();
+    f.controller.setContextText("Kept locally");
+    vi.spyOn(await f.snapshotStore, "confirmPause").mockRejectedValue(new Error("ACK write lost"));
+    f.setVisible(false);
+    await vi.waitFor(() => expect(f.c.status).toBe("paused"));
+    await f.controller.dispose();
+    f.setVisible(true);
+    const reloaded = await reloadedController(f);
+    await vi.waitFor(() => expect(reloaded.controller.retainedRecoveryState).toBe("paused"));
+    await reloaded.controller.resumeRetainedConversation();
+    expect(reloaded.controller.contextText).toBe("Kept locally");
+    expect(f.api.createSession).toHaveBeenCalledTimes(2);
+    await reloaded.controller.dispose(); await f.budget.close();
+  });
+  it("uses ledger pause proof to recover a lost local ACK without extending the deadline", async () => {
+    const { f, server, localDeadline, confirmPause } = await retainedLedgerFixture(false);
+    await confirmPause();
+    const reloaded = await reloadedController(f);
+    await vi.waitFor(() => expect(reloaded.controller.retainedRecoveryState).toBe("paused"));
+    const snapshot = await (await reloaded.store).readForResume(id => f.api.readConversation(id) as Promise<ConversationMetadata>);
+    expect(snapshot).toMatchObject({ contextText: "Kept locally", conversationVersion: 2,
+      serverResumeExpiresAt: f.c.resumeExpiresAt, localResumeDeadlineAt: localDeadline });
+    await reloaded.controller.resumeRetainedConversation();
+    expect(reloaded.controller.contextText).toBe("Kept locally");
+    expect(f.api.createSession).toHaveBeenCalledTimes(1);
+    await reloaded.controller.dispose(); await f.budget.close(); server.db.close();
+  });
+  it("rejects a lost pause ACK when the ledger has moved beyond that pause version", async () => {
+    const { f, server, confirmPause } = await retainedLedgerFixture(false);
+    await confirmPause();
+    const oldId = crypto.randomUUID();
+    server.ledger.claimResume(server.owner, server.conversationId, 2, oldId, "setup");
+    server.ledger.abortResume(server.owner, server.conversationId, 3, oldId, "hidden");
+    server.metadata();
+    const reloaded = await reloadedController(f);
+    await vi.waitFor(() => expect(reloaded.controller.retainedRecoveryState).toBe("blocked"));
+    await expect(reloaded.controller.resumeRetainedConversation()).rejects.toThrow("verification");
+    expect(f.api.claimResume).not.toHaveBeenCalled();
+    await reloaded.controller.dispose().catch(() => undefined); await f.budget.close(); server.db.close();
   });
 
   it("blocks a fresh create after the hidden deadline write fails", async () => {
@@ -2090,6 +2343,24 @@ describe("stage 5 hidden boundary", () => {
     f.clients[0]!.peer.channel.emit({ type: "session.closed" });
     await ending;
     await f.budget.close();
+  });
+  it.each([false, true])("handles denied sessionStorage with background close %s", async background => {
+    const f = fixture(40, background, false, undefined, true, true);
+    const server = useRealLedger(f, background);
+    if (background) {
+      await expect(f.controller.startContextCapture()).rejects.toThrow("sessionStorage denied");
+      expect(f.api.createSession).not.toHaveBeenCalled();
+      expect(f.controller.retainedRecoveryState).toBe("blocked");
+    } else {
+      await f.controller.startContextCapture();
+      expect(f.controller.session.state).toBe("context");
+      expect(f.api.createSession).toHaveBeenCalledTimes(1);
+      const ending = f.controller.cancel();
+      f.clients[0]!.peer.channel.emit({ type: "session.closed" });
+      await ending;
+    }
+    await f.budget.close();
+    server.db.close();
   });
 
   it("uses a newly disabled policy after End for the next conversation", async () => {

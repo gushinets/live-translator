@@ -454,8 +454,9 @@ retry TTL is immutable seven days, independent of conversation retention.
 Resume endpoints prepare the later client feature; the background feature flag
 remains false. A logical conversation retains its policy version and deadlines.
 
-The stage-5 background/resume client is in `feat/background-close-and-resume`,
-not merged or enabled in production. Its API flag is
+The stage-5 background/resume client is under review in
+[draft PR #21](https://github.com/gushinets/live-translator/pull/21) on
+`feat/background-close-and-resume`; it is not merged or enabled in production. Its API flag is
 `BACKGROUND_SESSION_CLOSE_ENABLED=false` by default and requires
 `USAGE_LEDGER_ENABLED=true`. When enabled after review and the E3/G2 device
 check, hidden closes the provider while retaining a five-minute logical
