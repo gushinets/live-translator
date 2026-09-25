@@ -1275,6 +1275,50 @@ describe("stage 5 hidden boundary", () => {
     expect(sessionStorage.getItem("live-translator-retained-conversation-v1")).toBeNull();
     await f.budget.close();
   });
+  it("starts a new conversation after server End clears an unresolved local resume", async () => {
+    const f = fixture(40, true); configureResume(f);
+    await f.controller.startBootstrap();
+    f.setVisible(false);
+    await vi.waitFor(() => expect(f.clients[0]!.peer.channel.sent).toContain("session.close"));
+    f.clients[0]!.peer.channel.emit({ type: "session.closed" });
+    await vi.waitFor(() => expect(f.c.status).toBe("paused"));
+    const complete = f.api.completeResume.getMockImplementation()!;
+    f.api.completeResume.mockImplementation(async (...args) => { await complete(...args); throw new Error("complete response lost"); });
+    const claim = f.api.claimResume.getMockImplementation()!;
+    f.api.claimResume.mockImplementation(async (...args) => {
+      if (f.c.status === "active") throw new Error("claim receipt lost");
+      return claim(...args);
+    });
+    f.api.abortResume.mockRejectedValue(new AccountingRequestError(409, "resume_claim_conflict"));
+    f.setVisible(true);
+    await vi.waitFor(() => expect(f.controller.retainedRecoveryState).toBe("failed"));
+    f.api.readConversation.mockRejectedValueOnce(new Error("offline"));
+    await expect(f.controller.endConversation()).rejects.toThrow("offline");
+    expect(f.scope.conversationStatus).toBe("resuming");
+    f.api.readConversation.mockResolvedValueOnce({ ...f.c, conversationId: "other", status: "ended", version: 5 });
+    await expect(f.controller.endConversation()).rejects.toThrow("Retained conversation status unavailable");
+    expect(f.scope.conversationStatus).toBe("resuming");
+    f.api.readConversation.mockResolvedValueOnce({ ...f.c, status: "ended", version: 3 });
+    await expect(f.controller.endConversation()).rejects.toThrow("Recovered conversation End does not match local ownership");
+    expect(f.scope.conversationStatus).toBe("resuming");
+    f.c.status = "ended"; f.c.version = 5;
+    await f.controller.endConversation();
+    expect(sessionStorage.getItem("live-translator-retained-conversation-v1")).toBeNull();
+    const fresh: ConversationMetadata = { ...f.c, conversationId: "new-conversation", version: 1, status: "active" };
+    f.api.createConversation.mockResolvedValueOnce(fresh);
+    f.api.handoff.mockImplementation(async id => ({ liveSessionId: id, state: "active", handoffAcknowledgedAt: Date.now(),
+      cleanupRequestedAt: null, conversation: fresh }));
+    f.api.readConversation.mockImplementation(async id => id === fresh.conversationId ? fresh : f.c);
+    f.api.end.mockImplementation(async (id, version) => {
+      const row = id === fresh.conversationId ? fresh : f.c;
+      row.status = "ended"; row.version = version + 1; return { ...row };
+    });
+    await f.controller.startBootstrap();
+    expect(f.api.createConversation).toHaveBeenCalledTimes(2);
+    expect(f.api.createSession.mock.calls.at(-1)![0].conversationId).toBe(fresh.conversationId);
+    expect(f.scope.conversationId).toBe(fresh.conversationId);
+    await f.controller.dispose(); await f.budget.close();
+  });
   it("A5.5 reconciles a lost claim response with the same ID before provider dispatch", async () => {
     const f = fixture(40, true); configureResume(f);
     await f.controller.startBootstrap();

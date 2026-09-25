@@ -163,6 +163,15 @@ export class ConversationAccounting {
     this.current = result; this.resume = undefined; this.pausing = true;
     return resume.id;
   }
+  confirmRecoveredEnd(result: ConversationMetadata): void {
+    const c = this.current;
+    if (!c) return;
+    if (result.conversationId !== c.conversationId || result.status !== "ended" ||
+      !Number.isSafeInteger(result.version) || result.version < c.version ||
+      (result.version === c.version && c.status !== "ended") || result.resumeAttemptId !== null)
+      throw new Error("Recovered conversation End does not match local ownership");
+    this.resetConversation();
+  }
   async pause(close: Promise<unknown>): Promise<ConversationMetadata | null> {
     const c = await this.pendingConversation();
     await close.catch(() => undefined);

@@ -263,7 +263,10 @@ export class AccountedSessionController extends SessionController {
       if (conversation.conversationId !== retainedId || !Number.isSafeInteger(conversation.version) ||
         conversation.version < store.retainedConversationVersion() || !["active", "paused", "resuming", "ended"].includes(conversation.status))
         throw new Error("Retained conversation status unavailable");
-      if (conversation.status === "ended") await store.discard(retainedId);
+      if (conversation.status === "ended") {
+        this.accounting.confirmRecoveredEnd(conversation);
+        await store.discard(retainedId);
+      }
       else {
         const local = await this.accounting.pendingConversation();
         if (local) {
