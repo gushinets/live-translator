@@ -1355,6 +1355,24 @@ describe("stage 4 durable lifecycle boundary", () => {
     expect(f.api.end).toHaveBeenCalledWith(f.c.conversationId, 1, "user_end"); await f.budget.close();
   });
 
+  it("does not turn a direct cleanup ACK into no-provider proof after staging fails", async () => {
+    const f = fixture();
+    f.c.policy.backgroundSessionCloseEnabled = true;
+    f.api.policy.mockResolvedValue({ usageLedgerEnabled: true, backgroundSessionCloseEnabled: true });
+    f.scope.setSnapshotStore(Promise.resolve({ available: true } as ResumeSnapshotStore));
+    const attempt = f.scope.newAttempt(); await attempt.create("offer");
+    vi.spyOn(f.scope.outbox, "enqueueEnd").mockRejectedValueOnce(new Error("storage unavailable"));
+    await expect(f.scope.stageEnd("setup_cancel")).rejects.toThrow("storage unavailable");
+    await f.api.cleanup(attempt.localId, "cancelled");
+    await f.scope.acknowledgeDirectCleanup(attempt.localId);
+    f.api.end.mockRejectedValue(new Error("offline"));
+    await expect(f.scope.end("setup_cancel")).rejects.toThrow("offline");
+
+    expect((await f.budget.ends())[0]).toMatchObject({ cleanupLocalIds: [],
+      noProviderPendingLocalIds: [attempt.localId] });
+    await f.budget.close();
+  });
+
   it("does not treat a release-only degraded response as a cleanup proof", async () => {
     const f = fixture(), attempt = f.scope.newAttempt(); await attempt.create("offer");
     vi.spyOn(f.scope.outbox, "enqueue").mockRejectedValue(new Error("quota"));

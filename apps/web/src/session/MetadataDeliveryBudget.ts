@@ -9,7 +9,12 @@ export interface MetadataEnvelope {
   cleanupAcknowledged?: boolean;
   closeObservation: CloseMetadata | null; usagePending: boolean; usage?: QueuedUsage | null; usageRevision?: number; usageProducerFinalized?: boolean;
 }
-export interface EndIntent { conversationId: string; expectedVersion: number; reason: "user_end" | "setup_cancel"; expiresAt: number; cleanupLocalIds?: string[]; noProviderPolicyVersion?: string; }
+export interface EndIntent {
+  conversationId: string; expectedVersion: number; reason: "user_end" | "setup_cancel"; expiresAt: number; cleanupLocalIds?: string[];
+  noProviderPolicyVersion?: string;
+  // Cleanup ACK removes cleanupLocalIds; only definitive no_provider proof removes these IDs.
+  noProviderPendingLocalIds?: string[];
+}
 export const METADATA_TTL_MS = 7 * 86400000;
 
 /** One origin-wide envelope per localId. Every pre-dispatch mutation waits for IDB commit. */
@@ -103,7 +108,7 @@ export class MetadataDeliveryBudget {
   private releasable(row: MetadataEnvelope): boolean {
     return row.producerFinalized && row.producerOutcome !== null && !row.cleanup && !row.closeObservation && !row.usagePending;
   }
-  private releaseAndRemoveEndDependency(localId: string, update: (row: MetadataEnvelope) => MetadataEnvelope): Promise<void> {
+  private releaseAndRemoveEndDependency(localId: string, update: (row: MetadataEnvelope) => MetadataEnvelope, noProvider = false): Promise<void> {
     return this.transaction("readwrite", (store, result, _fail, tx) => {
       const get = store.get(localId);
       get.onsuccess = () => {
@@ -116,7 +121,10 @@ export class MetadataDeliveryBudget {
         ends.onsuccess = () => {
           const lifecycle = tx.objectStore("lifecycle");
           for (const intent of ends.result as EndIntent[]) {
-            if (intent.cleanupLocalIds?.includes(localId)) lifecycle.put({ ...intent, cleanupLocalIds: intent.cleanupLocalIds.filter(id => id !== localId) });
+            if (intent.cleanupLocalIds?.includes(localId) || noProvider && intent.noProviderPendingLocalIds?.includes(localId))
+              lifecycle.put({ ...intent,
+                cleanupLocalIds: intent.cleanupLocalIds?.filter(id => id !== localId),
+                noProviderPendingLocalIds: noProvider ? intent.noProviderPendingLocalIds?.filter(id => id !== localId) : intent.noProviderPendingLocalIds });
           }
           result(undefined);
         };
@@ -143,7 +151,7 @@ export class MetadataDeliveryBudget {
   }
   finishProducerAndRelease(localId: string, outcome: ProducerOutcome): Promise<void> {
     if (outcome === "provider_closed") return this.acknowledgeCloseAndRelease(localId);
-    if (outcome === "no_provider") return this.releaseAndRemoveEndDependency(localId, row => ({ ...row, cleanup: null, producerFinalized: true, producerOutcome: outcome }));
+    if (outcome === "no_provider") return this.releaseAndRemoveEndDependency(localId, row => ({ ...row, cleanup: null, producerFinalized: true, producerOutcome: outcome }), true);
     return this.change(localId, row => {
       const next = { ...row, producerFinalized: true, producerOutcome: outcome };
       return this.releasable(next) ? null : next;
@@ -197,7 +205,7 @@ export class MetadataDeliveryBudget {
     return this.transaction("readonly", (store, result) => { const r = store.getAll(); r.onsuccess = () => result(r.result as MetadataEnvelope[]); });
   }
   enqueueEnd(conversationId: string, expectedVersion: number, reason: EndIntent["reason"], cleanupLocalIds: readonly string[] = [], closeTimeoutMs = 0,
-    noProviderPolicyVersion?: string): Promise<void> {
+    noProviderPolicyVersion?: string, noProviderAttemptIds: readonly string[] = cleanupLocalIds): Promise<void> {
     // One transaction removes the crash gap between saving cleanup and saving user intent.
     // Cleanup remains first-reason-wins, and no usage/close obligation is removed here.
     const safeTimeout = Number.isFinite(closeTimeoutMs) ? Math.min(2_147_483_647, Math.max(0, closeTimeoutMs)) : 2_147_483_647;
@@ -222,8 +230,10 @@ export class MetadataDeliveryBudget {
             return Boolean(row && (row.cleanup || row.closeObservation));
           }) : [];
           const dependencies = [...new Set([...retained, ...applicable])];
-          const replayPolicyVersion = dependencies.length === 0 && (sameEnd ? old?.reason : reason) === "setup_cancel"
-            ? (sameEnd ? old?.noProviderPolicyVersion ?? noProviderPolicyVersion : noProviderPolicyVersion) : undefined;
+          const replayPolicyVersion = (sameEnd ? old?.reason : reason) === "setup_cancel"
+            ? (sameEnd ? old?.noProviderPolicyVersion : noProviderPolicyVersion) : undefined;
+          const noProviderPendingLocalIds = replayPolicyVersion
+            ? (sameEnd ? old?.noProviderPendingLocalIds : [...new Set(noProviderAttemptIds)]) : undefined;
           for (const id of applicable) {
             const row = byId.get(id)!;
             if (row.closeObservation) continue;
@@ -238,11 +248,12 @@ export class MetadataDeliveryBudget {
               cleanup: row.cleanup ? { ...row.cleanup, expiresAt: cleanupExpiresAt } : { reason: reason === "setup_cancel" ? "cancelled" : "user_end", createdAt: now, expiresAt: cleanupExpiresAt } });
           }
           if (old) { if (old.expectedVersion <= expectedVersion) store.put({ conversationId, expectedVersion, reason: sameEnd ? old.reason : reason,
-            expiresAt, cleanupLocalIds: dependencies, noProviderPolicyVersion: replayPolicyVersion }); result(undefined); return; }
+            expiresAt, cleanupLocalIds: dependencies, noProviderPolicyVersion: replayPolicyVersion,
+            noProviderPendingLocalIds }); result(undefined); return; }
           const count = store.count(); count.onsuccess = () => {
             if (count.result >= 1000) { fail(new Error("Lifecycle metadata storage is full")); return; }
             store.put({ conversationId, expectedVersion, reason, expiresAt, cleanupLocalIds: dependencies,
-              noProviderPolicyVersion: replayPolicyVersion }); result(undefined);
+              noProviderPolicyVersion: replayPolicyVersion, noProviderPendingLocalIds }); result(undefined);
           };
         };
       };

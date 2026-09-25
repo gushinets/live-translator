@@ -445,7 +445,7 @@ export class ConversationAccounting {
     const dispatched = attempts.filter(a => a.dispatched);
     this.outbox.deferCleanup(dispatched.filter(a => !a.finished).map(a => a.localId));
     await this.outbox.enqueueEnd(c.conversationId, c.version, reason, dispatched.map(a => a.localId), c.policy.sessionCloseTimeoutMs,
-      reason === "setup_cancel" && !dispatched.length && c.productDeadlineAt === null && c.policy.backgroundSessionCloseEnabled
+      reason === "setup_cancel" && c.productDeadlineAt === null && c.policy.backgroundSessionCloseEnabled
         ? c.policy.policyVersion : undefined);
     this.stagedEndConversationId = c.conversationId;
   }
@@ -480,8 +480,8 @@ export class ConversationAccounting {
       try {
         await this.outbox.enqueueEnd(c.conversationId, c.version, boundary.reason,
           dispatched.filter(a => !this.directRetirementProofs.has(a.localId)).map(a => a.localId), c.policy.sessionCloseTimeoutMs,
-          boundary.reason === "setup_cancel" && !dispatched.length && c.productDeadlineAt === null && c.policy.backgroundSessionCloseEnabled
-            ? c.policy.policyVersion : undefined);
+          boundary.reason === "setup_cancel" && c.productDeadlineAt === null && c.policy.backgroundSessionCloseEnabled
+            ? c.policy.policyVersion : undefined, dispatched.map(a => a.localId));
         persisted = true;
       } catch { console.error("Conversation end storage degraded", { conversationId: c.conversationId }); }
     }
@@ -548,6 +548,7 @@ export class ProviderAccounting {
         this.scope.noteNoProvider(this);
         this.finished = true;
         await this.scope.finalizeNoProvider(this.localId);
+        this.dispatched = false;
       } else {
         await this.abandon("response_not_received");
       }

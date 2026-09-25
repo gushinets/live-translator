@@ -3135,6 +3135,81 @@ describe("stage 5 hidden boundary", () => {
     await reloaded.controller.dispose(); await f.controller.dispose(); await f.budget.close(); server.db.close();
   });
 
+  it.each([false, true])("replays definitive create rejection End after seven offline days with storage denied %s", async storageDenied => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    const startedAt = Date.now();
+    const f = fixture(40, true);
+    const server = useRealLedger(f, true);
+    f.api.createSession.mockRejectedValueOnce(new AccountingRequestError(503, "server_shutting_down_before_dispatch"));
+    const onlineEnd = f.api.end.getMockImplementation()!;
+    f.api.end.mockRejectedValue(new Error("offline"));
+
+    await expect(f.controller.startContextCapture()).rejects.toThrow();
+    await f.controller.cancel().catch(() => undefined);
+    expect((await f.budget.ends())[0]).toMatchObject({ conversationId: server.conversationId,
+      expectedVersion: 1, reason: "setup_cancel", cleanupLocalIds: [], noProviderPolicyVersion: f.c.policy.policyVersion });
+    expect(f.api.cleanup).not.toHaveBeenCalled();
+    expect(f.api.createSession).toHaveBeenCalledOnce();
+
+    vi.setSystemTime(startedAt + METADATA_TTL_MS + 1);
+    server.advance(METADATA_TTL_MS + 1);
+    const deniedStorage: Storage = { length: 0, clear() {}, key() { return null; }, removeItem() {},
+      setItem() {}, getItem() { throw new Error("sessionStorage denied"); } };
+    const reloaded = await reloadedController(f, false, storageDenied ? deniedStorage : sessionStorage);
+    f.api.end.mockImplementation(onlineEnd).mockClear();
+    await reloaded.scope.outbox.flush();
+
+    expect(f.api.end).toHaveBeenCalledExactlyOnceWith(server.conversationId, 1, "setup_cancel");
+    expect(server.metadata().status).toBe("ended");
+    expect(await f.budget.ends()).toEqual([]);
+    expect(f.api.createSession).toHaveBeenCalledOnce();
+    await reloaded.controller.dispose(); await f.controller.dispose(); await f.budget.close(); server.db.close();
+  });
+
+  it("retains exact no-provider End proof when cancellation precedes definitive create rejection", async () => {
+    const f = fixture(40, true);
+    const server = useRealLedger(f, true);
+    let rejectCreate!: (error: Error) => void;
+    f.api.createSession.mockImplementationOnce(() => new Promise((_resolve, reject) => { rejectCreate = reject; }));
+    f.api.end.mockRejectedValue(new Error("offline"));
+    const starting = f.controller.startContextCapture().catch(error => error);
+    await vi.waitFor(() => expect(rejectCreate).toBeDefined());
+    await f.controller.cancel().catch(() => undefined);
+    expect((await f.budget.ends())[0]?.noProviderPendingLocalIds).toEqual([f.clients[0]!.id]);
+
+    rejectCreate(new AccountingRequestError(503, "server_shutting_down_before_dispatch"));
+    await starting;
+    await vi.waitFor(async () => expect((await f.budget.ends())[0]?.cleanupLocalIds).toEqual([]));
+    expect((await f.budget.ends())[0]?.noProviderPolicyVersion).toBe(f.c.policy.policyVersion);
+    expect((await f.budget.ends())[0]?.noProviderPendingLocalIds).toEqual([]);
+    expect(server.metadata()).toMatchObject({ status: "active", productDeadlineAt: null });
+    expect(f.api.createSession).toHaveBeenCalledOnce();
+    await f.budget.close(); server.db.close();
+  });
+
+  it("does not replay expired End as no-provider after a lost provider create response", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    const startedAt = Date.now();
+    const f = fixture(40, true);
+    f.api.createSession.mockRejectedValueOnce(new Error("response lost"));
+    f.api.end.mockRejectedValue(new Error("offline"));
+
+    await expect(f.controller.startContextCapture()).rejects.toThrow();
+    await f.controller.cancel().catch(() => undefined);
+    const intent = (await f.budget.ends())[0]!;
+    expect(intent.noProviderPendingLocalIds).toEqual([f.clients[0]!.id]);
+
+    vi.setSystemTime(startedAt + METADATA_TTL_MS + 1);
+    f.api.end.mockResolvedValue({ ...f.c, status: "ended" }).mockClear();
+    const reloaded = await reloadedController(f, false);
+    await reloaded.scope.outbox.flush();
+    expect(f.api.end).not.toHaveBeenCalled();
+    expect(f.c.status).toBe("active");
+    expect(await f.budget.ends()).toHaveLength(1);
+    await expect(reloaded.controller.dispose()).rejects.toThrow("Conversation End was not confirmed during disposal");
+    await f.controller.dispose().catch(() => undefined); await f.budget.close();
+  });
+
   it("does not replay a foreign or changed no-provider End intent without document ownership", async () => {
     vi.useFakeTimers({ toFake: ["Date"] });
     const startedAt = Date.now();

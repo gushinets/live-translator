@@ -40,8 +40,8 @@ export class CleanupIntentOutbox {
     await this.budget.enqueueClose(localId, observation); this.deferredCleanup.delete(localId); this.revision++; this.schedule();
   }
   async enqueueEnd(id: string, version: number, reason: EndIntent["reason"], cleanupLocalIds: readonly string[] = [], closeTimeoutMs = 0,
-    noProviderPolicyVersion?: string): Promise<void> {
-    await this.budget.enqueueEnd(id, version, reason, cleanupLocalIds, closeTimeoutMs, noProviderPolicyVersion); this.revision++; this.schedule();
+    noProviderPolicyVersion?: string, noProviderPendingLocalIds?: readonly string[]): Promise<void> {
+    await this.budget.enqueueEnd(id, version, reason, cleanupLocalIds, closeTimeoutMs, noProviderPolicyVersion, noProviderPendingLocalIds); this.revision++; this.schedule();
   }
   deferCleanup(localIds: readonly string[]): void { for (const id of localIds) this.deferredCleanup.add(id); }
   confirmRetirement(localId: string): void { this.deferredCleanup.delete(localId); }
@@ -169,7 +169,8 @@ export class CleanupIntentOutbox {
       if (Date.now() >= intent.expiresAt) {
         this.anomaly("conversation_end_expired");
         const exactNoProvider = intent.reason === "setup_cancel" && Array.isArray(intent.cleanupLocalIds) &&
-          intent.cleanupLocalIds.length === 0 && Number.isSafeInteger(intent.expectedVersion) && intent.expectedVersion > 0 &&
+          intent.cleanupLocalIds.length === 0 && (intent.noProviderPendingLocalIds?.length ?? 0) === 0 &&
+          Number.isSafeInteger(intent.expectedVersion) && intent.expectedVersion > 0 &&
           typeof intent.noProviderPolicyVersion === "string" && intent.noProviderPolicyVersion.length > 0;
         try {
           const c = await this.transport.readConversation(intent.conversationId) as {
