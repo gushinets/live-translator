@@ -4,7 +4,7 @@ import type { UsageObservation } from "../metrics/UsageTypes";
 import { AccountingBackend, AccountingRequestError, type LedgerApi, type ConversationMetadata, type ResumeClaimMetadata, type ResumeAbortReason, type ProviderCreateBody } from "../api/AccountingBackend";
 import { BackendClient, type CreateLiveSessionResponse } from "../api/BackendClient";
 import { CleanupIntentOutbox, cleanupProofReceived, producerLeaseKey } from "./CleanupIntentOutbox";
-import { MetadataDeliveryBudget, type CleanupReason } from "./MetadataDeliveryBudget";
+import { MetadataDeliveryBudget, attemptKey, type CleanupReason } from "./MetadataDeliveryBudget";
 import type { LiveCloseResult } from "../live/LiveClient";
 import type { ReloadInspection, ResumeSnapshotStore } from "./ResumeSnapshotStore";
 
@@ -58,9 +58,9 @@ export class ConversationAccounting {
   private producerLock: Promise<void> | undefined;
   private readonly pendingEndBoundaries = new Map<number, PendingEndBoundary>();
   private readonly pendingDirectEnds = new Map<number, PendingDirectEnd>();
-  private readonly pendingDirectCleanupAcks = new Set<string>();
-  private readonly pendingDirectCloseAcks = new Set<string>();
-  private readonly pendingNoProviderFinalizations = new Map<string, string | undefined>();
+  private readonly pendingDirectCleanupAcks = new Map<string, { localId: string; conversationId: string }>();
+  private readonly pendingDirectCloseAcks = new Map<string, { localId: string; conversationId: string }>();
+  private readonly pendingNoProviderFinalizations = new Map<string, { localId: string; conversationId: string }>();
   private readonly directRetirementProofs = new Set<string>();
   private snapshotStore: Promise<ResumeSnapshotStore> | undefined;
   constructor(options: { api?: LedgerApi; budget?: MetadataDeliveryBudget; autoDelivery?: boolean } = {}) {
@@ -290,10 +290,10 @@ export class ConversationAccounting {
         await this.budget.reclaimUndispatched(id);
         for (const row of await this.budget.entries()) {
           if (row.producerId !== id || row.dispatchStartedAt === null) continue;
-          if (!row.producerFinalized && !row.cleanup && !row.closeObservation) await this.outbox.enqueue(row.localId, "response_not_received");
+          if (!row.producerFinalized && !row.cleanup && !row.closeObservation) await this.outbox.enqueue(row.localId, "response_not_received", row.conversationId);
           // The exclusive producer lock proves the app producer died, not that its metrics are complete.
           // Keep its last partial report for delivery; release the producer hold only.
-          if (row.usageProducerFinalized === false) await this.budget.finishUsageProducer(row.localId);
+          if (row.usageProducerFinalized === false) await this.budget.finishUsageProducer(row.localId, row.conversationId);
         }
       });
     }
@@ -369,7 +369,7 @@ export class ConversationAccounting {
   private async deliverDirectEnd(intent: PendingDirectEnd): Promise<void> {
     if (intent.inFlight) return intent.inFlight;
     const operation = (async () => {
-      const pending = intent.cleanupLocalIds.filter(localId => !this.directRetirementProofs.has(localId));
+      const pending = intent.cleanupLocalIds.filter(localId => !this.directRetirementProofs.has(attemptKey(intent.conversationId, localId)));
       if (pending.length) await this.outbox.flush();
       for (const localId of pending) {
         const row = await this.budget.get(localId);
@@ -386,53 +386,56 @@ export class ConversationAccounting {
   private async flushPendingDirectEnds(): Promise<void> {
     for (const intent of [...this.pendingDirectEnds.values()]) await this.deliverDirectEnd(intent);
   }
-  async acknowledgeDirectCleanup(localId: string): Promise<void> {
-    this.directRetirementProofs.add(localId);
-    this.outbox.confirmRetirement(localId);
+  async acknowledgeDirectCleanup(localId: string, conversationId: string): Promise<void> {
+    const key = attemptKey(conversationId, localId);
+    this.directRetirementProofs.add(key);
+    this.outbox.confirmRetirement(localId, conversationId);
     try {
-      await this.budget.acknowledgeDirectCleanupAndRelease(localId);
-      this.pendingDirectCleanupAcks.delete(localId);
+      await this.budget.acknowledgeDirectCleanupAndRelease(localId, conversationId);
+      this.pendingDirectCleanupAcks.delete(key);
     } catch {
-      this.pendingDirectCleanupAcks.add(localId);
+      this.pendingDirectCleanupAcks.set(key, { localId, conversationId });
     }
   }
   private async flushPendingDirectCleanupAcks(): Promise<void> {
-    for (const localId of [...this.pendingDirectCleanupAcks]) {
-      await this.budget.acknowledgeDirectCleanupAndRelease(localId);
-      this.pendingDirectCleanupAcks.delete(localId);
+    for (const [key, { localId, conversationId }] of [...this.pendingDirectCleanupAcks]) {
+      await this.budget.acknowledgeDirectCleanupAndRelease(localId, conversationId);
+      this.pendingDirectCleanupAcks.delete(key);
     }
   }
-  async acknowledgeDirectClose(localId: string): Promise<void> {
-    this.directRetirementProofs.add(localId);
-    this.outbox.confirmRetirement(localId);
+  async acknowledgeDirectClose(localId: string, conversationId: string): Promise<void> {
+    const key = attemptKey(conversationId, localId);
+    this.directRetirementProofs.add(key);
+    this.outbox.confirmRetirement(localId, conversationId);
     try {
-      await this.budget.finishProducerAndRelease(localId, "provider_closed");
-      this.pendingDirectCloseAcks.delete(localId);
+      await this.budget.finishProducerAndRelease(localId, "provider_closed", conversationId);
+      this.pendingDirectCloseAcks.delete(key);
     } catch {
-      this.pendingDirectCloseAcks.add(localId);
+      this.pendingDirectCloseAcks.set(key, { localId, conversationId });
     }
   }
   private async flushPendingDirectCloseAcks(): Promise<void> {
-    for (const localId of [...this.pendingDirectCloseAcks]) {
-      await this.budget.finishProducerAndRelease(localId, "provider_closed");
-      this.pendingDirectCloseAcks.delete(localId);
+    for (const [key, { localId, conversationId }] of [...this.pendingDirectCloseAcks]) {
+      await this.budget.finishProducerAndRelease(localId, "provider_closed", conversationId);
+      this.pendingDirectCloseAcks.delete(key);
     }
   }
-  async finalizeNoProvider(localId: string, conversationId?: string): Promise<void> {
-    this.directRetirementProofs.add(localId);
-    this.pendingNoProviderFinalizations.set(localId, conversationId);
+  async finalizeNoProvider(localId: string, conversationId: string): Promise<void> {
+    const key = attemptKey(conversationId, localId);
+    this.directRetirementProofs.add(key);
+    this.pendingNoProviderFinalizations.set(key, { localId, conversationId });
     try { await this.flushPendingNoProviderFinalizations(); }
     catch (error) { this.outbox.wake(); throw error; }
   }
   private async flushPendingNoProviderFinalizations(): Promise<void> {
-    for (const [localId, conversationId] of [...this.pendingNoProviderFinalizations]) {
+    for (const [key, { localId, conversationId }] of [...this.pendingNoProviderFinalizations]) {
       try { await this.budget.finishProducerAndRelease(localId, "no_provider", conversationId); }
       catch (error) {
         try { await this.budget.finishProducer(localId, "no_provider", conversationId); } catch { /* Preserve the confirmed outcome if IDB permits. */ }
         throw error;
       }
-      this.outbox.confirmRetirement(localId);
-      this.pendingNoProviderFinalizations.delete(localId);
+      this.outbox.confirmRetirement(localId, conversationId);
+      this.pendingNoProviderFinalizations.delete(key);
     }
   }
   async stageEnd(reason: "user_end" | "setup_cancel", expectedEpoch = this.epoch): Promise<void> {
@@ -443,7 +446,7 @@ export class ConversationAccounting {
     // Persist intent before waiting for provider final. Do not terminate the usage producer
     // or enqueue HTTP here: a crash can replay both stores, and a late final remains valid.
     const dispatched = attempts.filter(a => a.dispatched);
-    this.outbox.deferCleanup(dispatched.filter(a => !a.finished).map(a => a.localId));
+    this.outbox.deferCleanup(c.conversationId, dispatched.filter(a => !a.finished).map(a => a.localId));
     await this.outbox.enqueueEnd(c.conversationId, c.version, reason, dispatched.map(a => a.localId), c.policy.sessionCloseTimeoutMs,
       reason === "setup_cancel" && c.productDeadlineAt === null && c.policy.backgroundSessionCloseEnabled
         ? c.policy.policyVersion : undefined);
@@ -479,7 +482,7 @@ export class ConversationAccounting {
       const dispatched = boundary.attempts.filter(a => a.dispatched);
       try {
         await this.outbox.enqueueEnd(c.conversationId, c.version, boundary.reason,
-          dispatched.filter(a => !this.directRetirementProofs.has(a.localId)).map(a => a.localId), c.policy.sessionCloseTimeoutMs,
+          dispatched.filter(a => !this.directRetirementProofs.has(attemptKey(c.conversationId, a.localId))).map(a => a.localId), c.policy.sessionCloseTimeoutMs,
           boundary.reason === "setup_cancel" && c.productDeadlineAt === null && c.policy.backgroundSessionCloseEnabled
             ? c.policy.policyVersion : undefined, dispatched.map(a => a.localId));
         persisted = true;
@@ -491,7 +494,7 @@ export class ConversationAccounting {
     if (!persisted && dispatchedFailure?.status === "rejected") throw dispatchedFailure.reason;
     if (c) {
       const dispatched = boundary.attempts.filter(a => a.dispatched);
-      if (!persisted || dispatched.every(a => this.directRetirementProofs.has(a.localId))) {
+      if (!persisted || dispatched.every(a => this.directRetirementProofs.has(attemptKey(c.conversationId, a.localId)))) {
         const intent = this.pendingDirectEnds.get(boundary.epoch) ?? {
           conversationId: c.conversationId, version: c.version, reason: boundary.reason, epoch: boundary.epoch,
           cleanupLocalIds: dispatched.map(a => a.localId),
@@ -516,6 +519,7 @@ export class ProviderAccounting {
   private hasReservation = false;
   private controller: AbortController | undefined;
   private conversation: ConversationMetadata | undefined;
+  private attemptConversationId: string | undefined;
   private finishing: Promise<void> | undefined;
   private reporter: UsageReporter | undefined;
   private lastProduct: ProductObservation | undefined;
@@ -531,7 +535,7 @@ export class ProviderAccounting {
   async create(sdp: string, beforeManagedCreate?: () => void): Promise<CreateLiveSessionResponse> {
     const c = await this.scope.prepare(this); this.assertCurrent();
     if (!c) return new BackendClient().createLiveSession(sdp);
-    this.conversation = c; beforeManagedCreate?.();
+    this.conversation = c; this.attemptConversationId = c.conversationId; beforeManagedCreate?.();
     this.reservation = this.scope.budget.reserve(this.localId, c.conversationId, this.scope.usageOutbox !== undefined);
     await this.reservation; this.hasReservation = true;
     try {
@@ -581,10 +585,10 @@ export class ProviderAccounting {
     if (this.finishing) return this.finishing;
     const operation = (async () => {
       try {
-        if (this.dispatched) { await this.scope.outbox.enqueue(this.localId, committedReason); this.controller?.abort(); }
+        if (this.dispatched) { await this.scope.outbox.enqueue(this.localId, committedReason, this.attemptConversationId!); this.controller?.abort(); }
         else {
           await this.scope.usageOutbox?.noProvider(this.localId);
-          await this.scope.finalizeNoProvider(this.localId);
+          await this.scope.finalizeNoProvider(this.localId, this.attemptConversationId!);
         }
         this.finished = true;
       } catch (error) {
@@ -593,7 +597,7 @@ export class ProviderAccounting {
         if (!this.dispatched) throw error;
         const proof = await this.scope.api.cleanup(this.localId, committedReason);
         if (!cleanupProofReceived(proof)) throw new Error("Provider cleanup was not confirmed", { cause: error });
-        await this.scope.acknowledgeDirectCleanup(this.localId);
+        await this.scope.acknowledgeDirectCleanup(this.localId, this.attemptConversationId!);
         this.finished = true;
       }
     })();
@@ -614,14 +618,14 @@ export class ProviderAccounting {
     if (this.finishing) return this.finishing;
     const operation = (async () => {
       try {
-        await this.scope.outbox.observeClosed(this.localId, observation);
+        await this.scope.outbox.observeClosed(this.localId, observation, this.attemptConversationId!);
       } catch {
         console.error("Provider close metadata storage degraded", { localId: this.localId });
         const proof = await this.scope.api.closed(this.localId, observation);
         if (proof.closeConfirmed !== true && proof.state !== "closed" && !(proof.state === "failed" && !proof.openaiSessionId)) {
           throw new Error("Provider close was not confirmed");
         }
-        await this.scope.acknowledgeDirectClose(this.localId);
+        await this.scope.acknowledgeDirectClose(this.localId, this.attemptConversationId!);
       }
       this.finished = true;
     })();

@@ -801,7 +801,7 @@ describe("cleanup and End delivery", () => {
     await f.budget.markDispatchStarted("attempt");
     await f.budget.enqueueEnd("c", 1, "user_end", ["attempt"]);
 
-    await f.scope.acknowledgeDirectCleanup("attempt");
+    await f.scope.acknowledgeDirectCleanup("attempt", "c");
 
     expect((await f.budget.ends())[0]?.cleanupLocalIds).toEqual([]);
     await f.budget.close();
@@ -859,6 +859,103 @@ describe("cleanup and End delivery", () => {
     const f = fixture(); f.api.end.mockRejectedValue({ status: 409 }); f.api.readConversation.mockResolvedValue({ ...f.c, version: 3 });
     await f.scope.outbox.enqueueEnd("c", 2, "user_end"); await f.scope.outbox.flush(); expect(await f.budget.ends()).toHaveLength(1);
     expect(f.api.end).toHaveBeenCalledTimes(1); await f.budget.close();
+  });
+  it.each(["cleanup", "closed"])("does not apply a late direct %s ACK to a reused attempt ID", async kind => {
+    const f = fixture(), attempt = f.scope.newAttempt(); await attempt.create("offer");
+    const localId = attempt.localId;
+    if (kind === "cleanup") vi.spyOn(f.scope.outbox, "enqueue").mockRejectedValue(new Error("storage unavailable"));
+    else vi.spyOn(f.scope.outbox, "observeClosed").mockRejectedValue(new Error("storage unavailable"));
+    let releaseProof!: () => void;
+    const proofGate = new Promise<void>(resolve => { releaseProof = resolve; });
+    let proofStarted!: () => void;
+    const started = new Promise<void>(resolve => { proofStarted = resolve; });
+    if (kind === "cleanup") f.api.cleanup.mockImplementation(async () => { proofStarted(); await proofGate; return { cleanupRequestedAt: Date.now() }; });
+    else f.api.closed.mockImplementation(async () => { proofStarted(); await proofGate; return { state: "closed", closeConfirmed: true }; });
+    const retiring = kind === "cleanup" ? attempt.abandon("user_end") : attempt.finish({ finalized: true, usageSeconds: 7 });
+    await started;
+    await f.budget.finishUsageProducer(localId, "conversation");
+    await f.budget.finishProducerAndRelease(localId, "provider_closed", "conversation");
+    expect(await f.budget.get(localId)).toBeNull();
+    await f.budget.reserve(localId, "foreign"); await f.budget.markDispatchStarted(localId);
+    await f.budget.enqueueEnd("foreign", 1, "setup_cancel", [localId], 0, "policy");
+    releaseProof(); await retiring;
+    expect(await f.budget.get(localId)).toMatchObject({ conversationId: "foreign", producerFinalized: false });
+    expect((await f.budget.ends())[0]?.cleanupLocalIds).toEqual([localId]);
+    await f.budget.close();
+  });
+  it.each(["cleanup", "closed"])("does not retry an old direct %s ACK against a reused attempt ID", async kind => {
+    const f = fixture(), attempt = f.scope.newAttempt(); await attempt.create("offer");
+    const localId = attempt.localId;
+    if (kind === "cleanup") {
+      vi.spyOn(f.scope.outbox, "enqueue").mockRejectedValue(new Error("storage unavailable"));
+      vi.spyOn(f.budget, "acknowledgeDirectCleanupAndRelease").mockRejectedValueOnce(new Error("ACK write failed"));
+      await attempt.abandon("user_end");
+    } else {
+      vi.spyOn(f.scope.outbox, "observeClosed").mockRejectedValue(new Error("storage unavailable"));
+      vi.spyOn(f.budget, "finishProducerAndRelease").mockRejectedValueOnce(new Error("ACK write failed"));
+      await attempt.finish({ finalized: true, usageSeconds: 7 });
+    }
+    await f.budget.finishProducerAndRelease(localId, "provider_closed", "conversation");
+    await f.budget.reserve(localId, "foreign"); await f.budget.markDispatchStarted(localId);
+    await f.scope.prepare(f.scope.newAttempt());
+    expect(await f.budget.get(localId)).toMatchObject({ conversationId: "foreign", producerFinalized: false });
+    await f.budget.close();
+  });
+  it.each(["cleanup", "closed"])("does not enqueue stale %s metadata onto a reused attempt ID", async kind => {
+    const f = fixture(), localId = "shared";
+    await f.budget.reserve(localId, "original"); await f.budget.markDispatchStarted(localId);
+    let release!: () => void, entered!: () => void;
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    const started = new Promise<void>(resolve => { entered = resolve; });
+    if (kind === "cleanup") {
+      const original = f.budget.enqueueCleanup.bind(f.budget);
+      vi.spyOn(f.budget, "enqueueCleanup").mockImplementation(async (...args) => { entered(); await gate; return original(...args); });
+    } else {
+      const original = f.budget.enqueueClose.bind(f.budget);
+      vi.spyOn(f.budget, "enqueueClose").mockImplementation(async (...args) => { entered(); await gate; return original(...args); });
+    }
+    const operation = kind === "cleanup" ? f.scope.outbox.enqueue(localId, "user_end", "original") :
+      f.scope.outbox.observeClosed(localId, { seconds: 7 }, "original");
+    await started;
+    await f.budget.finishProducerAndRelease(localId, "provider_closed", "original");
+    await f.budget.reserve(localId, "foreign"); await f.budget.markDispatchStarted(localId);
+    release();
+    if (kind === "cleanup") await expect(operation).rejects.toThrow("Metadata identity conflict");
+    else await operation;
+    expect(await f.budget.get(localId)).toMatchObject({ conversationId: "foreign", producerFinalized: false, cleanup: null, closeObservation: null });
+    await f.budget.close();
+  });
+  it("does not let an old direct proof suppress a new conversation's End dependency", async () => {
+    const f = fixture(), first = f.scope.newAttempt(); await first.create("first");
+    const degraded = vi.spyOn(f.scope.outbox, "enqueue").mockRejectedValue(new Error("storage unavailable"));
+    await first.abandon("user_end"); degraded.mockRestore();
+    await f.scope.end("user_end"); await f.scope.outbox.flush();
+    const foreign = { ...f.c, conversationId: "foreign" };
+    f.api.createConversation.mockResolvedValueOnce(foreign);
+    const uuid = vi.spyOn(crypto, "randomUUID").mockReturnValueOnce(first.localId as `${string}-${string}-${string}-${string}-${string}`);
+    const next = f.scope.newAttempt(); uuid.mockRestore();
+    expect(next.localId).toBe(first.localId);
+    await next.create("second");
+    let release!: () => void, entered!: () => void;
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    const started = new Promise<void>(resolve => { entered = resolve; });
+    vi.spyOn(f.scope.outbox, "enqueue").mockImplementation(async () => { entered(); await gate; });
+    const ending = f.scope.end("setup_cancel"); await started;
+    expect((await f.budget.ends()).find(end => end.conversationId === "foreign")?.cleanupLocalIds).toEqual([first.localId]);
+    release(); await ending; await f.budget.close();
+  });
+  it("does not defer a reused attempt's cleanup because an older conversation staged End", async () => {
+    const f = fixture(), localId = "shared";
+    await f.budget.reserve(localId, "original"); await f.budget.markDispatchStarted(localId);
+    f.scope.outbox.deferCleanup("original", [localId]);
+    await f.budget.finishProducerAndRelease(localId, "provider_closed", "original");
+    await f.budget.reserve(localId, "foreign"); await f.budget.markDispatchStarted(localId);
+    await f.budget.enqueueCleanup(localId, "user_end", "foreign");
+    await f.budget.finishProducer(localId, "lost", "foreign");
+    await f.scope.outbox.flush();
+    expect(f.api.cleanup).toHaveBeenCalledWith(localId, "user_end");
+    expect(await f.budget.get(localId)).toBeNull();
+    await f.budget.close();
   });
   it("clears a stale End only after read-back confirms that conversation ended", async () => {
     const f = fixture(); f.api.end.mockRejectedValue(new AccountingRequestError(409, "conversation_version_conflict"));
@@ -1404,7 +1501,7 @@ describe("stage 4 durable lifecycle boundary", () => {
     await atRead; // This flush has already passed retryPendingFinalizations.
     const finish = vi.spyOn(f.budget, "finishProducerAndRelease").mockRejectedValueOnce(new Error("IDB write failed"));
     const fallback = vi.spyOn(f.budget, "finishProducer").mockRejectedValueOnce(new Error("IDB write failed"));
-    await expect(f.scope.finalizeNoProvider("attempt")).rejects.toThrow("IDB write failed");
+    await expect(f.scope.finalizeNoProvider("attempt", f.c.conversationId)).rejects.toThrow("IDB write failed");
     finish.mockImplementation((id, outcome) => MetadataDeliveryBudget.prototype.finishProducerAndRelease.call(f.budget, id, outcome));
     fallback.mockImplementation((id, outcome) => MetadataDeliveryBudget.prototype.finishProducer.call(f.budget, id, outcome));
     releaseRead();
@@ -1424,7 +1521,7 @@ describe("stage 4 durable lifecycle boundary", () => {
       const finalize = vi.spyOn(f.budget, "finishProducer").mockRejectedValue(new Error("IDB unavailable"));
       vi.spyOn(f.budget, "entries").mockRejectedValueOnce(new Error("IDB unavailable"));
 
-      await expect(f.scope.finalizeNoProvider("attempt")).rejects.toThrow("IDB unavailable");
+      await expect(f.scope.finalizeNoProvider("attempt", f.c.conversationId)).rejects.toThrow("IDB unavailable");
       release.mockRestore(); finalize.mockRestore();
       await vi.waitFor(async () => expect(await f.budget.get("attempt")).toBeNull(), { timeout: 7000, interval: 50 });
     } finally {
@@ -1440,7 +1537,7 @@ describe("stage 4 durable lifecycle boundary", () => {
     f.scope.outbox.start();
     await f.scope.outbox.flush();
 
-    await expect(f.scope.finalizeNoProvider("attempt")).rejects.toThrow("IDB write failed");
+    await expect(f.scope.finalizeNoProvider("attempt", f.c.conversationId)).rejects.toThrow("IDB write failed");
     release.mockRestore(); finalize.mockRestore();
     await vi.waitFor(async () => expect(await f.budget.get("attempt")).toBeNull());
     expect(await f.budget.ends()).toEqual([]);
@@ -1568,7 +1665,7 @@ describe("stage 4 durable lifecycle boundary", () => {
     vi.spyOn(f.scope.outbox, "enqueueEnd").mockRejectedValueOnce(new Error("storage unavailable"));
     await expect(f.scope.stageEnd("setup_cancel")).rejects.toThrow("storage unavailable");
     await f.api.cleanup(attempt.localId, "cancelled");
-    await f.scope.acknowledgeDirectCleanup(attempt.localId);
+    await f.scope.acknowledgeDirectCleanup(attempt.localId, f.c.conversationId);
     f.api.end.mockRejectedValue(new Error("offline"));
     await expect(f.scope.end("setup_cancel")).rejects.toThrow("offline");
 

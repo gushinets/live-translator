@@ -1,4 +1,4 @@
-import { MetadataDeliveryBudget, METADATA_TTL_MS, type CleanupReason, type CloseMetadata, type EndIntent, type MetadataEnvelope } from "./MetadataDeliveryBudget";
+import { MetadataDeliveryBudget, METADATA_TTL_MS, attemptKey, type CleanupReason, type CloseMetadata, type EndIntent, type MetadataEnvelope } from "./MetadataDeliveryBudget";
 export const producerLeaseKey = (id: string) => `live-metadata-producer:${id}`;
 export const MANAGED_SESSION_CREATE_TIMEOUT_MS = 120_000;
 // Without Web Locks, wait beyond the owner's managed create timeout before fencing a pre-registration 404.
@@ -29,22 +29,24 @@ export class CleanupIntentOutbox {
   constructor(private readonly budget: MetadataDeliveryBudget, private readonly transport: CleanupTransport,
     private readonly retryPendingFinalizations?: () => Promise<void>,
     private readonly anomaly: (code: string) => void = code => console.error("Metadata delivery anomaly", { code })) {}
-  async enqueue(localId: string, reason: CleanupReason): Promise<void> {
-    await this.budget.enqueueCleanup(localId, reason);
-    this.deferredCleanup.delete(localId);
-    try { await this.budget.finishProducer(localId, "lost"); }
+  async enqueue(localId: string, reason: CleanupReason, conversationId?: string): Promise<void> {
+    await this.budget.enqueueCleanup(localId, reason, conversationId);
+    if (conversationId) this.deferredCleanup.delete(attemptKey(conversationId, localId));
+    try { await this.budget.finishProducer(localId, "lost", conversationId); }
     catch (error) { this.revision++; this.schedule(); throw error; }
     this.revision++; this.schedule();
   }
-  async observeClosed(localId: string, observation: CloseMetadata): Promise<void> {
-    await this.budget.enqueueClose(localId, observation); this.deferredCleanup.delete(localId); this.revision++; this.schedule();
+  async observeClosed(localId: string, observation: CloseMetadata, conversationId?: string): Promise<void> {
+    await this.budget.enqueueClose(localId, observation, conversationId);
+    if (conversationId) this.deferredCleanup.delete(attemptKey(conversationId, localId));
+    this.revision++; this.schedule();
   }
   async enqueueEnd(id: string, version: number, reason: EndIntent["reason"], cleanupLocalIds: readonly string[] = [], closeTimeoutMs = 0,
     noProviderPolicyVersion?: string, noProviderPendingLocalIds?: readonly string[]): Promise<void> {
     await this.budget.enqueueEnd(id, version, reason, cleanupLocalIds, closeTimeoutMs, noProviderPolicyVersion, noProviderPendingLocalIds); this.revision++; this.schedule();
   }
-  deferCleanup(localIds: readonly string[]): void { for (const id of localIds) this.deferredCleanup.add(id); }
-  confirmRetirement(localId: string): void { this.deferredCleanup.delete(localId); }
+  deferCleanup(conversationId: string, localIds: readonly string[]): void { for (const id of localIds) this.deferredCleanup.add(attemptKey(conversationId, id)); }
+  confirmRetirement(localId: string, conversationId: string): void { this.deferredCleanup.delete(attemptKey(conversationId, localId)); }
   wake(): void { this.revision++; this.onWake(); }
   start(): void {
     if (this.started) return; this.started = true;
@@ -103,7 +105,7 @@ export class CleanupIntentOutbox {
         }
         continue;
       }
-      if (!row.closeObservation && this.deferredCleanup.has(row.localId)) { pending = true; continue; }
+      if (!row.closeObservation && this.deferredCleanup.has(attemptKey(row.conversationId, row.localId))) { pending = true; continue; }
       const deliverRow = async () => {
         if (Date.now() >= (row.cleanup?.expiresAt ?? row.reservedAt + 7 * 86400000)) {
           this.anomaly("metadata_delivery_expired"); await this.discard(row.localId, row.conversationId); return;

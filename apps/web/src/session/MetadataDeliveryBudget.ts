@@ -20,6 +20,7 @@ interface NoProviderProof { localId: string | [string, string]; attemptLocalId?:
 const proofAttemptId = (proof: NoProviderProof) => proof.attemptLocalId ??
   (typeof proof.localId === "string" ? proof.localId : proof.localId[1]);
 export const METADATA_TTL_MS = 7 * 86400000;
+export const attemptKey = (conversationId: string, localId: string): string => JSON.stringify([conversationId, localId]);
 
 /** One origin-wide envelope per localId. Every pre-dispatch mutation waits for IDB commit. */
 export class MetadataDeliveryBudget {
@@ -101,12 +102,12 @@ export class MetadataDeliveryBudget {
       return { ...row, dispatchStartedAt: row.dispatchStartedAt ?? Date.now() };
     });
   }
-  enqueueCleanup(localId: string, reason: CleanupReason): Promise<void> {
+  enqueueCleanup(localId: string, reason: CleanupReason, conversationId?: string): Promise<void> {
     return this.change(localId, row => ({ ...row, producerCloseDeadlineAt: row.producerCloseDeadlineAt ?? Date.now(),
-      cleanupAcknowledged: false, cleanup: row.cleanup ?? { reason, createdAt: Date.now(), expiresAt: Date.now() + METADATA_TTL_MS } }));
+      cleanupAcknowledged: false, cleanup: row.cleanup ?? { reason, createdAt: Date.now(), expiresAt: Date.now() + METADATA_TTL_MS } }), conversationId);
   }
-  enqueueClose(localId: string, observation: CloseMetadata): Promise<void> {
-    return this.change(localId, row => ({ ...row, closeObservation: row.closeObservation ?? observation, producerFinalized: true, producerOutcome: "provider_closed" }));
+  enqueueClose(localId: string, observation: CloseMetadata, conversationId?: string): Promise<void> {
+    return this.change(localId, row => ({ ...row, closeObservation: row.closeObservation ?? observation, producerFinalized: true, producerOutcome: "provider_closed" }), conversationId);
   }
   acknowledgeCleanup(localId: string): Promise<void> { return this.change(localId, row => ({ ...row, cleanup: null, cleanupAcknowledged: true })); }
   acknowledgeClose(localId: string): Promise<void> { return this.change(localId, row => ({ ...row, cleanup: null, closeObservation: null })); }
@@ -178,8 +179,8 @@ export class MetadataDeliveryBudget {
       return next;
     }, false, conversationId);
   }
-  acknowledgeDirectCleanupAndRelease(localId: string): Promise<void> {
-    return this.releaseAndRemoveEndDependency(localId, row => ({ ...row, cleanup: null, cleanupAcknowledged: true, producerFinalized: true, producerOutcome: "lost" }));
+  acknowledgeDirectCleanupAndRelease(localId: string, conversationId?: string): Promise<void> {
+    return this.releaseAndRemoveEndDependency(localId, row => ({ ...row, cleanup: null, cleanupAcknowledged: true, producerFinalized: true, producerOutcome: "lost" }), false, conversationId);
   }
   acknowledgeCloseAndRelease(localId: string, conversationId?: string): Promise<void> {
     return this.releaseAndRemoveEndDependency(localId, row => ({ ...row, cleanup: null, closeObservation: null, producerFinalized: true, producerOutcome: "provider_closed" }), false, conversationId);
