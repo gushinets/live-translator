@@ -152,7 +152,7 @@ export class ConversationAccounting {
     await this.flushPendingDirectCloseAcks();
     attempt.managed = true; attempt.assertCurrent();
     await this.holdProducerLock();
-    if (!this.current) await this.outbox.flush();
+    await this.outbox.flush();
     if ((await this.budget.ends()).length) throw new Error("Previous conversation End is pending");
     this.creating ??= this.api.createConversation(this.requestId).catch(error => { this.creating = undefined; throw error; });
     const c = await this.creating; attempt.assertCurrent(); this.current = c;

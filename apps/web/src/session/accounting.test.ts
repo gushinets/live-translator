@@ -988,6 +988,39 @@ describe("controller-owned conversation accounting", () => {
 });
 
 describe("stage 4 durable lifecycle boundary", () => {
+  it("retries a confirmed End from another scope before replacing an active conversation", async () => {
+    const indexedDB = new IDBFactory(), name = crypto.randomUUID();
+    const a = fixture(new MetadataDeliveryBudget({ indexedDB, name }));
+    const b = fixture(new MetadataDeliveryBudget({ indexedDB, name }));
+    b.c.conversationId = "conversation-b";
+    await a.scope.prepare(a.scope.newAttempt());
+    const first = b.scope.newAttempt();
+    await first.create("first");
+    await first.finish({ finalized: true });
+    await b.scope.outbox.flush();
+
+    await a.scope.stageEnd("user_end");
+    vi.spyOn(a.budget, "acknowledgeEnd").mockRejectedValueOnce(new Error("storage unavailable"));
+    await a.scope.outbox.flush();
+    expect(a.api.end).toHaveBeenCalledWith(a.c.conversationId, a.c.version, "user_end");
+    expect(await a.budget.ends()).toHaveLength(1);
+
+    b.api.end.mockRejectedValueOnce(new Error("offline"));
+    await expect(b.scope.newAttempt().create("blocked")).rejects.toThrow("End is pending");
+    expect(b.api.end).toHaveBeenCalledTimes(1);
+    expect(b.api.createSession).toHaveBeenCalledTimes(1);
+    expect(await b.budget.ends()).toHaveLength(1);
+
+    const replacement = b.scope.newAttempt();
+    await replacement.create("replacement");
+    expect(b.api.end).toHaveBeenCalledTimes(2);
+    expect(await b.budget.ends()).toHaveLength(0);
+    expect(b.api.createConversation).toHaveBeenCalledTimes(1);
+    expect(b.api.createSession).toHaveBeenCalledTimes(2);
+    expect(b.api.createSession.mock.calls[1]![0]).toMatchObject({ conversationId: b.c.conversationId, startReason: "bootstrap_replacement" });
+    await a.budget.close(); await b.budget.close();
+  });
+
   it("blocks provider dispatch while the current conversation has a staged End", async () => {
     const f = fixture();
     await f.scope.prepare(f.scope.newAttempt());
