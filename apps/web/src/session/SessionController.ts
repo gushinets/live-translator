@@ -252,7 +252,7 @@ export class SessionController {
     await this.muteGateB(generation);
     if (!current()) throw new Error("Resume cancelled");
     const languages = { A: snapshot.participantA.language, B: snapshot.participantB.language };
-    if (snapshot.contextText.trim()) {
+    if (snapshot.setupStage === "interpreter" && snapshot.contextText.trim()) {
       await live.appendThinking(buildAuthoritativeContext(snapshot.contextText.trim()), { kind: "startup_interpreter" });
       if (!current()) throw new Error("Resume cancelled");
       this.authoritativeContextSent = true;

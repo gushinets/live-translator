@@ -27,7 +27,7 @@ class Channel extends EventTarget {
   readyState = "open";
   readonly sent: string[] = [];
   autoAckMute = true;
-  readonly events: Array<{ type: string; event_id?: string }> = [];
+  readonly events: Array<{ type: string; event_id?: string; content?: string }> = [];
   send(raw: string) {
     const event = JSON.parse(raw) as { type: string; event_id?: string };
     this.sent.push(event.type);
@@ -429,6 +429,81 @@ describe("stage 5 hidden boundary", () => {
     expect(f.track.enabled).toBe(true);
     expect(f.clients[1]!.peer.channel.sent).toContain("session.input_audio.unmute");
     f.api.end.mockImplementation(async (_id, version) => { f.c.status = "ended"; f.c.version = version + 1; return { ...f.c }; });
+    await f.controller.dispose(); await f.budget.close();
+  });
+  it.each([
+    ["edits", "Use the north entrance.", 1],
+    ["clears", "", 0],
+  ] as const)("uses the final context when the owner %s it after setup resume", async (_action, finalText, thinkingCount) => {
+    const f = fixture(40, true); configureResume(f);
+    await f.controller.startContextCapture();
+    f.controller.setContextText("Private old itinerary.");
+    f.setVisible(false);
+    await vi.waitFor(() => expect(f.clients[0]!.peer.channel.sent).toContain("session.close"));
+    f.clients[0]!.peer.channel.emit({ type: "session.closed" });
+    await vi.waitFor(() => expect(f.c.status).toBe("paused"));
+    f.setVisible(true);
+    await vi.waitFor(() => expect(f.controller.session.state).toBe("context"));
+    expect(f.clients[1]!.peer.channel.events.filter(event => event.type === "session.thinking.append")).toEqual([]);
+
+    f.controller.setContextText(finalText);
+    await f.controller.startBootstrap();
+    await f.controller.acceptBootstrap("I speak English and would like to find the nearest station.");
+    const firstSample = f.clients.at(-1)!;
+    const replacing = f.controller.startBootstrap();
+    await vi.waitFor(() => expect(firstSample.peer.channel.sent).toContain("session.close"));
+    firstSample.peer.channel.emit({ type: "session.closed" });
+    await replacing;
+    await f.controller.acceptBootstrap("Hablo español y quisiera encontrar la estación de tren.");
+    await f.controller.beginInterpreter();
+
+    const finalEvents = f.clients.at(-1)!.peer.channel.events;
+    const thinking = finalEvents.filter(event => event.type === "session.thinking.append");
+    expect(thinking).toHaveLength(thinkingCount);
+    if (finalText) expect(thinking[0]?.content).toBe(
+      "Authoritative conversation context: Use the north entrance. If earlier context-capture speech conflicts with this text, use this text.",
+    );
+    expect(finalEvents.filter(event => event.type.endsWith(".append")).map(event => event.type)).toEqual(
+      thinkingCount ? ["session.thinking.append", "session.instructions.append", "session.instructions.append"] :
+        ["session.instructions.append", "session.instructions.append"],
+    );
+    expect(JSON.stringify(f.clients.slice(1).flatMap(client => client.peer.channel.events))).not.toContain("Private old itinerary.");
+    expect(f.controller.session.state).toBe("listening");
+    const ending = f.controller.endConversation();
+    f.clients.at(-1)!.peer.channel.emit({ type: "session.closed" });
+    await ending;
+    await f.controller.dispose(); await f.budget.close();
+  });
+  it("defers retained bootstrap context until interpreter mode begins", async () => {
+    const f = fixture(40, true); configureResume(f);
+    await f.controller.startContextCapture();
+    f.controller.setContextText("Confirmed setup note.");
+    await f.controller.startBootstrap();
+    f.setVisible(false);
+    await vi.waitFor(() => expect(f.clients[0]!.peer.channel.sent).toContain("session.close"));
+    f.clients[0]!.peer.channel.emit({ type: "session.closed" });
+    await vi.waitFor(() => expect(f.c.status).toBe("paused"));
+    f.setVisible(true);
+    await vi.waitFor(() => expect(f.controller.session.state).toBe("bootstrap"));
+    expect(f.clients[1]!.peer.channel.events.filter(event => event.type === "session.thinking.append")).toEqual([]);
+
+    await f.controller.startBootstrap();
+    await f.controller.acceptBootstrap("I speak English and would like to find the nearest station.");
+    const firstSample = f.clients.at(-1)!;
+    const replacing = f.controller.startBootstrap();
+    await vi.waitFor(() => expect(firstSample.peer.channel.sent).toContain("session.close"));
+    firstSample.peer.channel.emit({ type: "session.closed" });
+    await replacing;
+    await f.controller.acceptBootstrap("Hablo español y quisiera encontrar la estación de tren.");
+    await f.controller.beginInterpreter();
+
+    expect(f.clients.at(-1)!.peer.channel.events.filter(event => event.type === "session.thinking.append")
+      .map(event => event.content)).toEqual([
+      "Authoritative conversation context: Confirmed setup note. If earlier context-capture speech conflicts with this text, use this text.",
+    ]);
+    const ending = f.controller.endConversation();
+    f.clients.at(-1)!.peer.channel.emit({ type: "session.closed" });
+    await ending;
     await f.controller.dispose(); await f.budget.close();
   });
   it("A5.5/A5.14 fences a hidden resume while create is pending, then ignores its late result and duplicate visible events", async () => {
