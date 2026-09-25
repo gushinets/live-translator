@@ -1,7 +1,7 @@
 import { UsageReporter, type ProductObservation } from "../metrics/UsageReporter";
 import { UsageOutbox } from "../metrics/UsageOutbox";
 import type { UsageObservation } from "../metrics/UsageTypes";
-import { AccountingBackend, AccountingRequestError, type LedgerApi, type ConversationMetadata } from "../api/AccountingBackend";
+import { AccountingBackend, AccountingRequestError, type LedgerApi, type ConversationMetadata, type ResumeClaimMetadata, type ResumeAbortReason, type ProviderCreateBody } from "../api/AccountingBackend";
 import { BackendClient, type CreateLiveSessionResponse } from "../api/BackendClient";
 import { CleanupIntentOutbox, cleanupProofReceived, producerLeaseKey } from "./CleanupIntentOutbox";
 import { MetadataDeliveryBudget, type CleanupReason } from "./MetadataDeliveryBudget";
@@ -42,6 +42,7 @@ export class ConversationAccounting {
   private enabled: Promise<boolean> | undefined;
   private backgroundPolicy = false;
   private pausing = false;
+  private resume: { id: string; version: number; mode: ProviderCreateBody["initialMode"] } | undefined;
   private creating: Promise<ConversationMetadata> | undefined;
   private current: ConversationMetadata | undefined;
   private last: ProviderAccounting | undefined;
@@ -71,6 +72,8 @@ export class ConversationAccounting {
   get revision() { return this.epoch; }
   get isPausing() { return this.pausing; }
   get conversationId(): string | null { return this.current?.conversationId ?? null; }
+  get conversationStatus(): ConversationMetadata["status"] | null { return this.current?.status ?? null; }
+  get resumeDispatched(): boolean { return [...this.attempts].some(attempt => attempt.localId === this.resume?.id && attempt.dispatched); }
   get isCreating(): boolean { return this.creating !== undefined; }
   clearIdleBackgroundPause(): boolean {
     if (this.current || this.creating) return false;
@@ -96,6 +99,47 @@ export class ConversationAccounting {
     await this.enabled;
   }
   beginBackgroundPause(): void { this.pausing = true; }
+  beginResume(claim: ResumeClaimMetadata): void {
+    if (claim.status !== "resuming" || claim.resumeAttemptId !== claim.attempt.liveSessionId || claim.attempt.resumeOutcome !== "pending")
+      throw new Error("Resume claim was not confirmed");
+    this.current = claim;
+    this.resume = { id: claim.attempt.liveSessionId, version: claim.attempt.resumeClaimVersion, mode: claim.attempt.initialMode };
+    this.pausing = false;
+  }
+  isResumeAttempt(attempt: ProviderAccounting): boolean { return this.resume?.id === attempt.localId; }
+  resumeMode(attempt: ProviderAccounting): ProviderCreateBody["initialMode"] {
+    return this.isResumeAttempt(attempt) ? this.resume!.mode : "setup";
+  }
+  async completeResume(startedAt: number): Promise<ConversationMetadata> {
+    const resume = this.resume, c = this.current;
+    if (!resume || !c) throw new Error("Resume claim unavailable");
+    let result: ConversationMetadata;
+    try { result = await this.api.completeResume(c.conversationId, resume.version, resume.id, startedAt, resume.mode); }
+    catch (error) {
+      // A lost response may follow a committed transaction. Read this immutable claim before any retry.
+      const receipt = await this.api.claimResume(c.conversationId, resume.version - 1, resume.id, resume.mode)
+        .catch(() => { throw error; });
+      if (receipt.attempt.liveSessionId !== resume.id || receipt.attempt.resumeClaimVersion !== resume.version ||
+        receipt.attempt.resumeOutcome !== "committed" || receipt.status !== "active" || receipt.version !== resume.version + 1)
+        throw error;
+      result = receipt;
+    }
+    if (result.status !== "active" || result.conversationId !== c.conversationId ||
+      result.version !== resume.version + 1 || result.resumeAttemptId !== null)
+      throw new Error("Resume completion was not confirmed");
+    this.current = result; this.resume = undefined;
+    return result;
+  }
+  async abortResume(reason: ResumeAbortReason): Promise<ConversationMetadata | null> {
+    const resume = this.resume, c = this.current;
+    this.pausing = true;
+    if (!resume || !c) return null;
+    const result = await this.api.abortResume(c.conversationId, resume.version, resume.id, reason);
+    if (result.conversationId !== c.conversationId || !["paused", "ended"].includes(result.status))
+      throw new Error("Resume abort was not confirmed");
+    this.current = result; this.resume = undefined;
+    return result;
+  }
   async pause(close: Promise<unknown>): Promise<ConversationMetadata | null> {
     const c = await this.pendingConversation();
     await close.catch(() => undefined);
@@ -110,7 +154,7 @@ export class ConversationAccounting {
     return paused;
   }
   newAttempt(): ProviderAccounting {
-    const attempt = new ProviderAccounting(this, this.epoch); this.attempts.add(attempt); return attempt;
+    const attempt = new ProviderAccounting(this, this.epoch, this.resume?.id); this.attempts.add(attempt); return attempt;
   }
   isCurrent(epoch: number) { return epoch === this.epoch; }
   private async holdProducerLock(): Promise<void> {
@@ -167,9 +211,10 @@ export class ConversationAccounting {
       if (!await this.enabled) { attempt.managed = false; return null; }
     }
     if (ends.length) throw new Error("Previous conversation End is pending");
-    this.creating ??= this.api.createConversation(this.requestId).catch(error => { this.creating = undefined; throw error; });
-    const c = await this.creating; attempt.assertCurrent(); this.current = c;
-    if (c.status !== "active") throw new Error("Conversation is not active");
+    if (!this.current) this.creating ??= this.api.createConversation(this.requestId).catch(error => { this.creating = undefined; throw error; });
+    const c = this.current ?? await this.creating!; attempt.assertCurrent(); this.current = c;
+    if (c.status !== "active" && !(c.status === "resuming" && this.resume?.id === attempt.localId))
+      throw new Error("Conversation is not activatable");
     // close() only joins local media retirement; do not race its pending durable write.
     if (this.last && this.last !== attempt && this.last.dispatched) await this.last.waitForRetirement();
     await this.outbox.flush(); attempt.assertCurrent();
@@ -185,10 +230,11 @@ export class ConversationAccounting {
     }
     return c;
   }
-  noteDispatch(attempt: ProviderAccounting): "initial" | "bootstrap_replacement" {
+  noteDispatch(attempt: ProviderAccounting): ProviderCreateBody["startReason"] {
     this.previousDispatch.set(attempt, this.last);
     this.last = attempt;
-    return this.dispatchCount++ === 0 ? "initial" : "bootstrap_replacement";
+    this.dispatchCount++;
+    return this.resume?.id === attempt.localId ? "resume" : this.dispatchCount === 1 ? "initial" : "bootstrap_replacement";
   }
   noteNoProvider(attempt: ProviderAccounting): void {
     const previous = this.previousDispatch.get(attempt);
@@ -201,6 +247,7 @@ export class ConversationAccounting {
     nextAttempt?.rebase(this.epoch);
     this.current = undefined; this.creating = undefined; this.last = undefined;
     this.pausing = false; this.enabled = undefined; this.backgroundPolicy = false;
+    this.resume = undefined;
     this.dispatchCount = 0; this.requestId = crypto.randomUUID(); this.attempts = new Set(nextAttempt ? [nextAttempt] : []);
     this.stagedEndConversationId = undefined;
   }
@@ -339,7 +386,7 @@ export class ConversationAccounting {
   }
 }
 export class ProviderAccounting {
-  readonly localId = crypto.randomUUID();
+  readonly localId: string;
   managed = false;
   dispatched = false;
   finished = false;
@@ -356,7 +403,7 @@ export class ProviderAccounting {
   observeProduct(observation: ProductObservation): void { this.lastProduct = observation; this.reporter?.observeProduct(observation); }
   observeUsage(observation: UsageObservation): void { this.reporter?.observeUsage(observation); }
   providerStarted(): void { this.reporter?.providerStarted(); }
-  constructor(private readonly scope: ConversationAccounting, private epoch: number) {}
+  constructor(private readonly scope: ConversationAccounting, private epoch: number, id?: string) { this.localId = id ?? crypto.randomUUID(); }
   rebase(epoch: number): void { this.epoch = epoch; }
   assertCurrent(): void {
     if (this.cancelled || this.scope.isPausing || !this.scope.isCurrent(this.epoch) || (typeof document !== "undefined" && document.visibilityState === "hidden" && this.managed)) throw new Error("Provider attempt cancelled");
@@ -372,7 +419,7 @@ export class ProviderAccounting {
       if (this.scope.usageOutbox) this.reporter = new UsageReporter(this.localId, c.conversationId, this.scope.usageOutbox, { initial: this.lastProduct });
       this.controller = new AbortController(); this.dispatched = true;
       return await this.scope.api.createSession({ sdp, liveSessionId: this.localId, conversationId: c.conversationId,
-        conversationVersion: c.version, initialMode: "setup", startReason: this.scope.noteDispatch(this) }, this.controller.signal);
+        conversationVersion: c.version, initialMode: this.scope.resumeMode(this), startReason: this.scope.noteDispatch(this) }, this.controller.signal);
     } catch (error) {
       if (isDefinitiveNoProviderError(error)) {
         this.cancelled = true;
@@ -393,7 +440,8 @@ export class ProviderAccounting {
     try { receipt = await this.scope.api.handoff(this.localId); }
     catch { receipt = await this.scope.api.readAttempt(this.localId); }
     this.assertCurrent();
-    if (receipt.state !== "active" || receipt.handoffAcknowledgedAt == null || receipt.cleanupRequestedAt != null || receipt.conversation.status !== "active" ||
+    if (receipt.state !== "active" || receipt.handoffAcknowledgedAt == null || receipt.cleanupRequestedAt != null ||
+        receipt.conversation.status !== (this.scope.isResumeAttempt(this) ? "resuming" : "active") ||
         receipt.conversation.version !== this.conversation?.version || (receipt.conversation.productDeadlineAt !== null && receipt.conversation.serverTime >= receipt.conversation.productDeadlineAt)) throw new Error("Provider handoff was not confirmed");
   }
   async waitForRetirement(): Promise<void> {

@@ -4,7 +4,7 @@ import { BackendClient } from "../api/BackendClient";
 import { AudioController } from "../audio/AudioController";
 import { LiveClient, type LiveCloseResult, type LiveClientDeps } from "../live/LiveClient";
 import { SessionController, type SessionControllerDeps } from "./SessionController";
-import type { ConversationMetadata } from "../api/AccountingBackend";
+import { AccountingRequestError, type ConversationMetadata, type ResumeAbortReason } from "../api/AccountingBackend";
 import { ConversationAccounting, type ProviderAccounting } from "./ConversationAccounting";
 import type { CleanupReason } from "./MetadataDeliveryBudget";
 import { ResumeSnapshotStore, type ResumeSnapshotInput } from "./ResumeSnapshotStore";
@@ -31,14 +31,18 @@ class LazyAccounting implements NonNullable<LiveClientDeps["accounting"]> {
   async abandon(reason: CleanupReason) { this.cancelled = true; await this.attempt?.abandon(reason); }
 }
 export class AccountedSessionController extends SessionController {
+  private resumeWork: Promise<void> | null = null;
+  private resumeFailed = false;
   constructor(deps: SessionControllerDeps, private readonly accounting: ConversationAccounting,
     private readonly snapshotStore: Promise<ResumeSnapshotStore> = ResumeSnapshotStore.open()) {
     super(deps);
   }
   start(): void { this.startEarlyVisibility(); }
   async dispose(): Promise<void> {
+    this.fenceRetainedResumeForDisposal();
     this.stopEarlyVisibility();
     try {
+      await this.resumeWork?.catch(() => undefined);
       await this.awaitBackgroundPause();
       this.accounting.beginBackgroundPause();
       if (this.accounting.conversationId || this.accounting.isCreating) {
@@ -87,6 +91,90 @@ export class AccountedSessionController extends SessionController {
   get conversationId() { return this.accounting.conversationId; }
   protected override get backgroundCloseEnabled() { return this.accounting.backgroundSessionCloseEnabled; }
   protected override clearIdleBackgroundPause() { return this.accounting.clearIdleBackgroundPause(); }
+  protected override async resumeBackground(): Promise<void> {
+    if (this.resumeFailed) return;
+    try { await this.resumeRetainedConversation(false); }
+    catch (error) { console.error("Retained conversation resume failed", { error }); }
+  }
+  async resumeRetainedConversation(explicit = true): Promise<void> {
+    if (this.resumeWork) return this.resumeWork;
+    if (explicit) this.resumeFailed = false;
+    const work = this.runRetainedResume(explicit);
+    this.resumeWork = work;
+    try { await work; }
+    finally { if (this.resumeWork === work) this.resumeWork = null; }
+  }
+  private pausedOrUnloaded(): boolean {
+    return this.accounting.conversationStatus === null || this.accounting.conversationStatus === "paused";
+  }
+  private async runRetainedResume(explicit: boolean): Promise<void> {
+    if (explicit && this.session.state === "idle" && this.accounting.conversationStatus === null) {
+      const store = await this.snapshotStore;
+      const result = await store.inspectReload(id => this.accounting.api.readConversation(id) as Promise<ConversationMetadata>);
+      if (result?.kind !== "paused") return;
+      this.adoptRetainedPause();
+    }
+    const generation = this.backgroundResumeGeneration;
+    await this.awaitBackgroundPause();
+    if (!this.backgroundResumeCurrent(generation)) return;
+    if (!this.pausedOrUnloaded()) return;
+    const store = await this.snapshotStore;
+    const inspected = await store.inspectReload(id => this.accounting.api.readConversation(id) as Promise<ConversationMetadata>);
+    if (!inspected || inspected.kind === "active" || inspected.kind === "pending") return;
+    if (!this.backgroundResumeCurrent(generation)) return;
+    const { snapshot, conversation } = inspected;
+    if (snapshot.resumeAttemptId !== null) return; // An uncertain prior claim requires explicit server reconciliation.
+    const id = crypto.randomUUID();
+    await store.rememberResumeAttempt(conversation.conversationId, id);
+    let claimed = false;
+    let claimRequested = false;
+    let settled = false;
+    try {
+      if (!this.backgroundResumeCurrent(generation)) return;
+      claimRequested = true;
+      const mode = snapshot.setupStage === "interpreter" ? "interpreter" : "setup";
+      let claim;
+      try { claim = await this.accounting.api.claimResume(conversation.conversationId, conversation.version, id, mode); }
+      catch (error) {
+        if (error instanceof AccountingRequestError) throw error;
+        claim = await this.accounting.api.claimResume(conversation.conversationId, conversation.version, id, mode)
+          .catch(() => { throw error; });
+      }
+      claimed = true;
+      this.accounting.beginResume(claim);
+      if (!this.backgroundResumeCurrent(generation)) throw new Error("Resume cancelled");
+      await this.restoreRetained(snapshot, async startedAt => {
+        const completed = await this.accounting.completeResume(startedAt);
+        await store.confirmResume(completed, id);
+      });
+      settled = true;
+      this.resumeFailed = false;
+    } catch (error) {
+      const cancelled = !this.backgroundResumeCurrent(generation);
+      this.resumeFailed = !cancelled;
+      if (claimed) {
+        try { await this.abandonRetainedMedia(this.backgroundResumeCurrent(generation) ? "abandoned_connect" : "hidden"); }
+        catch { console.error("Retained transport cleanup incomplete"); }
+        const reason: ResumeAbortReason = cancelled && document.visibilityState === "hidden" ? "hidden" :
+          this.retainedResumePhase === "media" || !this.accounting.resumeDispatched ||
+          error instanceof Error && /Microphone|audio|playback|media/i.test(error.message) ? "media_not_ready" :
+          this.retainedResumePhase === "create" ? "provider_creation_failed" : "restore_ack_failed";
+        if (this.accounting.conversationStatus === "active") {
+          try { await this.accounting.end("setup_cancel", this.accounting.revision); settled = true; }
+          catch { console.error("Committed resume retirement pending"); }
+        } else {
+          try {
+            const aborted = await this.accounting.abortResume(reason);
+            if (aborted?.status === "paused") await store.confirmPause(aborted);
+            settled = aborted !== null;
+          } catch { console.error("Resume abort delivery pending"); }
+        }
+      }
+      throw error;
+    } finally {
+      if (!claimRequested || settled) await store.clearResumeAttempt(conversation.conversationId, id).catch(() => undefined);
+    }
+  }
   private async mayStart(): Promise<boolean> {
     await this.accounting.loadPolicy();
     await this.awaitBackgroundPause();

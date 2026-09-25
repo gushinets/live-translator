@@ -117,3 +117,13 @@ it("keeps technical outcomes distinct and deduplicates correction of one logical
   metrics.recordTechnicalOutcome("four", "discarded"); metrics.recordCorrectionAttempt();
   expect(metrics.snapshot()).toMatchObject({ audioCompletedTurnCount: 1, textOnlyCompletedTurnCount: 1, failedTurnCount: 1, discardedTurnCount: 1, correctionAttemptCount: 1 });
 });
+
+it("restores cumulative counters without reviving old turn IDs or losing poor output history", () => {
+  const metrics = new ConversationMetrics();
+  metrics.restoreCounters({ completedTurnCount: 4, earlyOutputCount: 1, textOnlyCompletionCount: 2,
+    audioCompletedTurnCount: 3, failedTurnCount: 1 });
+  expect(metrics.snapshot()).toMatchObject({ completedTurnCount: 4, earlyOutputRate: 0.25,
+    textOnlyCompletionCount: 2, audioCompletedTurnCount: 3, failedTurnCount: 1, poorOutputRoute: true });
+  expect(metrics.recordTechnicalOutcome("new-turn", "audio")).toBe(true);
+  expect(metrics.snapshot().audioCompletedTurnCount).toBe(4);
+});
