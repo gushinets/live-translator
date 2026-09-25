@@ -4,7 +4,7 @@ import { resolve } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { describe, expect, it, vi } from "vitest";
 import { MetadataDeliveryBudget, METADATA_TTL_MS } from "./MetadataDeliveryBudget";
-import { ATTEMPT_REGISTRATION_GRACE_MS, type CleanupTransport } from "./CleanupIntentOutbox";
+import { ATTEMPT_REGISTRATION_GRACE_MS, CleanupIntentOutbox, type CleanupTransport } from "./CleanupIntentOutbox";
 import { ConversationAccounting } from "./ConversationAccounting";
 import { AccountingRequestError, type LedgerApi, type ConversationMetadata } from "../api/AccountingBackend";
 import type { ResumeSnapshotStore } from "./ResumeSnapshotStore";
@@ -110,6 +110,54 @@ describe("shared IndexedDB metadata budget", () => {
     await b.finishProducerAndRelease("attempt", "no_provider");
     await b.enqueueEnd("foreign", 1, "setup_cancel", [], 0, "policy", ["attempt"]);
     expect((await b.ends())[0]?.noProviderPendingLocalIds).toEqual(["attempt"]);
+    await b.close();
+  });
+  it.each([
+    { order: "End before proof", releaseEnvelope: false },
+    { order: "End before proof", releaseEnvelope: true },
+    { order: "proof before End", releaseEnvelope: false },
+  ])("does not release a foreign End sharing an attempt ID: $order, envelope released $releaseEnvelope", async ({ order, releaseEnvelope }) => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    const b = budget();
+    try {
+      await b.reserve("shared", "original"); await b.markDispatchStarted("shared");
+      const enqueueBothEnds = async () => {
+        await b.enqueueEnd("original", 1, "setup_cancel", ["shared"], 0, "policy", ["shared"]);
+        await b.enqueueEnd("foreign", 1, "setup_cancel", [], 0, "policy", ["shared"]);
+      };
+      if (order === "End before proof") await enqueueBothEnds();
+      if (releaseEnvelope) {
+        await b.enqueueCleanup("shared", "cancelled"); await b.acknowledgeDirectCleanupAndRelease("shared");
+        expect(await b.get("shared")).toBeNull();
+      }
+      await b.finishProducerAndRelease("shared", "no_provider", "original");
+      if (order === "proof before End") await enqueueBothEnds();
+      const ends = new Map((await b.ends()).map(end => [end.conversationId, end]));
+      expect(ends.get("original")?.noProviderPendingLocalIds).toEqual([]);
+      expect(ends.get("foreign")?.noProviderPendingLocalIds).toEqual(["shared"]);
+
+      vi.setSystemTime(Date.now() + METADATA_TTL_MS + 1);
+      const end = vi.fn<NonNullable<CleanupTransport["end"]>>(async () => ({ status: "ended" }));
+      const outbox = new CleanupIntentOutbox(b, {
+        cleanup: async () => ({}), closed: async () => ({}), end,
+        readConversation: async conversationId => ({ conversationId, version: 1, status: "active", productDeadlineAt: null,
+          resumeAttemptId: null, serverTime: Date.now(), policy: { policyVersion: "policy", backgroundSessionCloseEnabled: true } }),
+      });
+      await outbox.flush();
+      expect(end).toHaveBeenCalledExactlyOnceWith("original", 1, "setup_cancel");
+      expect((await b.ends())[0]).toMatchObject({ conversationId: "foreign", noProviderPendingLocalIds: ["shared"] });
+    } finally { await b.close(); vi.useRealTimers(); }
+  });
+  it("rejects a late proof when the same local ID now belongs to another conversation", async () => {
+    const b = budget();
+    await b.reserve("shared", "original"); await b.markDispatchStarted("shared");
+    await b.finishProducerAndRelease("shared", "no_provider", "original");
+    await b.reserve("shared", "foreign"); await b.markDispatchStarted("shared");
+    await b.enqueueEnd("foreign", 1, "setup_cancel", ["shared"], 0, "policy", ["shared"]);
+    await expect(b.finishProducerAndRelease("shared", "no_provider", "original")).rejects.toThrow("Metadata identity conflict");
+    await expect(b.finishProducer("shared", "no_provider", "original")).rejects.toThrow("Metadata identity conflict");
+    expect((await b.ends())[0]).toMatchObject({ cleanupLocalIds: ["shared"], noProviderPendingLocalIds: ["shared"] });
+    expect(await b.get("shared")).toMatchObject({ conversationId: "foreign", producerFinalized: false });
     await b.close();
   });
   it("retains definitive proof after direct cleanup removed the original envelope", async () => {

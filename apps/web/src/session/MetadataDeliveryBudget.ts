@@ -106,7 +106,12 @@ export class MetadataDeliveryBudget {
   }
   acknowledgeCleanup(localId: string): Promise<void> { return this.change(localId, row => ({ ...row, cleanup: null, cleanupAcknowledged: true })); }
   acknowledgeClose(localId: string): Promise<void> { return this.change(localId, row => ({ ...row, cleanup: null, closeObservation: null })); }
-  finishProducer(localId: string, outcome: ProducerOutcome): Promise<void> { return this.change(localId, row => ({ ...row, producerFinalized: true, producerOutcome: outcome })); }
+  finishProducer(localId: string, outcome: ProducerOutcome, conversationId?: string): Promise<void> {
+    return this.change(localId, row => {
+      if (conversationId && row.conversationId !== conversationId) throw new Error("Metadata identity conflict");
+      return { ...row, producerFinalized: true, producerOutcome: outcome };
+    });
+  }
   private releasable(row: MetadataEnvelope): boolean {
     return row.producerFinalized && row.producerOutcome !== null && !row.cleanup && !row.closeObservation && !row.usagePending;
   }
@@ -116,6 +121,10 @@ export class MetadataDeliveryBudget {
       const get = store.get(localId);
       get.onsuccess = () => {
         const row = get.result as MetadataEnvelope | undefined;
+        if (row && knownConversationId && row.conversationId !== knownConversationId) {
+          fail(new Error("Metadata identity conflict")); return;
+        }
+        const conversationId = row?.conversationId ?? knownConversationId;
         const release = () => {
           if (row) {
             const next = update(row);
@@ -125,7 +134,8 @@ export class MetadataDeliveryBudget {
           ends.onsuccess = () => {
             const lifecycle = tx.objectStore("lifecycle");
             for (const intent of ends.result as EndIntent[]) {
-              if (intent.cleanupLocalIds?.includes(localId) || noProvider && intent.noProviderPendingLocalIds?.includes(localId))
+              if (intent.conversationId === conversationId &&
+                (intent.cleanupLocalIds?.includes(localId) || noProvider && intent.noProviderPendingLocalIds?.includes(localId)))
                 lifecycle.put({ ...intent,
                   cleanupLocalIds: intent.cleanupLocalIds?.filter(id => id !== localId),
                   noProviderPendingLocalIds: noProvider ? intent.noProviderPendingLocalIds?.filter(id => id !== localId) : intent.noProviderPendingLocalIds });
@@ -133,10 +143,9 @@ export class MetadataDeliveryBudget {
             result(undefined);
           };
         };
-        if (!noProvider || row?.dispatchStartedAt === null && !knownConversationId || !row && !knownConversationId) {
+        if (!noProvider || row?.dispatchStartedAt === null && !knownConversationId || !conversationId) {
           release(); return;
         }
-        const conversationId = row?.conversationId ?? knownConversationId!;
         const proofs = tx.objectStore("noProviderProofs"), all = proofs.getAll();
         all.onsuccess = () => {
           const now = Date.now();

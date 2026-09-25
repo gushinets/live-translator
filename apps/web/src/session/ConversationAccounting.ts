@@ -428,7 +428,7 @@ export class ConversationAccounting {
     for (const [localId, conversationId] of [...this.pendingNoProviderFinalizations]) {
       try { await this.budget.finishProducerAndRelease(localId, "no_provider", conversationId); }
       catch (error) {
-        try { await this.budget.finishProducer(localId, "no_provider"); } catch { /* Preserve the confirmed outcome if IDB permits. */ }
+        try { await this.budget.finishProducer(localId, "no_provider", conversationId); } catch { /* Preserve the confirmed outcome if IDB permits. */ }
         throw error;
       }
       this.outbox.confirmRetirement(localId);
