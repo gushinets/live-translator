@@ -15,6 +15,7 @@ export interface EndIntent {
   // Cleanup ACK removes cleanupLocalIds; only definitive no_provider proof removes these IDs.
   noProviderPendingLocalIds?: string[];
 }
+interface NoProviderProof { localId: string; conversationId: string; expiresAt: number; }
 export const METADATA_TTL_MS = 7 * 86400000;
 
 /** One origin-wide envelope per localId. Every pre-dispatch mutation waits for IDB commit. */
@@ -35,13 +36,14 @@ export class MetadataDeliveryBudget {
     if (!this.factory) return Promise.reject(new Error("Metadata storage unavailable"));
     this.opening ??= new Promise<IDBDatabase>((resolve, reject) => {
       let settled = false;
-      const request = this.factory!.open(this.name, 2);
+      const request = this.factory!.open(this.name, 3);
       const fail = () => { if (!settled) { settled = true; clearTimeout(timer); reject(new Error("Metadata storage unavailable")); } };
       const timer = setTimeout(fail, this.timeoutMs);
       request.onupgradeneeded = () => {
         const db = request.result;
         if (!db.objectStoreNames.contains("envelopes")) db.createObjectStore("envelopes", { keyPath: "localId" });
         if (!db.objectStoreNames.contains("lifecycle")) db.createObjectStore("lifecycle", { keyPath: "conversationId" });
+        if (!db.objectStoreNames.contains("noProviderProofs")) db.createObjectStore("noProviderProofs", { keyPath: "localId" });
       };
       request.onsuccess = () => {
         if (settled) { request.result.close(); return; }
@@ -108,28 +110,47 @@ export class MetadataDeliveryBudget {
   private releasable(row: MetadataEnvelope): boolean {
     return row.producerFinalized && row.producerOutcome !== null && !row.cleanup && !row.closeObservation && !row.usagePending;
   }
-  private releaseAndRemoveEndDependency(localId: string, update: (row: MetadataEnvelope) => MetadataEnvelope, noProvider = false): Promise<void> {
-    return this.transaction("readwrite", (store, result, _fail, tx) => {
+  private releaseAndRemoveEndDependency(localId: string, update: (row: MetadataEnvelope) => MetadataEnvelope,
+    noProvider = false, knownConversationId?: string): Promise<void> {
+    return this.transaction("readwrite", (store, result, fail, tx) => {
       const get = store.get(localId);
       get.onsuccess = () => {
         const row = get.result as MetadataEnvelope | undefined;
-        if (row) {
-          const next = update(row);
-          if (this.releasable(next)) store.delete(localId); else store.put(next);
-        }
-        const ends = tx.objectStore("lifecycle").getAll();
-        ends.onsuccess = () => {
-          const lifecycle = tx.objectStore("lifecycle");
-          for (const intent of ends.result as EndIntent[]) {
-            if (intent.cleanupLocalIds?.includes(localId) || noProvider && intent.noProviderPendingLocalIds?.includes(localId))
-              lifecycle.put({ ...intent,
-                cleanupLocalIds: intent.cleanupLocalIds?.filter(id => id !== localId),
-                noProviderPendingLocalIds: noProvider ? intent.noProviderPendingLocalIds?.filter(id => id !== localId) : intent.noProviderPendingLocalIds });
+        const release = () => {
+          if (row) {
+            const next = update(row);
+            if (this.releasable(next)) store.delete(localId); else store.put(next);
           }
-          result(undefined);
+          const ends = tx.objectStore("lifecycle").getAll();
+          ends.onsuccess = () => {
+            const lifecycle = tx.objectStore("lifecycle");
+            for (const intent of ends.result as EndIntent[]) {
+              if (intent.cleanupLocalIds?.includes(localId) || noProvider && intent.noProviderPendingLocalIds?.includes(localId))
+                lifecycle.put({ ...intent,
+                  cleanupLocalIds: intent.cleanupLocalIds?.filter(id => id !== localId),
+                  noProviderPendingLocalIds: noProvider ? intent.noProviderPendingLocalIds?.filter(id => id !== localId) : intent.noProviderPendingLocalIds });
+            }
+            result(undefined);
+          };
+        };
+        if (!noProvider || row?.dispatchStartedAt === null && !knownConversationId || !row && !knownConversationId) {
+          release(); return;
+        }
+        const conversationId = row?.conversationId ?? knownConversationId!;
+        const proofs = tx.objectStore("noProviderProofs"), all = proofs.getAll();
+        all.onsuccess = () => {
+          const now = Date.now();
+          let live = 0;
+          for (const proof of all.result as NoProviderProof[]) {
+            if (proof.expiresAt <= now) proofs.delete(proof.localId);
+            else if (proof.localId !== localId) live++;
+          }
+          if (live >= this.capacity) { fail(new Error("No-provider proof storage is full")); return; }
+          proofs.put({ localId, conversationId, expiresAt: now + METADATA_TTL_MS } satisfies NoProviderProof);
+          release();
         };
       };
-    }, ["envelopes", "lifecycle"]);
+    }, noProvider ? ["envelopes", "lifecycle", "noProviderProofs"] : ["envelopes", "lifecycle"]);
   }
   acknowledgeCleanupAndRelease(localId: string): Promise<void> {
     return this.releaseAndRemoveEndDependency(localId, row => ({ ...row, cleanup: null, cleanupAcknowledged: true }));
@@ -149,9 +170,9 @@ export class MetadataDeliveryBudget {
   acknowledgeCloseAndRelease(localId: string): Promise<void> {
     return this.releaseAndRemoveEndDependency(localId, row => ({ ...row, cleanup: null, closeObservation: null, producerFinalized: true, producerOutcome: "provider_closed" }));
   }
-  finishProducerAndRelease(localId: string, outcome: ProducerOutcome): Promise<void> {
+  finishProducerAndRelease(localId: string, outcome: ProducerOutcome, conversationId?: string): Promise<void> {
     if (outcome === "provider_closed") return this.acknowledgeCloseAndRelease(localId);
-    if (outcome === "no_provider") return this.releaseAndRemoveEndDependency(localId, row => ({ ...row, cleanup: null, producerFinalized: true, producerOutcome: outcome }), true);
+    if (outcome === "no_provider") return this.releaseAndRemoveEndDependency(localId, row => ({ ...row, cleanup: null, producerFinalized: true, producerOutcome: outcome }), true, conversationId);
     return this.change(localId, row => {
       const next = { ...row, producerFinalized: true, producerOutcome: outcome };
       return this.releasable(next) ? null : next;
@@ -215,6 +236,8 @@ export class MetadataDeliveryBudget {
       const envelopes = tx.objectStore("envelopes");
       const rows = envelopes.getAll(); rows.onsuccess = () => {
         const byId = new Map((rows.result as MetadataEnvelope[]).map(row => [row.localId, row]));
+        const proofStore = tx.objectStore("noProviderProofs"), proofs = proofStore.getAll();
+        proofs.onsuccess = () => {
         const get = store.get(conversationId); get.onsuccess = () => {
           const old = get.result as EndIntent | undefined;
           const sameEnd = old?.expectedVersion === expectedVersion;
@@ -232,8 +255,14 @@ export class MetadataDeliveryBudget {
           const dependencies = [...new Set([...retained, ...applicable])];
           const replayPolicyVersion = (sameEnd ? old?.reason : reason) === "setup_cancel"
             ? (sameEnd ? old?.noProviderPolicyVersion : noProviderPolicyVersion) : undefined;
+          const pendingIds = sameEnd ? old?.noProviderPendingLocalIds ?? [] : [...new Set(noProviderAttemptIds)];
+          const proofIds = new Set(pendingIds);
+          const proven = new Set((proofs.result as NoProviderProof[])
+            .filter(proof => proof.conversationId === conversationId && proof.expiresAt > now && proofIds.has(proof.localId))
+            .map(proof => proof.localId));
           const noProviderPendingLocalIds = replayPolicyVersion
-            ? (sameEnd ? old?.noProviderPendingLocalIds : [...new Set(noProviderAttemptIds)]) : undefined;
+            ? pendingIds.filter(id => !proven.has(id)) : undefined;
+          const consumeProofs = () => { if (replayPolicyVersion) for (const id of proven) proofStore.delete(id); };
           for (const id of applicable) {
             const row = byId.get(id)!;
             if (row.closeObservation) continue;
@@ -247,25 +276,35 @@ export class MetadataDeliveryBudget {
             envelopes.put({ ...row, producerCloseDeadlineAt,
               cleanup: row.cleanup ? { ...row.cleanup, expiresAt: cleanupExpiresAt } : { reason: reason === "setup_cancel" ? "cancelled" : "user_end", createdAt: now, expiresAt: cleanupExpiresAt } });
           }
-          if (old) { if (old.expectedVersion <= expectedVersion) store.put({ conversationId, expectedVersion, reason: sameEnd ? old.reason : reason,
+          if (old) { if (old.expectedVersion <= expectedVersion) { consumeProofs(); store.put({ conversationId, expectedVersion, reason: sameEnd ? old.reason : reason,
             expiresAt, cleanupLocalIds: dependencies, noProviderPolicyVersion: replayPolicyVersion,
-            noProviderPendingLocalIds }); result(undefined); return; }
+            noProviderPendingLocalIds }); } result(undefined); return; }
           const count = store.count(); count.onsuccess = () => {
             if (count.result >= 1000) { fail(new Error("Lifecycle metadata storage is full")); return; }
+            consumeProofs();
             store.put({ conversationId, expectedVersion, reason, expiresAt, cleanupLocalIds: dependencies,
               noProviderPolicyVersion: replayPolicyVersion, noProviderPendingLocalIds }); result(undefined);
+        };
           };
         };
       };
-    }, ["lifecycle", "envelopes"]);
+    }, ["lifecycle", "envelopes", "noProviderProofs"]);
   }
   ends(): Promise<EndIntent[]> {
     return this.transaction("readonly", (store, result) => { const r = store.getAll(); r.onsuccess = () => result(r.result as EndIntent[]); }, "lifecycle");
   }
   acknowledgeEnd(id: string, version: number): Promise<void> {
-    return this.transaction("readwrite", (store, result) => {
-      const r = store.get(id); r.onsuccess = () => { if ((r.result as EndIntent | undefined)?.expectedVersion === version) store.delete(id); result(undefined); };
-    }, "lifecycle");
+    return this.transaction("readwrite", (store, result, _fail, tx) => {
+      const r = store.get(id); r.onsuccess = () => {
+        if ((r.result as EndIntent | undefined)?.expectedVersion !== version) { result(undefined); return; }
+        store.delete(id);
+        const proofs = tx.objectStore("noProviderProofs"), all = proofs.getAll();
+        all.onsuccess = () => {
+          for (const proof of all.result as NoProviderProof[]) if (proof.conversationId === id) proofs.delete(proof.localId);
+          result(undefined);
+        };
+      };
+    }, ["lifecycle", "noProviderProofs"]);
   }
   async close(): Promise<void> { if (this.opening) (await this.opening).close(); this.opening = undefined; }
 }

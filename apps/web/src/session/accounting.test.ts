@@ -3,7 +3,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { describe, expect, it, vi } from "vitest";
-import { MetadataDeliveryBudget } from "./MetadataDeliveryBudget";
+import { MetadataDeliveryBudget, METADATA_TTL_MS } from "./MetadataDeliveryBudget";
 import { ATTEMPT_REGISTRATION_GRACE_MS, type CleanupTransport } from "./CleanupIntentOutbox";
 import { ConversationAccounting } from "./ConversationAccounting";
 import { AccountingRequestError, type LedgerApi, type ConversationMetadata } from "../api/AccountingBackend";
@@ -94,6 +94,58 @@ describe("shared IndexedDB metadata budget", () => {
   it("reclaims a proven never-dispatched cancelled attempt", async () => {
     const b = budget(); await b.reserve("id", "c"); await b.finishProducer("id", "no_provider"); await b.releaseIfSafe("id");
     expect(await b.entries()).toHaveLength(0); await b.close();
+  });
+  it("keeps proof for one attempt separate from another attempt's cleanup ACK", async () => {
+    const b = budget();
+    for (const id of ["proven", "uncertain"]) { await b.reserve(id, "c"); await b.markDispatchStarted(id); }
+    await b.finishProducerAndRelease("proven", "no_provider");
+    await b.enqueueEnd("c", 1, "setup_cancel", ["proven", "uncertain"], 0, "policy");
+    expect((await b.ends())[0]).toMatchObject({ cleanupLocalIds: ["uncertain"], noProviderPendingLocalIds: ["uncertain"] });
+    await b.acknowledgeCleanupAndRelease("uncertain");
+    expect((await b.ends())[0]).toMatchObject({ cleanupLocalIds: [], noProviderPendingLocalIds: ["uncertain"] });
+    await b.close();
+  });
+  it("does not apply a no-provider proof to another conversation", async () => {
+    const b = budget(); await b.reserve("attempt", "original"); await b.markDispatchStarted("attempt");
+    await b.finishProducerAndRelease("attempt", "no_provider");
+    await b.enqueueEnd("foreign", 1, "setup_cancel", [], 0, "policy", ["attempt"]);
+    expect((await b.ends())[0]?.noProviderPendingLocalIds).toEqual(["attempt"]);
+    await b.close();
+  });
+  it("retains definitive proof after direct cleanup removed the original envelope", async () => {
+    const b = budget(); await b.reserve("attempt", "c"); await b.markDispatchStarted("attempt");
+    await b.enqueueCleanup("attempt", "cancelled"); await b.acknowledgeDirectCleanupAndRelease("attempt");
+    expect(await b.get("attempt")).toBeNull();
+    await b.finishProducerAndRelease("attempt", "no_provider", "c");
+    await b.enqueueEnd("c", 1, "setup_cancel", [], 0, "policy", ["attempt"]);
+    expect((await b.ends())[0]?.noProviderPendingLocalIds).toEqual([]);
+    await b.close();
+  });
+  it("bounds unconsumed no-provider proofs and reclaims them after TTL", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    try {
+      const b = budget(1);
+      await b.reserve("first", "c"); await b.markDispatchStarted("first");
+      await b.finishProducerAndRelease("first", "no_provider");
+      await b.reserve("second", "c"); await b.markDispatchStarted("second");
+      await expect(b.finishProducerAndRelease("second", "no_provider")).rejects.toThrow("proof storage is full");
+      expect(await b.get("second")).not.toBeNull();
+      vi.setSystemTime(Date.now() + METADATA_TTL_MS + 1);
+      await b.finishProducerAndRelease("second", "no_provider");
+      expect(await b.entries()).toEqual([]);
+      await b.close();
+    } finally { vi.useRealTimers(); }
+  });
+  it("reclaims a late no-provider proof when End is acknowledged", async () => {
+    const b = budget(1);
+    await b.reserve("first", "c"); await b.markDispatchStarted("first");
+    await b.enqueueEnd("c", 1, "setup_cancel", ["first"], 0, "policy");
+    await b.finishProducerAndRelease("first", "no_provider");
+    await b.acknowledgeEnd("c", 1);
+    await b.reserve("second", "next"); await b.markDispatchStarted("second");
+    await b.finishProducerAndRelease("second", "no_provider");
+    expect(await b.entries()).toEqual([]);
+    await b.close();
   });
 });
 describe("cleanup and End delivery", () => {
@@ -953,7 +1005,7 @@ describe("controller-owned conversation accounting", () => {
     await vi.waitFor(async () => expect(await store.get(attempt.localId)).toBeNull());
 
     expect(release).toHaveBeenCalled();
-    expect(release).toHaveBeenLastCalledWith(attempt.localId, "no_provider");
+    expect(release).toHaveBeenLastCalledWith(attempt.localId, "no_provider", f.c.conversationId);
     expect(f.api.cleanup).not.toHaveBeenCalled();
     await scope.outbox.stop(); await scope.usageOutbox?.stop(); await store.close();
   });

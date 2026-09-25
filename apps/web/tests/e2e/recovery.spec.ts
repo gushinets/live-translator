@@ -51,7 +51,7 @@ test("pending End stays blocked offline and releases Start only after server pro
   await page.goto("/");
   await page.evaluate(async () => {
     const db = await new Promise<IDBDatabase>((resolve, reject) => {
-      const request = indexedDB.open("live-translator-metadata-v1", 2);
+      const request = indexedDB.open("live-translator-metadata-v1");
       request.onupgradeneeded = () => {
         request.result.createObjectStore("envelopes", { keyPath: "localId" });
         request.result.createObjectStore("lifecycle", { keyPath: "conversationId" });

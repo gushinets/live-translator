@@ -60,7 +60,7 @@ export class ConversationAccounting {
   private readonly pendingDirectEnds = new Map<number, PendingDirectEnd>();
   private readonly pendingDirectCleanupAcks = new Set<string>();
   private readonly pendingDirectCloseAcks = new Set<string>();
-  private readonly pendingNoProviderFinalizations = new Set<string>();
+  private readonly pendingNoProviderFinalizations = new Map<string, string | undefined>();
   private readonly directRetirementProofs = new Set<string>();
   private snapshotStore: Promise<ResumeSnapshotStore> | undefined;
   constructor(options: { api?: LedgerApi; budget?: MetadataDeliveryBudget; autoDelivery?: boolean } = {}) {
@@ -418,15 +418,15 @@ export class ConversationAccounting {
       this.pendingDirectCloseAcks.delete(localId);
     }
   }
-  async finalizeNoProvider(localId: string): Promise<void> {
+  async finalizeNoProvider(localId: string, conversationId?: string): Promise<void> {
     this.directRetirementProofs.add(localId);
-    this.pendingNoProviderFinalizations.add(localId);
+    this.pendingNoProviderFinalizations.set(localId, conversationId);
     try { await this.flushPendingNoProviderFinalizations(); }
     catch (error) { this.outbox.wake(); throw error; }
   }
   private async flushPendingNoProviderFinalizations(): Promise<void> {
-    for (const localId of [...this.pendingNoProviderFinalizations]) {
-      try { await this.budget.finishProducerAndRelease(localId, "no_provider"); }
+    for (const [localId, conversationId] of [...this.pendingNoProviderFinalizations]) {
+      try { await this.budget.finishProducerAndRelease(localId, "no_provider", conversationId); }
       catch (error) {
         try { await this.budget.finishProducer(localId, "no_provider"); } catch { /* Preserve the confirmed outcome if IDB permits. */ }
         throw error;
@@ -547,7 +547,7 @@ export class ProviderAccounting {
         if (!this.reporter && this.scope.usageOutbox) await this.scope.usageOutbox.noProvider(this.localId);
         this.scope.noteNoProvider(this);
         this.finished = true;
-        await this.scope.finalizeNoProvider(this.localId);
+        await this.scope.finalizeNoProvider(this.localId, c.conversationId);
         this.dispatched = false;
       } else {
         await this.abandon("response_not_received");

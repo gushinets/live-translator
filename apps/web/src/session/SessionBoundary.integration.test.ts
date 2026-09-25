@@ -3187,6 +3187,54 @@ describe("stage 5 hidden boundary", () => {
     await f.budget.close(); server.db.close();
   });
 
+  it.each([false, true])("replays End when no-provider proof precedes a stale staged End with storage denied %s", async storageDenied => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    const startedAt = Date.now();
+    const f = fixture(40, true);
+    const server = useRealLedger(f, true);
+    let rejectCreate!: (error: Error) => void;
+    f.api.createSession.mockImplementationOnce(() => new Promise((_resolve, reject) => { rejectCreate = reject; }));
+    const onlineEnd = f.api.end.getMockImplementation()!;
+    f.api.end.mockRejectedValue(new Error("offline"));
+    const starting = f.controller.startContextCapture().catch(error => error);
+    await vi.waitFor(() => expect(rejectCreate).toBeDefined());
+
+    let releaseEnd!: () => void, endCaptured!: () => void, noProviderCommitted!: () => void;
+    const endGate = new Promise<void>(resolve => { releaseEnd = resolve; });
+    const captured = new Promise<void>(resolve => { endCaptured = resolve; });
+    const committed = new Promise<void>(resolve => { noProviderCommitted = resolve; });
+    const enqueueEnd = f.scope.outbox.enqueueEnd.bind(f.scope.outbox);
+    vi.spyOn(f.scope.outbox, "enqueueEnd").mockImplementationOnce(async (...args) => {
+      endCaptured(); await endGate; await enqueueEnd(...args);
+    });
+    const finishNoProvider = f.budget.finishProducerAndRelease.bind(f.budget);
+    vi.spyOn(f.budget, "finishProducerAndRelease").mockImplementation(async (...args) => {
+      await finishNoProvider(...args);
+      if (args[1] === "no_provider") noProviderCommitted();
+    });
+    const cancelling = f.controller.cancel().catch(error => error);
+    await captured;
+    rejectCreate(new AccountingRequestError(503, "server_shutting_down_before_dispatch"));
+    await committed;
+    await f.budget.close(); // The proof must survive a closed IndexedDB connection before End is written.
+    releaseEnd();
+    await Promise.all([starting, cancelling]);
+    expect((await f.budget.ends())[0]).toMatchObject({ cleanupLocalIds: [], noProviderPendingLocalIds: [] });
+
+    vi.setSystemTime(startedAt + METADATA_TTL_MS + 1);
+    server.advance(METADATA_TTL_MS + 1);
+    f.api.end.mockImplementation(onlineEnd).mockClear();
+    const deniedStorage: Storage = { length: 0, clear() {}, key() { return null; }, removeItem() {},
+      setItem() {}, getItem() { throw new Error("sessionStorage denied"); } };
+    const reloaded = await reloadedController(f, false, storageDenied ? deniedStorage : sessionStorage);
+    await reloaded.scope.outbox.flush();
+    expect(f.api.end).toHaveBeenCalledExactlyOnceWith(server.conversationId, 1, "setup_cancel");
+    expect(server.metadata().status).toBe("ended");
+    expect(await f.budget.ends()).toEqual([]);
+    expect(f.api.createSession).toHaveBeenCalledOnce();
+    await reloaded.controller.dispose(); await f.controller.dispose(); await f.budget.close(); server.db.close();
+  });
+
   it("does not replay expired End as no-provider after a lost provider create response", async () => {
     vi.useFakeTimers({ toFake: ["Date"] });
     const startedAt = Date.now();
