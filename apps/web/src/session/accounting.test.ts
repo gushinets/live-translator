@@ -1,9 +1,13 @@
 import { IDBFactory } from "fake-indexeddb";
+import { existsSync, readFileSync } from "node:fs";
+import { resolve } from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import { describe, expect, it, vi } from "vitest";
 import { MetadataDeliveryBudget } from "./MetadataDeliveryBudget";
 import { ATTEMPT_REGISTRATION_GRACE_MS, type CleanupTransport } from "./CleanupIntentOutbox";
 import { ConversationAccounting } from "./ConversationAccounting";
 import { AccountingRequestError, type LedgerApi, type ConversationMetadata } from "../api/AccountingBackend";
+import { UsageLedger } from "../../../api/src/accounting/UsageLedger";
 
 function budget(capacity = 1000) { return new MetadataDeliveryBudget({ indexedDB: new IDBFactory(), name: crypto.randomUUID(), capacity }); }
 function fixture(store = budget()) {
@@ -988,6 +992,39 @@ describe("controller-owned conversation accounting", () => {
 });
 
 describe("stage 4 durable lifecycle boundary", () => {
+  it.each([false, true])("starts a new ledger conversation after its own staged End is confirmed (preflushed=%s)", async preflushed => {
+    const db = new DatabaseSync(":memory:");
+    const root = resolve(process.cwd(), "apps/api/src/persistence/migrations");
+    const migrations = existsSync(root) ? root : resolve(process.cwd(), "../api/src/persistence/migrations");
+    for (const name of ["001-usage-ledger.sql", "002-live-session-recovery-fences.sql"])
+      db.exec(readFileSync(resolve(migrations, name), "utf8"));
+    const ledger = new UsageLedger(db), owner = crypto.randomUUID(), f = fixture();
+    const metadata = (row: ReturnType<typeof ledger.createConversation>): ConversationMetadata => ({
+      ...f.c, conversationId: row.id, version: row.version, status: row.status,
+    });
+    f.api.createConversation.mockImplementation(async requestId => metadata(ledger.createConversation(owner, requestId, "test")));
+    f.api.end.mockImplementation(async (id, version, reason) => metadata(ledger.endConversation(owner, id, version, reason)));
+    f.api.createSession.mockImplementation(async body => {
+      ledger.registerAttempt(owner, { liveSessionId: body.liveSessionId, conversationId: body.conversationId,
+        conversationVersion: body.conversationVersion, initialMode: body.initialMode,
+        startReason: body.startReason, fingerprint: "sdp-hash" });
+      return { session: { id: "provider" }, transport: { type: "webrtc", sdp: "answer" } };
+    });
+    try {
+      const oldAttempt = f.scope.newAttempt();
+      const first = await f.scope.prepare(oldAttempt);
+      expect(first).not.toBeNull();
+      await f.scope.stageEnd("user_end");
+      if (preflushed) await f.scope.outbox.flush();
+      await f.scope.newAttempt().create("offer");
+      expect(ledger.getConversation(owner, first!.conversationId).status).toBe("ended");
+      expect(f.api.createConversation).toHaveBeenCalledTimes(2);
+      expect(f.api.createSession.mock.calls[0]![0]).toMatchObject({ startReason: "initial" });
+      expect(f.api.createSession.mock.calls[0]![0].conversationId).not.toBe(first!.conversationId);
+      expect(() => oldAttempt.assertCurrent()).toThrow("Provider attempt cancelled");
+    } finally { await f.budget.close(); db.close(); }
+  });
+
   it("retries a confirmed End from another scope before replacing an active conversation", async () => {
     const indexedDB = new IDBFactory(), name = crypto.randomUUID();
     const a = fixture(new MetadataDeliveryBudget({ indexedDB, name }));
@@ -1029,6 +1066,17 @@ describe("stage 4 durable lifecycle boundary", () => {
 
     await expect(f.scope.newAttempt().create("offer")).rejects.toThrow("End is pending");
     expect(f.api.createConversation).toHaveBeenCalledTimes(1);
+    expect(f.api.createSession).not.toHaveBeenCalled();
+    await f.budget.close();
+  });
+
+  it("keeps a background pause that begins while the staged End is flushed", async () => {
+    const f = fixture();
+    await f.scope.prepare(f.scope.newAttempt());
+    await f.scope.stageEnd("user_end");
+    const flush = f.scope.outbox.flush.bind(f.scope.outbox);
+    vi.spyOn(f.scope.outbox, "flush").mockImplementationOnce(async () => { await flush(); f.scope.beginBackgroundPause(); });
+    await expect(f.scope.newAttempt().create("offer")).rejects.toThrow("Provider attempt cancelled");
     expect(f.api.createSession).not.toHaveBeenCalled();
     await f.budget.close();
   });

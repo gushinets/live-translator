@@ -50,6 +50,7 @@ export class ConversationAccounting {
   private epoch = 0;
   private dispatchCount = 0;
   private requestId = crypto.randomUUID();
+  private stagedEndConversationId: string | undefined;
   private readonly autoDelivery: boolean;
   private readonly producerId: string;
   private producerLock: Promise<void> | undefined;
@@ -153,7 +154,17 @@ export class ConversationAccounting {
     attempt.managed = true; attempt.assertCurrent();
     await this.holdProducerLock();
     await this.outbox.flush();
-    if ((await this.budget.ends()).length) throw new Error("Previous conversation End is pending");
+    const ends = await this.budget.ends();
+    if (this.stagedEndConversationId &&
+        this.stagedEndConversationId === (this.current ?? await this.creating?.catch(() => undefined))?.conversationId &&
+        !ends.some(end => end.conversationId === this.stagedEndConversationId)) {
+      attempt.assertCurrent();
+      this.resetConversation(attempt);
+      await this.loadPolicy();
+      attempt.assertCurrent();
+      if (!await this.enabled) { attempt.managed = false; return null; }
+    }
+    if (ends.length) throw new Error("Previous conversation End is pending");
     this.creating ??= this.api.createConversation(this.requestId).catch(error => { this.creating = undefined; throw error; });
     const c = await this.creating; attempt.assertCurrent(); this.current = c;
     if (c.status !== "active") throw new Error("Conversation is not active");
@@ -182,6 +193,14 @@ export class ConversationAccounting {
     if (!this.previousDispatch.delete(attempt)) return;
     this.dispatchCount = Math.max(0, this.dispatchCount - 1);
     if (this.last === attempt) this.last = previous;
+  }
+  private resetConversation(nextAttempt?: ProviderAccounting): void {
+    this.epoch++;
+    nextAttempt?.rebase(this.epoch);
+    this.current = undefined; this.creating = undefined; this.last = undefined;
+    this.pausing = false; this.enabled = undefined; this.backgroundPolicy = false;
+    this.dispatchCount = 0; this.requestId = crypto.randomUUID(); this.attempts = new Set(nextAttempt ? [nextAttempt] : []);
+    this.stagedEndConversationId = undefined;
   }
   private async deliverDirectEnd(intent: PendingDirectEnd): Promise<void> {
     if (intent.inFlight) return intent.inFlight;
@@ -262,6 +281,7 @@ export class ConversationAccounting {
     const dispatched = attempts.filter(a => a.dispatched);
     this.outbox.deferCleanup(dispatched.filter(a => !a.finished).map(a => a.localId));
     await this.outbox.enqueueEnd(c.conversationId, c.version, reason, dispatched.map(a => a.localId), c.policy.sessionCloseTimeoutMs);
+    this.stagedEndConversationId = c.conversationId;
   }
 
   async end(reason: "user_end" | "setup_cancel", expectedEpoch = this.epoch): Promise<void> {
@@ -269,9 +289,7 @@ export class ConversationAccounting {
     if (!boundary && expectedEpoch === this.epoch) {
       boundary = { epoch: expectedEpoch, reason, attempts: [...this.attempts], conversation: this.current, creating: this.creating };
       this.pendingEndBoundaries.set(expectedEpoch, boundary);
-      this.epoch++; this.current = undefined; this.creating = undefined; this.last = undefined;
-      this.pausing = false; this.enabled = undefined; this.backgroundPolicy = false;
-      this.dispatchCount = 0; this.requestId = crypto.randomUUID(); this.attempts = new Set();
+      this.resetConversation();
     }
     if (boundary) return this.finishEndBoundary(boundary); // First reason/version wins across retries.
     const pending = this.pendingDirectEnds.get(expectedEpoch);
@@ -336,7 +354,8 @@ export class ProviderAccounting {
   observeProduct(observation: ProductObservation): void { this.lastProduct = observation; this.reporter?.observeProduct(observation); }
   observeUsage(observation: UsageObservation): void { this.reporter?.observeUsage(observation); }
   providerStarted(): void { this.reporter?.providerStarted(); }
-  constructor(private readonly scope: ConversationAccounting, private readonly epoch: number) {}
+  constructor(private readonly scope: ConversationAccounting, private epoch: number) {}
+  rebase(epoch: number): void { this.epoch = epoch; }
   assertCurrent(): void {
     if (this.cancelled || this.scope.isPausing || !this.scope.isCurrent(this.epoch) || (typeof document !== "undefined" && document.visibilityState === "hidden" && this.managed)) throw new Error("Provider attempt cancelled");
   }
