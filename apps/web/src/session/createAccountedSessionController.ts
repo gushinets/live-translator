@@ -227,7 +227,9 @@ export class AccountedSessionController extends SessionController {
     if (this.unresolvedCreate) return Promise.reject(new Error("Retained conversation create remains unresolved"));
     if (this.retainedEndWork) return this.retainedEndWork;
     if (this.resumeWork && this.accounting.conversationId) return super.endConversation();
-    if (!this.resumeWork && (this.accounting.conversationId ||
+    if (!this.resumeWork && ((this.accounting.conversationId &&
+      this.accounting.conversationStatus !== "resuming" && !this.resumeFailed &&
+      !this.recoveryBlocked && !this.pendingEnd) ||
       !this.retainedPaused && !this.retainedActive && !this.resumeFailed && !this.recoveryChecking &&
       !this.pendingEnd && !this.pendingClaim && !this.recoveryBlocked))
       return super.endConversation();
@@ -265,7 +267,9 @@ export class AccountedSessionController extends SessionController {
       else {
         const local = await this.accounting.pendingConversation();
         if (local) {
-          if (local.conversationId !== conversation.conversationId || local.version !== conversation.version ||
+          if (local.status === "resuming" && conversation.status === "active")
+            await store.confirmResume(conversation, this.accounting.confirmRecoveredCompletion(conversation));
+          else if (local.conversationId !== conversation.conversationId || local.version !== conversation.version ||
             local.status !== conversation.status) throw new Error("Retained End version changed");
         } else this.accounting.adoptRetained(conversation);
         await this.accounting.stageEnd("user_end", this.accounting.revision);

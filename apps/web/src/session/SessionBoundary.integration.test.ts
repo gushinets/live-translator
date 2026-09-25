@@ -1211,6 +1211,70 @@ describe("stage 5 hidden boundary", () => {
     expect(f.api.abortResume).not.toHaveBeenCalled();
     await f.controller.dispose(); await f.budget.close();
   });
+  it("ends once after committed resume loses both completion and claim receipts", async () => {
+    const f = fixture(40, true); configureResume(f);
+    await f.controller.startBootstrap();
+    f.setVisible(false);
+    await vi.waitFor(() => expect(f.clients[0]!.peer.channel.sent).toContain("session.close"));
+    f.clients[0]!.peer.channel.emit({ type: "session.closed" });
+    await vi.waitFor(() => expect(f.c.status).toBe("paused"));
+    const complete = f.api.completeResume.getMockImplementation()!;
+    f.api.completeResume.mockImplementation(async (...args) => { await complete(...args); throw new Error("complete response lost"); });
+    const claim = f.api.claimResume.getMockImplementation()!;
+    f.api.claimResume.mockImplementation(async (...args) => {
+      if (f.c.status === "active") throw new Error("claim receipt lost");
+      return claim(...args);
+    });
+    f.api.abortResume.mockRejectedValue(new AccountingRequestError(409, "resume_claim_conflict"));
+    const end = f.api.end.getMockImplementation()!;
+    f.api.end.mockImplementation(async (...args) => {
+      if (args[1] !== f.c.version) throw new AccountingRequestError(409, "conversation_version_conflict");
+      return end(...args);
+    });
+    f.setVisible(true);
+    await vi.waitFor(() => expect(f.controller.retainedRecoveryState).toBe("failed"));
+    expect(f.c.status).toBe("active");
+    expect(f.scope.conversationStatus).toBe("resuming");
+    await expect(f.controller.resumeRetainedConversation()).rejects.toThrow();
+    expect(f.api.claimResume).toHaveBeenCalledTimes(2);
+    await f.controller.endConversation();
+    expect(f.api.end).toHaveBeenCalledTimes(1);
+    expect(f.api.end).toHaveBeenCalledWith(f.c.conversationId, 4, "user_end");
+    expect(f.api.claimResume).toHaveBeenCalledTimes(2);
+    expect(f.c.status).toBe("ended");
+    expect(await f.budget.ends()).toHaveLength(0);
+    expect(sessionStorage.getItem("live-translator-retained-conversation-v1")).toBeNull();
+    await f.controller.dispose(); await f.budget.close();
+  });
+  it("disposes a committed resume with lost receipts using the confirmed version", async () => {
+    const f = fixture(40, true); configureResume(f);
+    await f.controller.startBootstrap();
+    f.setVisible(false);
+    await vi.waitFor(() => expect(f.clients[0]!.peer.channel.sent).toContain("session.close"));
+    f.clients[0]!.peer.channel.emit({ type: "session.closed" });
+    await vi.waitFor(() => expect(f.c.status).toBe("paused"));
+    const complete = f.api.completeResume.getMockImplementation()!;
+    f.api.completeResume.mockImplementation(async (...args) => { await complete(...args); throw new Error("complete response lost"); });
+    const claim = f.api.claimResume.getMockImplementation()!;
+    f.api.claimResume.mockImplementation(async (...args) => {
+      if (f.c.status === "active") throw new Error("claim receipt lost");
+      return claim(...args);
+    });
+    f.api.abortResume.mockRejectedValue(new AccountingRequestError(409, "resume_claim_conflict"));
+    const end = f.api.end.getMockImplementation()!;
+    f.api.end.mockImplementation(async (...args) => {
+      if (args[1] !== f.c.version) throw new AccountingRequestError(409, "conversation_version_conflict");
+      return end(...args);
+    });
+    f.setVisible(true);
+    await vi.waitFor(() => expect(f.controller.retainedRecoveryState).toBe("failed"));
+    await f.controller.dispose();
+    expect(f.api.end).toHaveBeenCalledTimes(1);
+    expect(f.api.end).toHaveBeenCalledWith(f.c.conversationId, 4, "user_end");
+    expect(f.c.status).toBe("ended");
+    expect(sessionStorage.getItem("live-translator-retained-conversation-v1")).toBeNull();
+    await f.budget.close();
+  });
   it("A5.5 reconciles a lost claim response with the same ID before provider dispatch", async () => {
     const f = fixture(40, true); configureResume(f);
     await f.controller.startBootstrap();

@@ -154,6 +154,15 @@ export class ConversationAccounting {
       throw new Error("Recovered resume abort does not match the local claim");
     this.current = result; this.resume = undefined; this.pausing = true;
   }
+  confirmRecoveredCompletion(result: ConversationMetadata): string {
+    const resume = this.resume, c = this.current;
+    if (!resume || !c || c.status !== "resuming" || result.conversationId !== c.conversationId ||
+      result.status !== "active" || result.version !== resume.version + 1 ||
+      result.resumeAttemptId !== null || result.resumeExpiresAt !== null)
+      throw new Error("Recovered resume completion does not match the local claim");
+    this.current = result; this.resume = undefined; this.pausing = true;
+    return resume.id;
+  }
   async pause(close: Promise<unknown>): Promise<ConversationMetadata | null> {
     const c = await this.pendingConversation();
     await close.catch(() => undefined);
