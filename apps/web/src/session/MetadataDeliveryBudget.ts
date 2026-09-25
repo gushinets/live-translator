@@ -9,7 +9,7 @@ export interface MetadataEnvelope {
   cleanupAcknowledged?: boolean;
   closeObservation: CloseMetadata | null; usagePending: boolean; usage?: QueuedUsage | null; usageRevision?: number; usageProducerFinalized?: boolean;
 }
-export interface EndIntent { conversationId: string; expectedVersion: number; reason: "user_end" | "setup_cancel"; expiresAt: number; cleanupLocalIds?: string[]; }
+export interface EndIntent { conversationId: string; expectedVersion: number; reason: "user_end" | "setup_cancel"; expiresAt: number; cleanupLocalIds?: string[]; noProviderPolicyVersion?: string; }
 export const METADATA_TTL_MS = 7 * 86400000;
 
 /** One origin-wide envelope per localId. Every pre-dispatch mutation waits for IDB commit. */
@@ -196,7 +196,8 @@ export class MetadataDeliveryBudget {
   entries(): Promise<MetadataEnvelope[]> {
     return this.transaction("readonly", (store, result) => { const r = store.getAll(); r.onsuccess = () => result(r.result as MetadataEnvelope[]); });
   }
-  enqueueEnd(conversationId: string, expectedVersion: number, reason: EndIntent["reason"], cleanupLocalIds: readonly string[] = [], closeTimeoutMs = 0): Promise<void> {
+  enqueueEnd(conversationId: string, expectedVersion: number, reason: EndIntent["reason"], cleanupLocalIds: readonly string[] = [], closeTimeoutMs = 0,
+    noProviderPolicyVersion?: string): Promise<void> {
     // One transaction removes the crash gap between saving cleanup and saving user intent.
     // Cleanup remains first-reason-wins, and no usage/close obligation is removed here.
     const safeTimeout = Number.isFinite(closeTimeoutMs) ? Math.min(2_147_483_647, Math.max(0, closeTimeoutMs)) : 2_147_483_647;
@@ -221,6 +222,8 @@ export class MetadataDeliveryBudget {
             return Boolean(row && (row.cleanup || row.closeObservation));
           }) : [];
           const dependencies = [...new Set([...retained, ...applicable])];
+          const replayPolicyVersion = dependencies.length === 0 && (sameEnd ? old?.reason : reason) === "setup_cancel"
+            ? (sameEnd ? old?.noProviderPolicyVersion ?? noProviderPolicyVersion : noProviderPolicyVersion) : undefined;
           for (const id of applicable) {
             const row = byId.get(id)!;
             if (row.closeObservation) continue;
@@ -234,10 +237,12 @@ export class MetadataDeliveryBudget {
             envelopes.put({ ...row, producerCloseDeadlineAt,
               cleanup: row.cleanup ? { ...row.cleanup, expiresAt: cleanupExpiresAt } : { reason: reason === "setup_cancel" ? "cancelled" : "user_end", createdAt: now, expiresAt: cleanupExpiresAt } });
           }
-          if (old) { if (old.expectedVersion <= expectedVersion) store.put({ conversationId, expectedVersion, reason: sameEnd ? old.reason : reason, expiresAt, cleanupLocalIds: dependencies }); result(undefined); return; }
+          if (old) { if (old.expectedVersion <= expectedVersion) store.put({ conversationId, expectedVersion, reason: sameEnd ? old.reason : reason,
+            expiresAt, cleanupLocalIds: dependencies, noProviderPolicyVersion: replayPolicyVersion }); result(undefined); return; }
           const count = store.count(); count.onsuccess = () => {
             if (count.result >= 1000) { fail(new Error("Lifecycle metadata storage is full")); return; }
-            store.put({ conversationId, expectedVersion, reason, expiresAt, cleanupLocalIds: dependencies }); result(undefined);
+            store.put({ conversationId, expectedVersion, reason, expiresAt, cleanupLocalIds: dependencies,
+              noProviderPolicyVersion: replayPolicyVersion }); result(undefined);
           };
         };
       };

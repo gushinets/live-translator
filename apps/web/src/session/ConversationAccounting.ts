@@ -444,7 +444,9 @@ export class ConversationAccounting {
     // or enqueue HTTP here: a crash can replay both stores, and a late final remains valid.
     const dispatched = attempts.filter(a => a.dispatched);
     this.outbox.deferCleanup(dispatched.filter(a => !a.finished).map(a => a.localId));
-    await this.outbox.enqueueEnd(c.conversationId, c.version, reason, dispatched.map(a => a.localId), c.policy.sessionCloseTimeoutMs);
+    await this.outbox.enqueueEnd(c.conversationId, c.version, reason, dispatched.map(a => a.localId), c.policy.sessionCloseTimeoutMs,
+      reason === "setup_cancel" && !dispatched.length && c.productDeadlineAt === null && c.policy.backgroundSessionCloseEnabled
+        ? c.policy.policyVersion : undefined);
     this.stagedEndConversationId = c.conversationId;
   }
 
@@ -474,9 +476,12 @@ export class ConversationAccounting {
     const c = boundary.conversation ?? await boundary.creating?.catch(() => undefined);
     let persisted = false;
     if (c) {
+      const dispatched = boundary.attempts.filter(a => a.dispatched);
       try {
         await this.outbox.enqueueEnd(c.conversationId, c.version, boundary.reason,
-          boundary.attempts.filter(a => a.dispatched && !this.directRetirementProofs.has(a.localId)).map(a => a.localId), c.policy.sessionCloseTimeoutMs);
+          dispatched.filter(a => !this.directRetirementProofs.has(a.localId)).map(a => a.localId), c.policy.sessionCloseTimeoutMs,
+          boundary.reason === "setup_cancel" && !dispatched.length && c.productDeadlineAt === null && c.policy.backgroundSessionCloseEnabled
+            ? c.policy.policyVersion : undefined);
         persisted = true;
       } catch { console.error("Conversation end storage degraded", { conversationId: c.conversationId }); }
     }

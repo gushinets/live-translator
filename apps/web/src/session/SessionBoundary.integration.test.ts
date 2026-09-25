@@ -7,7 +7,7 @@ import { AccountingRequestError, type ConversationMetadata, type LedgerApi, type
 import type { UsageReport } from "../metrics/UsageTypes";
 import { LiveClient } from "../live/LiveClient";
 import { ConversationAccounting } from "./ConversationAccounting";
-import { MetadataDeliveryBudget } from "./MetadataDeliveryBudget";
+import { MetadataDeliveryBudget, METADATA_TTL_MS } from "./MetadataDeliveryBudget";
 import { ResumeSnapshotStore } from "./ResumeSnapshotStore";
 import { AccountedSessionController } from "./createAccountedSessionController";
 import type { SessionControllerDeps } from "./SessionController";
@@ -3105,13 +3105,46 @@ describe("stage 5 hidden boundary", () => {
     await f.controller.dispose(); await f.budget.close(); server.db.close();
   });
 
+  it("replays a no-provider End after seven offline days and clears its durable intent", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    const startedAt = Date.now();
+    const f = fixture(40, false, false, undefined, true, false, undefined, false);
+    const server = useRealLedger(f, true);
+    f.api.policy.mockResolvedValue({ usageLedgerEnabled: true, backgroundSessionCloseEnabled: false });
+    const onlineEnd = f.api.end.getMockImplementation()!;
+    f.api.end.mockRejectedValue(new Error("offline"));
+    await expect(f.controller.startContextCapture()).rejects.toThrow();
+    expect((await f.budget.ends())[0]).toMatchObject({ conversationId: server.conversationId,
+      expectedVersion: 1, reason: "setup_cancel", cleanupLocalIds: [], noProviderPolicyVersion: f.c.policy.policyVersion });
+
+    vi.setSystemTime(startedAt + METADATA_TTL_MS + 1);
+    server.advance(METADATA_TTL_MS + 1);
+    expect(server.metadata()).toMatchObject({ status: "active", productDeadlineAt: null });
+    const reloaded = await reloadedController(f, false);
+    await vi.waitFor(() => expect(reloaded.controller.retainedRecoveryState).toBe("no_provider_end"));
+    await reloaded.controller.verifyRetainedConversation();
+    expect((await reloaded.store).hasRetainedIdentity()).toBe(true);
+
+    f.api.end.mockImplementation(onlineEnd).mockClear();
+    await reloaded.controller.verifyRetainedConversation();
+    expect(f.api.end).toHaveBeenCalledExactlyOnceWith(server.conversationId, 1, "setup_cancel");
+    expect(server.metadata().status).toBe("ended");
+    expect(await f.budget.ends()).toEqual([]);
+    expect((await reloaded.store).hasRetainedIdentity()).toBe(false);
+    expect(f.api.createSession).not.toHaveBeenCalled();
+    await reloaded.controller.dispose(); await f.controller.dispose(); await f.budget.close(); server.db.close();
+  });
+
   it("does not replay a foreign or changed no-provider End intent without document ownership", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    const startedAt = Date.now();
     const f = fixture(40, false, false, undefined, true, false, undefined, false);
     const server = useRealLedger(f, true);
     f.api.policy.mockResolvedValue({ usageLedgerEnabled: true, backgroundSessionCloseEnabled: false });
     f.api.end.mockRejectedValue(new Error("offline"));
     await expect(f.controller.startContextCapture()).rejects.toThrow();
     await f.budget.enqueueEnd(server.conversationId, 2, "user_end");
+    vi.setSystemTime(startedAt + METADATA_TTL_MS + 1);
     f.api.end.mockClear();
     const reloaded = await reloadedController(f, false);
     await expect(reloaded.controller.verifyRetainedConversation()).rejects.toThrow("intent does not match");
@@ -3195,6 +3228,70 @@ describe("stage 5 hidden boundary", () => {
     expect(f.api.createConversation).toHaveBeenCalledOnce();
     expect(f.api.createSession).not.toHaveBeenCalled();
     expect((await f.budget.ends())).toHaveLength(1);
+    await f.budget.close(); server.db.close();
+  });
+
+  it("replays a durable no-provider End after seven offline days even when sessionStorage is denied", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    const startedAt = Date.now();
+    const f = fixture(40, false, false, undefined, true, true, undefined, false);
+    const server = useRealLedger(f, true);
+    f.api.policy.mockResolvedValue({ usageLedgerEnabled: true, backgroundSessionCloseEnabled: false });
+    const onlineEnd = f.api.end.getMockImplementation()!;
+    f.api.end.mockRejectedValue(new Error("offline"));
+    await expect(f.controller.startContextCapture()).rejects.toThrow();
+    expect((await f.budget.ends())[0]).toMatchObject({ conversationId: server.conversationId,
+      expectedVersion: 1, reason: "setup_cancel", cleanupLocalIds: [], noProviderPolicyVersion: f.c.policy.policyVersion });
+    expect(f.api.createSession).not.toHaveBeenCalled();
+
+    vi.setSystemTime(startedAt + METADATA_TTL_MS + 1);
+    server.advance(METADATA_TTL_MS + 1);
+    expect(server.metadata()).toMatchObject({ status: "active", productDeadlineAt: null });
+    const reloaded = await reloadedController(f, false, f.retainedStorage);
+    await vi.waitFor(() => expect(reloaded.controller.retainedRecoveryState).toBe("storage_unavailable"));
+    f.api.end.mockImplementation(onlineEnd).mockClear();
+    await reloaded.scope.outbox.flush();
+
+    expect(f.api.end).toHaveBeenCalledExactlyOnceWith(server.conversationId, 1, "setup_cancel");
+    expect(server.metadata().status).toBe("ended");
+    expect(await f.budget.ends()).toEqual([]);
+    expect(f.api.createSession).not.toHaveBeenCalled();
+    await f.budget.close(); server.db.close();
+  });
+
+  it.each(["policy", "version"] as const)("refuses an expired no-provider End with a foreign %s", async mismatch => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    const startedAt = Date.now();
+    const f = fixture(40, false, false, undefined, true, true, undefined, false);
+    const server = useRealLedger(f, true);
+    await f.budget.enqueueEnd(server.conversationId, mismatch === "version" ? 2 : 1, "setup_cancel", [], 0,
+      mismatch === "policy" ? "foreign-policy" : f.c.policy.policyVersion);
+    vi.setSystemTime(startedAt + METADATA_TTL_MS + 1);
+    server.advance(METADATA_TTL_MS + 1);
+
+    await f.scope.outbox.flush();
+
+    expect(f.api.end).not.toHaveBeenCalled();
+    expect(server.metadata().status).toBe("active");
+    expect(await f.budget.ends()).toHaveLength(1);
+    await f.budget.close(); server.db.close();
+  });
+
+  it("purges an expired no-provider intent when the ledger already proves End", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    const startedAt = Date.now();
+    const f = fixture(40, false, false, undefined, true, true, undefined, false);
+    const server = useRealLedger(f, true);
+    await f.budget.enqueueEnd(server.conversationId, 1, "setup_cancel", [], 0, f.c.policy.policyVersion);
+    server.ledger.endConversation(server.owner, server.conversationId, 1, "setup_cancel");
+    server.metadata();
+    vi.setSystemTime(startedAt + METADATA_TTL_MS + 1);
+    server.advance(METADATA_TTL_MS + 1);
+
+    await f.scope.outbox.flush();
+
+    expect(f.api.end).not.toHaveBeenCalled();
+    expect(await f.budget.ends()).toEqual([]);
     await f.budget.close(); server.db.close();
   });
 

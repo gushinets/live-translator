@@ -1026,6 +1026,7 @@ describe("stage 4 durable lifecycle boundary", () => {
       original.api.readConversation.mockRejectedValue(new AccountingRequestError(status, "identity_required"));
     }
     await original.scope.outbox.flush();
+    if (outcome === "expired") expect(original.api.end).not.toHaveBeenCalled();
     expect(await original.budget.ends()).toHaveLength(1);
     await original.budget.close();
 

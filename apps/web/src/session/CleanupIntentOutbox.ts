@@ -39,8 +39,9 @@ export class CleanupIntentOutbox {
   async observeClosed(localId: string, observation: CloseMetadata): Promise<void> {
     await this.budget.enqueueClose(localId, observation); this.deferredCleanup.delete(localId); this.revision++; this.schedule();
   }
-  async enqueueEnd(id: string, version: number, reason: EndIntent["reason"], cleanupLocalIds: readonly string[] = [], closeTimeoutMs = 0): Promise<void> {
-    await this.budget.enqueueEnd(id, version, reason, cleanupLocalIds, closeTimeoutMs); this.revision++; this.schedule();
+  async enqueueEnd(id: string, version: number, reason: EndIntent["reason"], cleanupLocalIds: readonly string[] = [], closeTimeoutMs = 0,
+    noProviderPolicyVersion?: string): Promise<void> {
+    await this.budget.enqueueEnd(id, version, reason, cleanupLocalIds, closeTimeoutMs, noProviderPolicyVersion); this.revision++; this.schedule();
   }
   deferCleanup(localIds: readonly string[]): void { for (const id of localIds) this.deferredCleanup.add(id); }
   confirmRetirement(localId: string): void { this.deferredCleanup.delete(localId); }
@@ -167,11 +168,28 @@ export class CleanupIntentOutbox {
       if (cleanupLocalIds.length > 0) { pending = true; continue; }
       if (Date.now() >= intent.expiresAt) {
         this.anomaly("conversation_end_expired");
+        const exactNoProvider = intent.reason === "setup_cancel" && Array.isArray(intent.cleanupLocalIds) &&
+          intent.cleanupLocalIds.length === 0 && Number.isSafeInteger(intent.expectedVersion) && intent.expectedVersion > 0 &&
+          typeof intent.noProviderPolicyVersion === "string" && intent.noProviderPolicyVersion.length > 0;
         try {
-          const c = await this.transport.readConversation(intent.conversationId) as { conversationId?: string; status?: string };
-          if (c.conversationId === intent.conversationId && c.status === "ended") await this.budget.acknowledgeEnd(intent.conversationId, intent.expectedVersion);
-        } catch { /* Expiry or identity loss does not prove End. */ }
-        continue;
+          const c = await this.transport.readConversation(intent.conversationId) as {
+            conversationId?: string; version?: number; status?: string; productDeadlineAt?: number | null;
+            resumeAttemptId?: string | null; serverTime?: number;
+            policy?: { policyVersion?: string; backgroundSessionCloseEnabled?: boolean };
+          };
+          if (c.conversationId === intent.conversationId && c.status === "ended" &&
+            (!exactNoProvider || c.version === intent.expectedVersion + 1 &&
+              c.policy?.policyVersion === intent.noProviderPolicyVersion && c.policy?.backgroundSessionCloseEnabled === true)) {
+            await this.budget.acknowledgeEnd(intent.conversationId, intent.expectedVersion); continue;
+          }
+          if (!exactNoProvider || c.conversationId !== intent.conversationId || c.status !== "active" ||
+            c.version !== intent.expectedVersion || c.productDeadlineAt !== null || c.resumeAttemptId !== null ||
+            c.policy?.policyVersion !== intent.noProviderPolicyVersion || c.policy?.backgroundSessionCloseEnabled !== true ||
+            !Number.isSafeInteger(c.serverTime) || c.serverTime! <= 0) {
+            if (exactNoProvider) pending = true;
+            continue;
+          }
+        } catch { if (exactNoProvider) pending = true; continue; }
       }
       try {
         if (!this.transport.end) { pending = true; continue; }
