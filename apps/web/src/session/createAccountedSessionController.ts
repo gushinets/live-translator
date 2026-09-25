@@ -47,11 +47,14 @@ export class AccountedSessionController extends SessionController {
   private resumeFailed = false;
   private retainedActive = false;
   private pendingEnd = false;
+  private noProviderEndPending = false;
   private pendingClaim = false;
   private hiddenPausePending = false;
   private unresolvedCreate = false;
   private recoveryBlocked = false;
   private startUnavailable = false;
+  private storageUnavailable = false;
+  private ownershipUnavailable = false;
   private retainedEndWork: Promise<void> | null = null;
   constructor(deps: SessionControllerDeps, private readonly accounting: ConversationAccounting,
     private readonly snapshotStore: Promise<ResumeSnapshotStore> = ResumeSnapshotStore.open()) {
@@ -66,13 +69,21 @@ export class AccountedSessionController extends SessionController {
     this.recoveryChecking = true;
     this.notify();
     const probe = (async () => {
-      if ((await this.accounting.budget.ends()).length) { this.pendingEnd = true; return; }
       let knownRetained = false;
       try {
+        if ((await this.accounting.budget.ends()).length) {
+          const store = await this.snapshotStore;
+          if (!store.ownsDocument && store.noProviderEnd()) this.noProviderEndPending = true;
+          else if (!store.ownsDocument && store.hasRetainedIdentity()) this.ownershipUnavailable = true;
+          else this.pendingEnd = true;
+          return;
+        }
         const store = await this.snapshotStore;
         if (store.hasPendingCreate()) { this.unresolvedCreate = true; return; }
         knownRetained = store.hasRetainedIdentity();
         if (!knownRetained) return;
+        if (!store.ownsDocument && store.noProviderEnd()) { this.noProviderEndPending = true; return; }
+        if (!store.ownsDocument) { this.ownershipUnavailable = true; return; }
         const result = await store.inspectReload(id => this.accounting.api.readConversation(id) as Promise<ConversationMetadata>);
         if (result?.kind === "paused" || result?.kind === "pending") this.adoptRetainedPause();
         if (result?.kind === "pending") this.pendingClaim = true;
@@ -80,6 +91,7 @@ export class AccountedSessionController extends SessionController {
       } catch (error) {
         await this.accounting.loadPolicy();
         if (!this.backgroundCloseEnabled && !knownRetained) return;
+        if (!knownRetained) { this.storageUnavailable = true; return; }
         throw error;
       }
     })().catch(error => {
@@ -92,10 +104,13 @@ export class AccountedSessionController extends SessionController {
     });
     this.recoveryProbe = probe;
   }
-  get retainedRecoveryState(): "checking" | "paused" | "resuming" | "ending" | "failed" | "active" | "pending_end" | "pending_claim" | "blocked" | "unresolved_create" | "unavailable" | undefined {
+  get retainedRecoveryState(): "checking" | "paused" | "resuming" | "ending" | "failed" | "active" | "pending_end" | "no_provider_end" | "pending_claim" | "blocked" | "unresolved_create" | "unavailable" | "storage_unavailable" | "ownership_unavailable" | undefined {
     if (this.retainedEndWork || this.session.state === "ending") return "ending";
     if (this.recoveryChecking || this.verificationWork) return "checking";
     if (this.resumeWork) return "resuming";
+    if (this.storageUnavailable) return "storage_unavailable";
+    if (this.noProviderEndPending) return "no_provider_end";
+    if (this.ownershipUnavailable) return "ownership_unavailable";
     if (this.pendingEnd) return "pending_end";
     if (this.unresolvedCreate) return "unresolved_create";
     if (this.retainedActive) return "active";
@@ -122,10 +137,15 @@ export class AccountedSessionController extends SessionController {
   private async runRecoveryVerification(): Promise<void> {
     await this.recoveryProbe;
     if (this.unresolvedCreate) throw new Error("Retained conversation create remains unresolved");
+    const store = await this.snapshotStore;
+    if (!store.ownsDocument && store.noProviderEnd()) {
+      await this.verifyNoProviderEnd(store);
+      return;
+    }
+    if (!store.ownsDocument && store.hasRetainedIdentity()) throw new Error("Retained conversation ownership unavailable");
     await this.accounting.outbox.flush();
     this.pendingEnd = (await this.accounting.budget.ends()).length > 0;
     if (this.pendingEnd) return;
-    const store = await this.snapshotStore;
     if (!store.hasRetainedIdentity()) {
       if (this.accounting.conversationId) throw new Error("Retained conversation identity is unavailable");
       this.recoveryBlocked = false;
@@ -146,6 +166,32 @@ export class AccountedSessionController extends SessionController {
       this.resumeFailed = false;
       if (this.retainedPaused) this.clearRetainedAfterEnd();
     }
+  }
+  private async verifyNoProviderEnd(store: ResumeSnapshotStore): Promise<void> {
+    const proof = store.noProviderEnd();
+    if (!proof) throw new Error("No-provider End identity unavailable");
+    const ends = await this.accounting.budget.ends();
+    if (ends.some(intent => intent.conversationId !== proof.conversationId ||
+      intent.expectedVersion !== proof.expectedVersion || intent.reason !== proof.reason ||
+      (intent.cleanupLocalIds?.length ?? 0) !== 0))
+      throw new Error("No-provider End intent does not match retained identity");
+    if (ends.length) await this.accounting.outbox.flush();
+    const remaining = await this.accounting.budget.ends();
+    if (remaining.length) {
+      this.noProviderEndPending = true;
+      return;
+    }
+    const ended = await this.accounting.api.readConversation(proof.conversationId) as ConversationMetadata;
+    if (ended.conversationId !== proof.conversationId || ended.status !== "ended" ||
+      ended.version !== proof.expectedVersion + 1 || ended.policy.policyVersion !== proof.policyVersion ||
+      !ended.policy.backgroundSessionCloseEnabled || !Number.isSafeInteger(ended.serverTime) || ended.serverTime <= 0)
+      throw new Error("No-provider End was not confirmed");
+    this.accounting.confirmRecoveredEnd(ended);
+    await store.discard(proof.conversationId);
+    this.noProviderEndPending = false;
+    this.pendingEnd = false;
+    this.recoveryBlocked = false;
+    this.startUnavailable = true;
   }
   async dispose(): Promise<void> {
     this.disposed = true;
@@ -208,6 +254,7 @@ export class AccountedSessionController extends SessionController {
     catch (error) { console.error("Retained conversation resume failed", { error }); }
   }
   async resumeRetainedConversation(explicit = true): Promise<void> {
+    if (this.ownershipUnavailable) throw new Error("Retained conversation ownership unavailable");
     if (this.pendingEnd || this.recoveryBlocked || this.unresolvedCreate) throw new Error("Retained conversation requires verification");
     if (this.retainedEndWork) return this.retainedEndWork;
     if (this.resumeWork) return this.resumeWork;
@@ -233,6 +280,7 @@ export class AccountedSessionController extends SessionController {
   }
   override endConversation(): Promise<void> {
     this.invalidatePendingStart();
+    if (this.ownershipUnavailable) return Promise.reject(new Error("Retained conversation ownership unavailable"));
     if (this.unresolvedCreate) return Promise.reject(new Error("Retained conversation create remains unresolved"));
     if (this.retainedEndWork) return this.retainedEndWork;
     const unconfirmedPause = this.retainedPaused && !this.hiddenPausePending && this.accounting.conversationStatus === "active";
@@ -505,6 +553,8 @@ export class AccountedSessionController extends SessionController {
       retained = store.hasRetainedIdentity();
     } catch (error) {
       if (!this.backgroundCloseEnabled) return true;
+      this.storageUnavailable = true;
+      this.notify();
       throw error;
     }
     if (retained) {
@@ -522,19 +572,26 @@ export class AccountedSessionController extends SessionController {
   }
   protected override onVisibilityHidden(): void { if (this.startWork) this.hiddenDuringStart = true; }
   private invalidatePendingStart(): void { this.startGeneration++; this.startWork = null; }
-  private async retireUnavailableStart(id: string, version: number): Promise<void> {
+  private async retireUnavailableStart(id: string, version: number, policyVersion: string): Promise<void> {
     try {
+      try {
+        const store = await this.snapshotStore;
+        store.retainIdentity(id, version);
+        store.retainNoProviderEnd(id, version, policyVersion);
+      } catch {
+        this.storageUnavailable = true;
+      }
       await super.cancel();
-      const ended = await this.accounting.api.readConversation(id);
-      if (typeof ended !== "object" || ended === null || !("conversationId" in ended) ||
-        ended.conversationId !== id || !("status" in ended) || ended.status !== "ended" ||
-        !("version" in ended) || typeof ended.version !== "number" || !Number.isSafeInteger(ended.version) ||
-        ended.version <= version)
+      const ended = await this.accounting.api.readConversation(id) as ConversationMetadata | null;
+      if (ended?.conversationId !== id || ended.status !== "ended" || !Number.isSafeInteger(ended.version) ||
+        ended.version !== version + 1 || ended.policy.policyVersion !== policyVersion ||
+        !ended.policy.backgroundSessionCloseEnabled || !Number.isSafeInteger(ended.serverTime) || ended.serverTime <= 0)
         throw new Error("Conversation End was not confirmed after unavailable start");
       await this.snapshotStore.then(store => store.discard(id), () => undefined);
       this.recoveryBlocked = false;
     } catch (error) {
       this.recoveryBlocked = true;
+      this.noProviderEndPending = await this.snapshotStore.then(store => !store.ownsDocument && store.noProviderEnd() !== null, () => false);
       throw error;
     } finally { this.notify(); }
   }
@@ -552,7 +609,8 @@ export class AccountedSessionController extends SessionController {
         const conversation = await this.accounting.pendingConversation();
         if (!this.disposed && conversation?.policy.backgroundSessionCloseEnabled &&
           !await this.snapshotStore.then(store => store.available, () => false)) {
-          const retiring = this.retireUnavailableStart(conversation.conversationId, conversation.version);
+          const retiring = this.retireUnavailableStart(conversation.conversationId, conversation.version,
+            conversation.policy.policyVersion);
           this.retainedEndWork = retiring;
           this.notify();
           try {

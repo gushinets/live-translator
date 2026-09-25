@@ -161,9 +161,9 @@ async function reloadAfterPause(f: ReturnType<typeof fixture>, dispose = true, p
   if (pendingEnd) await expect(controller.dispose()).rejects.toThrow("Conversation End was not confirmed");
   else await controller.dispose();
 }
-async function reloadedController(f: ReturnType<typeof fixture>) {
+async function reloadedController(f: ReturnType<typeof fixture>, locksAvailable = true) {
   const store = ResumeSnapshotStore.open({ indexedDB: f.snapshotDb, sessionStorage,
-    locks: f.snapshotLocks, name: f.snapshotName });
+    locks: locksAvailable ? f.snapshotLocks : null, name: f.snapshotName });
   const scope = new ConversationAccounting({ api: f.api, budget: f.budget, autoDelivery: false });
   const clients: Array<{ client: LiveClient; peer: Peer }> = [];
   const controller = new AccountedSessionController({ audio: f.audio, createLive: () => {
@@ -2987,7 +2987,12 @@ describe("stage 5 hidden boundary", () => {
     if (background) {
       await expect(f.controller.startContextCapture()).rejects.toThrow("sessionStorage denied");
       expect(f.api.createSession).not.toHaveBeenCalled();
-      expect(f.controller.retainedRecoveryState).toBe("blocked");
+      expect(f.controller.retainedRecoveryState).toBe("storage_unavailable");
+      render(jsx(ContextScreen, { controller: f.controller satisfies ContextScreenController }));
+      expect(screen.getByRole("alert")).toHaveTextContent("Не удалось открыть хранилище");
+      expect(screen.getByRole("button", { name: "Обновить страницу" })).toHaveFocus();
+      expect(screen.queryByRole("button", { name: "Повторить проверку" })).not.toBeInTheDocument();
+      expect(screen.queryByRole("button", { name: "Завершить сохранённый разговор" })).not.toBeInTheDocument();
     } else {
       await f.controller.startContextCapture();
       expect(f.controller.session.state).toBe("context");
@@ -3048,6 +3053,169 @@ describe("stage 5 hidden boundary", () => {
     expect(screen.getByRole("alert")).toHaveTextContent("Разговор не начат");
     expect(screen.getByRole("button", { name: "Обновить страницу" })).toHaveFocus();
     await f.controller.dispose(); await f.budget.close(); server.db.close();
+  });
+
+  it("retries only the no-provider changed-policy End after an offline failure in the same document", async () => {
+    const f = fixture(40, false, false, undefined, true, false, undefined, false);
+    const server = useRealLedger(f, true);
+    f.api.policy.mockResolvedValue({ usageLedgerEnabled: true, backgroundSessionCloseEnabled: false });
+    const end = f.api.end.getMockImplementation()!;
+    f.api.end.mockRejectedValue(new Error("offline"));
+    await expect(f.controller.startContextCapture()).rejects.toThrow();
+    expect((await f.budget.ends())).toEqual([expect.objectContaining({ conversationId: server.conversationId,
+      expectedVersion: 1, reason: "setup_cancel", cleanupLocalIds: [] })]);
+    expect((await f.snapshotStore).hasRetainedIdentity()).toBe(true);
+    expect(f.api.createSession).not.toHaveBeenCalled();
+    render(jsx(ContextScreen, { controller: f.controller satisfies ContextScreenController }));
+    expect(screen.getByRole("alert")).toHaveTextContent("Разговор не начат");
+    expect(screen.getByRole("button", { name: "Повторить проверку" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Завершить сохранённый разговор" })).not.toBeInTheDocument();
+
+    f.api.end.mockImplementation(end);
+    await f.controller.verifyRetainedConversation();
+    expect(f.c.status).toBe("ended");
+    expect((await f.snapshotStore).hasRetainedIdentity()).toBe(false);
+    expect(f.controller.retainedRecoveryState).toBe("unavailable");
+    expect(f.api.createSession).not.toHaveBeenCalled();
+    await f.controller.dispose(); await f.budget.close(); server.db.close();
+  });
+
+  it("replays the exact durable no-provider End after reload without Web Locks", async () => {
+    const f = fixture(40, false, false, undefined, true, false, undefined, false);
+    const server = useRealLedger(f, true);
+    f.api.policy.mockResolvedValue({ usageLedgerEnabled: true, backgroundSessionCloseEnabled: false });
+    const end = f.api.end.getMockImplementation()!;
+    f.api.end.mockRejectedValue(new Error("offline"));
+    await expect(f.controller.startContextCapture()).rejects.toThrow();
+    const reloaded = await reloadedController(f, false);
+    await vi.waitFor(() => expect(reloaded.controller.retainedRecoveryState).toBe("no_provider_end"));
+    render(jsx(ContextScreen, { controller: reloaded.controller satisfies ContextScreenController }));
+    expect(screen.getByRole("alert")).toHaveTextContent("Разговор не начат");
+    expect(screen.queryByRole("button", { name: "Завершить сохранённый разговор" })).not.toBeInTheDocument();
+    await reloaded.controller.verifyRetainedConversation();
+    expect((await reloaded.store).hasRetainedIdentity()).toBe(true);
+    const reloadedAgain = await reloadedController(f, false);
+    await vi.waitFor(() => expect(reloadedAgain.controller.retainedRecoveryState).toBe("no_provider_end"));
+    f.api.end.mockImplementation(end);
+    await reloadedAgain.controller.verifyRetainedConversation();
+    expect(f.api.end).toHaveBeenLastCalledWith(server.conversationId, 1, "setup_cancel");
+    expect((await reloadedAgain.store).hasRetainedIdentity()).toBe(false);
+    expect(f.api.createSession).not.toHaveBeenCalled();
+    await reloadedAgain.controller.dispose(); await reloaded.controller.dispose();
+    await f.controller.dispose(); await f.budget.close(); server.db.close();
+  });
+
+  it("does not replay a foreign or changed no-provider End intent without document ownership", async () => {
+    const f = fixture(40, false, false, undefined, true, false, undefined, false);
+    const server = useRealLedger(f, true);
+    f.api.policy.mockResolvedValue({ usageLedgerEnabled: true, backgroundSessionCloseEnabled: false });
+    f.api.end.mockRejectedValue(new Error("offline"));
+    await expect(f.controller.startContextCapture()).rejects.toThrow();
+    await f.budget.enqueueEnd(server.conversationId, 2, "user_end");
+    f.api.end.mockClear();
+    const reloaded = await reloadedController(f, false);
+    await expect(reloaded.controller.verifyRetainedConversation()).rejects.toThrow("intent does not match");
+    expect(f.api.end).not.toHaveBeenCalled();
+    expect((await reloaded.store).hasRetainedIdentity()).toBe(true);
+    expect(f.api.createSession).not.toHaveBeenCalled();
+    await f.budget.close(); server.db.close();
+  });
+
+  it("does not offer Verify or End for an unowned pointer without the exact no-provider proof", async () => {
+    const f = fixture(40, true, false, undefined, true, false, undefined, false);
+    await vi.waitFor(() => expect(f.controller.retainedRecoveryState).toBeUndefined());
+    (await f.snapshotStore).retainIdentity("foreign-conversation", 1);
+    const reloaded = await reloadedController(f, false);
+    await vi.waitFor(() => expect(reloaded.controller.retainedRecoveryState).toBe("ownership_unavailable"));
+    render(jsx(ContextScreen, { controller: reloaded.controller satisfies ContextScreenController }));
+    expect(screen.getByRole("alert")).toHaveTextContent("не может безопасно проверить");
+    expect(screen.queryByRole("button", { name: "Повторить проверку" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Завершить сохранённый разговор" })).not.toBeInTheDocument();
+    await expect(reloaded.controller.verifyRetainedConversation()).rejects.toThrow("ownership unavailable");
+    await expect(reloaded.controller.endConversation()).rejects.toThrow("ownership unavailable");
+    expect(f.api.readConversation).not.toHaveBeenCalled();
+    expect(f.api.end).not.toHaveBeenCalled();
+    expect(f.api.createSession).not.toHaveBeenCalled();
+    await f.budget.close();
+  });
+
+  it("does not clear an active no-provider conversation if its durable End intent vanished", async () => {
+    const f = fixture(40, false, false, undefined, true, false, undefined, false);
+    const server = useRealLedger(f, true);
+    f.api.policy.mockResolvedValue({ usageLedgerEnabled: true, backgroundSessionCloseEnabled: false });
+    f.api.end.mockRejectedValue(new Error("offline"));
+    await expect(f.controller.startContextCapture()).rejects.toThrow();
+    await f.budget.acknowledgeEnd(server.conversationId, 1);
+    const reloaded = await reloadedController(f, false);
+    await expect(reloaded.controller.verifyRetainedConversation()).rejects.toThrow("was not confirmed");
+    expect((await reloaded.store).hasRetainedIdentity()).toBe(true);
+    expect(f.api.createSession).not.toHaveBeenCalled();
+    await f.budget.close(); server.db.close();
+  });
+
+  it("keeps a storage-denied OFF-to-ON End failure honest without offering unusable actions", async () => {
+    const f = fixture(40, false, false, undefined, true, true, undefined, false);
+    const server = useRealLedger(f, true);
+    f.api.policy.mockResolvedValue({ usageLedgerEnabled: true, backgroundSessionCloseEnabled: false });
+    f.api.end.mockRejectedValue(new Error("offline"));
+    await expect(f.controller.startContextCapture()).rejects.toThrow();
+    expect(f.api.createSession).not.toHaveBeenCalled();
+    expect(f.audio.getCaptureStream()).toBeNull();
+    expect((await f.budget.ends())).toEqual([expect.objectContaining({ conversationId: server.conversationId,
+      expectedVersion: 1, reason: "setup_cancel", cleanupLocalIds: [] })]);
+    expect(f.controller.retainedRecoveryState).toBe("storage_unavailable");
+    render(jsx(ContextScreen, { controller: f.controller satisfies ContextScreenController }));
+    expect(screen.getByRole("alert")).toHaveTextContent("Не удалось открыть хранилище");
+    expect(screen.getByRole("button", { name: "Обновить страницу" })).toHaveFocus();
+    expect(screen.queryByRole("button", { name: "Повторить проверку" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Завершить сохранённый разговор" })).not.toBeInTheDocument();
+    await f.budget.close(); server.db.close();
+  });
+
+  it.each(["version", "policy"] as const)(
+    "rejects a terminal no-provider proof with changed %s", async field => {
+      const f = fixture(40, false, false, undefined, true, false, undefined, false);
+      const server = useRealLedger(f, true);
+      f.api.policy.mockResolvedValue({ usageLedgerEnabled: true, backgroundSessionCloseEnabled: false });
+      const end = f.api.end.getMockImplementation()!;
+      f.api.end.mockRejectedValue(new Error("offline"));
+      await expect(f.controller.startContextCapture()).rejects.toThrow();
+      f.api.end.mockImplementation(end);
+      await f.scope.outbox.flush();
+      f.api.readConversation.mockImplementation(async () => {
+        const c = server.metadata();
+        return field === "version" ? { ...c, version: c.version + 1 } :
+          { ...c, policy: { ...c.policy, policyVersion: "different-policy" } };
+      });
+      const reloaded = await reloadedController(f, false);
+      await expect(reloaded.controller.verifyRetainedConversation()).rejects.toThrow("was not confirmed");
+      expect((await reloaded.store).hasRetainedIdentity()).toBe(true);
+      expect(f.api.createSession).not.toHaveBeenCalled();
+      await f.budget.close(); server.db.close();
+    },
+  );
+
+  it("clears the exact no-provider pointer after outbox confirmed End and removed its intent", async () => {
+    const f = fixture(40, false, false, undefined, true, false, undefined, false);
+    const server = useRealLedger(f, true);
+    f.api.policy.mockResolvedValue({ usageLedgerEnabled: true, backgroundSessionCloseEnabled: false });
+    const end = f.api.end.getMockImplementation()!;
+    f.api.end.mockRejectedValue(new Error("offline"));
+    await expect(f.controller.startContextCapture()).rejects.toThrow();
+    f.api.end.mockImplementation(end);
+    await f.scope.outbox.flush();
+    expect(await f.budget.ends()).toEqual([]);
+    expect((await f.snapshotStore).hasRetainedIdentity()).toBe(true);
+    const reloaded = await reloadedController(f, false);
+    await vi.waitFor(() => expect(reloaded.controller.retainedRecoveryState).toBe("no_provider_end"));
+    await reloaded.controller.verifyRetainedConversation();
+    expect((await reloaded.store).hasRetainedIdentity()).toBe(false);
+    expect(reloaded.controller.retainedRecoveryState).toBe("unavailable");
+    f.api.policy.mockResolvedValue({ usageLedgerEnabled: true, backgroundSessionCloseEnabled: true });
+    await expect(reloaded.controller.startContextCapture()).rejects.toThrow("ownership unavailable");
+    expect(f.api.createConversation).toHaveBeenCalledOnce();
+    expect(f.api.createSession).not.toHaveBeenCalled();
+    await reloaded.controller.dispose(); await f.controller.dispose(); await f.budget.close(); server.db.close();
   });
 
   it("keeps reload unavailable until the changed-policy conversation End is confirmed", async () => {

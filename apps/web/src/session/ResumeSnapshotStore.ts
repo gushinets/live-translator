@@ -6,6 +6,7 @@ import { COUNTER_NAMES, type MetricCounters } from "../metrics/UsageTypes";
 const TAB_KEY = "live-translator-client-instance-v1";
 const CONVERSATION_KEY = "live-translator-retained-conversation-v1";
 const CONVERSATION_VERSION_KEY = "live-translator-retained-conversation-version-v1";
+const NO_PROVIDER_END_KEY = "live-translator-no-provider-end-v1";
 const PENDING_CREATE = "pending-create";
 const PROMPT_VERSION = "fixed-language-interpreter-v1";
 const ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -44,6 +45,8 @@ export interface ResumeSnapshotOptions {
 export type ReloadInspection =
   | { kind: "paused" | "pending"; snapshot: ResumeSnapshot; conversation: ConversationMetadata }
   | { kind: "active"; conversationId: string; conversationVersion: number };
+
+export interface NoProviderEnd { conversationId: string; expectedVersion: number; policyVersion: string; reason: "setup_cancel"; clientInstanceId: string; }
 
 function timestamp(value: unknown): value is number {
   return typeof value === "number" && Number.isSafeInteger(value) && value > 0;
@@ -100,7 +103,8 @@ export class ResumeSnapshotStore {
   get available(): boolean { return this.owned && this.storage !== null && this.factory !== null; }
   get ownsDocument(): boolean { return this.owned; }
   private constructor(readonly clientInstanceId: string, private readonly storage: Storage | null,
-    private readonly factory: IDBFactory | null, private readonly name: string, private readonly now: () => number) {}
+    private readonly factory: IDBFactory | null, private readonly name: string, private readonly now: () => number,
+    private readonly previousClientInstanceId: string | null = null) {}
 
   static async open(options: ResumeSnapshotOptions = {}): Promise<ResumeSnapshotStore> {
     const storage = options.sessionStorage ?? globalThis.sessionStorage ?? null;
@@ -112,7 +116,11 @@ export class ResumeSnapshotStore {
     const disabled = () => {
       id = crypto.randomUUID();
       storage?.setItem(TAB_KEY, id);
-      return new ResumeSnapshotStore(id, storage, store.factory, store.name, store.now);
+      const unowned = new ResumeSnapshotStore(id, storage, store.factory, store.name, store.now, existing);
+      const noProviderEnd = unowned.noProviderEnd();
+      if (noProviderEnd) unowned.retainNoProviderEnd(noProviderEnd.conversationId,
+        noProviderEnd.expectedVersion, noProviderEnd.policyVersion);
+      return unowned;
     };
     if (!locks) return disabled();
     let collided = false;
@@ -177,6 +185,28 @@ export class ResumeSnapshotStore {
     if (!this.storage) throw new Error("Retained conversation storage unavailable");
     const version = Number(this.storage.getItem(CONVERSATION_VERSION_KEY));
     return Number.isSafeInteger(version) && version > 0 ? version : 0;
+  }
+
+  retainNoProviderEnd(conversationId: string, expectedVersion: number, policyVersion: string): void {
+    if (!this.storage || this.storage.getItem(CONVERSATION_KEY) !== conversationId ||
+      this.retainedConversationVersion() !== expectedVersion || !policyVersion)
+      throw new Error("No-provider End identity unavailable");
+    this.storage.setItem(NO_PROVIDER_END_KEY, JSON.stringify({ conversationId, expectedVersion, policyVersion,
+      reason: "setup_cancel", clientInstanceId: this.clientInstanceId } satisfies NoProviderEnd));
+  }
+
+  noProviderEnd(): NoProviderEnd | null {
+    if (!this.storage) return null;
+    const raw = this.storage.getItem(NO_PROVIDER_END_KEY);
+    if (!raw) return null;
+    let value: unknown;
+    try { value = JSON.parse(raw); } catch { return null; }
+    if (!record(value) || !only(value, ["conversationId", "expectedVersion", "policyVersion", "reason", "clientInstanceId"]) ||
+      value.conversationId !== this.retainedConversationId() || value.expectedVersion !== this.retainedConversationVersion() ||
+      value.reason !== "setup_cancel" || typeof value.policyVersion !== "string" || !value.policyVersion ||
+      !ID.test(String(value.clientInstanceId)) ||
+      value.clientInstanceId !== this.clientInstanceId && value.clientInstanceId !== this.previousClientInstanceId) return null;
+    return value as unknown as NoProviderEnd;
   }
 
   retainIdentity(conversationId: string, version?: number): void {
@@ -429,6 +459,7 @@ export class ResumeSnapshotStore {
     if (this.storage?.getItem(CONVERSATION_KEY) === conversationId) {
       this.storage.removeItem(CONVERSATION_KEY);
       this.storage.removeItem(CONVERSATION_VERSION_KEY);
+      this.storage.removeItem(NO_PROVIDER_END_KEY);
     }
   }
 }
