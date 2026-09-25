@@ -6,6 +6,7 @@ import { BackendClient, type CreateLiveSessionResponse } from "../api/BackendCli
 import { CleanupIntentOutbox, cleanupProofReceived, producerLeaseKey } from "./CleanupIntentOutbox";
 import { MetadataDeliveryBudget, type CleanupReason } from "./MetadataDeliveryBudget";
 import type { LiveCloseResult } from "../live/LiveClient";
+import type { ReloadInspection } from "./ResumeSnapshotStore";
 
 const DEFINITIVE_NO_PROVIDER_CODES = new Set([
   "new_creations_paused", "client_upgrade_required", "invalid_request", "unexpected_origin",
@@ -88,6 +89,16 @@ export class ConversationAccounting {
   }
   async pendingConversation(): Promise<ConversationMetadata | null> { return this.current ?? await this.creating?.catch(() => undefined) ?? null; }
   get backgroundSessionCloseEnabled(): boolean { return this.current?.policy.backgroundSessionCloseEnabled ?? this.backgroundPolicy; }
+  confirmHandoffConversation(result: ConversationMetadata, attemptConversation: ConversationMetadata): void {
+    const current = this.current;
+    if (!current || current.conversationId !== attemptConversation.conversationId ||
+      current.version !== attemptConversation.version || current.status !== "active" ||
+      result.conversationId !== current.conversationId || result.version !== current.version || result.status !== "active" ||
+      result.policy.policyVersion !== current.policy.policyVersion ||
+      current.productDeadlineAt !== null && current.productDeadlineAt !== result.productDeadlineAt)
+      throw new Error("Provider handoff conversation does not match local ownership");
+    this.current = result;
+  }
   async loadPolicy(): Promise<void> {
     this.enabled ??= this.api.policy().then(p => {
       if (p.creationPaused) throw new Error("New sessions are temporarily paused");
@@ -111,6 +122,38 @@ export class ConversationAccounting {
       throw new Error("Retained conversation cannot be adopted for End");
     this.current = conversation;
     this.pausing = true;
+  }
+  confirmRecoveredPause(conversation: ConversationMetadata): void {
+    const local = this.current;
+    if (!local || local.status !== "active" || conversation.status !== "paused" ||
+      local.conversationId !== conversation.conversationId || conversation.version !== local.version + 1 ||
+      local.policy.policyVersion !== conversation.policy.policyVersion ||
+      local.productDeadlineAt !== conversation.productDeadlineAt || conversation.resumeAttemptId !== null ||
+      !Number.isSafeInteger(conversation.resumeExpiresAt) || conversation.resumeExpiresAt! <= 0)
+      throw new Error("Recovered pause does not match local ownership");
+    this.current = conversation; this.pausing = true;
+  }
+  reconcileRetained(result: ReloadInspection | null): void {
+    if (!result || result.kind === "active" || !this.current) return;
+    const { snapshot, conversation } = result, local = this.current;
+    if (local.conversationId !== snapshot.conversationId || conversation.conversationId !== local.conversationId ||
+      local.policy.policyVersion !== snapshot.policyVersion || conversation.policy.policyVersion !== snapshot.policyVersion ||
+      local.productDeadlineAt !== conversation.productDeadlineAt)
+      throw new Error("Retained conversation does not match local ownership");
+    if (local.status === "active" && conversation.status === "paused") {
+      if (result.kind !== "paused" || snapshot.conversationVersion !== conversation.version)
+        throw new Error("Recovered pause does not match local ownership");
+      this.confirmRecoveredPause(conversation);
+    } else if (local.status === "paused" && conversation.status === "resuming") {
+      if (result.kind !== "pending" || this.resume || conversation.version !== local.version + 1 ||
+        snapshot.conversationVersion !== local.version || !snapshot.resumeAttemptId ||
+        conversation.resumeAttemptId !== snapshot.resumeAttemptId)
+        throw new Error("Recovered claim does not match local ownership");
+      this.current = conversation;
+      this.resume = { id: snapshot.resumeAttemptId, version: conversation.version,
+        mode: snapshot.setupStage === "interpreter" ? "interpreter" : "setup" };
+      this.pausing = true;
+    }
   }
   isResumeAttempt(attempt: ProviderAccounting): boolean { return this.resume?.id === attempt.localId; }
   resumeMode(attempt: ProviderAccounting): ProviderCreateBody["initialMode"] {
@@ -488,6 +531,7 @@ export class ProviderAccounting {
     if (receipt.state !== "active" || receipt.handoffAcknowledgedAt == null || receipt.cleanupRequestedAt != null ||
         receipt.conversation.status !== (this.scope.isResumeAttempt(this) ? "resuming" : "active") ||
         receipt.conversation.version !== this.conversation?.version || (receipt.conversation.productDeadlineAt !== null && receipt.conversation.serverTime >= receipt.conversation.productDeadlineAt)) throw new Error("Provider handoff was not confirmed");
+    if (!this.scope.isResumeAttempt(this)) this.scope.confirmHandoffConversation(receipt.conversation, this.conversation!);
   }
   async waitForRetirement(): Promise<void> {
     if (this.finishing) await this.finishing;

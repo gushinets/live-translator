@@ -1967,6 +1967,116 @@ describe("stage 5 hidden boundary", () => {
     expect(f.api.createSession).toHaveBeenCalledTimes(1);
     await reloaded.controller.dispose(); await f.budget.close(); server.db.close();
   });
+  it.each(["End", "Resume"] as const)("%s reconciles a same-controller claim after both claim receipts are lost", async action => {
+    const f = fixture(40, true), server = useRealLedger(f);
+    await f.controller.startBootstrap();
+    f.setVisible(false);
+    await vi.waitFor(() => expect(f.clients[0]!.peer.channel.sent).toContain("session.close"));
+    f.clients[0]!.peer.channel.emit({ type: "session.closed" });
+    await vi.waitFor(() => expect(f.c.status).toBe("paused"));
+    await f.scope.outbox.flush();
+    const claim = f.api.claimResume.getMockImplementation()!;
+    f.api.claimResume.mockImplementationOnce(async (...args) => { await claim(...args); throw new Error("claim response lost"); })
+      .mockImplementationOnce(async (...args) => { await claim(...args); throw new Error("claim response lost"); });
+    f.setVisible(true);
+    await vi.waitFor(() => expect(f.controller.retainedRecoveryState).toBe("failed"));
+    expect(f.scope.conversationStatus).toBe("paused");
+    expect(f.c.status).toBe("resuming");
+    expect(f.api.claimResume.mock.calls[1]).toEqual(f.api.claimResume.mock.calls[0]);
+    expect(server.ledger.listAttempts(server.owner, server.conversationId)).toHaveLength(2);
+
+    if (action === "End") {
+      await f.controller.endConversation();
+      expect(f.api.end).toHaveBeenCalledWith(server.conversationId, 3, "user_end");
+      expect(f.c.status).toBe("ended");
+      expect(sessionStorage.getItem("live-translator-retained-conversation-v1")).toBeNull();
+      expect(f.api.createSession).toHaveBeenCalledTimes(1);
+    } else {
+      await f.controller.resumeRetainedConversation();
+      expect(f.controller.session.state).toBe("bootstrap");
+      expect(server.ledger.listAttempts(server.owner, server.conversationId)).toHaveLength(3);
+      expect(f.api.createSession).toHaveBeenCalledTimes(2);
+      expect(f.api.claimResume.mock.calls[2]![2]).not.toBe(f.api.claimResume.mock.calls[0]![2]);
+    }
+    await f.controller.dispose(); await f.budget.close(); server.db.close();
+  });
+  it.each(["Resume", "End"] as const)("reconciles a lost pause response before same-controller %s", async action => {
+    const f = fixture(40, true); configureResume(f);
+    f.api.createConversation.mockImplementation(async () => ({ ...f.c, policy: { ...f.c.policy } }));
+    await f.controller.startBootstrap();
+    const end = f.api.end.getMockImplementation()!;
+    f.api.end.mockImplementation(async (...args) => {
+      if (args[1] !== f.c.version) throw new AccountingRequestError(409, "conversation_version_conflict");
+      return end(...args);
+    });
+    const pause = f.api.pause.getMockImplementation()!;
+    f.api.pause.mockImplementationOnce(async (...args) => { await pause(...args); throw new Error("pause response lost"); });
+    f.setVisible(false);
+    await vi.waitFor(() => expect(f.clients[0]!.peer.channel.sent).toContain("session.close"));
+    f.clients[0]!.peer.channel.emit({ type: "session.closed" });
+    await vi.waitFor(() => expect(f.c.status).toBe("paused"));
+    expect(f.scope.conversationStatus).toBe("active");
+    if (action === "Resume") {
+      f.setVisible(true);
+      await vi.waitFor(() => expect(f.controller.session.state).toBe("bootstrap"));
+      expect(f.api.claimResume).toHaveBeenCalledWith(f.c.conversationId, 2, expect.any(String), "setup");
+      expect(f.api.createSession).toHaveBeenCalledTimes(2);
+    } else {
+      await f.controller.endConversation();
+      expect(f.api.end).toHaveBeenCalledWith(f.c.conversationId, 2, "user_end");
+      expect(f.c.status).toBe("ended");
+      expect(sessionStorage.getItem("live-translator-retained-conversation-v1")).toBeNull();
+      expect(f.api.claimResume).not.toHaveBeenCalled();
+    }
+    await f.controller.dispose(); await f.budget.close();
+  });
+  it("ends a server-proven lost pause after the local resume deadline expires", async () => {
+    const f = fixture(40, true); configureResume(f);
+    f.api.createConversation.mockImplementation(async () => ({ ...f.c, policy: { ...f.c.policy } }));
+    await f.controller.startBootstrap();
+    const pause = f.api.pause.getMockImplementation()!;
+    f.api.pause.mockImplementationOnce(async (...args) => { await pause(...args); throw new Error("pause response lost"); });
+    f.setVisible(false);
+    await vi.waitFor(() => expect(f.clients[0]!.peer.channel.sent).toContain("session.close"));
+    f.clients[0]!.peer.channel.emit({ type: "session.closed" });
+    await vi.waitFor(() => expect(f.c.status).toBe("paused"));
+    await (await f.snapshotStore).markHidden(f.c.conversationId, Date.now() - 300000, 300000);
+    await f.controller.endConversation();
+    expect(f.api.end).toHaveBeenCalledWith(f.c.conversationId, 2, "user_end");
+    expect(sessionStorage.getItem("live-translator-retained-conversation-v1")).toBeNull();
+    await f.controller.dispose(); await f.budget.close();
+  });
+  it.each([["Resume", false], ["Resume", true], ["End", true]] as const)(
+    "keeps the real ledger's handoff deadline through hidden pause and %s (pause response lost=%s)", async (action, losePause) => {
+      const f = fixture(40, true), server = useRealLedger(f);
+      await f.controller.startBootstrap();
+      const deadline = f.c.productDeadlineAt;
+      expect(deadline).not.toBeNull();
+      expect((await f.scope.pendingConversation())?.productDeadlineAt).toBe(deadline);
+      if (losePause) {
+        const pause = f.api.pause.getMockImplementation()!;
+        f.api.pause.mockImplementationOnce(async (...args) => { await pause(...args); throw new Error("pause response lost"); });
+      }
+      f.setVisible(false);
+      await vi.waitFor(() => expect(f.clients[0]!.peer.channel.sent).toContain("session.close"));
+      f.clients[0]!.peer.channel.emit({ type: "session.closed" });
+      await vi.waitFor(() => expect(f.c.status).toBe("paused"));
+      await f.scope.outbox.flush();
+      const saved = await (await f.snapshotStore).readForResume(id => f.api.readConversation(id) as Promise<ConversationMetadata>);
+      expect(saved?.productDeadlineAt).toBe(deadline);
+      if (action === "Resume") {
+        f.setVisible(true);
+        await vi.waitFor(() => expect(f.controller.session.state).toBe("bootstrap"));
+        expect(f.c.productDeadlineAt).toBe(deadline);
+        expect((await f.scope.pendingConversation())?.productDeadlineAt).toBe(deadline);
+        expect(f.api.claimResume).toHaveBeenCalledWith(server.conversationId, 2, expect.any(String), "setup");
+      } else {
+        await f.controller.endConversation();
+        expect(f.api.end).toHaveBeenCalledWith(server.conversationId, 2, "user_end");
+        expect(f.c.status).toBe("ended");
+      }
+      await f.controller.dispose(); await f.budget.close(); server.db.close();
+    });
   it("retries an ambiguous abort with the same claim before opening a new provider", async () => {
     const f = await pausedReloadFixture();
     const oldId = crypto.randomUUID();

@@ -48,6 +48,7 @@ export class AccountedSessionController extends SessionController {
   private retainedActive = false;
   private pendingEnd = false;
   private pendingClaim = false;
+  private hiddenPausePending = false;
   private unresolvedCreate = false;
   private recoveryBlocked = false;
   private retainedEndWork: Promise<void> | null = null;
@@ -133,6 +134,7 @@ export class AccountedSessionController extends SessionController {
     }
     const result = await store.inspectReload(id => this.accounting.api.readConversation(id) as Promise<ConversationMetadata>,
       ended => this.accounting.confirmRecoveredEnd(ended));
+    this.accounting.reconcileRetained(result);
     this.recoveryBlocked = false;
     this.retainedActive = result?.kind === "active";
     this.pendingClaim = result?.kind === "pending";
@@ -230,7 +232,8 @@ export class AccountedSessionController extends SessionController {
     this.invalidatePendingStart();
     if (this.unresolvedCreate) return Promise.reject(new Error("Retained conversation create remains unresolved"));
     if (this.retainedEndWork) return this.retainedEndWork;
-    if (!this.resumeWork && ((this.accounting.conversationId &&
+    const unconfirmedPause = this.retainedPaused && !this.hiddenPausePending && this.accounting.conversationStatus === "active";
+    if (!this.resumeWork && !unconfirmedPause && ((this.accounting.conversationId &&
       this.accounting.conversationStatus !== "resuming" && !this.resumeFailed &&
       !this.recoveryBlocked && !this.pendingEnd) ||
       !this.retainedPaused && !this.retainedActive && !this.resumeFailed && !this.recoveryChecking &&
@@ -252,12 +255,13 @@ export class AccountedSessionController extends SessionController {
       }
     })();
     this.retainedEndWork = work;
-    if (resume && this.session.state !== "idle" && this.session.state !== "ended") this.dispatch({ type: "END" });
+    if ((resume || this.retainedPaused) && !["idle", "ended", "ending"].includes(this.session.state)) this.dispatch({ type: "END" });
     this.notify();
     return work;
   }
   private async runRetainedEnd(): Promise<void> {
     await this.recoveryProbe;
+    await this.awaitBackgroundPause();
     const store = await this.snapshotStore;
     if (this.pendingEnd) { await this.runRecoveryVerification(); if (this.pendingEnd) return; }
     const retainedId = store.retainedConversationId();
@@ -274,12 +278,24 @@ export class AccountedSessionController extends SessionController {
       else {
         const local = await this.accounting.pendingConversation();
         if (local) {
+          if (local.status === "active" && conversation.status === "paused")
+            this.accounting.confirmRecoveredPause(conversation);
+          else if (local.status === "paused" && conversation.status === "resuming") {
+            const inspected = await store.inspectReload(id => this.accounting.api.readConversation(id) as Promise<ConversationMetadata>);
+            if (!inspected || inspected.kind === "active" || inspected.conversation.status !== conversation.status ||
+              inspected.conversation.version !== conversation.version)
+              throw new Error("Retained End version changed");
+            this.accounting.reconcileRetained(inspected);
+          }
           if (local.status === "resuming" && conversation.status === "active")
             await store.confirmResume(conversation, this.accounting.confirmRecoveredCompletion(conversation));
           else if (local.status === "resuming" && conversation.status === "paused")
             await this.accounting.reconcileRecoveredAbort(conversation);
-          else if (local.conversationId !== conversation.conversationId || local.version !== conversation.version ||
-            local.status !== conversation.status) throw new Error("Retained End version changed");
+          else {
+            const reconciled = await this.accounting.pendingConversation();
+            if (reconciled?.conversationId !== conversation.conversationId || reconciled.version !== conversation.version ||
+              reconciled.status !== conversation.status) throw new Error("Retained End version changed");
+          }
         } else this.accounting.adoptRetained(conversation);
         await this.accounting.stageEnd("user_end", this.accounting.revision);
         await this.accounting.end("user_end", this.accounting.revision);
@@ -312,10 +328,11 @@ export class AccountedSessionController extends SessionController {
     const generation = this.backgroundResumeGeneration;
     await this.awaitBackgroundPause();
     if (!this.backgroundResumeCurrent(generation)) return;
-    const reconciling = explicit && this.accounting.conversationStatus === "resuming";
-    if (!this.pausedOrUnloaded() && !reconciling) return;
     const store = await this.snapshotStore;
     let inspected = await store.inspectReload(id => this.accounting.api.readConversation(id) as Promise<ConversationMetadata>);
+    this.accounting.reconcileRetained(inspected);
+    const reconciling = explicit && this.accounting.conversationStatus === "resuming";
+    if (!this.pausedOrUnloaded() && !reconciling) return;
     if (reconciling && inspected?.kind !== "pending")
       throw new Error("Retained resume claim requires explicit recovery");
     if (inspected?.kind === "pending" && explicit) {
@@ -477,45 +494,47 @@ export class AccountedSessionController extends SessionController {
   override startContextCapture(): Promise<void> { return this.startExplicit(primed => super.startContextCapture(primed)); }
   override startBootstrap(): Promise<void> { return this.startExplicit(primed => super.startBootstrap(primed)); }
   override cancel(): Promise<void> { this.invalidatePendingStart(); return super.cancel(); }
-  protected override beginBackgroundPause(): void { this.accounting.beginBackgroundPause(); }
+  protected override beginBackgroundPause(): void { this.hiddenPausePending = true; this.accounting.beginBackgroundPause(); }
   protected override async pauseBackground(state: Omit<ResumeSnapshotInput,
     "conversationId" | "conversationVersion" | "policyVersion" | "productDeadlineAt">,
   hiddenAt: number, close: Promise<unknown>): Promise<void> {
-    const conversation = await this.accounting.pendingConversation();
-    if (conversation) {
-      if (!conversation.policy.backgroundSessionCloseEnabled) {
-        await close.catch(() => undefined);
-        this.accounting.keepUnpausedConversation(conversation);
-        this.resetAfterUnpausedBackground();
-        return;
-      }
-      let retainedIdentity = false;
-      try {
-        const store = await this.snapshotStore;
-        store.retainIdentity(conversation.conversationId, conversation.version);
-        retainedIdentity = true;
-        await store.save({ ...state, conversationId: conversation.conversationId,
-          conversationVersion: conversation.version, policyVersion: conversation.policy.policyVersion,
-          productDeadlineAt: conversation.productDeadlineAt });
-        await store.markHidden(conversation.conversationId, hiddenAt, conversation.policy.conversationRetentionMs);
-      } catch (error) {
-        if (!retainedIdentity) {
+    try {
+      const conversation = await this.accounting.pendingConversation();
+      if (conversation) {
+        if (!conversation.policy.backgroundSessionCloseEnabled) {
           await close.catch(() => undefined);
-          await this.accounting.end("setup_cancel", this.accounting.revision);
-          await this.accounting.outbox.flush();
-          const ended = await this.accounting.api.readConversation(conversation.conversationId);
-          if (typeof ended !== "object" || ended === null || !("status" in ended) || ended.status !== "ended")
-            throw new Error("Retained conversation could not be safely ended", { cause: error });
+          this.accounting.keepUnpausedConversation(conversation);
+          this.resetAfterUnpausedBackground();
           return;
         }
-        console.error("Retained conversation snapshot unavailable", { error });
+        let retainedIdentity = false;
+        try {
+          const store = await this.snapshotStore;
+          store.retainIdentity(conversation.conversationId, conversation.version);
+          retainedIdentity = true;
+          await store.save({ ...state, conversationId: conversation.conversationId,
+            conversationVersion: conversation.version, policyVersion: conversation.policy.policyVersion,
+            productDeadlineAt: conversation.productDeadlineAt });
+          await store.markHidden(conversation.conversationId, hiddenAt, conversation.policy.conversationRetentionMs);
+        } catch (error) {
+          if (!retainedIdentity) {
+            await close.catch(() => undefined);
+            await this.accounting.end("setup_cancel", this.accounting.revision);
+            await this.accounting.outbox.flush();
+            const ended = await this.accounting.api.readConversation(conversation.conversationId);
+            if (typeof ended !== "object" || ended === null || !("status" in ended) || ended.status !== "ended")
+              throw new Error("Retained conversation could not be safely ended", { cause: error });
+            return;
+          }
+          console.error("Retained conversation snapshot unavailable", { error });
+        }
       }
-    }
-    const paused = await this.accounting.pause(close);
-    if (paused) {
-      try { await (await this.snapshotStore).confirmPause(paused); }
-      catch { console.error("Retained conversation pause snapshot unavailable"); }
-    }
+      const paused = await this.accounting.pause(close);
+      if (paused) {
+        try { await (await this.snapshotStore).confirmPause(paused); }
+        catch { console.error("Retained conversation pause snapshot unavailable"); }
+      }
+    } finally { this.hiddenPausePending = false; }
   }
   protected override async prepareConversationRetirement(reason: "user_end" | "setup_cancel"): Promise<void> {
     const conversation = await this.accounting.pendingConversation();
