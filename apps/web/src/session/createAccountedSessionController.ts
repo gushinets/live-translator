@@ -280,6 +280,9 @@ export class AccountedSessionController extends SessionController {
         await this.accounting.outbox.flush();
         await store.inspectReload(id => this.accounting.api.readConversation(id) as Promise<ConversationMetadata>);
       }
+    } else if (this.accounting.conversationId) {
+      const conversation = await this.accounting.api.readConversation(this.accounting.conversationId) as ConversationMetadata;
+      this.accounting.confirmRecoveredEnd(conversation);
     }
     this.pendingEnd = (await this.accounting.budget.ends()).length > 0;
     if (this.pendingEnd || store.hasRetainedIdentity()) throw new Error("Conversation End is not confirmed");

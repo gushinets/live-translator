@@ -1275,7 +1275,7 @@ describe("stage 5 hidden boundary", () => {
     expect(sessionStorage.getItem("live-translator-retained-conversation-v1")).toBeNull();
     await f.budget.close();
   });
-  it("starts a new conversation after server End clears an unresolved local resume", async () => {
+  it.each(["direct End", "verified End"] as const)("starts a new conversation after %s clears an unresolved local resume", async route => {
     const f = fixture(40, true); configureResume(f);
     await f.controller.startBootstrap();
     f.setVisible(false);
@@ -1302,6 +1302,7 @@ describe("stage 5 hidden boundary", () => {
     await expect(f.controller.endConversation()).rejects.toThrow("Recovered conversation End does not match local ownership");
     expect(f.scope.conversationStatus).toBe("resuming");
     f.c.status = "ended"; f.c.version = 5;
+    if (route === "verified End") await f.controller.verifyRetainedConversation();
     await f.controller.endConversation();
     expect(sessionStorage.getItem("live-translator-retained-conversation-v1")).toBeNull();
     const fresh: ConversationMetadata = { ...f.c, conversationId: "new-conversation", version: 1, status: "active" };
