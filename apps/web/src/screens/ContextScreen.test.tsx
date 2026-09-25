@@ -30,7 +30,7 @@ class FakeOwnerController implements ContextScreenController {
   isConnectInFlight = false;
   isInterpreterStarting = false;
   audioElement: HTMLAudioElement | undefined;
-  retainedRecoveryState: "checking" | "paused" | "resuming" | "ending" | "failed" | "active" | "pending_end" | "pending_claim" | "blocked" | "unresolved_create" | undefined;
+  retainedRecoveryState: "checking" | "paused" | "resuming" | "ending" | "failed" | "active" | "pending_end" | "pending_claim" | "blocked" | "unresolved_create" | "unavailable" | undefined;
   private readonly listeners = new Set<() => void>();
 
   subscribe(listener: () => void): () => void {

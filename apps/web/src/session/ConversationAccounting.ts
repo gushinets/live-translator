@@ -6,7 +6,7 @@ import { BackendClient, type CreateLiveSessionResponse } from "../api/BackendCli
 import { CleanupIntentOutbox, cleanupProofReceived, producerLeaseKey } from "./CleanupIntentOutbox";
 import { MetadataDeliveryBudget, type CleanupReason } from "./MetadataDeliveryBudget";
 import type { LiveCloseResult } from "../live/LiveClient";
-import type { ReloadInspection } from "./ResumeSnapshotStore";
+import type { ReloadInspection, ResumeSnapshotStore } from "./ResumeSnapshotStore";
 
 const DEFINITIVE_NO_PROVIDER_CODES = new Set([
   "new_creations_paused", "client_upgrade_required", "invalid_request", "unexpected_origin",
@@ -62,6 +62,7 @@ export class ConversationAccounting {
   private readonly pendingDirectCloseAcks = new Set<string>();
   private readonly pendingNoProviderFinalizations = new Set<string>();
   private readonly directRetirementProofs = new Set<string>();
+  private snapshotStore: Promise<ResumeSnapshotStore> | undefined;
   constructor(options: { api?: LedgerApi; budget?: MetadataDeliveryBudget; autoDelivery?: boolean } = {}) {
     this.api = options.api ?? new AccountingBackend();
     this.producerId = options.budget?.ownerProducerId ?? crypto.randomUUID();
@@ -76,6 +77,7 @@ export class ConversationAccounting {
   get conversationStatus(): ConversationMetadata["status"] | null { return this.current?.status ?? null; }
   get resumeDispatched(): boolean { return [...this.attempts].some(attempt => attempt.localId === this.resume?.id && attempt.dispatched); }
   get isCreating(): boolean { return this.creating !== undefined; }
+  setSnapshotStore(store: Promise<ResumeSnapshotStore>): void { this.snapshotStore = store; }
   clearIdleBackgroundPause(): boolean {
     if (this.current || this.creating) return false;
     this.pausing = false;
@@ -325,6 +327,9 @@ export class ConversationAccounting {
     const c = this.current ?? await this.creating!; attempt.assertCurrent(); this.current = c;
     if (c.status !== "active" && !(c.status === "resuming" && this.resume?.id === attempt.localId))
       throw new Error("Conversation is not activatable");
+    if (c.policy.backgroundSessionCloseEnabled &&
+      !await this.snapshotStore?.then(store => store.available, () => false))
+      throw new Error("Retained conversation ownership unavailable");
     // close() only joins local media retirement; do not race its pending durable write.
     if (this.last && this.last !== attempt && this.last.dispatched) await this.last.waitForRetirement();
     await this.outbox.flush(); attempt.assertCurrent();

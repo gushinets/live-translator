@@ -51,10 +51,12 @@ export class AccountedSessionController extends SessionController {
   private hiddenPausePending = false;
   private unresolvedCreate = false;
   private recoveryBlocked = false;
+  private startUnavailable = false;
   private retainedEndWork: Promise<void> | null = null;
   constructor(deps: SessionControllerDeps, private readonly accounting: ConversationAccounting,
     private readonly snapshotStore: Promise<ResumeSnapshotStore> = ResumeSnapshotStore.open()) {
     super(deps);
+    this.accounting.setSnapshotStore(this.snapshotStore);
     void this.snapshotStore.catch(() => undefined);
   }
   start(): void {
@@ -90,7 +92,7 @@ export class AccountedSessionController extends SessionController {
     });
     this.recoveryProbe = probe;
   }
-  get retainedRecoveryState(): "checking" | "paused" | "resuming" | "ending" | "failed" | "active" | "pending_end" | "pending_claim" | "blocked" | "unresolved_create" | undefined {
+  get retainedRecoveryState(): "checking" | "paused" | "resuming" | "ending" | "failed" | "active" | "pending_end" | "pending_claim" | "blocked" | "unresolved_create" | "unavailable" | undefined {
     if (this.retainedEndWork || this.session.state === "ending") return "ending";
     if (this.recoveryChecking || this.verificationWork) return "checking";
     if (this.resumeWork) return "resuming";
@@ -100,6 +102,7 @@ export class AccountedSessionController extends SessionController {
     if (this.recoveryBlocked) return "blocked";
     if (this.pendingClaim) return "pending_claim";
     if (this.resumeFailed) return "failed";
+    if (this.startUnavailable) return "unavailable";
     return this.retainedPaused ? "paused" : undefined;
   }
   verifyRetainedConversation(): Promise<void> {
@@ -485,7 +488,7 @@ export class AccountedSessionController extends SessionController {
         await store.clearResumeAttempt(conversation.conversationId, id).catch(() => undefined);
     }
   }
-  private async mayStart(): Promise<boolean> {
+  private async mayStart(generation: number): Promise<boolean> {
     await this.accounting.loadPolicy();
     await this.recoveryProbe;
     await this.awaitBackgroundPause();
@@ -509,10 +512,32 @@ export class AccountedSessionController extends SessionController {
       if (retained || store.hasRetainedIdentity()) throw new Error("Retained conversation requires explicit recovery");
     }
     if (!this.backgroundCloseEnabled) return true;
+    if (generation !== this.startGeneration || this.disposed) return false;
+    if (!store.available) {
+      this.startUnavailable = true;
+      this.notify();
+      throw new Error("Retained conversation ownership unavailable");
+    }
     return !this.sampleInitialHidden();
   }
   protected override onVisibilityHidden(): void { if (this.startWork) this.hiddenDuringStart = true; }
   private invalidatePendingStart(): void { this.startGeneration++; this.startWork = null; }
+  private async retireUnavailableStart(id: string, version: number): Promise<void> {
+    try {
+      await super.cancel();
+      const ended = await this.accounting.api.readConversation(id);
+      if (typeof ended !== "object" || ended === null || !("conversationId" in ended) ||
+        ended.conversationId !== id || !("status" in ended) || ended.status !== "ended" ||
+        !("version" in ended) || typeof ended.version !== "number" || !Number.isSafeInteger(ended.version) ||
+        ended.version <= version)
+        throw new Error("Conversation End was not confirmed after unavailable start");
+      await this.snapshotStore.then(store => store.discard(id), () => undefined);
+      this.recoveryBlocked = false;
+    } catch (error) {
+      this.recoveryBlocked = true;
+      throw error;
+    } finally { this.notify(); }
+  }
   private startExplicit(action: (primedOutput: Promise<void>) => Promise<void>): Promise<void> {
     if (this.disposed) return Promise.resolve();
     if (this.startWork) return this.startWork;
@@ -520,9 +545,26 @@ export class AccountedSessionController extends SessionController {
     this.hiddenDuringStart = document.visibilityState === "hidden";
     const primedOutput = this.beginOutputPriming();
     const work = (async () => {
-      if (!await this.mayStart()) return;
+      if (!await this.mayStart(generation)) return;
       if (generation !== this.startGeneration || this.backgroundCloseEnabled && this.hiddenDuringStart) return;
-      await action(primedOutput);
+      try { await action(primedOutput); }
+      catch (error) {
+        const conversation = await this.accounting.pendingConversation();
+        if (!this.disposed && conversation?.policy.backgroundSessionCloseEnabled &&
+          !await this.snapshotStore.then(store => store.available, () => false)) {
+          const retiring = this.retireUnavailableStart(conversation.conversationId, conversation.version);
+          this.retainedEndWork = retiring;
+          this.notify();
+          try {
+            await retiring;
+            this.startUnavailable = true;
+          } finally {
+            if (this.retainedEndWork === retiring) this.retainedEndWork = null;
+            this.notify();
+          }
+        }
+        throw error;
+      }
     })();
     this.startWork = work;
     const clear = () => { if (this.startWork === work) this.startWork = null; };

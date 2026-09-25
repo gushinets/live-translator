@@ -2,7 +2,7 @@ import { useRef, useState } from "react";
 import "./RetainedRecovery.css";
 
 export type RetainedRecoveryState = "checking" | "paused" | "resuming" | "ending" | "failed" |
-  "active" | "pending_end" | "pending_claim" | "blocked" | "unresolved_create";
+  "active" | "pending_end" | "pending_claim" | "blocked" | "unresolved_create" | "unavailable";
 
 const messages: Record<RetainedRecoveryState, string> = {
   checking: "Проверяем сохранённый разговор…",
@@ -15,6 +15,7 @@ const messages: Record<RetainedRecoveryState, string> = {
   pending_claim: "Прошлая попытка восстановления не подтверждена. Продолжение прервёт её и может создать новую оплачиваемую попытку.",
   blocked: "Не удалось проверить сохранённый разговор. Новый разговор пока недоступен. Повторите проверку или завершите его.",
   unresolved_create: "Создание разговора не удалось подтвердить. Новый разговор пока недоступен. Обратитесь в поддержку для проверки.",
+  unavailable: "Разговор не начат: браузер не даёт безопасно сохранить его для возобновления. Откройте переводчик в другом браузере или разрешите хранение данных, затем обновите страницу.",
 };
 
 export function RetainedRecovery({ state, surface, onResume, onVerify, onEnd }: {
@@ -41,7 +42,7 @@ export function RetainedRecovery({ state, surface, onResume, onVerify, onEnd }: 
   if (verify) lastPrimary.current = "verify";
   const showResume = resume || (processing && lastPrimary.current === "resume");
   const showVerify = verify || (processing && lastPrimary.current === "verify");
-  const alert = state === "failed" || state === "pending_end" || state === "pending_claim" || state === "blocked" || state === "unresolved_create";
+  const alert = state === "failed" || state === "pending_end" || state === "pending_claim" || state === "blocked" || state === "unresolved_create" || state === "unavailable";
 
   return <div className={`retained-recovery retained-recovery--${surface}`} aria-busy={processing}>
     <p className="retained-recovery__message" role={alert ? "alert" : "status"}>{messages[state]}</p>
@@ -52,8 +53,10 @@ export function RetainedRecovery({ state, surface, onResume, onVerify, onEnd }: 
       </button> : null}
       {showVerify && onVerify ? <button className={`${surface === "setup" ? "setup-primary-action " : ""}retained-recovery__primary`}
         type="button" disabled={processing} onClick={() => run(onVerify)}>Повторить проверку</button> : null}
-      {!showResume && !showVerify && state !== "unresolved_create" ? <span className="retained-recovery__placeholder" aria-hidden="true" /> : null}
-      {state !== "unresolved_create" ? <button className={`${surface === "setup" ? "setup-secondary-action " : ""}retained-recovery__danger`}
+      {state === "unavailable" ? <button className={`${surface === "setup" ? "setup-primary-action " : ""}retained-recovery__primary`}
+        type="button" autoFocus onClick={() => window.location.reload()}>Обновить страницу</button> : null}
+      {!showResume && !showVerify && state !== "unresolved_create" && state !== "unavailable" ? <span className="retained-recovery__placeholder" aria-hidden="true" /> : null}
+      {state !== "unresolved_create" && state !== "unavailable" ? <button className={`${surface === "setup" ? "setup-secondary-action " : ""}retained-recovery__danger`}
         type="button" disabled={processing} onClick={() => run(onEnd)}>
         Завершить сохранённый разговор
       </button> : null}

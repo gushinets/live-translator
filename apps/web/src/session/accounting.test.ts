@@ -7,6 +7,7 @@ import { MetadataDeliveryBudget } from "./MetadataDeliveryBudget";
 import { ATTEMPT_REGISTRATION_GRACE_MS, type CleanupTransport } from "./CleanupIntentOutbox";
 import { ConversationAccounting } from "./ConversationAccounting";
 import { AccountingRequestError, type LedgerApi, type ConversationMetadata } from "../api/AccountingBackend";
+import type { ResumeSnapshotStore } from "./ResumeSnapshotStore";
 import { UsageLedger } from "../../../api/src/accounting/UsageLedger";
 import { LedgerError } from "../../../api/src/accounting/types";
 
@@ -999,6 +1000,7 @@ describe("controller-owned conversation accounting", () => {
   it("exposes the conversation's retained background policy to its owner", async () => {
     const f = fixture();
     f.c.policy.backgroundSessionCloseEnabled = true;
+    f.scope.setSnapshotStore(Promise.resolve({ available: true } as ResumeSnapshotStore));
     await f.scope.prepare(f.scope.newAttempt());
     expect(f.scope.backgroundSessionCloseEnabled).toBe(true);
     await f.budget.close();

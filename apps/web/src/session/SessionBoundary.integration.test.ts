@@ -63,7 +63,7 @@ class Peer extends EventTarget {
   }
 }
 function fixture(closeTimeoutMs = 2000, background = false, initialHidden = false, snapshotGate?: Promise<void>, remoteTrack = true,
-  storageDenied = false, snapshotNow?: () => number) {
+  storageDenied = false, snapshotNow?: () => number, locksAvailable = true) {
   const doc = document;
   let hidden = initialHidden;
   const previousVisibility = Object.getOwnPropertyDescriptor(doc, "visibilityState");
@@ -81,7 +81,7 @@ function fixture(closeTimeoutMs = 2000, background = false, initialHidden = fals
   const snapshotDb = new IDBFactory(), snapshotName = crypto.randomUUID();
   const snapshotLocks = { request: async (_name: string, _options: unknown, callback: (lock: object) => unknown) => callback({}) } as LockManager;
   const snapshotStore = ResumeSnapshotStore.open({ indexedDB: snapshotDb, sessionStorage: retainedStorage,
-    locks: snapshotLocks, name: snapshotName, now: snapshotNow });
+    locks: locksAvailable ? snapshotLocks : null, name: snapshotName, now: snapshotNow });
   const budget = new MetadataDeliveryBudget({ indexedDB: new IDBFactory(), name: crypto.randomUUID() });
   const c: ConversationMetadata = { conversationId: "conversation", version: 1, status: "active", productDeadlineAt: null,
     resumeExpiresAt: null, resumeAttemptId: null, serverTime: Date.now(), policy: { sessionCloseTimeoutMs: closeTimeoutMs,
@@ -2999,6 +2999,101 @@ describe("stage 5 hidden boundary", () => {
     await f.budget.close();
     server.db.close();
   });
+
+  it.each(["startContextCapture", "startBootstrap"] as const)(
+    "blocks fresh Stage 5 %s without Web Locks before microphone or provider creation", async action => {
+      const f = fixture(40, true, false, undefined, true, false, undefined, false);
+      const capture = vi.spyOn(f.audio, "startCapture");
+
+      await expect(f.controller[action]()).rejects.toThrow("Retained conversation ownership unavailable");
+      expect(f.api.createConversation).not.toHaveBeenCalled();
+      expect(f.api.createSession).not.toHaveBeenCalled();
+      expect(capture).not.toHaveBeenCalled();
+      expect(f.controller.session.state).toBe("idle");
+      render(jsx(ContextScreen, { controller: f.controller satisfies ContextScreenController }));
+      expect(screen.getByRole("alert")).toHaveTextContent("Разговор не начат");
+      expect(screen.getByRole("button", { name: "Обновить страницу" })).toHaveFocus();
+      expect(screen.queryByRole("button", { name: "Начать перевод" })).not.toBeInTheDocument();
+      expect(screen.queryByRole("button", { name: "Завершить сохранённый разговор" })).not.toBeInTheDocument();
+      await f.controller.dispose(); await f.budget.close();
+    },
+  );
+
+  it("keeps flag-off setup working without Web Locks", async () => {
+    const f = fixture(40, false, false, undefined, true, false, undefined, false);
+    await f.controller.startContextCapture();
+    expect(f.controller.session.state).toBe("context");
+    expect(f.api.createSession).toHaveBeenCalledOnce();
+    const ending = f.controller.cancel();
+    f.clients[0]!.peer.channel.emit({ type: "session.closed" });
+    await ending;
+    await f.controller.dispose(); await f.budget.close();
+  });
+
+  it("ends a newly created Stage 5 conversation before provider dispatch when policy changes from OFF to ON", async () => {
+    const f = fixture(40, false, false, undefined, true, false, undefined, false);
+    const server = useRealLedger(f, true);
+    f.api.policy.mockResolvedValue({ usageLedgerEnabled: true, backgroundSessionCloseEnabled: false });
+    const capture = vi.spyOn(f.audio, "stopCapture");
+
+    await expect(f.controller.startContextCapture()).rejects.toThrow("Retained conversation ownership unavailable");
+    expect(f.api.createConversation).toHaveBeenCalledOnce();
+    expect(f.api.createSession).not.toHaveBeenCalled();
+    expect(f.api.end).toHaveBeenCalledWith(server.conversationId, 1, "setup_cancel");
+    expect(f.c.status).toBe("ended");
+    expect(capture).toHaveBeenCalled();
+    expect(f.audio.getCaptureStream()).toBeNull();
+    expect((await f.snapshotStore).hasRetainedIdentity()).toBe(false);
+    render(jsx(ContextScreen, { controller: f.controller satisfies ContextScreenController }));
+    expect(screen.getByRole("alert")).toHaveTextContent("Разговор не начат");
+    expect(screen.getByRole("button", { name: "Обновить страницу" })).toHaveFocus();
+    await f.controller.dispose(); await f.budget.close(); server.db.close();
+  });
+
+  it("keeps reload unavailable until the changed-policy conversation End is confirmed", async () => {
+    const f = fixture(40, false, false, undefined, true, false, undefined, false);
+    const server = useRealLedger(f, true);
+    f.api.policy.mockResolvedValue({ usageLedgerEnabled: true, backgroundSessionCloseEnabled: false });
+    const end = f.api.end.getMockImplementation()!;
+    let release!: () => void;
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    f.api.end.mockImplementation(async (...args) => { await gate; return end(...args); });
+
+    const starting = f.controller.startContextCapture();
+    await vi.waitFor(() => expect(f.api.end).toHaveBeenCalledOnce());
+    render(jsx(ContextScreen, { controller: f.controller satisfies ContextScreenController }));
+    expect(screen.getByRole("status")).toHaveTextContent("Завершаем");
+    expect(screen.queryByRole("button", { name: "Обновить страницу" })).not.toBeInTheDocument();
+    release();
+    await expect(starting).rejects.toThrow("Retained conversation ownership unavailable");
+    await vi.waitFor(() => expect(screen.getByRole("button", { name: "Обновить страницу" })).toHaveFocus());
+    await f.controller.dispose(); await f.budget.close(); server.db.close();
+  });
+
+  it.each(["hidden", "cancel"] as const)(
+    "does not dispatch a provider when %s interrupts an OFF-to-ON create", async interruption => {
+      const f = fixture(40, false, false, undefined, true, false, undefined, false);
+      const server = useRealLedger(f, true);
+      f.api.policy.mockResolvedValue({ usageLedgerEnabled: true, backgroundSessionCloseEnabled: false });
+      const create = f.api.createConversation.getMockImplementation()!;
+      let release!: () => void;
+      const gate = new Promise<void>(resolve => { release = resolve; });
+      f.api.createConversation.mockImplementation(async (...args) => { await gate; return create(...args); });
+
+      const starting = f.controller.startContextCapture();
+      await vi.waitFor(() => expect(f.api.createConversation).toHaveBeenCalledOnce());
+      const cancelling = interruption === "cancel" ? f.controller.cancel() : undefined;
+      if (interruption === "hidden") f.setVisible(false);
+      release();
+      if (interruption === "cancel") f.clients[0]!.peer.channel.emit({ type: "session.closed" });
+      await Promise.allSettled([starting, cancelling]);
+      await vi.waitFor(() => expect(f.c.status).toBe("ended"));
+      expect(f.api.createSession).not.toHaveBeenCalled();
+      expect(f.api.end).toHaveBeenCalledWith(server.conversationId, 1, "setup_cancel");
+      expect(f.audio.getCaptureStream()).toBeNull();
+      await f.controller.dispose(); await f.budget.close(); server.db.close();
+    },
+  );
 
   it("uses a newly disabled policy after End for the next conversation", async () => {
     const f = fixture(40, true);
