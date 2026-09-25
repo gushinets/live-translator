@@ -200,12 +200,18 @@ export class SessionController {
     return this.backgroundPaused && this.sessionGeneration === generation && !this.visibility.isHidden() &&
       this.orientation.isPortrait() && this.endWork === null && this.cancelWork === null;
   }
-  protected async restoreRetained(snapshot: ResumeSnapshot, complete: (startedAt: number) => Promise<void>): Promise<void> {
+  protected beginOutputPriming(): Promise<void> {
+    const priming = this.audio.primeOutput();
+    void priming.catch(() => undefined); // Policy/claim may reject before the priming result is awaited.
+    return priming;
+  }
+  protected async restoreRetained(snapshot: ResumeSnapshot, complete: (startedAt: number) => Promise<void>,
+    primedOutput?: Promise<void>): Promise<void> {
     const generation = this.sessionGeneration;
     this.retainedResumePhase = "media";
     const current = () => this.backgroundResumeCurrent(generation);
     if (!current()) throw new Error("Resume cancelled");
-    await this.audio.primeOutput();
+    await (primedOutput ?? this.audio.primeOutput());
     if (!current()) throw new Error("Resume cancelled");
     this.audio.setOutputAudible(false);
     await this.audio.startCapture();
@@ -483,7 +489,7 @@ export class SessionController {
     this.setContextText("");
   }
 
-  async startContextCapture(): Promise<void> {
+  async startContextCapture(primedOutput?: Promise<void>): Promise<void> {
     if (this.endWork !== null) await this.endWork;
     if (this.cancelWork !== null) {
       await this.cancelWork;
@@ -492,7 +498,7 @@ export class SessionController {
       await this.connectWork;
       return;
     }
-    const work = this.runStartContextCapture();
+    const work = this.runStartContextCapture(primedOutput);
     this.connectWork = work;
     try {
       await work;
@@ -507,7 +513,7 @@ export class SessionController {
     this.capturingContext = false;
   }
 
-  async startBootstrap(): Promise<void> {
+  async startBootstrap(primedOutput?: Promise<void>): Promise<void> {
     if (this.endWork !== null) await this.endWork;
     if (this.cancelWork !== null) {
       await this.cancelWork;
@@ -516,7 +522,7 @@ export class SessionController {
       await this.connectWork;
       return;
     }
-    const work = this.runStartBootstrap();
+    const work = this.runStartBootstrap(primedOutput);
     this.connectWork = work;
     try {
       await work;
@@ -2030,11 +2036,11 @@ export class SessionController {
     return true;
   }
 
-  private async ensureConnected(): Promise<void> {
+  private async ensureConnected(primedOutput?: Promise<void>): Promise<void> {
     const live = this.live;
     const generation = this.sessionGeneration;
     try {
-      await this.audio.primeOutput();
+      await (primedOutput ?? this.audio.primeOutput());
     } catch (error) {
       if (this.sessionGeneration !== generation) {
         return;
@@ -2125,13 +2131,13 @@ export class SessionController {
     this.idleTimer = null;
   }
 
-  private async runStartContextCapture(): Promise<void> {
+  private async runStartContextCapture(primedOutput?: Promise<void>): Promise<void> {
     const generation = this.sessionGeneration;
     this.ownerErrorMessage = undefined;
     this.connectInFlight = true;
     this.notify();
     try {
-      await this.ensureConnected();
+      await this.ensureConnected(primedOutput);
       if (this.sessionGeneration !== generation) {
         return;
       }
@@ -2158,13 +2164,13 @@ export class SessionController {
     }
   }
 
-  private async runStartBootstrap(): Promise<void> {
+  private async runStartBootstrap(primedOutput?: Promise<void>): Promise<void> {
     const generation = this.sessionGeneration;
     this.ownerErrorMessage = undefined;
     this.connectInFlight = true;
     this.notify();
     try {
-      await this.ensureConnected();
+      await this.ensureConnected(primedOutput);
       if (this.sessionGeneration !== generation) {
         return;
       }

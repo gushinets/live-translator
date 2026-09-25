@@ -183,11 +183,12 @@ export class AccountedSessionController extends SessionController {
     if (this.pendingEnd || this.recoveryBlocked || this.unresolvedCreate) throw new Error("Retained conversation requires verification");
     if (this.retainedEndWork) return this.retainedEndWork;
     if (this.resumeWork) return this.resumeWork;
+    const primedOutput = explicit ? this.beginOutputPriming() : undefined;
     if (explicit) { this.resumeFailed = false; this.pendingClaim = false; }
     const ownsFence = explicit && this.beginRetainedResume();
     const work = (async () => {
       await this.recoveryProbe;
-      await this.runRetainedResume(explicit);
+      await this.runRetainedResume(explicit, primedOutput);
     })();
     this.resumeWork = work;
     this.notify();
@@ -264,7 +265,7 @@ export class AccountedSessionController extends SessionController {
   private pausedOrUnloaded(): boolean {
     return this.accounting.conversationStatus === null || this.accounting.conversationStatus === "paused";
   }
-  private async runRetainedResume(explicit: boolean): Promise<void> {
+  private async runRetainedResume(explicit: boolean, primedOutput?: Promise<void>): Promise<void> {
     if (this.retainedActive) throw new Error("Active retained conversation must be ended before a new conversation");
     if (explicit && this.session.state === "idle" && this.accounting.conversationStatus === null) {
       const store = await this.snapshotStore;
@@ -323,6 +324,7 @@ export class AccountedSessionController extends SessionController {
     await store.rememberResumeAttempt(conversation.conversationId, id);
     let claimed = false;
     let claimRequested = false;
+    let preClaimRejected = false;
     let settled = false;
     try {
       if (!this.backgroundResumeCurrent(generation)) return;
@@ -331,7 +333,10 @@ export class AccountedSessionController extends SessionController {
       let claim;
       try { claim = await this.accounting.api.claimResume(conversation.conversationId, conversation.version, id, mode); }
       catch (error) {
-        if (error instanceof AccountingRequestError) throw error;
+        if (error instanceof AccountingRequestError) {
+          preClaimRejected = error.status === 503 && error.code === "new_creations_paused";
+          throw error;
+        }
         claim = await this.accounting.api.claimResume(conversation.conversationId, conversation.version, id, mode)
           .catch(() => { throw error; });
       }
@@ -341,7 +346,7 @@ export class AccountedSessionController extends SessionController {
       await this.restoreRetained(snapshot, async startedAt => {
         const completed = await this.accounting.completeResume(startedAt);
         await store.confirmResume(completed, id);
-      });
+      }, primedOutput);
       settled = true;
       this.resumeFailed = false;
     } catch (error) {
@@ -372,7 +377,8 @@ export class AccountedSessionController extends SessionController {
       }
       throw error;
     } finally {
-      if (!claimRequested || settled) await store.clearResumeAttempt(conversation.conversationId, id).catch(() => undefined);
+      if (!claimRequested || preClaimRejected || settled)
+        await store.clearResumeAttempt(conversation.conversationId, id).catch(() => undefined);
     }
   }
   private async mayStart(): Promise<boolean> {
@@ -394,12 +400,14 @@ export class AccountedSessionController extends SessionController {
     return !this.sampleInitialHidden();
   }
   override async startContextCapture(): Promise<void> {
+    const primedOutput = this.beginOutputPriming();
     if (!await this.mayStart()) return;
-    await super.startContextCapture();
+    await super.startContextCapture(primedOutput);
   }
   override async startBootstrap(): Promise<void> {
+    const primedOutput = this.beginOutputPriming();
     if (!await this.mayStart()) return;
-    await super.startBootstrap();
+    await super.startBootstrap(primedOutput);
   }
   protected override beginBackgroundPause(): void { this.accounting.beginBackgroundPause(); }
   protected override async pauseBackground(state: Omit<ResumeSnapshotInput,

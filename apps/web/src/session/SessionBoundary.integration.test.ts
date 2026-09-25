@@ -1104,6 +1104,139 @@ describe("stage 5 hidden boundary", () => {
     expect(resumedClients.at(-1)!.peer).not.toBe(f.clients[0]!.peer);
     await controller.dispose(); await f.budget.close();
   });
+  it("retries a definitively rejected pre-claim resume after admissions reopen", async () => {
+    const f = await pausedReloadFixture();
+    const reloaded = await reloadedController(f);
+    await vi.waitFor(() => expect(reloaded.controller.retainedRecoveryState).toBe("paused"));
+    f.api.claimResume.mockRejectedValueOnce(new AccountingRequestError(503, "new_creations_paused"));
+
+    await expect(reloaded.controller.resumeRetainedConversation()).rejects.toMatchObject({
+      status: 503, code: "new_creations_paused",
+    });
+    expect(f.c.status).toBe("paused");
+    expect(f.c.version).toBe(2);
+    expect(await (await reloaded.store).inspectReload(id => f.api.readConversation(id) as Promise<ConversationMetadata>))
+      .toMatchObject({ kind: "paused", snapshot: { resumeAttemptId: null } });
+
+    await reloaded.controller.resumeRetainedConversation();
+    expect(f.api.claimResume).toHaveBeenCalledTimes(2);
+    expect(f.api.createSession).toHaveBeenCalledTimes(2);
+    expect(reloaded.controller.session.state).toBe("bootstrap");
+    await reloaded.controller.dispose(); await f.budget.close();
+  });
+  it("keeps an uncertain claim ID when the retry receives a pre-claim 503", async () => {
+    const f = await pausedReloadFixture();
+    const reloaded = await reloadedController(f);
+    await vi.waitFor(() => expect(reloaded.controller.retainedRecoveryState).toBe("paused"));
+    f.api.claimResume.mockRejectedValueOnce(new Error("response lost"))
+      .mockRejectedValueOnce(new AccountingRequestError(503, "new_creations_paused"));
+
+    await expect(reloaded.controller.resumeRetainedConversation()).rejects.toThrow("response lost");
+    const id = f.api.claimResume.mock.calls[0]![2];
+    expect(f.api.claimResume.mock.calls[1]![2]).toBe(id);
+    expect(await (await reloaded.store).inspectReload(value => f.api.readConversation(value) as Promise<ConversationMetadata>))
+      .toMatchObject({ kind: "paused", snapshot: { resumeAttemptId: id } });
+    expect(f.api.createSession).toHaveBeenCalledTimes(1);
+    await reloaded.controller.dispose(); await f.budget.close();
+  });
+
+  it.each([
+    ["startContextCapture", false],
+    ["startBootstrap", true],
+  ] as const)("primes %s during the click before policy resolves (background=%s)", async (action, background) => {
+    const f = fixture(40, background);
+    let release!: () => void;
+    f.api.policy.mockImplementation(() => new Promise(resolve => {
+      release = () => resolve({ usageLedgerEnabled: true, backgroundSessionCloseEnabled: background });
+    }));
+    const prime = vi.spyOn(f.audio, "primeOutput");
+
+    const starting = f.controller[action]();
+    expect(prime).toHaveBeenCalledTimes(1);
+    expect(f.api.createSession).not.toHaveBeenCalled();
+    release();
+    await starting;
+    expect(prime).toHaveBeenCalledTimes(1);
+    expect(f.api.createSession).toHaveBeenCalledTimes(1);
+    f.api.end.mockImplementation(async (_id, version) => {
+      f.c.status = "ended"; f.c.version = version + 1; return { ...f.c };
+    });
+    await f.controller.dispose(); await f.budget.close();
+  });
+
+  it("contains a failed Start prime while policy is pending and never creates a provider", async () => {
+    const f = fixture(40, true);
+    let release!: () => void;
+    f.api.policy.mockImplementation(() => new Promise(resolve => {
+      release = () => resolve({ usageLedgerEnabled: true, backgroundSessionCloseEnabled: true });
+    }));
+    const prime = vi.spyOn(f.audio, "primeOutput").mockRejectedValueOnce(new Error("playback blocked"));
+
+    const starting = f.controller.startContextCapture();
+    expect(prime).toHaveBeenCalledTimes(1);
+    expect(f.api.createSession).not.toHaveBeenCalled();
+    release();
+    await expect(starting).rejects.toThrow("playback blocked");
+    expect(f.api.createConversation).not.toHaveBeenCalled();
+    expect(f.api.createSession).not.toHaveBeenCalled();
+    await f.controller.dispose(); await f.budget.close();
+  });
+
+  it("re-primes explicit Retry before the retained claim settles", async () => {
+    const f = await pausedReloadFixture();
+    const reloaded = await reloadedController(f);
+    await vi.waitFor(() => expect(reloaded.controller.retainedRecoveryState).toBe("paused"));
+    const claim = f.api.claimResume.getMockImplementation()!;
+    let release!: () => void;
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    f.api.claimResume.mockImplementation(async (...args) => { await gate; return claim(...args); });
+    const prime = vi.spyOn(f.audio, "primeOutput");
+
+    const retry = reloaded.controller.resumeRetainedConversation();
+    expect(prime).toHaveBeenCalledTimes(1);
+    await vi.waitFor(() => expect(f.api.claimResume).toHaveBeenCalledTimes(1));
+    expect(f.api.createSession).toHaveBeenCalledTimes(1);
+    release();
+    await retry;
+    expect(prime).toHaveBeenCalledTimes(1);
+    expect(f.api.createSession).toHaveBeenCalledTimes(2);
+    await reloaded.controller.dispose(); await f.budget.close();
+  });
+
+  it("waits for the claim before priming an automatic visibility resume", async () => {
+    const f = fixture(40, true); configureResume(f);
+    await f.controller.startBootstrap();
+    f.setVisible(false);
+    await vi.waitFor(() => expect(f.clients[0]!.peer.channel.sent).toContain("session.close"));
+    f.clients[0]!.peer.channel.emit({ type: "session.closed" });
+    await vi.waitFor(() => expect(f.c.status).toBe("paused"));
+    const claim = f.api.claimResume.getMockImplementation()!;
+    let release!: () => void;
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    f.api.claimResume.mockImplementation(async (...args) => { await gate; return claim(...args); });
+    const prime = vi.spyOn(f.audio, "primeOutput");
+
+    f.setVisible(true);
+    await vi.waitFor(() => expect(f.api.claimResume).toHaveBeenCalledTimes(1));
+    expect(prime).not.toHaveBeenCalled();
+    release();
+    await vi.waitFor(() => expect(f.controller.session.state).toBe("bootstrap"));
+    expect(prime).toHaveBeenCalledTimes(1);
+    await f.controller.dispose(); await f.budget.close();
+  });
+
+  it("handles a failed Retry prime as media failure without provider dispatch", async () => {
+    const f = await pausedReloadFixture();
+    const reloaded = await reloadedController(f);
+    await vi.waitFor(() => expect(reloaded.controller.retainedRecoveryState).toBe("paused"));
+    const prime = vi.spyOn(f.audio, "primeOutput").mockRejectedValueOnce(new Error("playback blocked"));
+
+    await expect(reloaded.controller.resumeRetainedConversation()).rejects.toThrow("playback blocked");
+    expect(prime).toHaveBeenCalledTimes(1);
+    expect(f.api.abortResume).toHaveBeenCalledWith("conversation", 3, expect.any(String), "media_not_ready");
+    expect(f.api.createSession).toHaveBeenCalledTimes(1);
+    await reloaded.controller.dispose(); await f.budget.close();
+  });
   it("reconciles a claimed reload before dispatch, then retries with one new provider", async () => {
     const f = await pausedReloadFixture();
     const oldId = crypto.randomUUID();
