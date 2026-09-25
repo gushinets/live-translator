@@ -296,9 +296,12 @@ export class AccountedSessionController extends SessionController {
     const generation = this.backgroundResumeGeneration;
     await this.awaitBackgroundPause();
     if (!this.backgroundResumeCurrent(generation)) return;
-    if (!this.pausedOrUnloaded()) return;
+    const reconciling = explicit && this.accounting.conversationStatus === "resuming";
+    if (!this.pausedOrUnloaded() && !reconciling) return;
     const store = await this.snapshotStore;
     let inspected = await store.inspectReload(id => this.accounting.api.readConversation(id) as Promise<ConversationMetadata>);
+    if (reconciling && inspected?.kind !== "pending")
+      throw new Error("Retained resume claim requires explicit recovery");
     if (inspected?.kind === "pending" && explicit) {
       const { snapshot, conversation } = inspected;
       const alreadySettled = conversation.status === "paused";
