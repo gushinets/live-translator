@@ -29,7 +29,7 @@ class FakeOwnerController implements ContextScreenController {
   isConnectInFlight = false;
   isInterpreterStarting = false;
   audioElement: HTMLAudioElement | undefined;
-  retainedRecoveryState: "paused" | "resuming" | "ending" | "failed" | "active" | undefined;
+  retainedRecoveryState: "paused" | "resuming" | "ending" | "failed" | "active" | "pending_end" | "pending_claim" | "blocked" | undefined;
   private readonly listeners = new Set<() => void>();
 
   subscribe(listener: () => void): () => void {
@@ -74,6 +74,7 @@ class FakeOwnerController implements ContextScreenController {
 
   resumeFromSourceTimeout = vi.fn(async () => {});
   resumeRetainedConversation = vi.fn(async () => {});
+  verifyRetainedConversation = vi.fn(async () => {});
 
   setBootstrapText(text: string): void {
     this.bootstrapText = text;
@@ -121,9 +122,48 @@ describe("ContextScreen", () => {
     const controller = new FakeOwnerController();
     controller.retainedRecoveryState = "ending";
     render(<ContextScreen controller={controller} />);
-    expect(screen.getByRole("status")).toHaveTextContent("Завершаем…");
+    expect(screen.getByRole("status")).toHaveTextContent("Завершаем сохранённый разговор…");
     expect(screen.getByRole("button", { name: "Завершить сохранённый разговор" })).toBeDisabled();
     expect(screen.queryByRole("button", { name: "Продолжить разговор" })).not.toBeInTheDocument();
+  });
+  it("blocks setup while End proof is pending and offers an explicit retry", () => {
+    const controller = new FakeOwnerController();
+    controller.retainedRecoveryState = "pending_end";
+    render(<ContextScreen controller={controller} />);
+    expect(screen.queryByRole("button", { name: "Начать перевод" })).not.toBeInTheDocument();
+    expect(screen.getByRole("alert")).toHaveTextContent("Завершение не подтверждено");
+    fireEvent.click(screen.getByRole("button", { name: "Повторить проверку" }));
+    expect(controller.verifyRetainedConversation).toHaveBeenCalledOnce();
+  });
+  it("prevents competing End while a verification request is pending", () => {
+    const controller = new FakeOwnerController();
+    controller.retainedRecoveryState = "pending_end";
+    controller.verifyRetainedConversation.mockImplementation(() => new Promise<void>(() => {}));
+    render(<ContextScreen controller={controller} />);
+    fireEvent.click(screen.getByRole("button", { name: "Повторить проверку" }));
+    fireEvent.click(screen.getByRole("button", { name: "Завершить сохранённый разговор" }));
+    expect(screen.getByRole("button", { name: "Завершить сохранённый разговор" })).toBeDisabled();
+    expect(controller.endConversation).not.toHaveBeenCalled();
+  });
+  it("keeps an uncertain retained conversation blocked with verification and safe End", async () => {
+    const controller = new FakeOwnerController();
+    controller.retainedRecoveryState = "blocked";
+    render(<ContextScreen controller={controller} />);
+    expect(screen.getByRole("alert")).toHaveTextContent("Не удалось проверить сохранённый разговор");
+    fireEvent.click(screen.getByRole("button", { name: "Повторить проверку" }));
+    await act(async () => { await Promise.resolve(); });
+    fireEvent.click(screen.getByRole("button", { name: "Завершить сохранённый разговор" }));
+    expect(controller.verifyRetainedConversation).toHaveBeenCalledOnce();
+    expect(controller.endConversation).toHaveBeenCalledOnce();
+  });
+  it("returns focus to Start after confirmed recovery clears the blocked controls", () => {
+    const controller = new FakeOwnerController();
+    controller.retainedRecoveryState = "pending_end";
+    const view = render(<ContextScreen controller={controller} />);
+    screen.getByRole("button", { name: "Повторить проверку" }).focus();
+    controller.retainedRecoveryState = undefined;
+    view.rerender(<ContextScreen controller={controller} />);
+    expect(screen.getByRole("button", { name: "Начать перевод" })).toHaveFocus();
   });
   it("treats context as optional without extra footer copy", () => {
     render(<ContextScreen controller={new FakeOwnerController()} />);

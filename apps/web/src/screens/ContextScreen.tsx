@@ -2,6 +2,7 @@ import { createAccountedSessionController, type AccountedSessionController } fro
 import { useEffect, useReducer, useRef, useState } from "react";
 import { ErrorOverlay } from "../components/ErrorOverlay";
 import { BootstrapPrompt } from "../components/BootstrapPrompt";
+import { RetainedRecovery, type RetainedRecoveryState } from "../components/RetainedRecovery";
 import { ContextTooLongError } from "../live/LiveEvents";
 import {
   type LifecycleSuspendReason,
@@ -33,7 +34,7 @@ export interface ContextScreenController {
   readonly audioElement?: HTMLAudioElement;
   readonly recoveryPrompt?: RecoveryPrompt;
   readonly suspendReason?: LifecycleSuspendReason;
-  readonly retainedRecoveryState?: "checking" | "paused" | "resuming" | "ending" | "failed" | "active";
+  readonly retainedRecoveryState?: RetainedRecoveryState;
   subscribe(listener: () => void): () => void;
   startContextCapture(): Promise<void>;
   finishContextCapture(): void;
@@ -49,6 +50,7 @@ export interface ContextScreenController {
   endConversation(): Promise<void>;
   resumeFromSourceTimeout(): Promise<void>;
   resumeRetainedConversation?(): Promise<void>;
+  verifyRetainedConversation?(): Promise<void>;
 }
 
 let documentController: AccountedSessionController | null = null;
@@ -113,7 +115,20 @@ export function ContextScreen({
 
   const [, rerender] = useReducer((count: number) => count + 1, 0);
   const audioHostRef = useRef<HTMLDivElement>(null);
-  useEffect(() => controller?.subscribe(rerender), [controller]);
+  const startRef = useRef<HTMLButtonElement>(null);
+  const previousRecovery = useRef<RetainedRecoveryState | undefined>(undefined);
+  const recoveryState = controller?.retainedRecoveryState;
+  useEffect(() => {
+    if (!controller) return;
+    const unsubscribe = controller.subscribe(rerender);
+    // Catch a recovery probe that settled between render and subscription.
+    rerender();
+    return unsubscribe;
+  }, [controller]);
+  useEffect(() => {
+    if (previousRecovery.current !== undefined && recoveryState === undefined) startRef.current?.focus();
+    previousRecovery.current = recoveryState;
+  }, [recoveryState]);
   useEffect(() => {
     const host = audioHostRef.current;
     const element = controller?.audioElement;
@@ -188,9 +203,9 @@ export function ContextScreen({
   const recovery = controller.retainedRecoveryState;
   const isContextListening = sessionState === "context";
   const showCancel =
-    controller.session.state !== "idle" ||
+    recovery === undefined && (controller.session.state !== "idle" ||
     controller.ownerError !== undefined ||
-    controller.isConnectInFlight === true;
+    controller.isConnectInFlight === true);
 
   traceConversationRenderPredicate({
     state: sessionState,
@@ -215,35 +230,14 @@ export function ContextScreen({
           </header>
 
           <div className="setup-card">
-            {controller.ownerError !== undefined ? (
+            {recovery === undefined && controller.ownerError !== undefined ? (
               <ErrorOverlay message={controller.ownerError} />
             ) : null}
             {recovery !== undefined ? (
-              <>
-                <p className="setup-inline-status" role="status">
-                  {recovery === "checking" ? "Проверяем сохранённый разговор…" :
-                    recovery === "resuming" ? "Восстанавливаем разговор…" :
-                    recovery === "ending" ? "Завершаем…" :
-                    recovery === "active" ? "Сохранённый разговор ещё активен. Завершите его перед новым разговором." :
-                    recovery === "failed" ? "Не удалось проверить или восстановить разговор. Проверьте соединение, микрофон и звук; повторите или завершите разговор." :
-                    "Разговор приостановлен."}
-                </p>
-                {recovery !== "checking" && recovery !== "active" && recovery !== "ending" ? (
-                  <button className="setup-primary-action" type="button" disabled={recovery === "resuming"}
-                    onClick={() => { void controller.resumeRetainedConversation?.().catch(error => {
-                      console.error("Retained conversation recovery failed", { error });
-                    }); }}>
-                    {recovery === "failed" ? "Повторить восстановление" :
-                      recovery === "resuming" ? "Восстанавливаем…" : "Продолжить разговор"}
-                  </button>
-                ) : null}
-                {recovery !== "checking" ? (
-                  <button className="setup-secondary-action" type="button" disabled={recovery === "ending"}
-                    onClick={() => { void controller.endConversation().catch(error => {
-                      console.error("Retained conversation End failed", { error });
-                    }); }}>Завершить сохранённый разговор</button>
-                ) : null}
-              </>
+              <RetainedRecovery state={recovery} surface="setup"
+                onResume={controller.resumeRetainedConversation?.bind(controller)}
+                onVerify={controller.verifyRetainedConversation?.bind(controller)}
+                onEnd={() => controller.endConversation()} />
             ) : isBootstrap ? (
               <BootstrapPrompt
                 transcript={controller.bootstrapText}
@@ -310,6 +304,7 @@ export function ContextScreen({
                 </div>
 
                 <button
+                  ref={startRef}
                   className="setup-primary-action"
                   type="button"
                   disabled={isBusy}

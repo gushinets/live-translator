@@ -161,6 +161,18 @@ export class ResumeSnapshotStore {
     return this.storage.getItem(CONVERSATION_KEY) !== null;
   }
 
+  retainedConversationId(): string | null {
+    if (!this.storage) throw new Error("Retained conversation storage unavailable");
+    const id = this.storage.getItem(CONVERSATION_KEY);
+    return id && id !== PENDING_CREATE ? id : null;
+  }
+
+  retainedConversationVersion(): number {
+    if (!this.storage) throw new Error("Retained conversation storage unavailable");
+    const version = Number(this.storage.getItem(CONVERSATION_VERSION_KEY));
+    return Number.isSafeInteger(version) && version > 0 ? version : 0;
+  }
+
   retainIdentity(conversationId: string, version?: number): void {
     if (!this.storage) throw new Error("Retained conversation storage unavailable");
     const previous = this.storage.getItem(CONVERSATION_KEY);

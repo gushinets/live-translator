@@ -146,7 +146,7 @@ async function reloadAfterPause(f: ReturnType<typeof fixture>, dispose = true, p
   }, scope, store);
   controller.start();
   f.setVisible(true);
-  await expect(controller.startContextCapture()).rejects.toThrow("Retained conversation");
+  await expect(controller.startContextCapture()).rejects.toThrow(/Retained conversation|End is pending/);
   expect(f.api.createConversation).toHaveBeenCalledTimes(1);
   expect(f.api.createSession).toHaveBeenCalledTimes(1);
   if (pendingEnd) await expect(controller.dispose()).rejects.toThrow("Conversation End was not confirmed");
@@ -883,8 +883,8 @@ describe("stage 5 hidden boundary", () => {
     await vi.waitFor(() => expect(f.controller.session.state).toBe("ending"));
     expect(f.controller.retainedRecoveryState).toBe("ending");
     render(jsx(ContextScreen, { controller: f.controller satisfies ContextScreenController }));
-    expect(screen.getByRole("status")).toHaveTextContent("Завершаем…");
-    expect(screen.getByRole("button", { name: "Завершить" })).toBeDisabled();
+    expect(screen.getByRole("status")).toHaveTextContent("Завершаем сохранённый разговор…");
+    expect(screen.getByRole("button", { name: "Завершить сохранённый разговор" })).toBeDisabled();
     expect(screen.queryByRole("button", { name: "Продолжить разговор" })).not.toBeInTheDocument();
     expect(f.track.enabled).toBe(false);
     release();
@@ -958,7 +958,7 @@ describe("stage 5 hidden boundary", () => {
     f.api.readAttempt.mockImplementation(async id => ({ liveSessionId: id, state: id === oldId ? "failed" : "active",
       cleanupRequestedAt: Date.now(), handoffAcknowledgedAt: null, conversation: { ...f.c } }));
     const reloaded = await reloadedController(f);
-    await vi.waitFor(() => expect(reloaded.controller.retainedRecoveryState).toBe("failed"));
+    await vi.waitFor(() => expect(reloaded.controller.retainedRecoveryState).toBe("pending_claim"));
     await reloaded.controller.resumeRetainedConversation();
     expect(f.api.abortResume).toHaveBeenCalledWith(f.c.conversationId, oldVersion, oldId, "interrupted_by_restart");
     expect(f.api.claimResume.mock.calls.at(-1)![2]).not.toBe(oldId);
@@ -976,7 +976,7 @@ describe("stage 5 hidden boundary", () => {
     f.c.status = "resuming"; f.c.version++; f.c.resumeAttemptId = oldId;
     f.api.abortResume.mockRejectedValue(new Error("abort response lost"));
     const reloaded = await reloadedController(f);
-    await vi.waitFor(() => expect(reloaded.controller.retainedRecoveryState).toBe("failed"));
+    await vi.waitFor(() => expect(reloaded.controller.retainedRecoveryState).toBe("pending_claim"));
     await expect(reloaded.controller.resumeRetainedConversation()).rejects.toThrow();
     expect(f.api.claimResume).not.toHaveBeenCalled();
     expect(f.api.createSession).toHaveBeenCalledTimes(1);
@@ -997,7 +997,7 @@ describe("stage 5 hidden boundary", () => {
     f.api.readAttempt.mockImplementation(async id => ({ liveSessionId: id, state: "failed", cleanupRequestedAt: Date.now(),
       handoffAcknowledgedAt: null, conversation: { ...f.c } }));
     const reloaded = await reloadedController(f);
-    await vi.waitFor(() => expect(reloaded.controller.retainedRecoveryState).toBe("failed"));
+    await vi.waitFor(() => expect(reloaded.controller.retainedRecoveryState).toBe("pending_claim"));
     await reloaded.controller.resumeRetainedConversation();
     expect(f.api.abortResume.mock.calls).toHaveLength(2);
     expect(f.api.abortResume.mock.calls[0]).toEqual(f.api.abortResume.mock.calls[1]);
@@ -1047,8 +1047,8 @@ describe("stage 5 hidden boundary", () => {
     await vi.waitFor(() => expect(f.controller.session.state).toBe("ending"));
     expect(f.controller.retainedRecoveryState).toBe("ending");
     render(jsx(ContextScreen, { controller: f.controller satisfies ContextScreenController }));
-    expect(screen.getByRole("status")).toHaveTextContent("Завершаем…");
-    expect(screen.getByRole("button", { name: "Завершить" })).toBeDisabled();
+    expect(screen.getByRole("status")).toHaveTextContent("Завершаем сохранённый разговор…");
+    expect(screen.getByRole("button", { name: "Завершить сохранённый разговор" })).toBeDisabled();
     expect(screen.queryByRole("button", { name: "Продолжить разговор" })).not.toBeInTheDocument();
     release();
     await ending;
@@ -1062,7 +1062,7 @@ describe("stage 5 hidden boundary", () => {
     await vi.waitFor(() => expect(reloaded.controller.retainedRecoveryState).toBe("active"));
     await expect(reloaded.controller.endConversation()).rejects.toThrow();
     expect(sessionStorage.getItem("live-translator-retained-conversation-v1")).toBe(f.c.conversationId);
-    await expect(reloaded.controller.startContextCapture()).rejects.toThrow("Retained conversation");
+    await expect(reloaded.controller.startContextCapture()).rejects.toThrow("End is pending");
     await reloaded.controller.dispose().catch(() => undefined); await f.budget.close();
   });
   it("ends a paused reload without resetting only its local UI", async () => {
@@ -1190,6 +1190,11 @@ describe("stage 5 hidden boundary", () => {
     expect(f.controller.session.state).toBe("idle");
     expect(f.scope.conversationId).toBeNull();
     expect(await f.budget.ends()).toHaveLength(1);
+    expect(f.controller.retainedRecoveryState).toBe("pending_end");
+    render(jsx(ContextScreen, { controller: f.controller as ContextScreenController }));
+    expect(screen.queryByRole("button", { name: "Начать перевод" })).not.toBeInTheDocument();
+    expect(screen.getByRole("alert")).toHaveTextContent("Завершение не подтверждено");
+    expect(screen.getByRole("button", { name: "Повторить проверку" })).toBeEnabled();
     await expect(f.controller.dispose()).rejects.toThrow();
     expect(sessionStorage.getItem("live-translator-retained-conversation-v1")).toBe(f.c.conversationId);
     await f.budget.close();
@@ -1216,11 +1221,50 @@ describe("stage 5 hidden boundary", () => {
     expect(await f.budget.ends()).toHaveLength(1);
     sessionStorage.removeItem("live-translator-retained-conversation-v1");
 
+    expect(f.controller.retainedRecoveryState).toBe("pending_end");
+
     await expect(f.controller.startContextCapture()).rejects.toThrow("End is pending");
     expect(f.api.createConversation).toHaveBeenCalledTimes(1);
     expect(f.api.createSession).toHaveBeenCalledTimes(1);
     await (await f.snapshotStore).dispose();
     await f.budget.close();
+  });
+  it("keeps an unprovable End barrier through retry, then admits Start only after server proof", async () => {
+    const f = fixture(40, true);
+    await f.controller.startContextCapture();
+    f.api.end.mockRejectedValue(new Error("offline"));
+    const ending = f.controller.endConversation();
+    f.clients[0]!.peer.channel.emit({ type: "session.closed" });
+    await ending;
+    sessionStorage.removeItem("live-translator-retained-conversation-v1");
+    await (await f.snapshotStore).dispose();
+    const reloaded = await reloadedController(f);
+    await vi.waitFor(() => expect(reloaded.controller.retainedRecoveryState).toBe("pending_end"));
+    await reloaded.controller.verifyRetainedConversation();
+    expect(reloaded.controller.retainedRecoveryState).toBe("pending_end");
+    await expect(reloaded.controller.startContextCapture()).rejects.toThrow("End is pending");
+    f.api.end.mockImplementation(async (_id, version) => { f.c.status = "ended"; f.c.version = version + 1; return { ...f.c }; });
+    await reloaded.controller.verifyRetainedConversation();
+    expect(reloaded.controller.retainedRecoveryState).toBeUndefined();
+    await reloaded.controller.dispose(); await f.budget.close();
+  });
+  it("offers server-proven End for an expired pause without creating another provider", async () => {
+    const f = fixture(40, true); configureResume(f);
+    await f.controller.startBootstrap();
+    f.setVisible(false);
+    await vi.waitFor(() => expect(f.clients[0]!.peer.channel.sent).toContain("session.close"));
+    f.clients[0]!.peer.channel.emit({ type: "session.closed" });
+    await vi.waitFor(() => expect(f.c.status).toBe("paused"));
+    await (await f.snapshotStore).markHidden(f.c.conversationId, Date.now() - 300000, 300000);
+    await f.controller.dispose();
+    const reloaded = await reloadedController(f);
+    await vi.waitFor(() => expect(reloaded.controller.retainedRecoveryState).toBe("blocked"));
+    f.setVisible(true);
+    await reloaded.controller.endConversation();
+    expect(f.c.status).toBe("ended");
+    expect(reloaded.controller.retainedRecoveryState).toBeUndefined();
+    expect(f.api.createSession).toHaveBeenCalledTimes(1);
+    await reloaded.controller.dispose(); await f.budget.close();
   });
   it("does not clear the pointer for a higher active version without confirmed End", async () => {
     const f = fixture(40, true);
@@ -1231,7 +1275,7 @@ describe("stage 5 hidden boundary", () => {
     f.clients[0]!.peer.channel.emit({ type: "session.closed" });
     await ending;
     expect(sessionStorage.getItem("live-translator-retained-conversation-v1")).toBe(f.c.conversationId);
-    await expect(f.controller.startContextCapture()).rejects.toThrow("Retained conversation");
+    await expect(f.controller.startContextCapture()).rejects.toThrow("End is pending");
     await f.budget.close();
   });
   it("retains an explicit End pointer until a server read confirms termination", async () => {

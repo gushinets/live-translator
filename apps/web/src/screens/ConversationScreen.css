@@ -42,6 +42,10 @@ body,
   cursor: pointer;
 }
 
+.conversation-center button:hover:not(:disabled) { background: #e7d9be; }
+.conversation-center button:active:not(:disabled) { transform: translateY(1px); }
+.conversation-center button:disabled { cursor: wait; opacity: 0.46; }
+
 .conversation-center button:focus-visible,
 .participant-correction-target:focus-visible {
   outline: 2px solid #f4ead5;

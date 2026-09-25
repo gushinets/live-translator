@@ -1,5 +1,6 @@
-import { useEffect, useReducer } from "react";
+import { useEffect, useReducer, useRef } from "react";
 import { ErrorOverlay } from "../components/ErrorOverlay";
+import { RetainedRecovery, type RetainedRecoveryState } from "../components/RetainedRecovery";
 import "./ConversationScreen.css";
 import { ParticipantPane } from "../components/ParticipantPane";
 import { deriveParticipantStatus } from "../components/ParticipantStatus";
@@ -14,12 +15,13 @@ export interface ConversationScreenController {
   readonly recoveryPrompt?: RecoveryPrompt;
   readonly ownerError?: string;
   readonly suspendReason?: LifecycleSuspendReason;
-  readonly retainedRecoveryState?: "checking" | "paused" | "resuming" | "ending" | "failed" | "active";
+  readonly retainedRecoveryState?: RetainedRecoveryState;
   subscribe(listener: () => void): () => void;
   correctLastTurn(side: Side): Promise<void>;
   endConversation(): Promise<void>;
   resumeFromSourceTimeout(): Promise<void>;
   resumeRetainedConversation?(): Promise<void>;
+  verifyRetainedConversation?(): Promise<void>;
 }
 
 export function ConversationScreen({
@@ -28,7 +30,17 @@ export function ConversationScreen({
   controller: ConversationScreenController;
 }) {
   const [, rerender] = useReducer((count: number) => count + 1, 0);
-  useEffect(() => controller.subscribe(rerender), [controller]);
+  const endRef = useRef<HTMLButtonElement>(null);
+  const previousRecovery = useRef<RetainedRecoveryState | undefined>(undefined);
+  useEffect(() => {
+    const unsubscribe = controller.subscribe(rerender);
+    rerender();
+    return unsubscribe;
+  }, [controller]);
+  useEffect(() => {
+    if (previousRecovery.current !== undefined && controller.retainedRecoveryState === undefined) endRef.current?.focus();
+    previousRecovery.current = controller.retainedRecoveryState;
+  }, [controller.retainedRecoveryState]);
 
   const session = controller.session;
   const active = session.activeTurn;
@@ -100,28 +112,18 @@ export function ConversationScreen({
         }}
       />
       <div className="conversation-center">
-        {controller.retainedRecoveryState !== undefined ? (
-          <p role="status">{controller.retainedRecoveryState === "failed" ? "Не удалось проверить или восстановить разговор. Проверьте соединение и повторите или завершите его." :
-            controller.retainedRecoveryState === "ending" ? "Завершаем…" :
-            controller.retainedRecoveryState === "active" ? "Сохранённый разговор ещё активен. Завершите его перед новым разговором." :
-            controller.retainedRecoveryState === "paused" ? "Разговор приостановлен." : "Восстанавливаем разговор…"}</p>
-        ) : null}
-        {controller.retainedRecoveryState !== undefined && !["checking", "active", "ending"].includes(controller.retainedRecoveryState) ? (
-          <button type="button" disabled={controller.retainedRecoveryState === "resuming"} onClick={() => {
-            void controller.resumeRetainedConversation?.().catch(error => {
-              console.error("Retained conversation recovery failed", { error });
-            });
-          }}>
-            {controller.retainedRecoveryState === "failed" ? "Повторить восстановление" :
-              controller.retainedRecoveryState === "resuming" ? "Восстанавливаем…" : "Продолжить разговор"}
-          </button>
-        ) : null}
+        {controller.retainedRecoveryState !== undefined ? <RetainedRecovery
+          state={controller.retainedRecoveryState} surface="conversation"
+          onResume={controller.resumeRetainedConversation?.bind(controller)}
+          onVerify={controller.verifyRetainedConversation?.bind(controller)}
+          onEnd={() => controller.endConversation()} /> : null}
         {canChooseSide ? (
           <p role="status">Сторона не определена. Для исправления нажмите свою половину экрана.</p>
         ) : null}
-        <button
+        {controller.retainedRecoveryState === undefined ? <button
+          ref={endRef}
           type="button"
-          disabled={controller.retainedRecoveryState === "ending" || session.state === "ending"}
+          disabled={session.state === "ending"}
           onClick={() => {
             void controller.endConversation().catch((error: unknown) => {
               console.error("End conversation failed", {
@@ -132,7 +134,7 @@ export function ConversationScreen({
           }}
         >
           Завершить
-        </button>
+        </button> : null}
         {controller.recoveryPrompt === "resume-repeat" ? (
           <button
             type="button"
@@ -149,7 +151,7 @@ export function ConversationScreen({
           </button>
         ) : null}
         {controller.recoveryPrompt === "repeat" ? <p>Повторите</p> : null}
-        {terminalAlert === undefined && controller.ownerError !== undefined ? (
+        {controller.retainedRecoveryState === undefined && terminalAlert === undefined && controller.ownerError !== undefined ? (
           <ErrorOverlay message={controller.ownerError} />
         ) : null}
       </div>

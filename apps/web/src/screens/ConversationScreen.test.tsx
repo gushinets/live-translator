@@ -50,11 +50,12 @@ class FakeConversationController implements ConversationScreenController {
   recoveryPrompt: RecoveryPrompt | undefined;
   ownerError: string | undefined;
   suspendReason: LifecycleSuspendReason | undefined;
-  retainedRecoveryState: "paused" | "resuming" | "ending" | "failed" | undefined;
+  retainedRecoveryState: "paused" | "resuming" | "ending" | "failed" | "pending_end" | "pending_claim" | "blocked" | undefined;
   readonly correctLastTurn = vi.fn<(side: Side) => Promise<void>>(async () => {});
   readonly endConversation = vi.fn(async () => {});
   readonly resumeFromSourceTimeout = vi.fn(async () => {});
   readonly resumeRetainedConversation = vi.fn(async () => {});
+  readonly verifyRetainedConversation = vi.fn(async () => {});
   private readonly listeners = new Set<() => void>();
 
   constructor(initial: TranslationSession = session()) {
@@ -87,9 +88,28 @@ describe("ConversationScreen orientation and status", () => {
     const controller = new FakeConversationController(session({ state: "suspended" }));
     controller.retainedRecoveryState = "ending";
     render(<ConversationScreen controller={controller} />);
-    expect(screen.getByRole("status")).toHaveTextContent("Завершаем…");
-    expect(screen.getByRole("button", { name: "Завершить" })).toBeDisabled();
+    expect(screen.getByRole("status")).toHaveTextContent("Завершаем сохранённый разговор…");
+    expect(screen.getByRole("button", { name: "Завершить сохранённый разговор" })).toBeDisabled();
     expect(screen.queryByRole("button", { name: "Продолжить разговор" })).not.toBeInTheDocument();
+  });
+  it("shows the same pending End recovery without claiming the interpreter is ready", () => {
+    const controller = new FakeConversationController(session({ state: "suspended" }));
+    controller.retainedRecoveryState = "pending_end";
+    render(<ConversationScreen controller={controller} />);
+    expect(screen.getByRole("alert")).toHaveTextContent("Завершение не подтверждено");
+    expect(screen.queryByText("ГОВОРИТЕ")).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Повторить проверку" }));
+    expect(controller.verifyRetainedConversation).toHaveBeenCalledOnce();
+  });
+  it("keeps keyboard focus on an action after retained resume completes", () => {
+    const controller = new FakeConversationController(session({ state: "suspended" }));
+    controller.retainedRecoveryState = "paused";
+    const view = render(<ConversationScreen controller={controller} />);
+    screen.getByRole("button", { name: "Продолжить разговор" }).focus();
+    controller.retainedRecoveryState = undefined;
+    controller.session = session({ state: "listening" });
+    view.rerender(<ConversationScreen controller={controller} />);
+    expect(screen.getByRole("button", { name: "Завершить" })).toHaveFocus();
   });
   it("keeps A LISTENING when A is still source-active and early GPT output exists, B TRANSLATING/SPEAKING, B rotated 180deg", () => {
     const controller = new FakeConversationController(

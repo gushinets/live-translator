@@ -1,4 +1,5 @@
 import { readFileSync } from "node:fs";
+import "fake-indexeddb/auto";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
