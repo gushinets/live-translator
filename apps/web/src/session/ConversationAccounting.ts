@@ -133,6 +133,16 @@ export class ConversationAccounting {
       throw new Error("Recovered pause does not match local ownership");
     this.current = conversation; this.pausing = true;
   }
+  confirmRecoveredSettledClaim(conversation: ConversationMetadata): void {
+    const local = this.current;
+    if (!local || local.status !== "paused" || conversation.status !== "paused" ||
+      local.conversationId !== conversation.conversationId || conversation.version !== local.version + 2 ||
+      local.policy.policyVersion !== conversation.policy.policyVersion ||
+      local.productDeadlineAt !== conversation.productDeadlineAt ||
+      local.resumeExpiresAt !== conversation.resumeExpiresAt || conversation.resumeAttemptId !== null)
+      throw new Error("Recovered claim rollback does not match local ownership");
+    this.current = conversation; this.pausing = true;
+  }
   reconcileRetained(result: ReloadInspection | null): void {
     if (!result || result.kind === "active" || !this.current) return;
     const { snapshot, conversation } = result, local = this.current;

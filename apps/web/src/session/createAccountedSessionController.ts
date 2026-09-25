@@ -286,6 +286,31 @@ export class AccountedSessionController extends SessionController {
               inspected.conversation.version !== conversation.version)
               throw new Error("Retained End version changed");
             this.accounting.reconcileRetained(inspected);
+          } else if (local.status === "paused" && conversation.status === "paused" &&
+            conversation.version === local.version + 2) {
+            let inspected;
+            try { inspected = await store.inspectReload(id => this.accounting.api.readConversation(id) as Promise<ConversationMetadata>); }
+            catch (error) {
+              // Expired private snapshot content is purged; the owner-scoped paused ledger row can still prove End's version.
+              if (!(error instanceof Error && ["Retained conversation snapshot unavailable",
+                "Retained conversation is not eligible for automatic resume"].includes(error.message))) throw error;
+            }
+            if (inspected) {
+              if (inspected.kind !== "pending" || inspected.conversation.status !== "paused" ||
+                inspected.conversation.version !== conversation.version ||
+                inspected.snapshot.conversationVersion !== local.version || !inspected.snapshot.resumeAttemptId)
+                throw new Error("Retained End claim changed");
+              const id = inspected.snapshot.resumeAttemptId;
+              const receipt = await this.accounting.api.readAttempt(id);
+              if (receipt.liveSessionId !== id || receipt.conversation.conversationId !== conversation.conversationId ||
+                receipt.conversation.version !== conversation.version || receipt.conversation.status !== "paused" ||
+                receipt.conversation.resumeAttemptId !== null || receipt.resumeClaimVersion !== local.version + 1 ||
+                !["aborted", "expired"].includes(receipt.resumeOutcome ?? "") ||
+                !["failed", "closed"].includes(receipt.state ?? "") || receipt.cleanupRequestedAt == null)
+                throw new Error("Recovered resume cleanup is still pending");
+            } else if (store.retainedConversationVersion() !== local.version || local.conversationId !== retainedId)
+              throw new Error("Retained End version changed");
+            this.accounting.confirmRecoveredSettledClaim(conversation);
           }
           if (local.status === "resuming" && conversation.status === "active")
             await store.confirmResume(conversation, this.accounting.confirmRecoveredCompletion(conversation));
