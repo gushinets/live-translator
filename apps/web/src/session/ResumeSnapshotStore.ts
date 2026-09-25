@@ -98,6 +98,7 @@ export class ResumeSnapshotStore {
   private releaseLock: (() => void) | undefined;
   private lockLifetime: Promise<unknown> | undefined;
   get available(): boolean { return this.owned && this.storage !== null && this.factory !== null; }
+  get ownsDocument(): boolean { return this.owned; }
   private constructor(readonly clientInstanceId: string, private readonly storage: Storage | null,
     private readonly factory: IDBFactory | null, private readonly name: string, private readonly now: () => number) {}
 

@@ -266,6 +266,7 @@ export class AccountedSessionController extends SessionController {
     if (this.pendingEnd) { await this.runRecoveryVerification(); if (this.pendingEnd) return; }
     const retainedId = store.retainedConversationId();
     if (retainedId) {
+      if (!store.ownsDocument) throw new Error("Retained conversation ownership unavailable");
       // A server read can safely End an expired/corrupt snapshot without claiming or restoring it.
       const conversation = await this.accounting.api.readConversation(retainedId) as ConversationMetadata;
       if (conversation.conversationId !== retainedId || !Number.isSafeInteger(conversation.version) ||
@@ -281,11 +282,23 @@ export class AccountedSessionController extends SessionController {
           if (local.status === "active" && conversation.status === "paused")
             this.accounting.confirmRecoveredPause(conversation);
           else if (local.status === "paused" && conversation.status === "resuming") {
-            const inspected = await store.inspectReload(id => this.accounting.api.readConversation(id) as Promise<ConversationMetadata>);
-            if (!inspected || inspected.kind === "active" || inspected.conversation.status !== conversation.status ||
-              inspected.conversation.version !== conversation.version)
-              throw new Error("Retained End version changed");
-            this.accounting.reconcileRetained(inspected);
+            if (store.retainedConversationVersion() !== local.version || local.conversationId !== retainedId ||
+              !conversation.resumeAttemptId) throw new Error("Retained End claim changed");
+            const receipt = await this.accounting.api.readAttempt(conversation.resumeAttemptId);
+            if (receipt.liveSessionId !== conversation.resumeAttemptId || receipt.startReason !== "resume" ||
+              receipt.conversation.conversationId !== retainedId ||
+              receipt.conversation.version !== conversation.version || receipt.conversation.status !== "resuming" ||
+              receipt.conversation.resumeAttemptId !== conversation.resumeAttemptId ||
+              receipt.conversation.policy.policyVersion !== conversation.policy.policyVersion ||
+              receipt.conversation.productDeadlineAt !== conversation.productDeadlineAt ||
+              receipt.conversation.resumeExpiresAt !== conversation.resumeExpiresAt ||
+              receipt.resumeClaimVersion !== conversation.version || receipt.resumeOutcome !== "pending" ||
+              receipt.resumeClaimExpiresAt == null || !Number.isSafeInteger(receipt.resumeClaimExpiresAt) ||
+              receipt.resumeClaimExpiresAt <= conversation.serverTime ||
+              receipt.resumeClaimExpiresAt > conversation.resumeExpiresAt! ||
+              (conversation.productDeadlineAt !== null && receipt.resumeClaimExpiresAt > conversation.productDeadlineAt))
+              throw new Error("Retained End claim changed");
+            this.accounting.confirmRecoveredClaimForEnd(conversation);
           } else if (local.status === "paused" && conversation.status === "paused" &&
             conversation.version === local.version + 2) {
             let inspected;

@@ -63,7 +63,7 @@ class Peer extends EventTarget {
   }
 }
 function fixture(closeTimeoutMs = 2000, background = false, initialHidden = false, snapshotGate?: Promise<void>, remoteTrack = true,
-  storageDenied = false) {
+  storageDenied = false, snapshotNow?: () => number) {
   const doc = document;
   let hidden = initialHidden;
   const previousVisibility = Object.getOwnPropertyDescriptor(doc, "visibilityState");
@@ -81,7 +81,7 @@ function fixture(closeTimeoutMs = 2000, background = false, initialHidden = fals
   const snapshotDb = new IDBFactory(), snapshotName = crypto.randomUUID();
   const snapshotLocks = { request: async (_name: string, _options: unknown, callback: (lock: object) => unknown) => callback({}) } as LockManager;
   const snapshotStore = ResumeSnapshotStore.open({ indexedDB: snapshotDb, sessionStorage: retainedStorage,
-    locks: snapshotLocks, name: snapshotName });
+    locks: snapshotLocks, name: snapshotName, now: snapshotNow });
   const budget = new MetadataDeliveryBudget({ indexedDB: new IDBFactory(), name: crypto.randomUUID() });
   const c: ConversationMetadata = { conversationId: "conversation", version: 1, status: "active", productDeadlineAt: null,
     resumeExpiresAt: null, resumeAttemptId: null, serverTime: Date.now(), policy: { sessionCloseTimeoutMs: closeTimeoutMs,
@@ -2000,6 +2000,77 @@ describe("stage 5 hidden boundary", () => {
     }
     await f.controller.dispose(); await f.budget.close(); server.db.close();
   });
+  async function doubleLostClaimBeforeLocalDeadline() {
+    let localNow = Date.now();
+    const f = fixture(40, true, false, undefined, true, false, () => localNow), server = useRealLedger(f);
+    await f.controller.startBootstrap();
+    f.setVisible(false);
+    await vi.waitFor(() => expect(f.clients[0]!.peer.channel.sent).toContain("session.close"));
+    server.advance(1000); // The server commits Pause after the local hidden timestamp.
+    f.clients[0]!.peer.channel.emit({ type: "session.closed" });
+    await vi.waitFor(() => expect(f.c.status).toBe("paused"));
+    await f.scope.outbox.flush();
+    const store = await f.snapshotStore;
+    const localDeadline = (await store.readForResume(id => f.api.readConversation(id) as Promise<ConversationMetadata>))!
+      .localResumeDeadlineAt!;
+    localNow = localDeadline - 1;
+    server.advance(298999);
+    const claim = f.api.claimResume.getMockImplementation()!;
+    f.api.claimResume.mockImplementationOnce(async (...args) => { await claim(...args); throw new Error("claim response lost"); })
+      .mockImplementationOnce(async (...args) => { await claim(...args); throw new Error("claim response lost"); });
+    f.setVisible(true);
+    await vi.waitFor(() => expect(f.controller.retainedRecoveryState).toBe("failed"));
+    expect(f.c).toMatchObject({ status: "resuming", version: 3 });
+    expect(f.c.serverTime).toBeLessThan(f.c.resumeExpiresAt!);
+    expect(f.api.createSession).toHaveBeenCalledTimes(1);
+    return { f, server, store, setLocalNow: (offset: number) => { localNow = localDeadline + offset; } };
+  }
+  it.each([-1, 0, 1])("End reconciles a double-lost claim at local resume deadline %+d ms", async offset => {
+    const { f, server, store, setLocalNow } = await doubleLostClaimBeforeLocalDeadline();
+    setLocalNow(offset);
+    if (offset === 1) {
+      await expect(store.inspectReload(id => f.api.readConversation(id) as Promise<ConversationMetadata>))
+        .rejects.toThrow("Retained conversation is not eligible for automatic resume");
+      expect(store.hasRetainedIdentity()).toBe(true);
+      await expect(f.controller.resumeRetainedConversation()).rejects.toThrow("Retained conversation snapshot unavailable");
+      f.setVisible(false);
+    }
+    const ending = f.controller.endConversation();
+    expect(f.controller.endConversation()).toBe(ending);
+    await ending;
+    expect(f.api.end).toHaveBeenCalledWith(server.conversationId, 3, "user_end");
+    expect(f.api.end).toHaveBeenCalledTimes(1);
+    expect(f.c.status).toBe("ended");
+    expect(f.api.claimResume).toHaveBeenCalledTimes(2);
+    expect(f.api.createSession).toHaveBeenCalledTimes(1);
+    expect(sessionStorage.getItem("live-translator-retained-conversation-v1")).toBeNull();
+    await f.controller.dispose(); await f.budget.close(); server.db.close();
+  });
+  it.each(["offline", "wrong_attempt", "wrong_policy", "bad_deadline"] as const)(
+    "keeps expired-snapshot End fenced when claim proof is %s", async failure => {
+      const { f, server, store, setLocalNow } = await doubleLostClaimBeforeLocalDeadline();
+      setLocalNow(0);
+      await expect(store.inspectReload(id => f.api.readConversation(id) as Promise<ConversationMetadata>))
+        .rejects.toThrow("Retained conversation is not eligible for automatic resume");
+      const readAttempt = f.api.readAttempt.getMockImplementation()!;
+      f.api.readAttempt.mockImplementationOnce(async id => {
+        if (failure === "offline") throw new Error("offline");
+        const receipt = await readAttempt(id);
+        return failure === "wrong_attempt" ? { ...receipt, startReason: "initial" } :
+          failure === "bad_deadline" ? { ...receipt, resumeClaimExpiresAt: NaN } :
+          { ...receipt, conversation: { ...receipt.conversation,
+            policy: { ...receipt.conversation.policy, policyVersion: "other-policy" } } };
+      });
+      await expect(f.controller.endConversation()).rejects.toThrow(
+        failure === "offline" ? "offline" : "Retained End claim changed");
+      expect(f.api.end).not.toHaveBeenCalled();
+      expect(store.hasRetainedIdentity()).toBe(true);
+      expect(f.api.createSession).toHaveBeenCalledTimes(1);
+      await f.controller.endConversation();
+      expect(f.api.end).toHaveBeenCalledTimes(1);
+      expect(f.c.status).toBe("ended");
+      await f.controller.dispose(); await f.budget.close(); server.db.close();
+    });
   it.each([["expired", false], ["aborted", false], ["expired", true]] as const)(
     "End reconciles a double-lost %s claim after server rollback (local snapshot expired=%s)", async (outcome, expireSnapshot) => {
       const f = fixture(40, true), server = useRealLedger(f);
