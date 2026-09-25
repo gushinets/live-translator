@@ -588,6 +588,41 @@ describe("stage 5 hidden boundary", () => {
     expect(f.scope.conversationStatus).toBe("active");
     await f.controller.dispose(); await f.budget.close();
   });
+  it("retries after proven abort when the final server read fails in the same controller", async () => {
+    const f = fixture(40, true); configureResume(f);
+    await f.controller.startBootstrap();
+    f.setVisible(false);
+    await vi.waitFor(() => expect(f.clients[0]!.peer.channel.sent).toContain("session.close"));
+    f.clients[0]!.peer.channel.emit({ type: "session.closed" });
+    await vi.waitFor(() => expect(f.c.status).toBe("paused"));
+    const startCapture = f.audio.startCapture;
+    f.audio.startCapture = vi.fn().mockRejectedValueOnce(new Error("Microphone not ready")).mockImplementation(startCapture);
+    f.api.abortResume.mockRejectedValueOnce(new Error("abort response lost"));
+    f.api.readAttempt.mockImplementation(async id => ({ liveSessionId: id, state: "failed",
+      cleanupRequestedAt: Date.now(), handoffAcknowledgedAt: null, conversation: { ...f.c } }));
+    f.setVisible(true);
+    await vi.waitFor(() => expect(f.controller.retainedRecoveryState).toBe("failed"));
+    const priorAttempt = f.api.claimResume.mock.calls[0]![2];
+    const read = f.api.readConversation.getMockImplementation()!;
+    let reads = 0;
+    f.api.readConversation.mockImplementation(async id => {
+      if (++reads === 2) throw new Error("temporary server read failure");
+      return read(id);
+    });
+
+    await expect(f.controller.resumeRetainedConversation()).rejects.toThrow("temporary server read failure");
+    expect(f.scope.conversationStatus).toBe("paused");
+    expect(f.api.claimResume).toHaveBeenCalledTimes(1);
+    expect(await (await f.snapshotStore).inspectReload(id => f.api.readConversation(id) as Promise<ConversationMetadata>))
+      .toMatchObject({ kind: "paused", snapshot: { resumeAttemptId: null } });
+
+    await f.controller.resumeRetainedConversation();
+    expect(f.api.claimResume).toHaveBeenCalledTimes(2);
+    expect(f.api.claimResume.mock.calls[1]![2]).not.toBe(priorAttempt);
+    expect(f.api.createSession).toHaveBeenCalledTimes(2);
+    expect(f.scope.conversationStatus).toBe("active");
+    await f.controller.dispose(); await f.budget.close();
+  });
   it("A5.10 rejects resume at the exact local deadline before a new claim", async () => {
     const f = fixture(40, true); configureResume(f);
     await f.controller.startBootstrap();

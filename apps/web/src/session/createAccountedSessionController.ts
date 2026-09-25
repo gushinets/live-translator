@@ -326,6 +326,7 @@ export class AccountedSessionController extends SessionController {
         !["failed", "closed"].includes(receipt.state ?? "") || receipt.cleanupRequestedAt == null)
         throw new Error("Previous resume cleanup is still pending");
       if (aborted.status === "paused") {
+        if (this.accounting.conversationStatus === "resuming") this.accounting.confirmRecoveredAbort(aborted, attemptId);
         await store.confirmPause(aborted);
         await store.clearResumeAttempt(conversation.conversationId, attemptId);
       }
