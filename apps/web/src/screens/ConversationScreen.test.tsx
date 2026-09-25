@@ -2,6 +2,7 @@ import { readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { Profiler } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { MAX_RECENT_TURNS } from "../conversation/TurnBuffer";
 import type { Side, Turn } from "../conversation/Turn";
@@ -50,7 +51,7 @@ class FakeConversationController implements ConversationScreenController {
   recoveryPrompt: RecoveryPrompt | undefined;
   ownerError: string | undefined;
   suspendReason: LifecycleSuspendReason | undefined;
-  retainedRecoveryState: "paused" | "resuming" | "ending" | "failed" | "pending_end" | "pending_claim" | "blocked" | undefined;
+  retainedRecoveryState: "paused" | "resuming" | "ending" | "failed" | "pending_end" | "pending_claim" | "blocked" | "unresolved_create" | undefined;
   readonly correctLastTurn = vi.fn<(side: Side) => Promise<void>>(async () => {});
   readonly endConversation = vi.fn(async () => {});
   readonly resumeFromSourceTimeout = vi.fn(async () => {});
@@ -77,6 +78,41 @@ class FakeConversationController implements ConversationScreenController {
 }
 
 describe("ConversationScreen orientation and status", () => {
+  it("does not render again when subscribing to an unchanged controller", () => {
+    let renders = 0;
+    render(<Profiler id="conversation" onRender={() => { renders++; }}><ConversationScreen controller={new FakeConversationController()} /></Profiler>);
+    expect(renders).toBe(1);
+  });
+  it("catches a recovery change between render and subscription", () => {
+    const controller = new FakeConversationController(session({ state: "suspended" }));
+    const subscribe = controller.subscribe.bind(controller);
+    controller.subscribe = listener => { controller.retainedRecoveryState = "paused"; return subscribe(listener); };
+    render(<ConversationScreen controller={controller} />);
+    expect(screen.getByRole("button", { name: "Продолжить разговор" })).toBeInTheDocument();
+  });
+  it("describes pending claims as a resume that can create a paid attempt", () => {
+    const controller = new FakeConversationController(session({ state: "suspended" }));
+    controller.retainedRecoveryState = "pending_claim";
+    render(<ConversationScreen controller={controller} />);
+    expect(screen.getByRole("alert")).toHaveTextContent("новую оплачиваемую попытку");
+    expect(screen.getByRole("button", { name: "Продолжить разговор" })).toBeEnabled();
+    expect(screen.queryByRole("button", { name: "Проверить восстановление" })).not.toBeInTheDocument();
+  });
+  it("keeps recoverable action slots present and Resume primary while busy", () => {
+    const controller = new FakeConversationController(session({ state: "suspended" }));
+    controller.retainedRecoveryState = "paused";
+    const view = render(<ConversationScreen controller={controller} />);
+    const resume = screen.getByRole("button", { name: "Продолжить разговор" });
+    const end = screen.getByRole("button", { name: "Завершить сохранённый разговор" });
+    expect(resume).toHaveClass("retained-recovery__primary");
+    expect(end).toHaveClass("retained-recovery__danger");
+    controller.retainedRecoveryState = "resuming";
+    view.rerender(<ConversationScreen controller={controller} />);
+    expect(resume).toBeInTheDocument();
+    expect(resume).toBeDisabled();
+    expect(end).toBeInTheDocument();
+    expect(end).toBeDisabled();
+  });
   it("offers retained resume from a paused interpreter screen", () => {
     const controller = new FakeConversationController(session({ state: "suspended" }));
     controller.retainedRecoveryState = "paused";

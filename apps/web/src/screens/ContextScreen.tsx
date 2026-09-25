@@ -1,5 +1,5 @@
 import { createAccountedSessionController, type AccountedSessionController } from "../session/createAccountedSessionController";
-import { useEffect, useReducer, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useReducer, useRef, useState } from "react";
 import { ErrorOverlay } from "../components/ErrorOverlay";
 import { BootstrapPrompt } from "../components/BootstrapPrompt";
 import { RetainedRecovery, type RetainedRecoveryState } from "../components/RetainedRecovery";
@@ -51,6 +51,14 @@ export interface ContextScreenController {
   resumeFromSourceTimeout(): Promise<void>;
   resumeRetainedConversation?(): Promise<void>;
   verifyRetainedConversation?(): Promise<void>;
+}
+
+function uiSnapshot(controller: ContextScreenController): unknown[] {
+  return [controller.session, controller.inputReady, controller.contextText, controller.bootstrapText,
+    controller.bootstrapSide, controller.bootstrapRecording, controller.ownerError,
+    controller.hasEnteredInterpreter, controller.isConnectInFlight, controller.isInterpreterStarting,
+    controller.recoveryPrompt, controller.suspendReason, controller.retainedRecoveryState,
+    controller.audioElement];
 }
 
 let documentController: AccountedSessionController | null = null;
@@ -116,17 +124,27 @@ export function ContextScreen({
   const [, rerender] = useReducer((count: number) => count + 1, 0);
   const audioHostRef = useRef<HTMLDivElement>(null);
   const startRef = useRef<HTMLButtonElement>(null);
+  const bootstrapPrimaryRef = useRef<HTMLButtonElement>(null);
+  const bootstrapRepeatRef = useRef<HTMLButtonElement>(null);
+  const renderedSnapshot = useRef<unknown[]>([]);
+  const snapshot = controller ? uiSnapshot(controller) : [];
+  useLayoutEffect(() => { renderedSnapshot.current = snapshot; });
   const previousRecovery = useRef<RetainedRecoveryState | undefined>(undefined);
   const recoveryState = controller?.retainedRecoveryState;
   useEffect(() => {
     if (!controller) return;
     const unsubscribe = controller.subscribe(rerender);
     // Catch a recovery probe that settled between render and subscription.
-    rerender();
+    if (uiSnapshot(controller).some((value, index) => !Object.is(value, renderedSnapshot.current[index]))) rerender();
     return unsubscribe;
   }, [controller]);
   useEffect(() => {
-    if (previousRecovery.current !== undefined && recoveryState === undefined) startRef.current?.focus();
+    if (previousRecovery.current !== undefined && recoveryState === undefined) {
+      const target = controller?.session.state === "bootstrap"
+        ? [bootstrapPrimaryRef.current, bootstrapRepeatRef.current].find(button => button && !button.disabled)
+        : startRef.current;
+      if (target && !target.disabled) target.focus();
+    }
     previousRecovery.current = recoveryState;
   }, [recoveryState]);
   useEffect(() => {
@@ -246,6 +264,8 @@ export function ContextScreen({
                 languageA={controller.session.participantA.language}
                 languageB={controller.session.participantB.language}
                 actionsDisabled={controller.isInterpreterStarting === true || isBusy}
+                primaryActionRef={bootstrapPrimaryRef}
+                repeatActionRef={bootstrapRepeatRef}
                 onRecord={() => { void handleStart(); }}
                 onBegin={() => { void handleBegin(); }}
                 onAccept={() => {

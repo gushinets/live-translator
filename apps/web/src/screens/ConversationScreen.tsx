@@ -1,4 +1,4 @@
-import { useEffect, useReducer, useRef } from "react";
+import { useEffect, useLayoutEffect, useReducer, useRef } from "react";
 import { ErrorOverlay } from "../components/ErrorOverlay";
 import { RetainedRecovery, type RetainedRecoveryState } from "../components/RetainedRecovery";
 import "./ConversationScreen.css";
@@ -24,6 +24,11 @@ export interface ConversationScreenController {
   verifyRetainedConversation?(): Promise<void>;
 }
 
+function uiSnapshot(controller: ConversationScreenController): unknown[] {
+  return [controller.session, controller.inputReady, controller.recoveryPrompt, controller.ownerError,
+    controller.suspendReason, controller.retainedRecoveryState];
+}
+
 export function ConversationScreen({
   controller,
 }: {
@@ -31,10 +36,13 @@ export function ConversationScreen({
 }) {
   const [, rerender] = useReducer((count: number) => count + 1, 0);
   const endRef = useRef<HTMLButtonElement>(null);
+  const renderedSnapshot = useRef<unknown[]>([]);
+  const snapshot = uiSnapshot(controller);
+  useLayoutEffect(() => { renderedSnapshot.current = snapshot; });
   const previousRecovery = useRef<RetainedRecoveryState | undefined>(undefined);
   useEffect(() => {
     const unsubscribe = controller.subscribe(rerender);
-    rerender();
+    if (uiSnapshot(controller).some((value, index) => !Object.is(value, renderedSnapshot.current[index]))) rerender();
     return unsubscribe;
   }, [controller]);
   useEffect(() => {

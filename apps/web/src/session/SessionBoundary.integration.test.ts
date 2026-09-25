@@ -1135,6 +1135,21 @@ describe("stage 5 hidden boundary", () => {
     expect(sessionStorage.getItem("live-translator-retained-conversation-v1")).toBeNull();
     await f.budget.close();
   });
+  it("exposes an unresolved create without permitting new admission after reload", async () => {
+    const f = fixture(40, true);
+    await f.controller.dispose();
+    const store = await ResumeSnapshotStore.open({ indexedDB: f.snapshotDb, sessionStorage,
+      locks: f.snapshotLocks, name: f.snapshotName });
+    store.retainPendingCreate();
+    await store.dispose();
+    const reloaded = await reloadedController(f);
+    await vi.waitFor(() => expect(reloaded.controller.retainedRecoveryState).toBe("unresolved_create"));
+    await expect(reloaded.controller.startContextCapture()).rejects.toThrow("Retained conversation create remains unresolved");
+    expect(f.api.createConversation).not.toHaveBeenCalled();
+    expect(f.api.end).not.toHaveBeenCalled();
+    await reloaded.controller.dispose().catch(() => undefined);
+    await f.budget.close();
+  });
   it("retains a late created identity when disposal End fails and blocks reload", async () => {
     const f = fixture(40, true);
     let create!: (value: ConversationMetadata) => void;

@@ -40,6 +40,7 @@ export class AccountedSessionController extends SessionController {
   private retainedActive = false;
   private pendingEnd = false;
   private pendingClaim = false;
+  private unresolvedCreate = false;
   private recoveryBlocked = false;
   private retainedEndWork: Promise<void> | null = null;
   constructor(deps: SessionControllerDeps, private readonly accounting: ConversationAccounting,
@@ -55,6 +56,7 @@ export class AccountedSessionController extends SessionController {
     const probe = (async () => {
       const store = await this.snapshotStore;
       if ((await this.accounting.budget.ends()).length) { this.pendingEnd = true; return; }
+      if (store.hasPendingCreate()) { this.unresolvedCreate = true; return; }
       if (!store.hasRetainedIdentity()) return;
       const result = await store.inspectReload(id => this.accounting.api.readConversation(id) as Promise<ConversationMetadata>);
       if (result?.kind === "paused" || result?.kind === "pending") this.adoptRetainedPause();
@@ -70,11 +72,12 @@ export class AccountedSessionController extends SessionController {
     });
     this.recoveryProbe = probe;
   }
-  get retainedRecoveryState(): "checking" | "paused" | "resuming" | "ending" | "failed" | "active" | "pending_end" | "pending_claim" | "blocked" | undefined {
+  get retainedRecoveryState(): "checking" | "paused" | "resuming" | "ending" | "failed" | "active" | "pending_end" | "pending_claim" | "blocked" | "unresolved_create" | undefined {
     if (this.retainedEndWork || this.session.state === "ending") return "ending";
     if (this.recoveryChecking || this.verificationWork) return "checking";
     if (this.resumeWork) return "resuming";
     if (this.pendingEnd) return "pending_end";
+    if (this.unresolvedCreate) return "unresolved_create";
     if (this.retainedActive) return "active";
     if (this.recoveryBlocked) return "blocked";
     if (this.pendingClaim) return "pending_claim";
@@ -97,6 +100,7 @@ export class AccountedSessionController extends SessionController {
   }
   private async runRecoveryVerification(): Promise<void> {
     await this.recoveryProbe;
+    if (this.unresolvedCreate) throw new Error("Retained conversation create remains unresolved");
     await this.accounting.outbox.flush();
     this.pendingEnd = (await this.accounting.budget.ends()).length > 0;
     if (this.pendingEnd) return;
@@ -176,7 +180,7 @@ export class AccountedSessionController extends SessionController {
     catch (error) { console.error("Retained conversation resume failed", { error }); }
   }
   async resumeRetainedConversation(explicit = true): Promise<void> {
-    if (this.pendingEnd || this.recoveryBlocked) throw new Error("Retained conversation requires verification");
+    if (this.pendingEnd || this.recoveryBlocked || this.unresolvedCreate) throw new Error("Retained conversation requires verification");
     if (this.retainedEndWork) return this.retainedEndWork;
     if (this.resumeWork) return this.resumeWork;
     if (explicit) { this.resumeFailed = false; this.pendingClaim = false; }
@@ -197,6 +201,7 @@ export class AccountedSessionController extends SessionController {
     }
   }
   override endConversation(): Promise<void> {
+    if (this.unresolvedCreate) return Promise.reject(new Error("Retained conversation create remains unresolved"));
     if (this.retainedEndWork) return this.retainedEndWork;
     if (this.resumeWork && this.accounting.conversationId) return super.endConversation();
     if (!this.resumeWork && (this.accounting.conversationId ||

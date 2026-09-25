@@ -20,6 +20,31 @@
   min-height: 3.25rem;
 }
 
+.retained-recovery__placeholder { min-height: 3.25rem; }
+
+.retained-recovery__actions .retained-recovery__danger {
+  border: 1px solid #7a2e1f;
+  background: #231d18;
+  color: #ffe8df;
+}
+
+.retained-recovery__actions .retained-recovery__danger:hover:not(:disabled) { background: #3a211b; }
+
+.conversation-center .retained-recovery__actions .retained-recovery__primary {
+  border-radius: 0.95rem;
+  background: #f4ead5;
+  color: #17130f;
+}
+
+.conversation-center .retained-recovery__actions .retained-recovery__danger {
+  border-radius: 0.95rem;
+  border: 1px solid #7a2e1f;
+  background: #231d18;
+  color: #ffe8df;
+}
+
+.conversation-center .retained-recovery__actions .retained-recovery__danger:hover:not(:disabled) { background: #3a211b; }
+
 .retained-recovery--conversation .retained-recovery__actions button:disabled { cursor: wait; opacity: 0.46; }
 
 @media (min-width: 30rem) {

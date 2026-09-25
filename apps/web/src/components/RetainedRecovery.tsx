@@ -2,7 +2,7 @@ import { useRef, useState } from "react";
 import "./RetainedRecovery.css";
 
 export type RetainedRecoveryState = "checking" | "paused" | "resuming" | "ending" | "failed" |
-  "active" | "pending_end" | "pending_claim" | "blocked";
+  "active" | "pending_end" | "pending_claim" | "blocked" | "unresolved_create";
 
 const messages: Record<RetainedRecoveryState, string> = {
   checking: "Проверяем сохранённый разговор…",
@@ -12,8 +12,9 @@ const messages: Record<RetainedRecoveryState, string> = {
   failed: "Не удалось восстановить разговор. Проверьте соединение, микрофон и звук; повторите или завершите разговор.",
   active: "Сохранённый разговор ещё активен. Завершите его перед новым разговором.",
   pending_end: "Завершение не подтверждено. Новый разговор пока недоступен. Проверьте соединение и повторите проверку.",
-  pending_claim: "Восстановление не подтверждено. Проверьте предыдущую попытку перед продолжением.",
+  pending_claim: "Прошлая попытка восстановления не подтверждена. Продолжение прервёт её и может создать новую оплачиваемую попытку.",
   blocked: "Не удалось проверить сохранённый разговор. Новый разговор пока недоступен. Повторите проверку или завершите его.",
+  unresolved_create: "Создание разговора не удалось подтвердить. Новый разговор пока недоступен. Обратитесь в поддержку для проверки.",
 };
 
 export function RetainedRecovery({ state, surface, onResume, onVerify, onEnd }: {
@@ -24,8 +25,9 @@ export function RetainedRecovery({ state, surface, onResume, onVerify, onEnd }: 
   onEnd: () => Promise<void>;
 }) {
   const flight = useRef(false);
+  const lastPrimary = useRef<"resume" | "verify" | null>(null);
   const [busy, setBusy] = useState(false);
-  const processing = busy || state === "checking" || state === "ending";
+  const processing = busy || state === "checking" || state === "resuming" || state === "ending";
   const run = (action: () => Promise<void>) => {
     if (flight.current || processing) return;
     flight.current = true;
@@ -35,18 +37,23 @@ export function RetainedRecovery({ state, surface, onResume, onVerify, onEnd }: 
   };
   const resume = state === "paused" || state === "failed" || state === "pending_claim";
   const verify = state === "pending_end" || state === "blocked";
-  const alert = state === "failed" || state === "pending_end" || state === "pending_claim" || state === "blocked";
+  if (resume) lastPrimary.current = "resume";
+  if (verify) lastPrimary.current = "verify";
+  const showResume = resume || (processing && lastPrimary.current === "resume");
+  const showVerify = verify || (processing && lastPrimary.current === "verify");
+  const alert = state === "failed" || state === "pending_end" || state === "pending_claim" || state === "blocked" || state === "unresolved_create";
 
   return <div className={`retained-recovery retained-recovery--${surface}`} aria-busy={processing}>
     <p className="retained-recovery__message" role={alert ? "alert" : "status"}>{messages[state]}</p>
     <div className="retained-recovery__actions">
-      {resume && onResume ? <button className={surface === "setup" ? "setup-primary-action" : undefined}
+      {showResume && onResume ? <button className={`${surface === "setup" ? "setup-primary-action " : ""}retained-recovery__primary`}
         type="button" disabled={processing} onClick={() => run(onResume)}>
-        {state === "failed" ? "Повторить восстановление" : state === "pending_claim" ? "Проверить восстановление" : "Продолжить разговор"}
+        {state === "failed" ? "Повторить восстановление" : "Продолжить разговор"}
       </button> : null}
-      {verify && onVerify ? <button className={surface === "setup" ? "setup-primary-action" : undefined}
+      {showVerify && onVerify ? <button className={`${surface === "setup" ? "setup-primary-action " : ""}retained-recovery__primary`}
         type="button" disabled={processing} onClick={() => run(onVerify)}>Повторить проверку</button> : null}
-      {state !== "checking" ? <button className={surface === "setup" ? "setup-secondary-action" : undefined}
+      {!showResume && !showVerify && state !== "unresolved_create" ? <span className="retained-recovery__placeholder" aria-hidden="true" /> : null}
+      {state !== "unresolved_create" ? <button className={`${surface === "setup" ? "setup-secondary-action " : ""}retained-recovery__danger`}
         type="button" disabled={processing} onClick={() => run(onEnd)}>
         Завершить сохранённый разговор
       </button> : null}

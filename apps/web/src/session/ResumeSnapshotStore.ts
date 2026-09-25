@@ -161,6 +161,11 @@ export class ResumeSnapshotStore {
     return this.storage.getItem(CONVERSATION_KEY) !== null;
   }
 
+  hasPendingCreate(): boolean {
+    if (!this.storage) throw new Error("Retained conversation storage unavailable");
+    return this.storage.getItem(CONVERSATION_KEY) === PENDING_CREATE;
+  }
+
   retainedConversationId(): string | null {
     if (!this.storage) throw new Error("Retained conversation storage unavailable");
     const id = this.storage.getItem(CONVERSATION_KEY);
