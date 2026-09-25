@@ -115,6 +115,30 @@ describe("conversation HTTP ownership and handoff", () => {
     expect(res.body.code).toBe("new_creations_paused");
     expect(f.ledger.getConversation((f.db.prepare("SELECT anonymous_user_id FROM conversations WHERE id=?").get(c.conversationId) as { anonymous_user_id: string }).anonymous_user_id, c.conversationId).status).toBe("paused");
   });
+  it("preserves a committed resume 201 through graceful shutdown for recovery, handoff, and completion", async () => {
+    const f = fixture(), c = await f.conversation(), id = randomUUID();
+    const paused = await f.agent.post(`/api/conversations/${c.conversationId}/pause`).set("Origin", origin)
+      .send({ expectedVersion: c.version }).expect(200);
+    const claim = await f.agent.post(`/api/conversations/${c.conversationId}/resume`).set("Origin", origin)
+      .send({ expectedVersion: paused.body.version, resumeAttemptId: id, initialMode: "setup" }).expect(200);
+    await f.agent.post("/api/live/session").set("Origin", origin).send({ ...payload(c),
+      conversationVersion: claim.body.version, liveSessionId: id, startReason: "resume" }).expect(201);
+    const runtime = f.app.locals.ledgerRuntime as LedgerRuntime;
+    await runtime.shutdown({ drainMs: 0, timeoutMs: 100 });
+    const before = f.ledger.getAttemptInternal(id);
+    expect(before).toMatchObject({ state: "creating", resume_outcome: "pending", cleanup_requested_at: null,
+      handoff_acknowledged_at: null, close_confirmed: 0, lease_released_at: null });
+    expect(before.openai_session_id).not.toBeNull();
+    expect(f.ledger.reservations()).toHaveLength(1);
+    expect(f.closeOrphan).not.toHaveBeenCalled();
+    new LedgerRuntime(f.ledger, { startWorker: false });
+    expect(f.ledger.getAttemptInternal(id).cleanup_requested_at).toBeNull();
+    const owner = (f.db.prepare("SELECT anonymous_user_id FROM conversations WHERE id=?").get(c.conversationId) as { anonymous_user_id: string }).anonymous_user_id;
+    expect(f.ledger.acknowledgeHandoff(owner, id).state).toBe("active");
+    expect(f.ledger.completeResume(owner, c.conversationId, claim.body.version, id, f.ledger.now(), "setup").status).toBe("active");
+    expect(f.ledger.getAttemptInternal(id)).toMatchObject({ resume_outcome: "committed", cleanup_requested_at: null });
+    expect(f.provider).toHaveBeenCalledTimes(1);
+  });
 
   it("keeps recovery endpoints while disabling new creations during rollback", async () => {
     const f = fixture(), c = await f.conversation();

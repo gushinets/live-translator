@@ -1,6 +1,6 @@
 # PR 1 — конфигурация и границы admission
 
-**Статус:** `in-progress` — реализация в [GitHub PR #14](https://github.com/gushinets/live-translator/pull/14), CI code revision прошёл; ожидает ревью и merge.  
+**Статус:** `completed` — реализация слита в [GitHub PR #14](https://github.com/gushinets/live-translator/pull/14).
 **Зависимости:** Документационный PR #13 слит; implementation baseline `158f011d63552d750ae9549fd29c4b3a51d56cf4`. Остальные этапы не входят в этот PR.  
 **Спецификация:** [v1.1](../../specs/2026-09-21-unit-economics-and-session-lifecycle.md).\
 **Общие ограничения и проверки:** [README плана](README.md).

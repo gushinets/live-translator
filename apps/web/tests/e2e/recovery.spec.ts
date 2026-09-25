@@ -1,20 +1,34 @@
 import { expect, test } from "@playwright/test";
 
-test("an opener-cloned tab rotates its inherited client ID while the owner holds the real Web Lock", async ({ page, browserName }) => {
-  test.skip(browserName !== "chromium", "Chromium Web Locks ownership check");
+test("an opener-cloned tab loses the owner's document-lifetime Web Lock and rotates its inherited ID", async ({ page }) => {
   const key = "live-translator-client-instance-v1";
+  const probe = (id: string) => navigator.locks.request(`client-instance:${id}`,
+    { mode: "exclusive", ifAvailable: true }, lock => Boolean(lock));
   await page.context().addInitScript(key => {
     Object.defineProperty(window, "__inheritedClientId", { value: sessionStorage.getItem(key) });
   }, key);
   await page.goto("/");
-  await expect.poll(() => page.evaluate(key => sessionStorage.getItem(key), key)).not.toBeNull();
+  await expect(page.getByRole("button", { name: "Начать перевод" })).toBeVisible();
   const ownerId = await page.evaluate(key => sessionStorage.getItem(key), key);
+  expect(ownerId).not.toBeNull();
+  expect(await page.evaluate(probe, ownerId!)).toBe(false);
   const popupEvent = page.waitForEvent("popup");
   await page.evaluate(() => window.open("/", "_blank"));
   const clone = await popupEvent;
-  await expect.poll(() => clone.evaluate(key => sessionStorage.getItem(key), key)).not.toBe(ownerId);
+  await expect(clone.getByRole("button", { name: "Начать перевод" })).toBeVisible();
   expect(await clone.evaluate(() => (window as Window & { __inheritedClientId?: string }).__inheritedClientId)).toBe(ownerId);
+  expect(await clone.evaluate(probe, ownerId!)).toBe(false);
+  const cloneId = await clone.evaluate(key => sessionStorage.getItem(key), key);
+  expect(cloneId).not.toBe(ownerId);
+  expect(cloneId).not.toBeNull();
+  expect(await clone.evaluate(probe, cloneId!)).toBe(false);
   expect(await page.evaluate(key => sessionStorage.getItem(key), key)).toBe(ownerId);
+  await clone.evaluate(id => {
+    (window as Window & { __releasedOwnerLock?: Promise<boolean> }).__releasedOwnerLock =
+      navigator.locks.request(`client-instance:${id}`, lock => Boolean(lock));
+  }, ownerId!);
+  await page.close();
+  expect(await clone.evaluate(() => (window as Window & { __releasedOwnerLock: Promise<boolean> }).__releasedOwnerLock)).toBe(true);
   await clone.close();
 });
 

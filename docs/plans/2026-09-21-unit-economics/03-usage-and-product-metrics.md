@@ -1,6 +1,6 @@
 # PR 3 — usage, active/speech time и отчёт по разговору
 
-**Статус:** `in-progress` — [PR #17](https://github.com/gushinets/live-translator/pull/17), от merge `571a07273a5491b06767581b024ab753e8d66e2e`; не слито.
+**Статус:** `completed` — [PR #17](https://github.com/gushinets/live-translator/pull/17) слит; устойчивость outbox дополнена слитым [PR #18](https://github.com/gushinets/live-translator/pull/18).
 **Зависимости:** Зависит от PR 2. Это первая измеримая контрольная точка G1; новый background lifecycle ещё выключен.  
 **Спецификация:** [v1.1](../../specs/2026-09-21-unit-economics-and-session-lifecycle.md).\
 **Общие ограничения и проверки:** [README плана](README.md).
