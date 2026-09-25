@@ -230,7 +230,6 @@ export class AccountedSessionController extends SessionController {
     this.invalidatePendingStart();
     if (this.unresolvedCreate) return Promise.reject(new Error("Retained conversation create remains unresolved"));
     if (this.retainedEndWork) return this.retainedEndWork;
-    if (this.resumeWork && this.accounting.conversationId) return super.endConversation();
     if (!this.resumeWork && ((this.accounting.conversationId &&
       this.accounting.conversationStatus !== "resuming" && !this.resumeFailed &&
       !this.recoveryBlocked && !this.pendingEnd) ||
@@ -253,6 +252,7 @@ export class AccountedSessionController extends SessionController {
       }
     })();
     this.retainedEndWork = work;
+    if (resume && this.session.state !== "idle" && this.session.state !== "ended") this.dispatch({ type: "END" });
     this.notify();
     return work;
   }
@@ -407,7 +407,10 @@ export class AccountedSessionController extends SessionController {
           this.retainedResumePhase === "media" || !this.accounting.resumeDispatched ||
           error instanceof Error && /Microphone|audio|playback|media/i.test(error.message) ? "media_not_ready" :
           this.retainedResumePhase === "create" ? "provider_creation_failed" : "restore_ack_failed";
-        if (this.accounting.conversationStatus === "active") {
+        if (this.retainedEndWork || this.disposed) {
+          try { await cleanup; }
+          catch { console.error("Retained transport cleanup incomplete"); }
+        } else if (this.accounting.conversationStatus === "active") {
           void cleanup.catch(() => console.error("Retained transport cleanup incomplete"));
           try { await this.accounting.end("setup_cancel", this.accounting.revision); settled = true; }
           catch { console.error("Committed resume retirement pending"); }

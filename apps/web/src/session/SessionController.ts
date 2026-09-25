@@ -2885,7 +2885,7 @@ export class SessionController {
     this.notify();
   }
 
-  private dispatch(action: SessionAction): void {
+  protected dispatch(action: SessionAction): void {
     const previousTurn = this.currentSession.activeTurn;
     this.currentSession = sessionReducer(this.currentSession, action);
     let completedTurnId: string | undefined;

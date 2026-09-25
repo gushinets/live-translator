@@ -782,6 +782,50 @@ describe("stage 5 hidden boundary", () => {
     expect(f.track.enabled).toBe(false);
     await f.controller.dispose(); await f.budget.close();
   });
+  it.each(["End", "disposal"] as const)("%s ends a committed resume when its completion and claim responses are lost", async route => {
+    const f = fixture(40, true); configureResume(f);
+    await f.controller.startBootstrap();
+    f.setVisible(false);
+    await vi.waitFor(() => expect(f.clients[0]!.peer.channel.sent).toContain("session.close"));
+    f.clients[0]!.peer.channel.emit({ type: "session.closed" });
+    await vi.waitFor(() => expect(f.c.status).toBe("paused"));
+    const complete = f.api.completeResume.getMockImplementation()!;
+    let loseResponse!: () => void;
+    f.api.completeResume.mockImplementation(async (...args) => {
+      await complete(...args);
+      await new Promise<void>(resolve => { loseResponse = resolve; });
+      throw new Error("complete response lost");
+    });
+    const claim = f.api.claimResume.getMockImplementation()!;
+    f.api.claimResume.mockImplementation(async (...args) => {
+      if (f.c.status === "active") throw new Error("claim receipt lost");
+      return claim(...args);
+    });
+    f.api.abortResume.mockRejectedValue(new AccountingRequestError(409, "resume_claim_conflict"));
+    const end = f.api.end.getMockImplementation()!;
+    f.api.end.mockImplementation(async (...args) => {
+      if (args[1] !== f.c.version) throw new AccountingRequestError(409, "conversation_version_conflict");
+      return end(...args);
+    });
+    f.setVisible(true);
+    await vi.waitFor(() => expect(loseResponse).toBeDefined());
+    expect(f.c.status).toBe("active");
+    expect(f.scope.conversationStatus).toBe("resuming");
+    const resumed = f.clients.at(-1)!;
+    const ending = route === "End" ? f.controller.endConversation() : f.controller.dispose();
+    expect(resumed.peer.close).toHaveBeenCalledTimes(1);
+    expect(f.track.enabled).toBe(false);
+    loseResponse();
+    await ending;
+    expect(f.api.end).toHaveBeenCalledTimes(1);
+    expect(f.api.end).toHaveBeenCalledWith(f.c.conversationId, 4, "user_end");
+    expect(f.api.claimResume).toHaveBeenCalledTimes(2);
+    expect(f.c.status).toBe("ended");
+    expect(await f.budget.ends()).toHaveLength(0);
+    expect(sessionStorage.getItem("live-translator-retained-conversation-v1")).toBeNull();
+    if (route === "End") await f.controller.dispose();
+    await f.budget.close();
+  });
   it("hides an explicit retry immediately while complete is pending", async () => {
     const f = await pausedReloadFixture();
     const reloaded = await reloadedController(f);
@@ -1474,12 +1518,13 @@ describe("stage 5 hidden boundary", () => {
     f.api.createSession.mockImplementationOnce(async () => new Promise(resolve => { respond = resolve; }));
     f.setVisible(true);
     await vi.waitFor(() => expect(respond).toBeDefined());
+    const resumed = f.clients.at(-1)!;
     const disposal = f.controller.dispose();
     respond({ session: { id: "late" }, transport: { type: "webrtc", sdp: "late" } });
     await disposal;
     expect(f.api.completeResume).not.toHaveBeenCalled();
     expect(f.track.enabled).toBe(false);
-    expect(f.clients.at(-1)!.peer.close).toHaveBeenCalled();
+    expect(resumed.peer.close).toHaveBeenCalled();
     await f.budget.close();
   });
   it("A5.15 explicit reload resume uses a confirmed paused snapshot and a fresh provider", async () => {
