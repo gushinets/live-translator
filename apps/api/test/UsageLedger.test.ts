@@ -3,7 +3,7 @@ import type { DatabaseSync } from "node:sqlite";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { openUsageDatabase } from "../src/persistence/database.js";
 import { UsageLedger } from "../src/accounting/UsageLedger.js";
-import type { AttemptInput } from "../src/accounting/types.js";
+import { DEFAULT_LEDGER_POLICY, type AttemptInput } from "../src/accounting/types.js";
 
 let db: DatabaseSync;
 let ledger: UsageLedger;
@@ -200,6 +200,21 @@ describe("persistent provider ledger", () => {
     const { c, id } = resumed(); ledger.acknowledgeHandoff(owner, id); now += 60000; ledger.watchdog();
     expect(ledger.getConversation(owner, c.id).status).toBe("paused");
     const s = ledger.getAttempt(owner, id); expect(s.resume_outcome).toBe("expired"); expect(s.cleanup_reason).toBe("resume_claim_expired"); expect(s.cleanup_next_attempt_at).toBe(now); expect(s.lease_released_at).toBeNull();
+  });
+  it.each([false, true])("recovers a future resume claim and fences it at the exact deadline (handoff=%s)", handedOff => {
+    ledger = new UsageLedger(db, { now: () => now, policy: { ...DEFAULT_LEDGER_POLICY, sessionHandoffAckTimeoutMs: 120000 } });
+    const { c, id, v } = resumed();
+    if (handedOff) ledger.acknowledgeHandoff(owner, id);
+    now += 59999;
+    ledger.recover();
+    expect(ledger.getConversation(owner, c.id)).toMatchObject({ status: "resuming", resume_attempt_id: id });
+    expect(ledger.getAttempt(owner, id)).toMatchObject({ state: handedOff ? "active" : "creating", cleanup_requested_at: null });
+    now += 1;
+    if (handedOff) expect(() => ledger.completeResume(owner, c.id, v, id, now, "setup")).toThrow("resume_not_activatable");
+    else expect(() => ledger.acknowledgeHandoff(owner, id)).toThrow("handoff_not_activatable");
+    expect(ledger.getConversation(owner, c.id).status).toBe("paused");
+    expect(ledger.getAttempt(owner, id)).toMatchObject({ state: "closing", resume_outcome: "expired",
+      cleanup_reason: "resume_claim_expired", cleanup_next_attempt_at: now, lease_released_at: null });
   });
   it("rolls all provider/claim changes back if expiry commit fails", () => {
     const { c, id } = resumed(); ledger.acknowledgeHandoff(owner, id); now += 60000;

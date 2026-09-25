@@ -1,5 +1,23 @@
 import { expect, test } from "@playwright/test";
 
+test("an opener-cloned tab rotates its inherited client ID while the owner holds the real Web Lock", async ({ page, browserName }) => {
+  test.skip(browserName !== "chromium", "Chromium Web Locks ownership check");
+  const key = "live-translator-client-instance-v1";
+  await page.context().addInitScript(key => {
+    Object.defineProperty(window, "__inheritedClientId", { value: sessionStorage.getItem(key) });
+  }, key);
+  await page.goto("/");
+  await expect.poll(() => page.evaluate(key => sessionStorage.getItem(key), key)).not.toBeNull();
+  const ownerId = await page.evaluate(key => sessionStorage.getItem(key), key);
+  const popupEvent = page.waitForEvent("popup");
+  await page.evaluate(() => window.open("/", "_blank"));
+  const clone = await popupEvent;
+  await expect.poll(() => clone.evaluate(key => sessionStorage.getItem(key), key)).not.toBe(ownerId);
+  expect(await clone.evaluate(() => (window as Window & { __inheritedClientId?: string }).__inheritedClientId)).toBe(ownerId);
+  expect(await page.evaluate(key => sessionStorage.getItem(key), key)).toBe(ownerId);
+  await clone.close();
+});
+
 test("unresolved create keeps admission blocked without retry or End offline", async ({ page }) => {
   await page.goto("/");
   await expect(page.getByRole("button", { name: "Начать перевод" })).toBeVisible();

@@ -1,6 +1,6 @@
 # PR 5 — immediate background close и retained conversation
 
-**Статус:** `planned`, реализация не начата этим документом.  
+**Статус:** `in-progress` в `feat/background-close-and-resume`; PR ещё не создан, merge и Gate G2 не заявлены.
 **Зависимости:** Зависит от PR 4. Отдельный feature flag; не меняет fixed-language routing.  
 **Спецификация:** [v1.1](../../specs/2026-09-21-unit-economics-and-session-lifecycle.md).\
 **Общие ограничения и проверки:** [README плана](README.md).
@@ -64,9 +64,13 @@ Resume: atomic server version claim (`paused → resuming`, durable local row/ID
 
 Каждый criterion сначала закрепляется regression test, затем изменением кода, затем повторной проверкой. Ожидаемый RED в новом тесте — обнаружение конкретного отсутствующего контракта, не случайная ошибка окружения. Общие root-команды обязательны; реальные provider/device tests — только в разрешённой среде.
 
+## Локальная проверка feature branch
+
+На 2026-09-25: `pnpm test` — 956/956, `pnpm typecheck`, `pnpm lint`, `pnpm build` — exit 0; Playwright Chromium/WebKit с `--workers=4` — 35 passed, 1 skipped (Chromium-only real Web Locks clone test). G1 mock report воспроизведён скриптом `node apps/api/scripts/g1-mock-report.mjs`; это synthetic fixture без provider charges. Один запуск Playwright с 14 workers дал timing failure в прежнем mock clock harness (`clock.pauseAt: Cannot fast-forward to the past`); отдельный повтор этого теста и полный запуск с 4 workers прошли. Это локальные результаты ветки, не CI/device/provider evidence и не закрытие Gate G2. Новые server regression для provisional/handed-off resume на точной claim boundary и browser opener-clone lock находятся в `apps/api/test/UsageLedger.test.ts` и `apps/web/tests/e2e/recovery.spec.ts`.
+
 ## Откат
 
-Отключить background flag для новых conversations. Существующий paused snapshot не пытаться unmute на мёртвом peer: либо завершить уже начатый новый-session restore, либо безопасно закончить conversation. Ledger/outbox остаются активны.
+`BACKGROUND_SESSION_CLOSE_ENABLED=false` — default. Включать только при `USAGE_LEDGER_ENABLED=true` после review и разрешённой E3/G2 проверки; изменение действует на новые conversations, уже созданные сохраняют свою записанную policy. Для отката выключить background flag для новых conversations, сохранив ledger/outbox и маршруты cleanup. Существующий paused snapshot не пытаться unmute на мёртвом peer: либо завершить уже начатый restore с новой provider session, либо безопасно закончить conversation. E1/E2 provider calibration, E3/G2 physical-device smoke, spend reconciliation и production flag rollout остаются внешними gates; локальные fake-provider tests их не заменяют.
 
 ## Что приложить к PR
 

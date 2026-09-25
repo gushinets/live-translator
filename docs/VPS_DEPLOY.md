@@ -454,6 +454,21 @@ retry TTL is immutable seven days, independent of conversation retention.
 Resume endpoints prepare the later client feature; the background feature flag
 remains false. A logical conversation retains its policy version and deadlines.
 
+The stage-5 background/resume client is in `feat/background-close-and-resume`,
+not merged or enabled in production. Its API flag is
+`BACKGROUND_SESSION_CLOSE_ENABLED=false` by default and requires
+`USAGE_LEDGER_ENABLED=true`. When enabled after review and the E3/G2 device
+check, hidden closes the provider while retaining a five-minute logical
+conversation; explicit resume claims a fresh provider attempt. Reload recovery
+uses a tab-scoped snapshot and server-confirmed paused state. Do not treat a
+retained snapshot, browser close report, or local fake-provider test as proof of
+provider billing termination. For a stage-5 rollback, set only the background
+flag to `false` for new conversations; existing conversations keep their stored
+policy. Keep the ledger, cleanup worker, and recovery endpoints running, and
+let pending retained conversations finish or End through their safe UI path.
+Real-provider E1/E2 calibration, E3/G2 physical-device results, spend checks,
+and production flag rollout are still external gates.
+
 API shutdown closes the create-dispatch gate first, drains in-flight creation
 for up to `SERVER_SHUTDOWN_DRAIN_MS=18000`, then stops cleanup using the remaining
 `SERVER_SHUTDOWN_TIMEOUT_MS=40000` budget. The configured absolute timeout is
