@@ -148,17 +148,121 @@ describe("shared IndexedDB metadata budget", () => {
       expect((await b.ends())[0]).toMatchObject({ conversationId: "foreign", noProviderPendingLocalIds: ["shared"] });
     } finally { await b.close(); vi.useRealTimers(); }
   });
-  it("rejects a late proof when the same local ID now belongs to another conversation", async () => {
+  it("preserves a late original proof without changing a reused local ID", async () => {
     const b = budget();
     await b.reserve("shared", "original"); await b.markDispatchStarted("shared");
     await b.finishProducerAndRelease("shared", "no_provider", "original");
     await b.reserve("shared", "foreign"); await b.markDispatchStarted("shared");
     await b.enqueueEnd("foreign", 1, "setup_cancel", ["shared"], 0, "policy", ["shared"]);
-    await expect(b.finishProducerAndRelease("shared", "no_provider", "original")).rejects.toThrow("Metadata identity conflict");
+    await b.finishProducerAndRelease("shared", "no_provider", "original");
     await expect(b.finishProducer("shared", "no_provider", "original")).rejects.toThrow("Metadata identity conflict");
     expect((await b.ends())[0]).toMatchObject({ cleanupLocalIds: ["shared"], noProviderPendingLocalIds: ["shared"] });
     expect(await b.get("shared")).toMatchObject({ conversationId: "foreign", producerFinalized: false });
+    await b.enqueueEnd("original", 1, "setup_cancel", [], 0, "policy", ["shared"]);
+    expect((await b.ends()).find(end => end.conversationId === "original")?.noProviderPendingLocalIds).toEqual([]);
     await b.close();
+  });
+  it("keeps simultaneous no-provider proofs for different conversations sharing a local ID", async () => {
+    const b = budget();
+    await b.reserve("shared", "original"); await b.markDispatchStarted("shared");
+    await b.finishProducerAndRelease("shared", "no_provider", "original");
+    await b.reserve("shared", "foreign"); await b.markDispatchStarted("shared");
+    await b.finishProducerAndRelease("shared", "no_provider", "foreign");
+    for (const id of ["original", "foreign"]) await b.enqueueEnd(id, 1, "setup_cancel", [], 0, "policy", ["shared"]);
+    const ends = new Map((await b.ends()).map(end => [end.conversationId, end]));
+    expect(ends.get("original")?.noProviderPendingLocalIds).toEqual([]);
+    expect(ends.get("foreign")?.noProviderPendingLocalIds).toEqual([]);
+    await b.close();
+  });
+  it("keeps a v3 no-provider proof when a new conversation reuses its local ID", async () => {
+    const indexedDB = new IDBFactory(), name = crypto.randomUUID();
+    const b = new MetadataDeliveryBudget({ indexedDB, name });
+    await b.reserve("shared", "foreign"); await b.markDispatchStarted("shared");
+    const db = await new Promise<IDBDatabase>((resolve, reject) => {
+      const request = indexedDB.open(name); request.onsuccess = () => resolve(request.result); request.onerror = () => reject(request.error);
+    });
+    await new Promise<void>((resolve, reject) => {
+      const tx = db.transaction("noProviderProofs", "readwrite");
+      tx.objectStore("noProviderProofs").put({ localId: "shared", conversationId: "original", expiresAt: Date.now() + METADATA_TTL_MS });
+      tx.oncomplete = () => resolve(); tx.onerror = () => reject(tx.error);
+    });
+    db.close();
+    await b.finishProducerAndRelease("shared", "no_provider", "foreign");
+    for (const id of ["original", "foreign"]) await b.enqueueEnd(id, 1, "setup_cancel", [], 0, "policy", ["shared"]);
+    for (const end of await b.ends()) expect(end.noProviderPendingLocalIds).toEqual([]);
+    await b.close();
+  });
+  it.each([
+    { route: "readAttempt", reuseId: false }, { route: "readAttempt", reuseId: true }, { route: "recover", reuseId: true },
+  ])("keeps a delayed $route no-provider proof after the old row is ACKed, reused ID $reuseId", async ({ route, reuseId }) => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    const indexedDB = new IDBFactory(), name = crypto.randomUUID();
+    const owner = new MetadataDeliveryBudget({ indexedDB, name, producerId: "owner" });
+    const otherTab = new MetadataDeliveryBudget({ indexedDB, name, producerId: "other" });
+    const reloadedBudget = new MetadataDeliveryBudget({ indexedDB, name, producerId: "reload" });
+    try {
+      await owner.reserve("shared", "original"); await owner.markDispatchStarted("shared");
+      await owner.enqueueCleanup("shared", "cancelled");
+      if (route === "readAttempt") await owner.acknowledgeCleanup("shared");
+      await owner.enqueueEnd("original", 1, "setup_cancel", route === "recover" ? ["shared"] : [], 0, "policy", ["shared"]);
+      let proofRequested!: () => void, releaseProof!: () => void;
+      const requested = new Promise<void>(resolve => { proofRequested = resolve; });
+      const gate = new Promise<void>(resolve => { releaseProof = resolve; });
+      const delayedProof = async () => { proofRequested(); await gate; return { state: "failed", openaiSessionId: null, cleanupRequestedAt: Date.now() }; };
+      const offline = new CleanupIntentOutbox(otherTab, {
+        cleanup: async () => ({}), closed: async () => ({}),
+        readAttempt: route === "readAttempt" ? delayedProof : undefined,
+        recover: route === "recover" ? delayedProof : undefined,
+        readConversation: async () => ({}), end: async () => { throw new Error("offline"); },
+      });
+      const flushing = offline.flush();
+      await requested;
+      await owner.acknowledgeDirectCleanupAndRelease("shared");
+      expect(await owner.get("shared")).toBeNull();
+      if (reuseId) { await owner.reserve("shared", "foreign", true); await owner.markDispatchStarted("shared"); }
+      releaseProof();
+      await flushing;
+      expect((await owner.ends())[0]).toMatchObject({ conversationId: "original", noProviderPendingLocalIds: [] });
+      if (reuseId) expect(await owner.get("shared")).toMatchObject({ conversationId: "foreign", producerFinalized: false, usagePending: true });
+
+      vi.setSystemTime(Date.now() + METADATA_TTL_MS + 1);
+      const end = vi.fn<NonNullable<CleanupTransport["end"]>>(async () => ({ status: "ended" }));
+      const reloaded = new CleanupIntentOutbox(reloadedBudget, {
+        cleanup: async () => ({}), closed: async () => ({}), end,
+        readConversation: async conversationId => ({ conversationId, version: 1, status: "active", productDeadlineAt: null,
+          resumeAttemptId: null, serverTime: Date.now(), policy: { policyVersion: "policy", backgroundSessionCloseEnabled: true } }),
+      });
+      await reloaded.flush();
+      expect(end).toHaveBeenCalledExactlyOnceWith("original", 1, "setup_cancel");
+    } finally { await owner.close(); await otherTab.close(); await reloadedBudget.close(); vi.useRealTimers(); }
+  });
+  it.each(["cleanup", "closed"])("does not apply a delayed %s ACK to a reused local ID", async route => {
+    const indexedDB = new IDBFactory(), name = crypto.randomUUID();
+    const owner = new MetadataDeliveryBudget({ indexedDB, name, producerId: "owner" });
+    const otherTab = new MetadataDeliveryBudget({ indexedDB, name, producerId: "other" });
+    await owner.reserve("shared", "original"); await owner.markDispatchStarted("shared");
+    if (route === "cleanup") await owner.enqueueCleanup("shared", "user_end");
+    else await owner.enqueueClose("shared", {});
+    await owner.enqueueEnd("original", 1, "user_end", ["shared"]);
+    let proofRequested!: () => void, releaseProof!: () => void;
+    const requested = new Promise<void>(resolve => { proofRequested = resolve; });
+    const gate = new Promise<void>(resolve => { releaseProof = resolve; });
+    const delayedProof = async () => { proofRequested(); await gate; return { state: "closed", closeConfirmed: true, cleanupRequestedAt: Date.now() }; };
+    const outbox = new CleanupIntentOutbox(owner, {
+      cleanup: delayedProof, closed: delayedProof, readConversation: async () => ({}), end: async () => { throw new Error("offline"); },
+    });
+    const flushing = outbox.flush();
+    await requested;
+    if (route === "cleanup") await otherTab.acknowledgeDirectCleanupAndRelease("shared");
+    else await otherTab.acknowledgeCloseAndRelease("shared");
+    await otherTab.reserve("shared", "foreign", true); await otherTab.markDispatchStarted("shared");
+    releaseProof();
+    await flushing;
+    expect((await owner.ends())[0]).toMatchObject({ conversationId: "original", cleanupLocalIds: [] });
+    expect(await owner.get("shared")).toMatchObject({ conversationId: "foreign", producerFinalized: false,
+      usagePending: true, cleanup: null, closeObservation: null });
+    expect((await owner.get("shared"))?.cleanupAcknowledged).toBeUndefined();
+    await owner.close(); await otherTab.close();
   });
   it("retains definitive proof after direct cleanup removed the original envelope", async () => {
     const b = budget(); await b.reserve("attempt", "c"); await b.markDispatchStarted("attempt");

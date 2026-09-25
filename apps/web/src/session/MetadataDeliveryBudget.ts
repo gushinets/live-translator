@@ -15,7 +15,10 @@ export interface EndIntent {
   // Cleanup ACK removes cleanupLocalIds; only definitive no_provider proof removes these IDs.
   noProviderPendingLocalIds?: string[];
 }
-interface NoProviderProof { localId: string; conversationId: string; expiresAt: number; }
+// v3 rows used the attempt ID as the key; new rows key by conversation and attempt.
+interface NoProviderProof { localId: string | [string, string]; attemptLocalId?: string; conversationId: string; expiresAt: number; }
+const proofAttemptId = (proof: NoProviderProof) => proof.attemptLocalId ??
+  (typeof proof.localId === "string" ? proof.localId : proof.localId[1]);
 export const METADATA_TTL_MS = 7 * 86400000;
 
 /** One origin-wide envelope per localId. Every pre-dispatch mutation waits for IDB commit. */
@@ -81,11 +84,12 @@ export class MetadataDeliveryBudget {
       };
     });
   }
-  private change(localId: string, update: (row: MetadataEnvelope) => MetadataEnvelope | null): Promise<void> {
+  private change(localId: string, update: (row: MetadataEnvelope) => MetadataEnvelope | null, conversationId?: string): Promise<void> {
     return this.transaction("readwrite", (store, result, fail) => {
       const get = store.get(localId);
       get.onsuccess = () => {
-        if (!get.result) { fail(new Error("Metadata storage reservation missing")); return; }
+        if (!get.result) { if (conversationId) result(undefined); else fail(new Error("Metadata storage reservation missing")); return; }
+        if (conversationId && (get.result as MetadataEnvelope).conversationId !== conversationId) { result(undefined); return; }
         try { const next = update(get.result as MetadataEnvelope); if (next) store.put(next); else store.delete(localId); result(undefined); }
         catch (error) { fail(error instanceof Error ? error : new Error("Metadata storage failure")); }
       };
@@ -120,11 +124,9 @@ export class MetadataDeliveryBudget {
     return this.transaction("readwrite", (store, result, fail, tx) => {
       const get = store.get(localId);
       get.onsuccess = () => {
-        const row = get.result as MetadataEnvelope | undefined;
-        if (row && knownConversationId && row.conversationId !== knownConversationId) {
-          fail(new Error("Metadata identity conflict")); return;
-        }
-        const conversationId = row?.conversationId ?? knownConversationId;
+        const storedRow = get.result as MetadataEnvelope | undefined;
+        const row = knownConversationId && storedRow?.conversationId !== knownConversationId ? undefined : storedRow;
+        const conversationId = knownConversationId ?? row?.conversationId;
         const release = () => {
           if (row) {
             const next = update(row);
@@ -149,46 +151,49 @@ export class MetadataDeliveryBudget {
         const proofs = tx.objectStore("noProviderProofs"), all = proofs.getAll();
         all.onsuccess = () => {
           const now = Date.now();
+          const key: [string, string] = [conversationId, localId];
           let live = 0;
           for (const proof of all.result as NoProviderProof[]) {
-            if (proof.expiresAt <= now) proofs.delete(proof.localId);
-            else if (proof.localId !== localId) live++;
+            const sameAttempt = proof.conversationId === conversationId && proofAttemptId(proof) === localId;
+            if (proof.expiresAt <= now || sameAttempt && typeof proof.localId === "string")
+              proofs.delete(proof.localId);
+            else if (!sameAttempt) live++;
           }
           if (live >= this.capacity) { fail(new Error("No-provider proof storage is full")); return; }
-          proofs.put({ localId, conversationId, expiresAt: now + METADATA_TTL_MS } satisfies NoProviderProof);
+          proofs.put({ localId: key, attemptLocalId: localId, conversationId, expiresAt: now + METADATA_TTL_MS } satisfies NoProviderProof);
           release();
         };
       };
     }, noProvider ? ["envelopes", "lifecycle", "noProviderProofs"] : ["envelopes", "lifecycle"]);
   }
-  acknowledgeCleanupAndRelease(localId: string): Promise<void> {
-    return this.releaseAndRemoveEndDependency(localId, row => ({ ...row, cleanup: null, cleanupAcknowledged: true }));
+  acknowledgeCleanupAndRelease(localId: string, conversationId?: string): Promise<void> {
+    return this.releaseAndRemoveEndDependency(localId, row => ({ ...row, cleanup: null, cleanupAcknowledged: true }), false, conversationId);
   }
-  acknowledgeForeignCleanupFence(localId: string): Promise<void> {
+  acknowledgeForeignCleanupFence(localId: string, conversationId?: string): Promise<void> {
     return this.releaseAndRemoveEndDependency(localId, row => {
       const next: MetadataEnvelope = { ...row, cleanup: null, cleanupAcknowledged: true };
       if (!row.closeObservation && row.producerOutcome !== "provider_closed" && row.producerOutcome !== "no_provider") {
         next.producerFinalized = false; next.producerOutcome = null;
       }
       return next;
-    });
+    }, false, conversationId);
   }
   acknowledgeDirectCleanupAndRelease(localId: string): Promise<void> {
     return this.releaseAndRemoveEndDependency(localId, row => ({ ...row, cleanup: null, cleanupAcknowledged: true, producerFinalized: true, producerOutcome: "lost" }));
   }
-  acknowledgeCloseAndRelease(localId: string): Promise<void> {
-    return this.releaseAndRemoveEndDependency(localId, row => ({ ...row, cleanup: null, closeObservation: null, producerFinalized: true, producerOutcome: "provider_closed" }));
+  acknowledgeCloseAndRelease(localId: string, conversationId?: string): Promise<void> {
+    return this.releaseAndRemoveEndDependency(localId, row => ({ ...row, cleanup: null, closeObservation: null, producerFinalized: true, producerOutcome: "provider_closed" }), false, conversationId);
   }
   finishProducerAndRelease(localId: string, outcome: ProducerOutcome, conversationId?: string): Promise<void> {
-    if (outcome === "provider_closed") return this.acknowledgeCloseAndRelease(localId);
+    if (outcome === "provider_closed") return this.acknowledgeCloseAndRelease(localId, conversationId);
     if (outcome === "no_provider") return this.releaseAndRemoveEndDependency(localId, row => ({ ...row, cleanup: null, producerFinalized: true, producerOutcome: outcome }), true, conversationId);
     return this.change(localId, row => {
       const next = { ...row, producerFinalized: true, producerOutcome: outcome };
       return this.releasable(next) ? null : next;
-    });
+    }, conversationId);
   }
-  discardDelivery(localId: string): Promise<void> {
-    return this.releaseAndRemoveEndDependency(localId, row => ({ ...row, cleanup: null, closeObservation: null, producerFinalized: true, producerOutcome: "lost" }));
+  discardDelivery(localId: string, conversationId?: string): Promise<void> {
+    return this.releaseAndRemoveEndDependency(localId, row => ({ ...row, cleanup: null, closeObservation: null, producerFinalized: true, producerOutcome: "lost" }), false, conversationId);
   }
   releaseIfSafe(localId: string): Promise<void> {
     return this.change(localId, row => this.releasable(row) ? null : row);
@@ -214,11 +219,11 @@ export class MetadataDeliveryBudget {
       return this.releasable(next) ? null : next;
     });
   }
-  finishUsageProducer(localId: string): Promise<void> {
+  finishUsageProducer(localId: string, conversationId?: string): Promise<void> {
     return this.change(localId, row => {
       const next = { ...row, usageProducerFinalized: true, usagePending: Boolean(row.usage) };
       return this.releasable(next) ? null : next;
-    });
+    }, conversationId);
   }
   /** Drops usage only, never cleanup. Callers diagnose expiry, identity loss, or definitive no-provider. */
   discardUsage(localId: string, revision?: number): Promise<void> {
@@ -266,12 +271,12 @@ export class MetadataDeliveryBudget {
             ? (sameEnd ? old?.noProviderPolicyVersion : noProviderPolicyVersion) : undefined;
           const pendingIds = sameEnd ? old?.noProviderPendingLocalIds ?? [] : [...new Set(noProviderAttemptIds)];
           const proofIds = new Set(pendingIds);
-          const proven = new Set((proofs.result as NoProviderProof[])
-            .filter(proof => proof.conversationId === conversationId && proof.expiresAt > now && proofIds.has(proof.localId))
-            .map(proof => proof.localId));
+          const matchingProofs = (proofs.result as NoProviderProof[])
+            .filter(proof => proof.conversationId === conversationId && proof.expiresAt > now && proofIds.has(proofAttemptId(proof)));
+          const proven = new Set(matchingProofs.map(proofAttemptId));
           const noProviderPendingLocalIds = replayPolicyVersion
             ? pendingIds.filter(id => !proven.has(id)) : undefined;
-          const consumeProofs = () => { if (replayPolicyVersion) for (const id of proven) proofStore.delete(id); };
+          const consumeProofs = () => { if (replayPolicyVersion) for (const proof of matchingProofs) proofStore.delete(proof.localId); };
           for (const id of applicable) {
             const row = byId.get(id)!;
             if (row.closeObservation) continue;
