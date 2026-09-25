@@ -161,11 +161,18 @@ export class CleanupIntentOutbox {
       } else await deliverRow();
     }
     for (const intent of await this.budget.ends()) {
-      if (Date.now() >= intent.expiresAt) { this.anomaly("conversation_end_expired"); await this.budget.acknowledgeEnd(intent.conversationId, intent.expectedVersion); continue; }
       const cleanupLocalIds = intent.cleanupLocalIds ?? (await this.budget.entries())
         .filter(row => row.conversationId === intent.conversationId && (row.cleanup || row.closeObservation))
         .map(row => row.localId);
       if (cleanupLocalIds.length > 0) { pending = true; continue; }
+      if (Date.now() >= intent.expiresAt) {
+        this.anomaly("conversation_end_expired");
+        try {
+          const c = await this.transport.readConversation(intent.conversationId) as { conversationId?: string; status?: string };
+          if (c.conversationId === intent.conversationId && c.status === "ended") await this.budget.acknowledgeEnd(intent.conversationId, intent.expectedVersion);
+        } catch { /* Expiry or identity loss does not prove End. */ }
+        continue;
+      }
       try {
         if (!this.transport.end) { pending = true; continue; }
         const result = await this.transport.end(intent.conversationId, intent.expectedVersion, intent.reason);
@@ -173,13 +180,13 @@ export class CleanupIntentOutbox {
       } catch (error) {
         if ([401, 403, 404, 409].includes(Number(statusOf(error)))) {
           try {
-            const c = await this.transport.readConversation(intent.conversationId) as { status?: string; version?: number };
-            if (c.status === "ended" || (c.version !== undefined && c.version > intent.expectedVersion)) {
+            const c = await this.transport.readConversation(intent.conversationId) as { conversationId?: string; status?: string };
+            if (c.conversationId === intent.conversationId && c.status === "ended") {
               await this.budget.acknowledgeEnd(intent.conversationId, intent.expectedVersion); continue;
             }
           } catch (readError) {
-            if (statusOf(readError) === 401 || statusOf(readError) === 404) {
-              this.anomaly("conversation_end_identity_lost"); await this.budget.acknowledgeEnd(intent.conversationId, intent.expectedVersion); continue;
+            if ([401, 403, 404].includes(Number(statusOf(readError)))) {
+              this.anomaly("conversation_end_identity_lost"); continue;
             }
           }
         }

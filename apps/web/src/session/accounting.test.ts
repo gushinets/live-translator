@@ -8,6 +8,7 @@ import { ATTEMPT_REGISTRATION_GRACE_MS, type CleanupTransport } from "./CleanupI
 import { ConversationAccounting } from "./ConversationAccounting";
 import { AccountingRequestError, type LedgerApi, type ConversationMetadata } from "../api/AccountingBackend";
 import { UsageLedger } from "../../../api/src/accounting/UsageLedger";
+import { LedgerError } from "../../../api/src/accounting/types";
 
 function budget(capacity = 1000) { return new MetadataDeliveryBudget({ indexedDB: new IDBFactory(), name: crypto.randomUUID(), capacity }); }
 function fixture(store = budget()) {
@@ -44,6 +45,17 @@ async function updateEnvelope(indexedDB: IDBFactory, name: string, id: string, p
   await new Promise<void>((resolve, reject) => {
     const tx = db.transaction("envelopes", "readwrite"), store = tx.objectStore("envelopes"), get = store.get(id);
     get.onsuccess = () => store.put({ ...get.result, ...patch });
+    tx.oncomplete = () => resolve(); tx.onerror = () => reject(tx.error);
+  });
+  db.close();
+}
+async function expireEnd(indexedDB: IDBFactory, name: string, id: string) {
+  const db = await new Promise<IDBDatabase>((resolve, reject) => {
+    const request = indexedDB.open(name); request.onsuccess = () => resolve(request.result); request.onerror = () => reject(request.error);
+  });
+  await new Promise<void>((resolve, reject) => {
+    const tx = db.transaction("lifecycle", "readwrite"), store = tx.objectStore("lifecycle"), get = store.get(id);
+    get.onsuccess = () => store.put({ ...get.result, expiresAt: Date.now() - 1 });
     tx.oncomplete = () => resolve(); tx.onerror = () => reject(tx.error);
   });
   db.close();
@@ -638,10 +650,18 @@ describe("cleanup and End delivery", () => {
 
     await next.abandon("cancelled"); await f.scope.outbox.flush(); await f.budget.close();
   });
-  it("drops stale End after conflict instead of taking over a newer conversation version", async () => {
+  it("keeps stale End as an admission barrier without taking over a newer conversation version", async () => {
     const f = fixture(); f.api.end.mockRejectedValue({ status: 409 }); f.api.readConversation.mockResolvedValue({ ...f.c, version: 3 });
-    await f.scope.outbox.enqueueEnd("c", 2, "user_end"); await f.scope.outbox.flush(); expect(await f.budget.ends()).toHaveLength(0);
+    await f.scope.outbox.enqueueEnd("c", 2, "user_end"); await f.scope.outbox.flush(); expect(await f.budget.ends()).toHaveLength(1);
     expect(f.api.end).toHaveBeenCalledTimes(1); await f.budget.close();
+  });
+  it("clears a stale End only after read-back confirms that conversation ended", async () => {
+    const f = fixture(); f.api.end.mockRejectedValue(new AccountingRequestError(409, "conversation_version_conflict"));
+    f.api.readConversation.mockResolvedValue({ ...f.c, status: "ended", version: 3 });
+    await f.scope.outbox.enqueueEnd(f.c.conversationId, 1, "user_end");
+    await f.scope.outbox.flush();
+    expect(await f.budget.ends()).toHaveLength(0);
+    await f.budget.close();
   });
 });
 describe("controller-owned conversation accounting", () => {
@@ -992,6 +1012,61 @@ describe("controller-owned conversation accounting", () => {
 });
 
 describe("stage 4 durable lifecycle boundary", () => {
+  it.each(["expired", "identity_401", "identity_403", "identity_404"])("keeps an unproven %s End across reload and blocks new provider admission", async outcome => {
+    const indexedDB = new IDBFactory(), name = crypto.randomUUID();
+    const original = fixture(new MetadataDeliveryBudget({ indexedDB, name }));
+    await original.scope.prepare(original.scope.newAttempt());
+    await original.scope.stageEnd("user_end");
+    if (outcome === "expired") await expireEnd(indexedDB, name, original.c.conversationId);
+    else {
+      const status = Number(outcome.slice(-3));
+      original.api.end.mockRejectedValue(new AccountingRequestError(status, "identity_required"));
+      original.api.readConversation.mockRejectedValue(new AccountingRequestError(status, "identity_required"));
+    }
+    await original.scope.outbox.flush();
+    expect(await original.budget.ends()).toHaveLength(1);
+    await original.budget.close();
+
+    const recoveredBudget = new MetadataDeliveryBudget({ indexedDB, name });
+    const recovered = new ConversationAccounting({ api: original.api, budget: recoveredBudget, autoDelivery: false });
+    await expect(recovered.newAttempt().create("offer")).rejects.toThrow("End is pending");
+    expect(original.api.createConversation).toHaveBeenCalledTimes(1);
+    expect(original.api.createSession).not.toHaveBeenCalled();
+    await recoveredBudget.close();
+  });
+
+  it.each([false, true])("does not rotate after a staged End loses to a server pause (preflushed=%s)", async preflushed => {
+    const db = new DatabaseSync(":memory:");
+    const root = resolve(process.cwd(), "apps/api/src/persistence/migrations");
+    const migrations = existsSync(root) ? root : resolve(process.cwd(), "../api/src/persistence/migrations");
+    for (const name of ["001-usage-ledger.sql", "002-live-session-recovery-fences.sql"])
+      db.exec(readFileSync(resolve(migrations, name), "utf8"));
+    const ledger = new UsageLedger(db), owner = crypto.randomUUID(), f = fixture();
+    const metadata = (row: ReturnType<typeof ledger.createConversation>): ConversationMetadata => ({
+      ...f.c, conversationId: row.id, version: row.version, status: row.status,
+    });
+    f.api.createConversation.mockImplementation(async requestId => metadata(ledger.createConversation(owner, requestId, "test")));
+    f.api.readConversation.mockImplementation(async id => metadata(ledger.getConversation(owner, id)));
+    f.api.end.mockImplementation(async (id, version, reason) => {
+      try { return metadata(ledger.endConversation(owner, id, version, reason)); }
+      catch (error) {
+        if (!(error instanceof LedgerError)) throw error;
+        throw new AccountingRequestError(error.status, error.code);
+      }
+    });
+    try {
+      const first = await f.scope.prepare(f.scope.newAttempt());
+      await f.scope.stageEnd("user_end");
+      expect(ledger.pauseConversation(owner, first!.conversationId, first!.version).status).toBe("paused");
+      if (preflushed) await f.scope.outbox.flush();
+
+      await expect(f.scope.newAttempt().create("offer")).rejects.toThrow("End is pending");
+      expect(ledger.getConversation(owner, first!.conversationId).status).toBe("paused");
+      expect(f.api.createConversation).toHaveBeenCalledTimes(1);
+      expect(f.api.createSession).not.toHaveBeenCalled();
+    } finally { await f.budget.close(); db.close(); }
+  });
+
   it.each([false, true])("starts a new ledger conversation after its own staged End is confirmed (preflushed=%s)", async preflushed => {
     const db = new DatabaseSync(":memory:");
     const root = resolve(process.cwd(), "apps/api/src/persistence/migrations");
@@ -1003,6 +1078,7 @@ describe("stage 4 durable lifecycle boundary", () => {
       ...f.c, conversationId: row.id, version: row.version, status: row.status,
     });
     f.api.createConversation.mockImplementation(async requestId => metadata(ledger.createConversation(owner, requestId, "test")));
+    f.api.readConversation.mockImplementation(async id => metadata(ledger.getConversation(owner, id)));
     f.api.end.mockImplementation(async (id, version, reason) => metadata(ledger.endConversation(owner, id, version, reason)));
     f.api.createSession.mockImplementation(async body => {
       ledger.registerAttempt(owner, { liveSessionId: body.liveSessionId, conversationId: body.conversationId,

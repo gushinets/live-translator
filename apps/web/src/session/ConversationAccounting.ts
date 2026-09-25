@@ -158,7 +158,9 @@ export class ConversationAccounting {
     if (this.stagedEndConversationId &&
         this.stagedEndConversationId === (this.current ?? await this.creating?.catch(() => undefined))?.conversationId &&
         !ends.some(end => end.conversationId === this.stagedEndConversationId)) {
+      const ended = await this.api.readConversation(this.stagedEndConversationId) as ConversationMetadata;
       attempt.assertCurrent();
+      if (ended.conversationId !== this.stagedEndConversationId || ended.status !== "ended") throw new Error("Previous conversation End is pending");
       this.resetConversation(attempt);
       await this.loadPolicy();
       attempt.assertCurrent();
