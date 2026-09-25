@@ -135,7 +135,7 @@ function fixture(closeTimeoutMs = 2000, background = false, initialHidden = fals
   }, scope, snapshotGate ? snapshotGate.then(() => snapshotStore) : snapshotStore);
   controller.start();
   return { budget, scope, api, c, reports, track, stream, audio, controller, clients, setVisible, snapshotStore,
-    snapshotDb, snapshotName, snapshotLocks };
+    snapshotDb, snapshotName, snapshotLocks, retainedStorage };
 }
 let restoreDocumentVisibility = () => {};
 const fixtureVisibilities: VisibilityController[] = [];
@@ -161,8 +161,8 @@ async function reloadAfterPause(f: ReturnType<typeof fixture>, dispose = true, p
   if (pendingEnd) await expect(controller.dispose()).rejects.toThrow("Conversation End was not confirmed");
   else await controller.dispose();
 }
-async function reloadedController(f: ReturnType<typeof fixture>, locksAvailable = true) {
-  const store = ResumeSnapshotStore.open({ indexedDB: f.snapshotDb, sessionStorage,
+async function reloadedController(f: ReturnType<typeof fixture>, locksAvailable = true, storage: Storage = sessionStorage) {
+  const store = ResumeSnapshotStore.open({ indexedDB: f.snapshotDb, sessionStorage: storage,
     locks: locksAvailable ? f.snapshotLocks : null, name: f.snapshotName });
   const scope = new ConversationAccounting({ api: f.api, budget: f.budget, autoDelivery: false });
   const clients: Array<{ client: LiveClient; peer: Peer }> = [];
@@ -3170,6 +3170,47 @@ describe("stage 5 hidden boundary", () => {
     expect(screen.queryByRole("button", { name: "Повторить проверку" })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Завершить сохранённый разговор" })).not.toBeInTheDocument();
     await f.budget.close(); server.db.close();
+  });
+
+  it("keeps durable End visible after a storage-denied reload despite a flag-off policy", async () => {
+    const f = fixture(40, false, false, undefined, true, true, undefined, false);
+    const server = useRealLedger(f, true);
+    f.api.policy.mockResolvedValue({ usageLedgerEnabled: true, backgroundSessionCloseEnabled: false });
+    f.api.end.mockRejectedValue(new Error("offline"));
+    await expect(f.controller.startContextCapture()).rejects.toThrow();
+    expect((await f.budget.ends())).toEqual([expect.objectContaining({ conversationId: server.conversationId,
+      expectedVersion: 1, reason: "setup_cancel", cleanupLocalIds: [] })]);
+
+    const reloaded = await reloadedController(f, false, f.retainedStorage);
+    await vi.waitFor(() => expect(reloaded.controller.retainedRecoveryState).toBe("storage_unavailable"));
+    render(jsx(ContextScreen, { controller: reloaded.controller satisfies ContextScreenController }));
+    expect(screen.getByRole("alert")).toHaveTextContent("Не удалось открыть хранилище");
+    expect(screen.getByRole("button", { name: "Обновить страницу" })).toHaveFocus();
+    expect(screen.queryByRole("button", { name: "Повторить проверку" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Завершить сохранённый разговор" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Начать перевод" })).not.toBeInTheDocument();
+    await expect(reloaded.controller.startContextCapture()).rejects.toThrow("Previous conversation End is pending");
+    expect(reloaded.controller.retainedRecoveryState).toBe("storage_unavailable");
+    expect(screen.getByRole("alert")).toHaveTextContent("Не удалось открыть хранилище");
+    expect(f.api.createConversation).toHaveBeenCalledOnce();
+    expect(f.api.createSession).not.toHaveBeenCalled();
+    expect((await f.budget.ends())).toHaveLength(1);
+    await f.budget.close(); server.db.close();
+  });
+
+  it("does not claim a flag-off start is safe when the durable End barrier cannot be read", async () => {
+    const f = fixture(40, false, false, undefined, true, false, undefined, false);
+    await vi.waitFor(() => expect(f.controller.retainedRecoveryState).toBeUndefined());
+    vi.spyOn(f.budget, "ends").mockRejectedValue(new Error("Metadata storage unavailable"));
+    const reloaded = await reloadedController(f, false);
+    await vi.waitFor(() => expect(reloaded.controller.retainedRecoveryState).toBe("storage_unavailable"));
+    render(jsx(ContextScreen, { controller: reloaded.controller satisfies ContextScreenController }));
+    expect(screen.getByRole("alert")).toHaveTextContent("Не удалось открыть хранилище");
+    expect(screen.queryByRole("button", { name: "Начать перевод" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Повторить проверку" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Завершить сохранённый разговор" })).not.toBeInTheDocument();
+    expect(f.api.createConversation).not.toHaveBeenCalled();
+    expect(f.api.createSession).not.toHaveBeenCalled();
   });
 
   it.each(["version", "policy"] as const)(

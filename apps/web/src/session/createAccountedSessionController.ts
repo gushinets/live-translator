@@ -69,9 +69,10 @@ export class AccountedSessionController extends SessionController {
     this.recoveryChecking = true;
     this.notify();
     const probe = (async () => {
-      let knownRetained = false;
+      let knownRetained = false, hasDurableEnd: boolean | null = null;
       try {
-        if ((await this.accounting.budget.ends()).length) {
+        hasDurableEnd = (await this.accounting.budget.ends()).length > 0;
+        if (hasDurableEnd) {
           const store = await this.snapshotStore;
           if (!store.ownsDocument && store.noProviderEnd()) this.noProviderEndPending = true;
           else if (!store.ownsDocument && store.hasRetainedIdentity()) this.ownershipUnavailable = true;
@@ -89,6 +90,7 @@ export class AccountedSessionController extends SessionController {
         if (result?.kind === "pending") this.pendingClaim = true;
         if (result?.kind === "active") this.retainedActive = true;
       } catch (error) {
+        if (hasDurableEnd !== false) { this.storageUnavailable = true; return; }
         await this.accounting.loadPolicy();
         if (!this.backgroundCloseEnabled && !knownRetained) return;
         if (!knownRetained) { this.storageUnavailable = true; return; }
