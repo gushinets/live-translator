@@ -29,7 +29,7 @@ class FakeOwnerController implements ContextScreenController {
   isConnectInFlight = false;
   isInterpreterStarting = false;
   audioElement: HTMLAudioElement | undefined;
-  retainedRecoveryState: "paused" | "resuming" | "failed" | "active" | undefined;
+  retainedRecoveryState: "paused" | "resuming" | "ending" | "failed" | "active" | undefined;
   private readonly listeners = new Set<() => void>();
 
   subscribe(listener: () => void): () => void {
@@ -116,6 +116,14 @@ describe("ContextScreen", () => {
     expect(screen.queryByRole("button", { name: "Начать перевод" })).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "Завершить сохранённый разговор" }));
     expect(controller.endConversation).toHaveBeenCalledOnce();
+  });
+  it("announces retained End as ending and disables both actions", () => {
+    const controller = new FakeOwnerController();
+    controller.retainedRecoveryState = "ending";
+    render(<ContextScreen controller={controller} />);
+    expect(screen.getByRole("status")).toHaveTextContent("Завершаем…");
+    expect(screen.getByRole("button", { name: "Завершить сохранённый разговор" })).toBeDisabled();
+    expect(screen.queryByRole("button", { name: "Продолжить разговор" })).not.toBeInTheDocument();
   });
   it("treats context as optional without extra footer copy", () => {
     render(<ContextScreen controller={new FakeOwnerController()} />);

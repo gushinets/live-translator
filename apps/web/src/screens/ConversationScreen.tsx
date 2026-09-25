@@ -14,7 +14,7 @@ export interface ConversationScreenController {
   readonly recoveryPrompt?: RecoveryPrompt;
   readonly ownerError?: string;
   readonly suspendReason?: LifecycleSuspendReason;
-  readonly retainedRecoveryState?: "checking" | "paused" | "resuming" | "failed" | "active";
+  readonly retainedRecoveryState?: "checking" | "paused" | "resuming" | "ending" | "failed" | "active";
   subscribe(listener: () => void): () => void;
   correctLastTurn(side: Side): Promise<void>;
   endConversation(): Promise<void>;
@@ -102,10 +102,11 @@ export function ConversationScreen({
       <div className="conversation-center">
         {controller.retainedRecoveryState !== undefined ? (
           <p role="status">{controller.retainedRecoveryState === "failed" ? "Не удалось проверить или восстановить разговор. Проверьте соединение и повторите или завершите его." :
+            controller.retainedRecoveryState === "ending" ? "Завершаем…" :
             controller.retainedRecoveryState === "active" ? "Сохранённый разговор ещё активен. Завершите его перед новым разговором." :
             controller.retainedRecoveryState === "paused" ? "Разговор приостановлен." : "Восстанавливаем разговор…"}</p>
         ) : null}
-        {controller.retainedRecoveryState !== undefined && !["checking", "active"].includes(controller.retainedRecoveryState) ? (
+        {controller.retainedRecoveryState !== undefined && !["checking", "active", "ending"].includes(controller.retainedRecoveryState) ? (
           <button type="button" disabled={controller.retainedRecoveryState === "resuming"} onClick={() => {
             void controller.resumeRetainedConversation?.().catch(error => {
               console.error("Retained conversation recovery failed", { error });
@@ -120,6 +121,7 @@ export function ConversationScreen({
         ) : null}
         <button
           type="button"
+          disabled={controller.retainedRecoveryState === "ending" || session.state === "ending"}
           onClick={() => {
             void controller.endConversation().catch((error: unknown) => {
               console.error("End conversation failed", {

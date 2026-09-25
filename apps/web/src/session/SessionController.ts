@@ -239,7 +239,7 @@ export class SessionController {
       this.remoteTrackArrived = null;
     }
     if (!current()) throw new Error("Resume cancelled");
-    if (this.isRemotePlaybackFailed()) throw new Error("Remote playback is unavailable");
+    this.assertRemotePlaybackReady();
     await this.muteGateB(generation);
     if (!current()) throw new Error("Resume cancelled");
     const languages = { A: snapshot.participantA.language, B: snapshot.participantB.language };
@@ -256,17 +256,19 @@ export class SessionController {
         { kind: "first_steering", sessionState: "suspended" });
       if (!current()) throw new Error("Resume cancelled");
     }
-    if (this.isRemotePlaybackFailed() || !this.providerStartedObservedAt ||
+    if (!this.providerStartedObservedAt ||
       Date.now() >= (snapshot.localResumeDeadlineAt ?? 0) ||
       Date.now() >= (snapshot.serverResumeExpiresAt ?? 0) ||
       (snapshot.productDeadlineAt !== null && Date.now() >= snapshot.productDeadlineAt))
       throw new Error("Resume readiness or deadline expired");
+    this.assertRemotePlaybackReady();
     this.retainedResumePhase = "complete";
     await complete(this.providerStartedObservedAt);
-    if (!current() || this.isRemotePlaybackFailed() || Date.now() >= (snapshot.localResumeDeadlineAt ?? 0) ||
+    if (!current() || Date.now() >= (snapshot.localResumeDeadlineAt ?? 0) ||
       Date.now() >= (snapshot.serverResumeExpiresAt ?? 0) ||
       (snapshot.productDeadlineAt !== null && Date.now() >= snapshot.productDeadlineAt))
       throw new Error("Resume cancelled after commit");
+    this.assertRemotePlaybackReady();
     this.contextBuffer = snapshot.contextText;
     this.contextFrozenByUser = true;
     this.bootstrapBuffer = "";
@@ -283,22 +285,31 @@ export class SessionController {
     this.discardedUnfinishedOnSuspend = snapshot.interruptedUtterance;
     this.recoveryPromptKind = snapshot.interruptedUtterance ? "repeat" : undefined;
     if (snapshot.setupStage === "interpreter") {
+      this.assertRemotePlaybackReady();
       if (!(await this.unmuteGateB(generation)) || this.sessionGeneration !== generation || this.visibility.isHidden())
         throw new Error("Resume cancelled before input opened");
+      this.assertRemotePlaybackReady();
       this.audio.resetVoiceActivityBaseline();
       this.audio.setCaptureEnabled(true);
+      this.assertRemotePlaybackReady();
       this.audio.setOutputAudible(true);
       this.speechInputReady = true;
       await this.startPlatformLifecycle();
     } else {
+      this.assertRemotePlaybackReady();
       if (!(await this.unmuteGateB(generation))) throw new Error("Resume cancelled before setup input opened");
+      this.assertRemotePlaybackReady();
     }
     if (!current()) throw new Error("Resume cancelled after commit");
+    this.assertRemotePlaybackReady();
     this.backgroundPaused = false;
     this.backgroundCloseWork = null;
     this.notify();
   }
-  private isRemotePlaybackFailed(): boolean { return this.remotePlaybackState === "failed"; }
+  private assertRemotePlaybackReady(): void {
+    if (this.remotePlaybackState !== "ready" || this.remotePlaybackTrack?.readyState !== "live")
+      throw new Error("Remote playback is unavailable");
+  }
   protected async abandonRetainedMedia(reason: "hidden" | "abandoned_connect"): Promise<void> {
     this.stopLocalMedia();
     await this.live.disconnectImmediately(reason);
@@ -520,6 +531,10 @@ export class SessionController {
         ) {
           return;
         }
+        if (track.readyState !== "live") {
+          this.failRemotePlayback(source, sessionGeneration, playbackGeneration, new Error("Remote audio track ended"));
+          return;
+        }
         this.remotePlaybackState = "ready";
         const pending = this.pendingRemotePlaybackActivity;
         this.pendingRemotePlaybackActivity = null;
@@ -546,10 +561,18 @@ export class SessionController {
     this.pendingRemotePlaybackActivity = null;
     if (this.playbackActive) { this.playbackActive = false; this.finishPlaybackIdleWait(); }
     console.error("Remote audio playback failed", { error });
-    if (this.retainedPlaybackCommitted) void (async () => {
-      await this.live.disconnectImmediately("abandoned_connect");
-      await this.endConversation();
-    })().catch(retireError => console.error("Remote playback retirement failed", { error: retireError }));
+    if (this.retainedPlaybackCommitted) {
+      try { this.stopLocalMedia(); }
+      catch {
+        this.closeGateAForSafety("Remote playback capture gate failed");
+        try { this.audio.setOutputAudible(false); } catch { /* Continue retirement. */ }
+        try { this.audio.audioElement.srcObject = null; } catch { /* Continue retirement. */ }
+        try { this.audio.stopCapture(); } catch { /* Gate A remains closed. */ }
+      }
+      void this.live.disconnectImmediately("abandoned_connect")
+        .catch(retireError => console.error("Remote playback cleanup failed", { error: retireError }));
+      void this.endConversation().catch(retireError => console.error("Remote playback retirement failed", { error: retireError }));
+    }
   }
 
   private acceptRemotePlaybackActivity(event: AudioActivityEvent): boolean {

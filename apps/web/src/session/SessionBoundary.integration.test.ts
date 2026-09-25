@@ -626,6 +626,87 @@ describe("stage 5 hidden boundary", () => {
     expect(reason).toBe("abandoned_connect");
     await f.controller.dispose(); await f.budget.close();
   });
+  it.each(["stalled", "rejected"])("fences local media and starts End when committed playback cleanup is %s", async outcome => {
+    const f = fixture(40, true); configureResume(f);
+    await enterInterpreter(f);
+    const old = f.clients.at(-1)!;
+    f.setVisible(false);
+    await vi.waitFor(() => expect(old.peer.channel.sent).toContain("session.close"));
+    old.peer.channel.emit({ type: "session.closed" });
+    await vi.waitFor(() => expect(f.c.status).toBe("paused"));
+    f.setVisible(true);
+    await vi.waitFor(() => expect(f.controller.session.state).toBe("listening"));
+    expect(f.track.enabled).toBe(true);
+    const resumed = f.clients.at(-1)!;
+    let release!: () => void;
+    const cleanupGate = new Promise<void>(resolve => { release = resolve; });
+    const order: string[] = [];
+    const disconnect = resumed.client.disconnectImmediately.bind(resumed.client);
+    vi.spyOn(resumed.client, "disconnectImmediately").mockImplementation(async reason => {
+      order.push("disconnect");
+      await disconnect(reason);
+      await cleanupGate;
+      if (outcome === "rejected") throw new Error("cleanup rejected");
+    });
+    const end = f.api.end.getMockImplementation()!;
+    f.api.end.mockImplementation(async (...args) => { order.push("end"); return end(...args); });
+    vi.mocked(f.audio.stopCapture).mockClear();
+    vi.mocked(f.audio.setOutputAudible).mockClear();
+    const ended = f.track.addEventListener.mock.calls.at(-1)?.[1] as EventListener;
+    ended(new Event("ended"));
+    expect(f.track.enabled).toBe(false);
+    expect(f.controller.session.state).not.toBe("listening");
+    expect(f.audio.stopCapture).toHaveBeenCalled();
+    expect(f.audio.setOutputAudible).toHaveBeenCalledWith(false);
+    expect(f.audio.audioElement.srcObject).toBeNull();
+    expect(resumed.peer.close).toHaveBeenCalled();
+    await vi.waitFor(() => expect(f.api.end).toHaveBeenCalledTimes(1), { timeout: 500 });
+    expect(order).toEqual(["disconnect", "end"]);
+    const reason = (await f.budget.get(resumed.id))?.cleanup?.reason ??
+      f.api.cleanup.mock.calls.find(([id]) => id === resumed.id)?.[1];
+    expect(reason).toBe("abandoned_connect");
+    release();
+    await f.controller.dispose(); await f.budget.close();
+  });
+  it("rejects a remote track ending before playback readiness without an ended event", async () => {
+    const f = fixture(40, true); configureResume(f);
+    await f.controller.startBootstrap();
+    f.setVisible(false);
+    await vi.waitFor(() => expect(f.clients[0]!.peer.channel.sent).toContain("session.close"));
+    f.clients[0]!.peer.channel.emit({ type: "session.closed" });
+    await vi.waitFor(() => expect(f.c.status).toBe("paused"));
+    f.audio.audioElement.play = vi.fn(async () => { f.track.readyState = "ended"; });
+    f.setVisible(true);
+    await vi.waitFor(() => expect(f.api.abortResume).toHaveBeenCalledWith("conversation", 3, expect.any(String), "media_not_ready"));
+    expect(f.api.completeResume).not.toHaveBeenCalled();
+    expect(f.track.enabled).toBe(false);
+    f.track.readyState = "live";
+    await f.controller.dispose(); await f.budget.close();
+  });
+  it("does not open capture when the accepted track ends at the complete ACK gate", async () => {
+    const f = fixture(40, true); configureResume(f);
+    await enterInterpreter(f);
+    const old = f.clients.at(-1)!;
+    f.setVisible(false);
+    await vi.waitFor(() => expect(old.peer.channel.sent).toContain("session.close"));
+    old.peer.channel.emit({ type: "session.closed" });
+    await vi.waitFor(() => expect(f.c.status).toBe("paused"));
+    const captureGate = vi.spyOn(f.audio, "setCaptureEnabled");
+    captureGate.mockClear();
+    const complete = f.api.completeResume.getMockImplementation()!;
+    f.api.completeResume.mockImplementation(async (...args) => {
+      const result = await complete(...args);
+      f.track.readyState = "ended";
+      return result;
+    });
+    f.setVisible(true);
+    await vi.waitFor(() => expect(f.api.end).toHaveBeenCalledTimes(1));
+    expect(f.track.enabled).toBe(false);
+    expect(captureGate).not.toHaveBeenCalledWith(true);
+    expect(f.controller.session.state).not.toBe("listening");
+    f.track.readyState = "live";
+    await f.controller.dispose(); await f.budget.close();
+  });
   it("A5.9 ignores a second remote track whose play would reject after commit", async () => {
     const f = fixture(40, true); configureResume(f);
     await enterInterpreter(f);
@@ -917,6 +998,22 @@ describe("stage 5 hidden boundary", () => {
     expect(f.api.end).toHaveBeenCalledWith(f.c.conversationId, 3, "user_end");
     expect(sessionStorage.getItem("live-translator-retained-conversation-v1")).toBeNull();
     expect(f.api.createSession).toHaveBeenCalledTimes(1);
+    await reloaded.controller.dispose(); await f.budget.close();
+  });
+  it("reports retained End as ending and serializes repeated requests", async () => {
+    const f = await pausedReloadFixture();
+    const reloaded = await reloadedController(f);
+    await vi.waitFor(() => expect(reloaded.controller.retainedRecoveryState).toBe("paused"));
+    const end = f.api.end.getMockImplementation()!;
+    let release!: () => void;
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    f.api.end.mockImplementation(async (...args) => { await gate; return end(...args); });
+    const first = reloaded.controller.endConversation();
+    const second = reloaded.controller.endConversation();
+    expect(second).toBe(first);
+    expect(reloaded.controller.retainedRecoveryState).toBe("ending");
+    release();
+    await first;
     await reloaded.controller.dispose(); await f.budget.close();
   });
   it("keeps an active reload blocked when End cannot be confirmed", async () => {

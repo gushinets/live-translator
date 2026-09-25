@@ -50,7 +50,7 @@ class FakeConversationController implements ConversationScreenController {
   recoveryPrompt: RecoveryPrompt | undefined;
   ownerError: string | undefined;
   suspendReason: LifecycleSuspendReason | undefined;
-  retainedRecoveryState: "paused" | "resuming" | "failed" | undefined;
+  retainedRecoveryState: "paused" | "resuming" | "ending" | "failed" | undefined;
   readonly correctLastTurn = vi.fn<(side: Side) => Promise<void>>(async () => {});
   readonly endConversation = vi.fn(async () => {});
   readonly resumeFromSourceTimeout = vi.fn(async () => {});
@@ -82,6 +82,14 @@ describe("ConversationScreen orientation and status", () => {
     render(<ConversationScreen controller={controller} />);
     fireEvent.click(screen.getByRole("button", { name: "Продолжить разговор" }));
     expect(controller.resumeRetainedConversation).toHaveBeenCalledOnce();
+  });
+  it("announces retained End as ending and disables both actions", () => {
+    const controller = new FakeConversationController(session({ state: "suspended" }));
+    controller.retainedRecoveryState = "ending";
+    render(<ConversationScreen controller={controller} />);
+    expect(screen.getByRole("status")).toHaveTextContent("Завершаем…");
+    expect(screen.getByRole("button", { name: "Завершить" })).toBeDisabled();
+    expect(screen.queryByRole("button", { name: "Продолжить разговор" })).not.toBeInTheDocument();
   });
   it("keeps A LISTENING when A is still source-active and early GPT output exists, B TRANSLATING/SPEAKING, B rotated 180deg", () => {
     const controller = new FakeConversationController(

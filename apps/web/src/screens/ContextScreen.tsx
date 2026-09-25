@@ -33,7 +33,7 @@ export interface ContextScreenController {
   readonly audioElement?: HTMLAudioElement;
   readonly recoveryPrompt?: RecoveryPrompt;
   readonly suspendReason?: LifecycleSuspendReason;
-  readonly retainedRecoveryState?: "checking" | "paused" | "resuming" | "failed" | "active";
+  readonly retainedRecoveryState?: "checking" | "paused" | "resuming" | "ending" | "failed" | "active";
   subscribe(listener: () => void): () => void;
   startContextCapture(): Promise<void>;
   finishContextCapture(): void;
@@ -223,11 +223,12 @@ export function ContextScreen({
                 <p className="setup-inline-status" role="status">
                   {recovery === "checking" ? "Проверяем сохранённый разговор…" :
                     recovery === "resuming" ? "Восстанавливаем разговор…" :
+                    recovery === "ending" ? "Завершаем…" :
                     recovery === "active" ? "Сохранённый разговор ещё активен. Завершите его перед новым разговором." :
                     recovery === "failed" ? "Не удалось проверить или восстановить разговор. Проверьте соединение, микрофон и звук; повторите или завершите разговор." :
                     "Разговор приостановлен."}
                 </p>
-                {recovery !== "checking" && recovery !== "active" ? (
+                {recovery !== "checking" && recovery !== "active" && recovery !== "ending" ? (
                   <button className="setup-primary-action" type="button" disabled={recovery === "resuming"}
                     onClick={() => { void controller.resumeRetainedConversation?.().catch(error => {
                       console.error("Retained conversation recovery failed", { error });
@@ -237,7 +238,7 @@ export function ContextScreen({
                   </button>
                 ) : null}
                 {recovery !== "checking" ? (
-                  <button className="setup-secondary-action" type="button"
+                  <button className="setup-secondary-action" type="button" disabled={recovery === "ending"}
                     onClick={() => { void controller.endConversation().catch(error => {
                       console.error("Retained conversation End failed", { error });
                     }); }}>Завершить сохранённый разговор</button>

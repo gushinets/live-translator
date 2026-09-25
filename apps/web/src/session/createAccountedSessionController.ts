@@ -65,9 +65,9 @@ export class AccountedSessionController extends SessionController {
     });
     this.recoveryProbe = probe;
   }
-  get retainedRecoveryState(): "checking" | "paused" | "resuming" | "failed" | "active" | undefined {
+  get retainedRecoveryState(): "checking" | "paused" | "resuming" | "ending" | "failed" | "active" | undefined {
+    if (this.retainedEndWork) return "ending";
     if (this.recoveryChecking) return "checking";
-    if (this.retainedEndWork) return "resuming";
     if (this.resumeWork) return "resuming";
     if (this.retainedActive) return "active";
     if (this.resumeFailed) return "failed";
@@ -281,16 +281,18 @@ export class AccountedSessionController extends SessionController {
       this.resumeFailed = !cancelled;
       this.notify();
       if (claimed) {
-        try { await this.abandonRetainedMedia(this.backgroundResumeCurrent(generation) ? "abandoned_connect" : "hidden"); }
-        catch { console.error("Retained transport cleanup incomplete"); }
+        const cleanup = this.abandonRetainedMedia(this.backgroundResumeCurrent(generation) ? "abandoned_connect" : "hidden");
         const reason: ResumeAbortReason = cancelled && document.visibilityState === "hidden" ? "hidden" :
           this.retainedResumePhase === "media" || !this.accounting.resumeDispatched ||
           error instanceof Error && /Microphone|audio|playback|media/i.test(error.message) ? "media_not_ready" :
           this.retainedResumePhase === "create" ? "provider_creation_failed" : "restore_ack_failed";
         if (this.accounting.conversationStatus === "active") {
+          void cleanup.catch(() => console.error("Retained transport cleanup incomplete"));
           try { await this.accounting.end("setup_cancel", this.accounting.revision); settled = true; }
           catch { console.error("Committed resume retirement pending"); }
         } else {
+          try { await cleanup; }
+          catch { console.error("Retained transport cleanup incomplete"); }
           try {
             const aborted = await this.accounting.abortResume(reason);
             if (aborted?.status === "paused") await store.confirmPause(aborted);
