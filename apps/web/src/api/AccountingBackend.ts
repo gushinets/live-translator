@@ -70,13 +70,13 @@ export class AccountingBackend implements LedgerApi {
     }
   }
   createConversation(createRequestId: string): Promise<ConversationMetadata> { return this.json("/api/conversations", "POST", { createRequestId, appVersion: "ledger-client-v1" }); }
-  createSession(body: ProviderCreateBody, signal: AbortSignal): Promise<CreateLiveSessionResponse> { return this.json("/api/live/session", "POST", body, signal, MANAGED_SESSION_CREATE_TIMEOUT_MS); }
+  createSession(body: ProviderCreateBody, signal: AbortSignal): Promise<CreateLiveSessionResponse> { return this.json("/api/live/session", "POST", { ...body, usageIdentityVersion: 1 }, signal, MANAGED_SESSION_CREATE_TIMEOUT_MS); }
   handoff(id: string): Promise<AttemptMetadata> { return this.json(`/api/live/session/${encodeURIComponent(id)}/handoff`, "POST", {}); }
   readAttempt(id: string): Promise<AttemptMetadata> { return this.json(`/api/live/session/${encodeURIComponent(id)}`); }
   readConversation(id: string): Promise<ConversationMetadata> { return this.json(`/api/conversations/${encodeURIComponent(id)}`); }
   pause(id: string, expectedVersion: number): Promise<ConversationMetadata> { return this.json(`/api/conversations/${encodeURIComponent(id)}/pause`, "POST", { expectedVersion }); }
   claimResume(id: string, expectedVersion: number, resumeAttemptId: string, initialMode: ProviderCreateBody["initialMode"]): Promise<ResumeClaimMetadata> {
-    return this.json(`/api/conversations/${encodeURIComponent(id)}/resume`, "POST", { expectedVersion, resumeAttemptId, initialMode });
+    return this.json(`/api/conversations/${encodeURIComponent(id)}/resume`, "POST", { expectedVersion, resumeAttemptId, initialMode, usageIdentityVersion: 1 });
   }
   completeResume(id: string, expectedVersion: number, resumeAttemptId: string, providerStartedObservedAt: number, readyStage: ProviderCreateBody["initialMode"]): Promise<ConversationMetadata> {
     return this.json(`/api/conversations/${encodeURIComponent(id)}/resume/complete`, "POST", { expectedVersion, resumeAttemptId, providerStartedObservedAt, readyStage });

@@ -9,7 +9,7 @@ const origin = "http://localhost:5173";
 const databases: ReturnType<typeof openUsageDatabase>[] = [];
 beforeEach(() => vi.stubEnv("OPENAI_API_KEY", "fake-key"));
 afterEach(() => { vi.unstubAllEnvs(); databases.splice(0).forEach(db => db.close()); });
-async function fixture() {
+async function fixture(usageIdentityVersion?: 1) {
   const db = openUsageDatabase(":memory:"); databases.push(db);
   const ledger = new UsageLedger(db);
   const provider = vi.fn(async () => ({ session: { id: randomUUID() }, transport: { type: "webrtc" as const, sdp: "answer" } }));
@@ -17,7 +17,7 @@ async function fixture() {
   const agent = request.agent(app);
   const c = (await agent.post("/api/conversations").set("Origin", origin).send({ createRequestId: randomUUID(), appVersion: "usage-test" }).expect(201)).body;
   const id = randomUUID();
-  await agent.post("/api/live/session").set("Origin", origin).send({ sdp: "offer", conversationId: c.conversationId, conversationVersion: c.version, liveSessionId: id, initialMode: "setup", startReason: "initial" }).expect(201);
+  await agent.post("/api/live/session").set("Origin", origin).send({ sdp: "offer", conversationId: c.conversationId, conversationVersion: c.version, liveSessionId: id, initialMode: "setup", startReason: "initial", ...(usageIdentityVersion ? { usageIdentityVersion } : {}) }).expect(201);
   const put = (body: object) => agent.put(`/api/live/session/${id}/usage`).set("Origin", origin).send({ conversationId: c.conversationId, schemaVersion: 1, ...body });
   return { db, ledger, provider, app, agent, c, id, put, row: () => ledger.getAttemptInternal(id) };
 }
@@ -31,7 +31,7 @@ const totals = (activityReportSeq: number, extra = {}) => ({
 
 describe("cumulative usage ingestion", () => {
   it("requires the attempt's conversation identity before mutating usage", async () => {
-    const f = await fixture();
+    const f = await fixture(1);
     const foreign = (await f.agent.post("/api/conversations").set("Origin", origin)
       .send({ createRequestId: randomUUID(), appVersion: "usage-test" }).expect(201)).body;
     await f.agent.put(`/api/live/session/${f.id}/usage`).set("Origin", origin)
@@ -39,6 +39,73 @@ describe("cumulative usage ingestion", () => {
     await f.agent.put(`/api/live/session/${f.id}/usage`).set("Origin", origin)
       .send({ conversationId: foreign.conversationId, schemaVersion: 1, checkpointSeconds: 33 }).expect(404);
     expect(f.row().provider_checkpoint_seconds).toBeNull();
+  });
+  it("accepts missing identity for a legacy open attempt but still rejects an explicit wrong identity", async () => {
+    const f = await fixture();
+    const foreign = (await f.agent.post("/api/conversations").set("Origin", origin)
+      .send({ createRequestId: randomUUID(), appVersion: "usage-test" }).expect(201)).body;
+    await f.agent.put(`/api/live/session/${f.id}/usage`).set("Origin", origin)
+      .send({ schemaVersion: 1, checkpointSeconds: 7, app: totals(1) }).expect(200);
+    await f.agent.put(`/api/live/session/${f.id}/usage`).set("Origin", origin)
+      .send({ conversationId: foreign.conversationId, schemaVersion: 1, providerClosed: { seconds: 8 } }).expect(404);
+    expect(f.row()).toMatchObject({ usage_identity_version: null, provider_checkpoint_seconds: 7,
+      provider_final_seconds: null, activity_report_seq: 1 });
+    await f.agent.post("/api/live/session").set("Origin", origin).send({ sdp: "offer",
+      conversationId: f.c.conversationId, conversationVersion: f.c.version, liveSessionId: f.id,
+      initialMode: "setup", startReason: "initial", usageIdentityVersion: 1 }).expect(409);
+    expect(f.row().usage_identity_version).toBeNull();
+    await f.agent.put(`/api/live/session/${f.id}/usage`).set("Origin", origin)
+      .send({ schemaVersion: 1, providerClosed: { seconds: 8 } }).expect(200);
+    expect(f.row()).toMatchObject({ provider_final_seconds: 8, activity_report_seq: 1 });
+  });
+  it("does not apply a late legacy report to a new attempt that reuses its local ID", async () => {
+    const f = await fixture();
+    const oldConversationId = f.c.conversationId;
+    // Emulate future row retention/pruning before an ID collision; the new row's contract remains strict.
+    f.db.prepare("DELETE FROM live_sessions WHERE id=?").run(f.id);
+    const next = (await f.agent.post("/api/conversations").set("Origin", origin)
+      .send({ createRequestId: randomUUID(), appVersion: "usage-test" }).expect(201)).body;
+    await f.agent.post("/api/live/session").set("Origin", origin).send({ sdp: "new-offer",
+      conversationId: next.conversationId, conversationVersion: next.version, liveSessionId: f.id,
+      initialMode: "setup", startReason: "initial", usageIdentityVersion: 1 }).expect(201);
+    await f.agent.put(`/api/live/session/${f.id}/usage`).set("Origin", origin)
+      .send({ schemaVersion: 1, checkpointSeconds: 99, app: totals(1) }).expect(400);
+    await f.agent.put(`/api/live/session/${f.id}/usage`).set("Origin", origin)
+      .send({ conversationId: oldConversationId, schemaVersion: 1, providerClosed: { seconds: 99 } }).expect(404);
+    expect(f.row()).toMatchObject({ conversation_id: next.conversationId, usage_identity_version: 1,
+      provider_checkpoint_seconds: null, provider_final_seconds: null, activity_report_seq: null });
+    await f.agent.put(`/api/live/session/${f.id}/usage`).set("Origin", origin)
+      .send({ conversationId: next.conversationId, schemaVersion: 1, checkpointSeconds: 5 }).expect(200);
+    expect(f.row().provider_checkpoint_seconds).toBe(5);
+  });
+  it("marks a new resume claim strict before provider creation", async () => {
+    const f = await fixture();
+    const paused = await f.agent.post(`/api/conversations/${f.c.conversationId}/pause`).set("Origin", origin)
+      .send({ expectedVersion: f.c.version }).expect(200);
+    f.ledger.recordProviderClosed(f.id, {}, "sideband");
+    const resumeId = randomUUID();
+    await f.agent.post(`/api/conversations/${f.c.conversationId}/resume`).set("Origin", origin)
+      .send({ expectedVersion: paused.body.version, resumeAttemptId: resumeId, initialMode: "setup", usageIdentityVersion: 1 }).expect(200);
+    expect(f.ledger.getAttemptInternal(resumeId).usage_identity_version).toBe(1);
+    await f.agent.put(`/api/live/session/${resumeId}/usage`).set("Origin", origin)
+      .send({ schemaVersion: 1, app: totals(1) }).expect(400);
+    expect(f.ledger.getAttemptInternal(resumeId).activity_report_seq).toBeNull();
+  });
+  it("upgrades an existing legacy claim to strict on a new create request", async () => {
+    const f = await fixture();
+    const paused = await f.agent.post(`/api/conversations/${f.c.conversationId}/pause`).set("Origin", origin)
+      .send({ expectedVersion: f.c.version }).expect(200);
+    f.ledger.recordProviderClosed(f.id, {}, "sideband");
+    const resumeId = randomUUID();
+    const claim = await f.agent.post(`/api/conversations/${f.c.conversationId}/resume`).set("Origin", origin)
+      .send({ expectedVersion: paused.body.version, resumeAttemptId: resumeId, initialMode: "setup" }).expect(200);
+    expect(f.ledger.getAttemptInternal(resumeId).usage_identity_version).toBeNull();
+    await f.agent.post("/api/live/session").set("Origin", origin).send({ sdp: "resume-offer",
+      conversationId: f.c.conversationId, conversationVersion: claim.body.version, liveSessionId: resumeId,
+      initialMode: "setup", startReason: "resume", usageIdentityVersion: 1 }).expect(201);
+    expect(f.ledger.getAttemptInternal(resumeId).usage_identity_version).toBe(1);
+    await f.agent.put(`/api/live/session/${resumeId}/usage`).set("Origin", origin)
+      .send({ schemaVersion: 1, checkpointSeconds: 99 }).expect(400);
   });
   it("A3.1 keeps checkpoints and final separate, never sums snapshots", async () => {
     const f = await fixture();

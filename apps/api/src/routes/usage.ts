@@ -11,7 +11,7 @@ export function createUsageRouter(runtime: LedgerRuntime, identity: AnonymousIde
     const owner = identity.require(req), id = uuidSchema.parse(req.params.localId);
     const body = req.body && typeof req.body === "object" && !Array.isArray(req.body) ? req.body as Record<string, unknown> : {};
     const { conversationId: rawConversationId, ...metadata } = body;
-    const conversationId = parseBody(uuidSchema, rawConversationId);
+    const conversationId = rawConversationId === undefined ? undefined : parseBody(uuidSchema, rawConversationId);
     const report = parseBody(usageReportSchema, metadata);
     // Provenance comes from this ingestion path, never from the request body.
     const result = runtime.ledger.recordUsage(owner, id, conversationId, report, "browser");

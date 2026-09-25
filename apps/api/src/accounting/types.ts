@@ -39,6 +39,7 @@ export interface ConversationRow {
 }
 export interface SessionRow {
   id: string; conversation_id: string; generation: number; openai_session_id: string | null;
+  usage_identity_version: 1 | null;
   state: AttemptState; initial_mode: InitialMode; start_reason: StartReason;
   request_fingerprint: string | null; request_conversation_version: number | null;
   resume_claimed_at: number | null; resume_claim_expires_at: number | null; resume_claim_version: number | null;
@@ -68,7 +69,7 @@ export interface SessionRow {
 }
 export interface AttemptInput {
   liveSessionId: string; conversationId: string; conversationVersion: number;
-  initialMode: InitialMode; startReason: StartReason; fingerprint: string;
+  initialMode: InitialMode; startReason: StartReason; fingerprint: string; usageIdentityVersion?: 1;
 }
 export interface CloseObservation { seconds?: number; reason?: string; invalidSeconds?: boolean; }
 export class LedgerError extends Error {

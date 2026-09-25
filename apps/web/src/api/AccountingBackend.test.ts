@@ -13,7 +13,7 @@ afterEach(() => vi.unstubAllGlobals());
 describe("AccountingBackend lifecycle contract", () => {
   it.each([
     ["pause", "/pause", { expectedVersion: 3 }, ["conversation/id", 3]],
-    ["claimResume", "/resume", { expectedVersion: 3, resumeAttemptId: "attempt-id", initialMode: "interpreter" }, ["conversation/id", 3, "attempt-id", "interpreter"]],
+    ["claimResume", "/resume", { expectedVersion: 3, resumeAttemptId: "attempt-id", initialMode: "interpreter", usageIdentityVersion: 1 }, ["conversation/id", 3, "attempt-id", "interpreter"]],
     ["completeResume", "/resume/complete", { expectedVersion: 3, resumeAttemptId: "attempt-id", providerStartedObservedAt: 1234, readyStage: "interpreter" }, ["conversation/id", 3, "attempt-id", 1234, "interpreter"]],
     ["abortResume", "/resume/abort", { expectedVersion: 3, resumeAttemptId: "attempt-id", reason: "media_not_ready" }, ["conversation/id", 3, "attempt-id", "media_not_ready"]],
   ] as const)("sends %s to the server route with the exact versioned body", async (method, path, body, args) => {
@@ -28,4 +28,15 @@ describe("AccountingBackend lifecycle contract", () => {
       method: "POST", credentials: "same-origin", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body),
     }));
   });
+});
+
+it("advertises scoped usage when creating a provider attempt", async () => {
+  const fetchMock = vi.fn(async () => Response.json({ session: {}, transport: {} }));
+  vi.stubGlobal("fetch", fetchMock);
+  const body = { sdp: "offer", liveSessionId: "attempt-id", conversationId: "conversation-id", conversationVersion: 1,
+    initialMode: "setup" as const, startReason: "initial" as const };
+  await new AccountingBackend().createSession(body, new AbortController().signal);
+  expect(fetchMock).toHaveBeenCalledWith("/api/live/session", expect.objectContaining({
+    method: "POST", body: JSON.stringify({ ...body, usageIdentityVersion: 1 }),
+  }));
 });

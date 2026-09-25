@@ -1368,7 +1368,7 @@ describe("stage 4 durable lifecycle boundary", () => {
     const db = new DatabaseSync(":memory:");
     const root = resolve(process.cwd(), "apps/api/src/persistence/migrations");
     const migrations = existsSync(root) ? root : resolve(process.cwd(), "../api/src/persistence/migrations");
-    for (const name of ["001-usage-ledger.sql", "002-live-session-recovery-fences.sql"])
+    for (const name of ["001-usage-ledger.sql", "002-live-session-recovery-fences.sql", "003-usage-identity.sql"])
       db.exec(readFileSync(resolve(migrations, name), "utf8"));
     const ledger = new UsageLedger(db), owner = crypto.randomUUID(), f = fixture();
     const metadata = (row: ReturnType<typeof ledger.createConversation>): ConversationMetadata => ({
@@ -1400,7 +1400,7 @@ describe("stage 4 durable lifecycle boundary", () => {
     const db = new DatabaseSync(":memory:");
     const root = resolve(process.cwd(), "apps/api/src/persistence/migrations");
     const migrations = existsSync(root) ? root : resolve(process.cwd(), "../api/src/persistence/migrations");
-    for (const name of ["001-usage-ledger.sql", "002-live-session-recovery-fences.sql"])
+    for (const name of ["001-usage-ledger.sql", "002-live-session-recovery-fences.sql", "003-usage-identity.sql"])
       db.exec(readFileSync(resolve(migrations, name), "utf8"));
     const ledger = new UsageLedger(db), owner = crypto.randomUUID(), f = fixture();
     const metadata = (row: ReturnType<typeof ledger.createConversation>): ConversationMetadata => ({

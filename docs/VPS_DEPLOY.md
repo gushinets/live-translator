@@ -417,7 +417,9 @@ This leaves all unrelated Nginx-hosted services untouched.
 
 Only roll back to a commit/tag that is already compatible with this host-Nginx
 topology (loopback-only application ports and no container ownership of
-80/443). After selecting that known-good compatible revision:
+80/443) and the migrated SQLite schema. Once schema v3 has opened the ledger,
+an older API binary limited to v2 will refuse that database; use a v3-capable
+image for flag-only rollback. After selecting that known-good compatible revision:
 
 ```bash
 docker compose --env-file .env -f infra/docker-compose.yml build
@@ -441,6 +443,10 @@ SameSite=Lax, Path=/, without Domain, with a sliding 90-day lifetime. A cleared
 cookie starts a new identity. Provider attempts are recorded before dispatch,
 and a browser must confirm handoff after applying the SDP answer. Old clients
 are rejected with `client_upgrade_required` when ledger creation is enabled.
+Already-open ledger clients may still submit usage without `conversationId`:
+the API accepts it only for attempts registered without `usageIdentityVersion: 1`.
+New browser attempts advertise version 1 and require an exact conversation ID
+for usage; the SQLite v3 migration leaves existing attempts in legacy mode.
 
 Creation results and usage do not imply a confirmed provider close. Cleanup is
 best-effort, bounded and metadata-only. A transient authenticated Sideband is
