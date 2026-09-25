@@ -88,7 +88,7 @@ export class UsageReporter {
   }
   async noProvider(): Promise<void> {
     this.finalize(); this.discarded = true;
-    await this.work; await this.outbox.noProvider(this.localId);
+    await this.work; await this.outbox.noProvider(this.localId, this.conversationId);
   }
   private finalAppSent = false;
   private finalAppScheduled = false;
@@ -111,7 +111,7 @@ export class UsageReporter {
     this.work = this.work.then(async () => {
       if (finalApp) report.app = await finalApp;
       await this.outbox.enqueue(this.localId, this.conversationId, report);
-      if (finishedNow) await this.outbox.finishProducer(this.localId);
+      if (finishedNow) await this.outbox.finishProducer(this.localId, this.conversationId);
     }).catch(() => { console.error("Usage delivery metadata degraded", { localId: this.localId }); });
   }
   idle(): Promise<void> { return this.work; }

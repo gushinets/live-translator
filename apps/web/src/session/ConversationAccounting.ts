@@ -548,7 +548,7 @@ export class ProviderAccounting {
       if (isDefinitiveNoProviderError(error)) {
         this.cancelled = true;
         await this.reporter?.noProvider();
-        if (!this.reporter && this.scope.usageOutbox) await this.scope.usageOutbox.noProvider(this.localId);
+        if (!this.reporter && this.scope.usageOutbox) await this.scope.usageOutbox.noProvider(this.localId, c.conversationId);
         this.scope.noteNoProvider(this);
         this.finished = true;
         await this.scope.finalizeNoProvider(this.localId, c.conversationId);
@@ -587,7 +587,7 @@ export class ProviderAccounting {
       try {
         if (this.dispatched) { await this.scope.outbox.enqueue(this.localId, committedReason, this.attemptConversationId!); this.controller?.abort(); }
         else {
-          await this.scope.usageOutbox?.noProvider(this.localId);
+          await this.scope.usageOutbox?.noProvider(this.localId, this.attemptConversationId!);
           await this.scope.finalizeNoProvider(this.localId, this.attemptConversationId!);
         }
         this.finished = true;

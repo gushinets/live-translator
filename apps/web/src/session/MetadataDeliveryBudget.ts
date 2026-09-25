@@ -208,31 +208,34 @@ export class MetadataDeliveryBudget {
       };
     });
   }
-  enqueueUsage(localId: string, report: UsageReport): Promise<void> {
-    return this.change(localId, row => ({ ...row, usagePending: true, usageRevision: (row.usageRevision ?? 0) + 1,
+  enqueueUsage(localId: string, conversationId: string, report: UsageReport): Promise<void> {
+    return this.change(localId, row => {
+      if (row.conversationId !== conversationId) throw new Error("Metadata identity conflict");
+      return { ...row, usagePending: true, usageRevision: (row.usageRevision ?? 0) + 1,
       usage: { revision: (row.usageRevision ?? 0) + 1, expiresAt: row.usage?.expiresAt ?? row.reservedAt + METADATA_TTL_MS,
-        report: coalesceUsage(row.usage?.report, report) } }));
+        report: coalesceUsage(row.usage?.report, report) } };
+    });
   }
-  acknowledgeUsage(localId: string, revision: number): Promise<void> {
+  acknowledgeUsage(localId: string, conversationId: string, revision: number): Promise<void> {
     return this.change(localId, row => {
       if (row.usage?.revision !== revision) return row;
       const next = { ...row, usage: null, usagePending: row.usageProducerFinalized === false };
       return this.releasable(next) ? null : next;
-    });
+    }, conversationId);
   }
-  finishUsageProducer(localId: string, conversationId?: string): Promise<void> {
+  finishUsageProducer(localId: string, conversationId: string): Promise<void> {
     return this.change(localId, row => {
       const next = { ...row, usageProducerFinalized: true, usagePending: Boolean(row.usage) };
       return this.releasable(next) ? null : next;
     }, conversationId);
   }
   /** Drops usage only, never cleanup. Callers diagnose expiry, identity loss, or definitive no-provider. */
-  discardUsage(localId: string, revision?: number): Promise<void> {
+  discardUsage(localId: string, conversationId: string, revision?: number): Promise<void> {
     return this.change(localId, row => {
       if (revision !== undefined && row.usage?.revision !== revision) return row;
       const next = { ...row, usage: null, usagePending: false, usageProducerFinalized: true };
       return this.releasable(next) ? null : next;
-    });
+    }, conversationId);
   }
   get(localId: string): Promise<MetadataEnvelope | null> {
     return this.transaction("readonly", (store, result) => { const r = store.get(localId); r.onsuccess = () => result((r.result as MetadataEnvelope | undefined) ?? null); });

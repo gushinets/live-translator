@@ -18,7 +18,7 @@ async function fixture() {
   const c = (await agent.post("/api/conversations").set("Origin", origin).send({ createRequestId: randomUUID(), appVersion: "usage-test" }).expect(201)).body;
   const id = randomUUID();
   await agent.post("/api/live/session").set("Origin", origin).send({ sdp: "offer", conversationId: c.conversationId, conversationVersion: c.version, liveSessionId: id, initialMode: "setup", startReason: "initial" }).expect(201);
-  const put = (body: object) => agent.put(`/api/live/session/${id}/usage`).set("Origin", origin).send({ schemaVersion: 1, ...body });
+  const put = (body: object) => agent.put(`/api/live/session/${id}/usage`).set("Origin", origin).send({ conversationId: c.conversationId, schemaVersion: 1, ...body });
   return { db, ledger, provider, app, agent, c, id, put, row: () => ledger.getAttemptInternal(id) };
 }
 const totals = (activityReportSeq: number, extra = {}) => ({
@@ -30,6 +30,16 @@ const totals = (activityReportSeq: number, extra = {}) => ({
 });
 
 describe("cumulative usage ingestion", () => {
+  it("requires the attempt's conversation identity before mutating usage", async () => {
+    const f = await fixture();
+    const foreign = (await f.agent.post("/api/conversations").set("Origin", origin)
+      .send({ createRequestId: randomUUID(), appVersion: "usage-test" }).expect(201)).body;
+    await f.agent.put(`/api/live/session/${f.id}/usage`).set("Origin", origin)
+      .send({ schemaVersion: 1, checkpointSeconds: 33 }).expect(400);
+    await f.agent.put(`/api/live/session/${f.id}/usage`).set("Origin", origin)
+      .send({ conversationId: foreign.conversationId, schemaVersion: 1, checkpointSeconds: 33 }).expect(404);
+    expect(f.row().provider_checkpoint_seconds).toBeNull();
+  });
   it("A3.1 keeps checkpoints and final separate, never sums snapshots", async () => {
     const f = await fixture();
     for (const checkpointSeconds of [15, 28, 15, 43]) await f.put({ checkpointSeconds }).expect(200);
@@ -75,7 +85,7 @@ describe("cumulative usage ingestion", () => {
     await request(f.app).put(`/api/live/session/${f.id}/usage`).set("Origin", origin).send({ schemaVersion: 1, checkpointSeconds: 3 }).expect(401);
     const other = request.agent(f.app);
     await other.post("/api/conversations").set("Origin", origin).send({ createRequestId: randomUUID(), appVersion: "other" }).expect(201);
-    await other.put(`/api/live/session/${f.id}/usage`).set("Origin", origin).send({ schemaVersion: 1, checkpointSeconds: 3 }).expect(404);
+    await other.put(`/api/live/session/${f.id}/usage`).set("Origin", origin).send({ conversationId: f.c.conversationId, schemaVersion: 1, checkpointSeconds: 3 }).expect(404);
     await f.agent.put(`/api/live/session/${f.id}/usage`).send({ schemaVersion: 1, checkpointSeconds: 3 }).expect(403);
     for (const extra of [{ source: "sideband" }, { transcript: "secret" }, { openaiSessionId: "spoofed" }]) await f.put({ checkpointSeconds: 3, ...extra }).expect(400);
     const invalidApp = await f.put({ app: { ...totals(1), counters: { transcript: "secret" } } }).expect(200);
@@ -123,7 +133,7 @@ describe("G1 conversation summary", () => {
     const f = await fixture(); await f.put({ providerClosed: { seconds: 120 }, app: totals(1) }).expect(200);
     const id2 = randomUUID();
     await f.agent.post("/api/live/session").set("Origin", origin).send({ sdp: "second", conversationId: f.c.conversationId, conversationVersion: f.c.version, liveSessionId: id2, initialMode: "setup", startReason: "bootstrap_replacement" }).expect(201);
-    await f.agent.put(`/api/live/session/${id2}/usage`).set("Origin", origin).send({ schemaVersion: 1, providerClosed: { seconds: 120 }, app: totals(1) }).expect(200);
+    await f.agent.put(`/api/live/session/${id2}/usage`).set("Origin", origin).send({ conversationId: f.c.conversationId, schemaVersion: 1, providerClosed: { seconds: 120 }, app: totals(1) }).expect(200);
     const summary = (await f.agent.get(`/api/conversations/${f.c.conversationId}`)).body.summary;
     expect(summary).toMatchObject({ attempts: { total: 2, dispatched: 2 }, usage: { totalProviderSeconds: 240 }, durations: { activeInterpreterMs: 120000 }, ratios: { providerSecondsPerActiveMinute: 120 } });
   });
@@ -145,11 +155,11 @@ it("rejects malformed app metrics independently from a valid final", async () =>
 
 it("updates checkpoint provenance only for the max value or an equal stronger observation", async () => {
   const f = await fixture(); const owner = String(f.db.prepare("SELECT anonymous_user_id FROM conversations WHERE id=?").get(f.c.conversationId)!.anonymous_user_id);
-  f.ledger.recordUsage(owner, f.id, { schemaVersion: 1, checkpointSeconds: 28 }, "sideband");
+  f.ledger.recordUsage(owner, f.id, f.c.conversationId, { schemaVersion: 1, checkpointSeconds: 28 }, "sideband");
   await f.put({ checkpointSeconds: 43 }).expect(200);
   expect(f.row().provider_checkpoint_source).toBe("browser");
-  f.ledger.recordUsage(owner, f.id, { schemaVersion: 1, checkpointSeconds: 28 }, "sideband");
+  f.ledger.recordUsage(owner, f.id, f.c.conversationId, { schemaVersion: 1, checkpointSeconds: 28 }, "sideband");
   expect(f.row().provider_checkpoint_source).toBe("browser");
-  f.ledger.recordUsage(owner, f.id, { schemaVersion: 1, checkpointSeconds: 43 }, "sideband");
+  f.ledger.recordUsage(owner, f.id, f.c.conversationId, { schemaVersion: 1, checkpointSeconds: 43 }, "sideband");
   expect(f.row().provider_checkpoint_source).toBe("sideband");
 });

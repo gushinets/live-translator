@@ -106,7 +106,7 @@ function fixture(closeTimeoutMs = 2000, background = false, initialHidden = fals
     completeResume: vi.fn<LedgerApi["completeResume"]>(),
     abortResume: vi.fn<LedgerApi["abortResume"]>(),
     end: vi.fn<LedgerApi["end"]>(async () => ({ ...c, status: "ended" })),
-    usage: vi.fn<NonNullable<LedgerApi["usage"]>>(async (id, report) => {
+    usage: vi.fn<NonNullable<LedgerApi["usage"]>>(async (id, _conversationId, report) => {
       reports.push({ id, report }); return { schemaVersion: 1, appAccepted: true, activityReportSeq: null, appMetricsFinalized: true };
     }),
   };

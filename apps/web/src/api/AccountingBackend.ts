@@ -28,7 +28,7 @@ export interface ResumeClaimMetadata extends ConversationMetadata {
 export type ResumeAbortReason = "media_not_ready" | "provider_creation_failed" | "webrtc_failed" |
   "restore_ack_failed" | "hidden" | "claim_timeout" | "interrupted_by_restart" | "user_end";
 export interface LedgerApi extends CleanupTransport {
-  usage?(id: string, report: UsageReport, keepalive?: boolean): Promise<UsageReceipt>;
+  usage?(id: string, conversationId: string, report: UsageReport, keepalive?: boolean): Promise<UsageReceipt>;
   policy(): Promise<{ usageLedgerEnabled: boolean; backgroundSessionCloseEnabled: boolean; creationPaused?: boolean }>;
   createConversation(requestId: string): Promise<ConversationMetadata>;
   createSession(body: ProviderCreateBody, signal: AbortSignal): Promise<CreateLiveSessionResponse>;
@@ -58,8 +58,8 @@ export class AccountingBackend implements LedgerApi {
       return await response.json() as T;
     } finally { clearTimeout(timer); signal?.removeEventListener("abort", abort); }
   }
-  usage(id: string, report: UsageReport, keepalive = false): Promise<UsageReceipt> {
-    return this.json(`/api/live/session/${encodeURIComponent(id)}/usage`, "PUT", report, undefined, 10000, keepalive);
+  usage(id: string, conversationId: string, report: UsageReport, keepalive = false): Promise<UsageReceipt> {
+    return this.json(`/api/live/session/${encodeURIComponent(id)}/usage`, "PUT", { conversationId, ...report }, undefined, 10000, keepalive);
   }
   async policy(): Promise<{ usageLedgerEnabled: boolean; backgroundSessionCloseEnabled: boolean; creationPaused?: boolean }> {
     try { return await this.json("/api/policy"); }

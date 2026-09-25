@@ -261,9 +261,10 @@ export class UsageLedger {
     });
   }
   /** One commit for the whole report; close uses the same primitive as PR-2 observers. */
-  recordUsage(owner: string, id: string, report: UsageReport, source: ObservationSource = "browser") {
+  recordUsage(owner: string, id: string, conversationId: string, report: UsageReport, source: ObservationSource = "browser") {
     return this.atomic(() => {
       let row = this.ownedAttempt(owner, id);
+      if (row.conversation_id !== conversationId) throw new LedgerError("not_found", 404);
       const now = this.now();
       if (row.provider_request_dispatched_at !== null && row.state !== "failed") {
         this.updateAttempt(id, mergeUsage(row, { checkpointSeconds: report.checkpointSeconds }, source, now));

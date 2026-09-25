@@ -991,6 +991,31 @@ describe("controller-owned conversation accounting", () => {
 
     await retry.abandon("cancelled"); await f.scope.outbox.flush(); await f.budget.close();
   });
+  it("does not discard a reused conversation's usage after definitive pre-registration rejection", async () => {
+    const f = fixture();
+    const api = { ...f.api, usage: vi.fn<NonNullable<LedgerApi["usage"]>>(async () => ({ schemaVersion: 1, appAccepted: true, activityReportSeq: null, appMetricsFinalized: false })) };
+    const scope = new ConversationAccounting({ api, budget: f.budget, autoDelivery: false });
+    const attempt = scope.newAttempt();
+    let rejectCreate!: (error: Error) => void;
+    api.createSession.mockImplementationOnce(() => new Promise((_resolve, reject) => { rejectCreate = reject; }));
+    const creating = attempt.create("offer").catch(error => error);
+    await vi.waitFor(() => expect(rejectCreate).toBeDefined());
+    attempt.observeUsage({ kind: "checkpoint", seconds: 15 });
+    await vi.waitFor(async () => expect((await f.budget.get(attempt.localId))?.usage?.report.checkpointSeconds).toBe(15));
+    let entered!: () => void, release!: () => void;
+    const started = new Promise<void>(resolve => { entered = resolve; });
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    vi.spyOn(f.budget, "discardUsage").mockImplementationOnce(async (...args) => { entered(); await gate; return MetadataDeliveryBudget.prototype.discardUsage.call(f.budget, ...args); });
+    rejectCreate(new AccountingRequestError(503, "provider_key_missing")); await started;
+    await MetadataDeliveryBudget.prototype.discardUsage.call(f.budget, attempt.localId, f.c.conversationId);
+    await f.budget.finishProducerAndRelease(attempt.localId, "no_provider", f.c.conversationId);
+    await f.budget.reserve(attempt.localId, "foreign", true);
+    await f.budget.enqueueUsage(attempt.localId, "foreign", { schemaVersion: 1, checkpointSeconds: 33 });
+    release(); await creating;
+    expect((await f.budget.get(attempt.localId))?.usage?.report.checkpointSeconds).toBe(33);
+    expect(api.cleanup).not.toHaveBeenCalled();
+    await f.budget.close();
+  });
 
   it("removes staged cleanup dependency when a pending create definitively creates no provider", async () => {
     const f = fixture(), attempt = f.scope.newAttempt();
@@ -1202,7 +1227,7 @@ describe("controller-owned conversation accounting", () => {
     const creating = attempt.create("offer").catch(error => error);
     await vi.waitFor(() => expect(rejectCreate).toBeDefined());
     await f.scope.stageEnd("setup_cancel");
-    await originalBudget.enqueueUsage(attempt.localId, { schemaVersion: 1, checkpointSeconds: 12 });
+    await originalBudget.enqueueUsage(attempt.localId, f.c.conversationId, { schemaVersion: 1, checkpointSeconds: 12 });
     vi.spyOn(originalBudget, "finishProducerAndRelease").mockRejectedValueOnce(new Error("finalization storage failed"));
     rejectCreate(new AccountingRequestError(404, "attempt_not_found"));
     await expect(creating).resolves.toMatchObject({ message: "finalization storage failed" });
@@ -1626,7 +1651,7 @@ describe("stage 4 durable lifecycle boundary", () => {
     const f = fixture();
     await f.budget.reserve("attempt", f.c.conversationId, true);
     await f.budget.markDispatchStarted("attempt");
-    await f.budget.enqueueUsage("attempt", { schemaVersion: 1, checkpointSeconds: 10 });
+    await f.budget.enqueueUsage("attempt", f.c.conversationId, { schemaVersion: 1, checkpointSeconds: 10 });
     await f.scope.outbox.enqueue("attempt", "response_not_received");
     await f.scope.outbox.flush();
     expect(await f.budget.get("attempt")).toMatchObject({ cleanup: null, usagePending: true, producerOutcome: "lost" });
@@ -1705,7 +1730,7 @@ describe("stage 4 durable lifecycle boundary", () => {
     const indexedDB = new IDBFactory(), name = crypto.randomUUID();
     const store = new MetadataDeliveryBudget({ indexedDB, name });
     await store.reserve("attempt", "c", true); await store.markDispatchStarted("attempt");
-    await store.enqueueUsage("attempt", { schemaVersion: 1, checkpointSeconds: 43 });
+    await store.enqueueUsage("attempt", "c", { schemaVersion: 1, checkpointSeconds: 43 });
     const enqueue = store.enqueueEnd.bind(store) as (id: string, version: number, reason: "user_end", cleanupIds: string[]) => Promise<void>;
     await enqueue("c", 1, "user_end", ["attempt"]); await store.close();
     const reloaded = new MetadataDeliveryBudget({ indexedDB, name });
