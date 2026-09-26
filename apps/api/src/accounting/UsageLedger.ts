@@ -2,6 +2,7 @@ import { mergeUsage, mergeAppMetrics, type UsageReport } from "./mergeUsage.js";
 import { randomUUID } from "node:crypto";
 import type { DatabaseSync, SQLInputValue } from "node:sqlite";
 import { transaction } from "../persistence/database.js";
+import { assignPricingPolicyVersion, PRICING_POLICIES, type PricingPolicy } from "../reports/pricingPolicy.js";
 import { CLEANUP_RETRY_TTL_MS, DEFAULT_LEDGER_POLICY, LedgerError,
   type AttemptInput, type CleanupReason, type CloseObservation, type ConversationRow,
   type EndReason, type InitialMode, type LedgerPolicy, type ObservationSource,
@@ -14,10 +15,12 @@ const strength = (s: ObservationSource | null) => s === "sideband" ? 2 : s === "
 /** SQL is authoritative for lifecycle and recovery; network work is outside transactions. */
 export class UsageLedger {
   private readonly clock: () => number;
+  private readonly pricingPolicies: readonly PricingPolicy[];
   readonly policy: LedgerPolicy;
-  constructor(readonly db: DatabaseSync, options: { now?: () => number; policy?: LedgerPolicy } = {}) {
+  constructor(readonly db: DatabaseSync, options: { now?: () => number; policy?: LedgerPolicy; pricingPolicies?: readonly PricingPolicy[] } = {}) {
     this.clock = options.now ?? Date.now;
     this.policy = { ...DEFAULT_LEDGER_POLICY, ...options.policy };
+    this.pricingPolicies = options.pricingPolicies ?? PRICING_POLICIES;
   }
   now() { return this.clock(); }
   private atomic<T>(work: () => T | LedgerError): T {
@@ -134,11 +137,14 @@ export class UsageLedger {
         this.cleanupInternal(s, "handoff_not_activatable", this.now()); return new LedgerError("conversation_not_activatable");
       }
       if (c.first_provider_dispatch_at === null) {
-        const deadline = this.now() + this.policyFor(c).maxConversationElapsedMs;
-        this.updateConversation(c.id, { first_provider_dispatch_at: this.now(), product_deadline_at: deadline });
+        const now = this.now();
+        const deadline = now + this.policyFor(c).maxConversationElapsedMs;
+        this.updateConversation(c.id, { first_provider_dispatch_at: now, product_deadline_at: deadline });
         if (s.resume_claim_expires_at !== null) this.updateAttempt(id, { resume_claim_expires_at: Math.min(s.resume_claim_expires_at, deadline) });
       }
-      this.updateAttempt(id, { provider_request_dispatched_at: this.now(), lease_id: leaseId, lease_expires_at: leaseExpiresAt });
+      const dispatchedAt = this.now();
+      this.updateAttempt(id, { provider_request_dispatched_at: dispatchedAt, lease_id: leaseId, lease_expires_at: leaseExpiresAt,
+        pricing_policy_version: assignPricingPolicyVersion(s.model, dispatchedAt, this.pricingPolicies) });
       return this.attempt(id);
     });
   }

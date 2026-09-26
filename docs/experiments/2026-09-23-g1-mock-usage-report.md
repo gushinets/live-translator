@@ -31,8 +31,9 @@ node apps/api/scripts/g1-mock-report.mjs
 
 Один record, final120 отдельно от checkpoint105. Итог не225. При complete app/speech
 coverage и final без конфликта ratios соответственно **120 / 240 / 360 provider
-seconds per active / accepted-source / completed-source minute**. В скрипте есть
-assertions этих значений; итоговый JSON печатается на stdout.
+seconds per active / accepted-source / completed-source minute**. Отношение
+provider usage к accepted speech seconds равно **4**. В скрипте есть assertions
+этих значений; итоговый JSON печатается на stdout.
 
 ## Что не доказано этим примером
 

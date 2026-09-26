@@ -30,6 +30,7 @@ try {
   const report = conversationSummary(ledger.listAttempts(owner, conversation.id));
   assert.deepEqual(report.ratios, { providerSecondsPerActiveMinute: 120,
     providerSecondsPerAcceptedSpeechMinute: 240, providerSecondsPerCompletedSpeechMinute: 360 });
+  assert.equal(report.ratios.providerSecondsPerAcceptedSpeechMinute / 60, 4);
   assert.equal(report.usage.totalProviderSeconds, 120);
   log(JSON.stringify({ evidence: "synthetic; not provider measurements or billing calibration", report }, null, 2));
 } finally { db.close(); }
