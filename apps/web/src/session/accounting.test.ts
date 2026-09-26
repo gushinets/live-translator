@@ -142,6 +142,95 @@ describe("shared IndexedDB metadata budget", () => {
     expect(remaining).toEqual([]);
     await b.close();
   });
+  it("applies an unexpired version-3 no-provider proof once and does not copy it back", async () => {
+    const indexedDB = new IDBFactory(), name = crypto.randomUUID(), now = Date.now();
+    const created = await new Promise<IDBDatabase>((resolve, reject) => {
+      const request = indexedDB.open(name, 3);
+      request.onupgradeneeded = () => {
+        request.result.createObjectStore("envelopes", { keyPath: "localId" });
+        request.result.createObjectStore("lifecycle", { keyPath: "conversationId" });
+        request.result.createObjectStore("noProviderProofs", { keyPath: "localId" });
+      };
+      request.onsuccess = () => resolve(request.result);
+      request.onerror = () => reject(request.error ?? new Error("seed failed"));
+    });
+    await new Promise<void>((resolve, reject) => {
+      const tx = created.transaction("noProviderProofs", "readwrite");
+      const proofs = tx.objectStore("noProviderProofs");
+      proofs.put({ localId: ["c", "attempt"], attemptLocalId: "attempt", conversationId: "c", expiresAt: now + METADATA_TTL_MS });
+      proofs.put({ localId: ["c", "stale"], attemptLocalId: "stale", conversationId: "c", expiresAt: now - 1 });
+      tx.oncomplete = () => resolve();
+      tx.onerror = () => reject(tx.error ?? new Error("proof seed failed"));
+    });
+    created.close();
+    const store = new MetadataDeliveryBudget({ indexedDB, name });
+    await store.enqueueEnd("c", 1, "setup_cancel", [], 0, "policy", ["attempt", "stale"]);
+    expect((await store.ends())[0]?.noProviderPendingLocalIds).toEqual(["stale"]);
+    await store.close();
+    const legacy = await new Promise<unknown[]>((resolve, reject) => {
+      const request = indexedDB.open(name);
+      request.onerror = () => reject(request.error ?? new Error("legacy reopen failed"));
+      request.onsuccess = () => {
+        const db = request.result;
+        const tx = db.transaction("noProviderProofs", "readonly");
+        const all = tx.objectStore("noProviderProofs").getAll();
+        all.onsuccess = () => { db.close(); resolve(all.result as unknown[]); };
+        tx.onerror = () => { db.close(); reject(tx.error ?? new Error("legacy proof read failed")); };
+      };
+    });
+    expect(legacy).toEqual([]);
+    const again = new MetadataDeliveryBudget({ indexedDB, name });
+    await again.enqueueEnd("c", 2, "setup_cancel", [], 0, "policy", ["attempt", "stale"]);
+    expect((await again.ends())[0]?.noProviderPendingLocalIds).toEqual(["attempt", "stale"]);
+    await again.close();
+  });
+  it("replays an expired End when a no-provider proof survives an interrupted reconcile", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    const b = budget();
+    try {
+    await b.reserve("attempt", "c");
+    await b.markDispatchStarted("attempt");
+    const target = b as unknown as {
+      listProofs(): Promise<unknown[]>;
+      reconcileLaterProofs(conversationId: string, expectedVersion: number, consumed: unknown[]): Promise<void>;
+    };
+    const readProofs = target.listProofs.bind(target);
+    let release!: () => void;
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    let listed!: () => void;
+    const sawList = new Promise<void>(resolve => { listed = resolve; });
+    vi.spyOn(target, "listProofs").mockImplementationOnce(async () => {
+      const proofs = await readProofs();
+      listed();
+      await gate;
+      return proofs;
+    });
+    vi.spyOn(target, "reconcileLaterProofs").mockRejectedValueOnce(new Error("reconcile did not commit"));
+    const ending = b.enqueueEnd("c", 1, "setup_cancel", [], 0, "policy", ["attempt"]);
+    await sawList;
+    await b.finishProducerAndRelease("attempt", "no_provider", "c");
+    release();
+    await expect(ending).rejects.toThrow("reconcile did not commit");
+    expect((await b.ends())[0]?.noProviderPendingLocalIds).toEqual(["attempt"]);
+    vi.mocked(target.reconcileLaterProofs).mockRestore();
+    const ended = vi.fn()
+      .mockRejectedValueOnce(new Error("offline"))
+      .mockResolvedValueOnce({ status: "ended" });
+    const outbox = new CleanupIntentOutbox(b, {
+      cleanup: async () => ({}), closed: async () => ({}),
+      readConversation: async () => ({ conversationId: "c", version: 1, status: "active", productDeadlineAt: null,
+        resumeAttemptId: null, serverTime: Date.now(),
+        policy: { policyVersion: "policy", backgroundSessionCloseEnabled: true } }),
+      end: ended,
+    });
+    await outbox.flush();
+    expect((await b.ends())[0]?.noProviderPendingLocalIds).toEqual([]);
+    vi.setSystemTime(Date.now() + METADATA_TTL_MS + 1);
+    await outbox.flush();
+    expect(ended).toHaveBeenNthCalledWith(2, "c", 1, "setup_cancel");
+    expect(await b.ends()).toEqual([]);
+    } finally { await b.close(); vi.useRealTimers(); }
+  });
   it("opens a metadata database left at version 3 when envelope stores exist", async () => {
     const indexedDB = new IDBFactory(), name = crypto.randomUUID();
     const created = await new Promise<IDBDatabase>((resolve, reject) => {

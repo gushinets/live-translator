@@ -38,12 +38,9 @@ export class MetadataDeliveryBudget {
     this.producerId = options.producerId ?? crypto.randomUUID(); this.timeoutMs = options.timeoutMs ?? 5000;
   }
   get ownerProducerId(): string { return this.producerId; }
-  private openDatabase(name: string, version: number | undefined, create: (db: IDBDatabase) => void,
-    opening: "metadata" | "proofs"): Promise<IDBDatabase> {
+  private openConnection(name: string, version: number | undefined, create: (db: IDBDatabase) => void): Promise<IDBDatabase> {
     if (!this.factory) return Promise.reject(new Error("Metadata storage unavailable"));
-    const current = opening === "metadata" ? this.opening : this.proofOpening;
-    if (current) return current;
-    const pending = new Promise<IDBDatabase>((resolve, reject) => {
+    return new Promise<IDBDatabase>((resolve, reject) => {
       let settled = false;
       const request = version === undefined ? this.factory!.open(name) : this.factory!.open(name, version);
       const fail = (error?: DOMException | null) => {
@@ -59,7 +56,13 @@ export class MetadataDeliveryBudget {
       };
       request.onerror = () => fail(request.error);
       request.onblocked = () => fail(null);
-    }).catch(error => {
+    });
+  }
+  private openDatabase(name: string, version: number | undefined, create: (db: IDBDatabase) => void,
+    opening: "metadata" | "proofs"): Promise<IDBDatabase> {
+    const current = opening === "metadata" ? this.opening : this.proofOpening;
+    if (current) return current;
+    const pending = this.openConnection(name, version, create).catch(error => {
       if (opening === "metadata") this.opening = undefined; else this.proofOpening = undefined;
       throw error;
     });
@@ -67,21 +70,58 @@ export class MetadataDeliveryBudget {
     return pending;
   }
   private database(): Promise<IDBDatabase> {
+    if (this.opening) return this.opening;
     const upgrade = (db: IDBDatabase) => {
       if (!db.objectStoreNames.contains("envelopes")) db.createObjectStore("envelopes", { keyPath: "localId" });
       if (!db.objectStoreNames.contains("lifecycle")) db.createObjectStore("lifecycle", { keyPath: "conversationId" });
     };
-    return this.openDatabase(this.name, 2, upgrade, "metadata").catch(error => {
+    const pending = this.openConnection(this.name, 2, upgrade).catch(async error => {
       if (!(error instanceof DOMException) || error.name !== "VersionError") throw error;
       return this.openExistingMetadata();
+    }).catch(error => {
+      this.opening = undefined;
+      throw error;
     });
+    this.opening = pending;
+    return pending;
   }
   private async openExistingMetadata(): Promise<IDBDatabase> {
-    const db = await this.openDatabase(this.name, undefined, () => undefined, "metadata");
-    if (db.objectStoreNames.contains("envelopes") && db.objectStoreNames.contains("lifecycle")) return db;
-    db.close();
-    this.opening = undefined;
-    throw new Error("Metadata storage unavailable");
+    const db = await this.openConnection(this.name, undefined, () => undefined);
+    if (!db.objectStoreNames.contains("envelopes") || !db.objectStoreNames.contains("lifecycle")) {
+      db.close();
+      throw new Error("Metadata storage unavailable");
+    }
+    if (db.objectStoreNames.contains("noProviderProofs")) {
+      try { await this.adoptLegacyProofs(db); }
+      catch (error) {
+        console.error("Legacy no-provider proof adoption failed", { name: this.name, error });
+        db.close();
+        throw error;
+      }
+    }
+    return db;
+  }
+  private async adoptLegacyProofs(db: IDBDatabase): Promise<void> {
+    const proofs = await new Promise<NoProviderProof[]>((resolve, reject) => {
+      const tx = db.transaction("noProviderProofs", "readonly");
+      const request = tx.objectStore("noProviderProofs").getAll();
+      request.onsuccess = () => resolve(request.result as NoProviderProof[]);
+      tx.onerror = () => reject(tx.error ?? new Error("Metadata storage unavailable"));
+    });
+    const now = Date.now();
+    const live = proofs.filter(proof => proof.expiresAt > now);
+    if (live.length) {
+      await this.proofTransaction("readwrite", (store, result) => {
+        for (const proof of live) store.put(proof);
+        result(undefined);
+      });
+    }
+    await new Promise<void>((resolve, reject) => {
+      const tx = db.transaction("noProviderProofs", "readwrite");
+      for (const proof of proofs) tx.objectStore("noProviderProofs").delete(proof.localId);
+      tx.oncomplete = () => resolve();
+      tx.onerror = () => reject(tx.error ?? new Error("Metadata storage unavailable"));
+    });
   }
   private proofDatabase(): Promise<IDBDatabase> {
     return this.openDatabase(noProviderProofDatabaseName(this.name), 1, db => {
@@ -389,6 +429,12 @@ export class MetadataDeliveryBudget {
       };
     }, ["lifecycle", "envelopes"]);
     if (reconcileProofs) await this.reconcileLaterProofs(conversationId, expectedVersion, consumed);
+    await this.deleteProofKeys(consumed);
+  }
+  /** Applies proofs that landed before an End row when the reconcile transaction never committed. */
+  async applyNoProviderProofs(conversationId: string, expectedVersion: number): Promise<void> {
+    const consumed: Array<NoProviderProof["localId"]> = [];
+    await this.reconcileLaterProofs(conversationId, expectedVersion, consumed);
     await this.deleteProofKeys(consumed);
   }
   ends(): Promise<EndIntent[]> {

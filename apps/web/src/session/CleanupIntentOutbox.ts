@@ -164,6 +164,10 @@ export class CleanupIntentOutbox {
       } else await deliverRow();
     }
     for (const intent of await this.budget.ends()) {
+      if ((intent.noProviderPendingLocalIds?.length ?? 0) > 0)
+        await this.budget.applyNoProviderProofs(intent.conversationId, intent.expectedVersion);
+    }
+    for (const intent of await this.budget.ends()) {
       const cleanupLocalIds = intent.cleanupLocalIds ?? (await this.budget.entries())
         .filter(row => row.conversationId === intent.conversationId && (row.cleanup || row.closeObservation))
         .map(row => row.localId);
