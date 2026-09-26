@@ -1628,6 +1628,26 @@ describe("stage 5 hidden boundary", () => {
     expect(f.api.createSession).toHaveBeenCalledTimes(1);
     await reloaded.controller.dispose(); await f.budget.close();
   });
+  it("retries the same uncommitted claim after both requests miss the server", async () => {
+    const f = await pausedReloadFixture();
+    const reloaded = await reloadedController(f);
+    await vi.waitFor(() => expect(reloaded.controller.retainedRecoveryState).toBe("paused"));
+    const claim = f.api.claimResume.getMockImplementation()!;
+    f.api.claimResume.mockRejectedValueOnce(new Error("offline")).mockRejectedValueOnce(new Error("offline"));
+
+    await expect(reloaded.controller.resumeRetainedConversation()).rejects.toThrow("offline");
+    const id = f.api.claimResume.mock.calls[0]![2];
+    expect(f.api.claimResume.mock.calls[1]![2]).toBe(id);
+    expect(f.c).toMatchObject({ status: "paused", resumeAttemptId: null });
+    expect(await (await reloaded.store).inspectReload(value => f.api.readConversation(value) as Promise<ConversationMetadata>))
+      .toMatchObject({ kind: "paused", snapshot: { resumeAttemptId: id } });
+
+    f.api.claimResume.mockImplementation(claim);
+    await reloaded.controller.resumeRetainedConversation();
+    expect(f.api.claimResume.mock.calls[2]![2]).toBe(id);
+    expect(f.api.createSession).toHaveBeenCalledTimes(2);
+    await reloaded.controller.dispose(); await f.budget.close();
+  });
   it("keeps an uncertain claim ID when the retry receives a pre-claim 503", async () => {
     const f = await pausedReloadFixture();
     const reloaded = await reloadedController(f);

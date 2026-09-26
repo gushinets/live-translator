@@ -3,7 +3,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { describe, expect, it, vi } from "vitest";
-import { MetadataDeliveryBudget, METADATA_TTL_MS } from "./MetadataDeliveryBudget";
+import { MetadataDeliveryBudget, METADATA_TTL_MS, noProviderProofDatabaseName } from "./MetadataDeliveryBudget";
 import { ATTEMPT_REGISTRATION_GRACE_MS, CleanupIntentOutbox, type CleanupTransport } from "./CleanupIntentOutbox";
 import { ConversationAccounting } from "./ConversationAccounting";
 import { AccountingRequestError, type LedgerApi, type ConversationMetadata } from "../api/AccountingBackend";
@@ -174,12 +174,53 @@ describe("shared IndexedDB metadata budget", () => {
     expect(ends.get("foreign")?.noProviderPendingLocalIds).toEqual([]);
     await b.close();
   });
-  it("keeps a v3 no-provider proof when a new conversation reuses its local ID", async () => {
+  it("keeps an open version-2 metadata tab usable when a new tab stores no-provider proof", async () => {
+    const indexedDB = new IDBFactory(), name = crypto.randomUUID();
+    const legacy = await new Promise<IDBDatabase>((resolve, reject) => {
+      const request = indexedDB.open(name, 2);
+      request.onupgradeneeded = () => {
+        const db = request.result;
+        if (!db.objectStoreNames.contains("envelopes")) db.createObjectStore("envelopes", { keyPath: "localId" });
+        if (!db.objectStoreNames.contains("lifecycle")) db.createObjectStore("lifecycle", { keyPath: "conversationId" });
+      };
+      request.onsuccess = () => resolve(request.result);
+      request.onerror = () => reject(request.error ?? new Error("legacy metadata open failed"));
+    });
+    let upgraded = false;
+    legacy.onversionchange = () => { upgraded = true; legacy.close(); };
+    const next = new MetadataDeliveryBudget({ indexedDB, name });
+    await next.reserve("attempt", "conversation");
+    await next.markDispatchStarted("attempt");
+    await next.finishProducerAndRelease("attempt", "no_provider", "conversation");
+    expect(upgraded).toBe(false);
+    await new Promise<void>((resolve, reject) => {
+      const tx = legacy.transaction("envelopes", "readonly");
+      tx.oncomplete = () => resolve();
+      tx.onerror = () => reject(tx.error ?? new Error("legacy metadata transaction failed"));
+      tx.objectStore("envelopes").get("attempt");
+    });
+    const reopened = await new Promise<IDBDatabase>((resolve, reject) => {
+      const request = indexedDB.open(name, 2);
+      request.onsuccess = () => resolve(request.result);
+      request.onerror = () => reject(request.error ?? new Error("version-2 metadata reopen failed"));
+    });
+    expect(reopened.version).toBe(2);
+    reopened.close();
+    legacy.close();
+    await next.close();
+  });
+  it("keeps a legacy string-keyed no-provider proof when a new conversation reuses its local ID", async () => {
     const indexedDB = new IDBFactory(), name = crypto.randomUUID();
     const b = new MetadataDeliveryBudget({ indexedDB, name });
     await b.reserve("shared", "foreign"); await b.markDispatchStarted("shared");
     const db = await new Promise<IDBDatabase>((resolve, reject) => {
-      const request = indexedDB.open(name); request.onsuccess = () => resolve(request.result); request.onerror = () => reject(request.error);
+      const request = indexedDB.open(noProviderProofDatabaseName(name), 1);
+      request.onupgradeneeded = () => {
+        if (!request.result.objectStoreNames.contains("noProviderProofs"))
+          request.result.createObjectStore("noProviderProofs", { keyPath: "localId" });
+      };
+      request.onsuccess = () => resolve(request.result);
+      request.onerror = () => reject(request.error);
     });
     await new Promise<void>((resolve, reject) => {
       const tx = db.transaction("noProviderProofs", "readwrite");

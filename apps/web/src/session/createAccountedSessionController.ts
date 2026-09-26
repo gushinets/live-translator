@@ -472,8 +472,8 @@ export class AccountedSessionController extends SessionController {
     }
     if (!this.backgroundResumeCurrent(generation)) return;
     const { snapshot, conversation } = inspected;
-    if (snapshot.resumeAttemptId !== null) return; // An uncertain prior claim requires explicit server reconciliation.
-    const id = crypto.randomUUID();
+    if (snapshot.resumeAttemptId !== null && !explicit) return;
+    const id = snapshot.resumeAttemptId ?? crypto.randomUUID();
     await store.rememberResumeAttempt(conversation.conversationId, id);
     let claimed = false;
     let claimRequested = false;
