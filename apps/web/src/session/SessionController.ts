@@ -2438,6 +2438,7 @@ export class SessionController {
     await this.enqueueLifecycle(() => this.resumeFromLifecycle());
   }
 
+  protected applyHiddenBackgroundClose(): Promise<void> { return this.handleVisibilityHidden(); }
   private async handleVisibilityHidden(): Promise<void> {
     if (this.backgroundCloseEnabled) {
       if (this.backgroundPaused) {

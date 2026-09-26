@@ -609,18 +609,24 @@ export class AccountedSessionController extends SessionController {
       try { await action(primedOutput); }
       catch (error) {
         const conversation = await this.accounting.pendingConversation();
-        if (!this.disposed && conversation?.policy.backgroundSessionCloseEnabled &&
-          !await this.snapshotStore.then(store => store.available, () => false)) {
-          const retiring = this.retireUnavailableStart(conversation.conversationId, conversation.version,
-            conversation.policy.policyVersion);
-          this.retainedEndWork = retiring;
-          this.notify();
-          try {
-            await retiring;
-            this.startUnavailable = true;
-          } finally {
-            if (this.retainedEndWork === retiring) this.retainedEndWork = null;
+        if (!this.disposed && conversation?.policy.backgroundSessionCloseEnabled) {
+          const available = await this.snapshotStore.then(store => store.available, () => false);
+          if (this.hiddenDuringStart && document.visibilityState === "hidden" && available && !this.retainedPaused) {
+            this.accounting.adoptHiddenCreation(conversation);
+            await this.applyHiddenBackgroundClose();
             this.notify();
+          } else if (!available) {
+            const retiring = this.retireUnavailableStart(conversation.conversationId, conversation.version,
+              conversation.policy.policyVersion);
+            this.retainedEndWork = retiring;
+            this.notify();
+            try {
+              await retiring;
+              this.startUnavailable = true;
+            } finally {
+              if (this.retainedEndWork === retiring) this.retainedEndWork = null;
+              this.notify();
+            }
           }
         }
         throw error;

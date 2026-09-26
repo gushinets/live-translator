@@ -125,6 +125,17 @@ export class ConversationAccounting {
     this.current = conversation;
     this.pausing = true;
   }
+  adoptHiddenCreation(conversation: ConversationMetadata): void {
+    if (conversation.status !== "active" || !conversation.policy.backgroundSessionCloseEnabled)
+      throw new Error("Hidden start conversation is not activatable");
+    if (this.current) {
+      if (this.current.conversationId !== conversation.conversationId || this.current.version !== conversation.version ||
+        this.current.policy.policyVersion !== conversation.policy.policyVersion)
+        throw new Error("Hidden start conversation does not match local ownership");
+      return;
+    }
+    this.current = conversation;
+  }
   confirmRecoveredPause(conversation: ConversationMetadata): void {
     const local = this.current;
     if (!local || local.status !== "active" || conversation.status !== "paused" ||

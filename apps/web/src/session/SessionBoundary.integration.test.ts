@@ -3500,6 +3500,40 @@ describe("stage 5 hidden boundary", () => {
     await f.controller.dispose(); await f.budget.close(); server.db.close();
   });
 
+  it("pauses an ON-policy conversation when flag-off create is hidden and storage is available", async () => {
+    const f = fixture(40, false);
+    const server = useRealLedger(f, true);
+    f.api.policy.mockResolvedValue({ usageLedgerEnabled: true, backgroundSessionCloseEnabled: false });
+    const create = f.api.createConversation.getMockImplementation()!;
+    let release!: () => void;
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    f.api.createConversation.mockImplementation(async (...args) => { await gate; return create(...args); });
+
+    const starting = f.controller.startContextCapture();
+    await vi.waitFor(() => expect(f.api.createConversation).toHaveBeenCalledOnce());
+    f.setVisible(false);
+    release();
+    await expect(starting).rejects.toThrow();
+
+    expect(f.api.createSession).not.toHaveBeenCalled();
+    expect(server.metadata()).toMatchObject({ status: "paused", productDeadlineAt: null });
+    expect(server.metadata().resumeExpiresAt).toBeGreaterThan(server.metadata().serverTime);
+    expect((await f.snapshotStore).hasRetainedIdentity()).toBe(true);
+    expect(f.controller.retainedRecoveryState).toBe("paused");
+
+    await f.controller.dispose();
+    f.setVisible(true);
+    const reloaded = await reloadedController(f);
+    await vi.waitFor(() => expect(reloaded.controller.retainedRecoveryState).toBe("paused"));
+    render(jsx(ContextScreen, { controller: reloaded.controller satisfies ContextScreenController }));
+    expect(screen.getByRole("button", { name: "Продолжить разговор" })).toBeInTheDocument();
+    expect(server.metadata().status).toBe("paused");
+    expect(f.api.createSession).not.toHaveBeenCalled();
+    await reloaded.controller.dispose();
+    await f.budget.close();
+    server.db.close();
+  });
+
   it.each(["hidden", "cancel"] as const)(
     "does not dispatch a provider when %s interrupts an OFF-to-ON create", async interruption => {
       const f = fixture(40, false, false, undefined, true, false, undefined, false);
