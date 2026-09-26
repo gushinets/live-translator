@@ -417,9 +417,9 @@ This leaves all unrelated Nginx-hosted services untouched.
 
 Only roll back to a commit/tag that is already compatible with this host-Nginx
 topology (loopback-only application ports and no container ownership of
-80/443) and the migrated SQLite schema. Once schema v3 has opened the ledger,
-an older API binary limited to v2 will refuse that database; use a v3-capable
-image for flag-only rollback. After selecting that known-good compatible revision:
+80/443). The usage-identity column keeps `user_version=2`, so the previous v2
+API image can reopen the ledger after this release. After selecting that
+known-good compatible revision:
 
 ```bash
 docker compose --env-file .env -f infra/docker-compose.yml build

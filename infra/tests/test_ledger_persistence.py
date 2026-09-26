@@ -26,7 +26,8 @@ await import('ws');
 await import('openai/resources/live/sideband/ws');
 const db = openUsageDatabase('/data/verification.sqlite');
 try {
-  assert.equal(db.prepare('PRAGMA user_version').get().user_version, 3);
+  assert.equal(db.prepare('PRAGMA user_version').get().user_version, 2);
+  assert.equal(db.prepare("SELECT count(*) AS n FROM pragma_table_info('live_sessions') WHERE name='usage_identity_version'").get().n, 1);
   assert.equal(db.prepare('PRAGMA journal_mode').get().journal_mode, 'wal');
   assert.equal(db.prepare('PRAGMA synchronous').get().synchronous, 2);
   assert.equal(db.prepare('PRAGMA foreign_keys').get().foreign_keys, 1);

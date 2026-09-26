@@ -19,9 +19,11 @@ export function openUsageDatabase(path: string, busyTimeoutMs = 1000): DatabaseS
       db.exec(readFileSync(new URL("./migrations/002-live-session-recovery-fences.sql", import.meta.url), "utf8"));
       db.exec("PRAGMA user_version=2");
     });
-    if (version < 3) transaction(db, () => {
-      db.exec(readFileSync(new URL("./migrations/003-usage-identity.sql", import.meta.url), "utf8"));
-      db.exec("PRAGMA user_version=3");
+    const hasUsageIdentity = db.prepare("SELECT 1 FROM pragma_table_info('live_sessions') WHERE name='usage_identity_version'").get();
+    if (!hasUsageIdentity || version === 3) transaction(db, () => {
+      if (!hasUsageIdentity) db.exec(readFileSync(new URL("./migrations/003-usage-identity.sql", import.meta.url), "utf8"));
+      // The nullable column is safe for the previous v2 binary to ignore on rollback.
+      db.exec("PRAGMA user_version=2");
     });
     return db;
   } catch (error) { db.close(); throw error; }
