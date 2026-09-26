@@ -105,6 +105,74 @@ describe("shared IndexedDB metadata budget", () => {
     expect((await b.ends())[0]).toMatchObject({ cleanupLocalIds: [], noProviderPendingLocalIds: ["uncertain"] });
     await b.close();
   });
+  it("drops a no-provider id proven after End snapshots proofs and before End commits", async () => {
+    const indexedDB = new IDBFactory(), name = crypto.randomUUID();
+    const b = new MetadataDeliveryBudget({ indexedDB, name });
+    await b.reserve("attempt", "c");
+    await b.markDispatchStarted("attempt");
+    const target = b as unknown as { listProofs(): Promise<Array<{ localId: string | [string, string] }>> };
+    const readProofs = target.listProofs.bind(target);
+    let release!: () => void;
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    let listed!: () => void;
+    const sawList = new Promise<void>(resolve => { listed = resolve; });
+    vi.spyOn(target, "listProofs").mockImplementationOnce(async () => {
+      const proofs = await readProofs();
+      listed();
+      await gate;
+      return proofs;
+    });
+    const ending = b.enqueueEnd("c", 1, "setup_cancel", [], 0, "policy", ["attempt"]);
+    await sawList;
+    await b.finishProducerAndRelease("attempt", "no_provider", "c");
+    release();
+    await ending;
+    expect((await b.ends())[0]?.noProviderPendingLocalIds).toEqual([]);
+    const remaining = await new Promise<unknown[]>((resolve, reject) => {
+      const request = indexedDB.open(noProviderProofDatabaseName(name));
+      request.onerror = () => reject(request.error ?? new Error("proof database unavailable"));
+      request.onsuccess = () => {
+        const db = request.result;
+        const tx = db.transaction("noProviderProofs", "readonly");
+        const all = tx.objectStore("noProviderProofs").getAll();
+        all.onsuccess = () => { db.close(); resolve(all.result as unknown[]); };
+        tx.onerror = () => { db.close(); reject(tx.error ?? new Error("proof read failed")); };
+      };
+    });
+    expect(remaining).toEqual([]);
+    await b.close();
+  });
+  it("opens a metadata database left at version 3 when envelope stores exist", async () => {
+    const indexedDB = new IDBFactory(), name = crypto.randomUUID();
+    const created = await new Promise<IDBDatabase>((resolve, reject) => {
+      const request = indexedDB.open(name, 3);
+      request.onupgradeneeded = () => {
+        request.result.createObjectStore("envelopes", { keyPath: "localId" });
+        request.result.createObjectStore("lifecycle", { keyPath: "conversationId" });
+        request.result.createObjectStore("noProviderProofs", { keyPath: "localId" });
+      };
+      request.onsuccess = () => resolve(request.result);
+      request.onerror = () => reject(request.error ?? new Error("seed failed"));
+    });
+    created.close();
+    const store = new MetadataDeliveryBudget({ indexedDB, name });
+    await store.enqueueEnd("c", 1, "user_end");
+    expect(await store.ends()).toMatchObject([{ conversationId: "c", expectedVersion: 1 }]);
+    await store.close();
+  });
+  it("rejects a higher metadata version that lacks envelope stores", async () => {
+    const indexedDB = new IDBFactory(), name = crypto.randomUUID();
+    const created = await new Promise<IDBDatabase>((resolve, reject) => {
+      const request = indexedDB.open(name, 3);
+      request.onupgradeneeded = () => { request.result.createObjectStore("other", { keyPath: "id" }); };
+      request.onsuccess = () => resolve(request.result);
+      request.onerror = () => reject(request.error ?? new Error("seed failed"));
+    });
+    created.close();
+    const store = new MetadataDeliveryBudget({ indexedDB, name });
+    await expect(store.enqueueEnd("c", 1, "user_end")).rejects.toThrow("Metadata storage unavailable");
+    await store.close();
+  });
   it("does not apply a no-provider proof to another conversation", async () => {
     const b = budget(); await b.reserve("attempt", "original"); await b.markDispatchStarted("attempt");
     await b.finishProducerAndRelease("attempt", "no_provider");

@@ -444,7 +444,12 @@ describe("stage 5 hidden boundary", () => {
     f.clients[0]!.peer.channel.emit({ type: "session.closed" });
     await vi.waitFor(() => expect(f.c.status).toBe("paused"));
     f.setVisible(true);
-    await vi.waitFor(() => expect(f.controller.session.state).toBe("context"));
+    await vi.waitFor(() => expect(f.controller.session.state).toBe("connecting"));
+    expect(f.track.enabled).toBe(false);
+    render(jsx(ContextScreen, { controller: f.controller satisfies ContextScreenController }));
+    expect(screen.queryByText("Слушаю контекст")).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Продиктовать контекст" })).toBeEnabled();
+    expect(screen.getByRole("button", { name: "Начать перевод" })).toBeEnabled();
     expect(f.clients[1]!.peer.channel.events.filter(event => event.type === "session.thinking.append")).toEqual([]);
 
     f.controller.setContextText(finalText);
@@ -718,6 +723,11 @@ describe("stage 5 hidden boundary", () => {
     expect(latest.peer.channel.events.filter(event => event.type.endsWith(".append"))).toHaveLength(3);
     expect(f.track.enabled).toBe(true);
     const ending = f.controller.endConversation(); latest.peer.channel.emit({ type: "session.closed" }); await ending;
+    await f.scope.usageOutbox!.flush();
+    const resumed = f.reports.filter(item => item.id === latest.id && item.report.app).at(-1)?.report.app;
+    expect(resumed?.counters).toMatchObject({
+      sourceTailClippingReports: 0, completedTurnCount: 0, textOnlyCompletionCount: 0, audioCompletedTurnCount: 0,
+    });
     await f.controller.dispose(); await f.budget.close();
   });
   it("A5.5 hidden during claim aborts the claimed ID without media dispatch", async () => {
@@ -1206,7 +1216,8 @@ describe("stage 5 hidden boundary", () => {
     f.clients[0]!.peer.channel.emit({ type: "session.closed" });
     await vi.waitFor(() => expect(f.c.status).toBe("paused"));
     f.setVisible(true);
-    await vi.waitFor(() => expect(f.controller.session.state).toBe("context"));
+    await vi.waitFor(() => expect(f.controller.session.state).toBe("connecting"));
+    expect(f.track.enabled).toBe(false);
     expect(f.controller.contextText).toBe("");
     expect(f.clients.at(-1)!.peer.channel.events.filter(event => event.type === "session.thinking.append")).toHaveLength(0);
     await f.controller.dispose(); await f.budget.close();

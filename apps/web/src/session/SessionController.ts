@@ -225,6 +225,9 @@ export class SessionController {
     const live = this.live = this.deps.createLive();
     this.bindLive();
     this.retainedProductDeadlineAt = snapshot.productDeadlineAt;
+    this.conversationMetrics = new ConversationMetrics();
+    this.conversationMetrics.restoreCounters(snapshot.counters);
+    this.publishRetainedCounterBaseline();
     const remoteTrack = new Promise<void>(resolve => { this.remoteTrackArrived = resolve; });
     this.liveConnectStarted = true;
     this.retainedResumePhase = "create";
@@ -283,13 +286,11 @@ export class SessionController {
     this.contextBuffer = snapshot.contextText;
     this.contextFrozenByUser = true;
     this.bootstrapBuffer = "";
-    this.currentSession = { state: snapshot.setupStage === "interpreter" ? "listening" : snapshot.setupStage,
+    this.currentSession = { state: snapshot.setupStage === "interpreter" ? "listening" : snapshot.setupStage === "bootstrap" ? "bootstrap" : "connecting",
       contextText: snapshot.contextText, recentTurns: [],
       participantA: { side: "A", ...snapshot.participantA }, participantB: { side: "B", ...snapshot.participantB } };
     this.enteredInterpreter = snapshot.enteredInterpreter;
     this.freshBootstrapReady = snapshot.setupStage === "bootstrap";
-    this.conversationMetrics = new ConversationMetrics();
-    this.conversationMetrics.restoreCounters(snapshot.counters);
     this.hasConnected = true;
     this.retainedPlaybackCommitted = true;
     this.lifecycleSuspendReason = undefined;
@@ -2901,6 +2902,21 @@ export class SessionController {
       this.conversationMetrics.recordTechnicalOutcome(previousTurn.id, action.type === "SESSION_ERROR" ? "failed" : "discarded");
     }
     this.notify(completedTurnId);
+  }
+
+  /** Seed the new attempt before managed create so retained totals are a baseline, not a delta. */
+  private publishRetainedCounterBaseline(): void {
+    if (typeof this.live.observeProductMetrics !== "function") return;
+    const counters: MetricCounters = {};
+    const snapshot = this.conversationMetrics.snapshot();
+    for (const name of COUNTER_NAMES) {
+      const value = snapshot[name as keyof typeof snapshot];
+      if (typeof value === "number") counters[name] = value;
+    }
+    try {
+      this.live.observeProductMetrics({ atMs: performance.now(), visible: document.visibilityState !== "hidden" && !this.visibility.isHidden(),
+        state: "connecting", interpreterReady: false, mediaReady: false, speechEligible: false, counters });
+    } catch { console.error("Product measurement unavailable"); }
   }
 
   /** Observe facts only. These hooks never change product states, thresholds, or audio gates. */

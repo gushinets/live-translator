@@ -38,22 +38,27 @@ export class MetadataDeliveryBudget {
     this.producerId = options.producerId ?? crypto.randomUUID(); this.timeoutMs = options.timeoutMs ?? 5000;
   }
   get ownerProducerId(): string { return this.producerId; }
-  private openDatabase(name: string, version: number, create: (db: IDBDatabase) => void,
+  private openDatabase(name: string, version: number | undefined, create: (db: IDBDatabase) => void,
     opening: "metadata" | "proofs"): Promise<IDBDatabase> {
     if (!this.factory) return Promise.reject(new Error("Metadata storage unavailable"));
     const current = opening === "metadata" ? this.opening : this.proofOpening;
     if (current) return current;
     const pending = new Promise<IDBDatabase>((resolve, reject) => {
       let settled = false;
-      const request = this.factory!.open(name, version);
-      const fail = () => { if (!settled) { settled = true; clearTimeout(timer); reject(new Error("Metadata storage unavailable")); } };
-      const timer = setTimeout(fail, this.timeoutMs);
+      const request = version === undefined ? this.factory!.open(name) : this.factory!.open(name, version);
+      const fail = (error?: DOMException | null) => {
+        if (settled) return;
+        settled = true; clearTimeout(timer);
+        reject(error?.name === "VersionError" ? error : new Error("Metadata storage unavailable"));
+      };
+      const timer = setTimeout(() => fail(null), this.timeoutMs);
       request.onupgradeneeded = () => create(request.result);
       request.onsuccess = () => {
         if (settled) { request.result.close(); return; }
         settled = true; clearTimeout(timer); request.result.onversionchange = () => request.result.close(); resolve(request.result);
       };
-      request.onerror = request.onblocked = fail;
+      request.onerror = () => fail(request.error);
+      request.onblocked = () => fail(null);
     }).catch(error => {
       if (opening === "metadata") this.opening = undefined; else this.proofOpening = undefined;
       throw error;
@@ -62,10 +67,21 @@ export class MetadataDeliveryBudget {
     return pending;
   }
   private database(): Promise<IDBDatabase> {
-    return this.openDatabase(this.name, 2, db => {
+    const upgrade = (db: IDBDatabase) => {
       if (!db.objectStoreNames.contains("envelopes")) db.createObjectStore("envelopes", { keyPath: "localId" });
       if (!db.objectStoreNames.contains("lifecycle")) db.createObjectStore("lifecycle", { keyPath: "conversationId" });
-    }, "metadata");
+    };
+    return this.openDatabase(this.name, 2, upgrade, "metadata").catch(error => {
+      if (!(error instanceof DOMException) || error.name !== "VersionError") throw error;
+      return this.openExistingMetadata();
+    });
+  }
+  private async openExistingMetadata(): Promise<IDBDatabase> {
+    const db = await this.openDatabase(this.name, undefined, () => undefined, "metadata");
+    if (db.objectStoreNames.contains("envelopes") && db.objectStoreNames.contains("lifecycle")) return db;
+    db.close();
+    this.opening = undefined;
+    throw new Error("Metadata storage unavailable");
   }
   private proofDatabase(): Promise<IDBDatabase> {
     return this.openDatabase(noProviderProofDatabaseName(this.name), 1, db => {
@@ -283,6 +299,27 @@ export class MetadataDeliveryBudget {
   entries(): Promise<MetadataEnvelope[]> {
     return this.transaction("readonly", (store, result) => { const r = store.getAll(); r.onsuccess = () => result(r.result as MetadataEnvelope[]); });
   }
+  private async reconcileLaterProofs(conversationId: string, expectedVersion: number,
+    consumed: Array<NoProviderProof["localId"]>): Promise<void> {
+    const now = Date.now();
+    const known = new Set(consumed.map(key => JSON.stringify(key)));
+    const later = (await this.listProofs()).filter(proof => proof.conversationId === conversationId &&
+      proof.expiresAt > now && !known.has(JSON.stringify(proof.localId)));
+    if (!later.length) return;
+    const proven = new Set(later.map(proofAttemptId));
+    await this.transaction("readwrite", (store, result) => {
+      const get = store.get(conversationId);
+      get.onsuccess = () => {
+        const intent = get.result as EndIntent | undefined;
+        const pending = intent?.noProviderPendingLocalIds;
+        if (intent?.expectedVersion !== expectedVersion || !pending?.some(id => proven.has(id))) { result(undefined); return; }
+        const removed = new Set(pending.filter(id => proven.has(id)));
+        consumed.push(...later.filter(proof => removed.has(proofAttemptId(proof))).map(proof => proof.localId));
+        store.put({ ...intent, noProviderPendingLocalIds: pending.filter(id => !removed.has(id)) });
+        result(undefined);
+      };
+    }, "lifecycle");
+  }
   async enqueueEnd(conversationId: string, expectedVersion: number, reason: EndIntent["reason"], cleanupLocalIds: readonly string[] = [], closeTimeoutMs = 0,
     noProviderPolicyVersion?: string, noProviderAttemptIds: readonly string[] = cleanupLocalIds): Promise<void> {
     // One transaction removes the crash gap between saving cleanup and saving user intent.
@@ -290,6 +327,7 @@ export class MetadataDeliveryBudget {
     const safeTimeout = Number.isFinite(closeTimeoutMs) ? Math.min(2_147_483_647, Math.max(0, closeTimeoutMs)) : 2_147_483_647;
     const storedProofs = await this.listProofs();
     const consumed: Array<NoProviderProof["localId"]> = [];
+    let reconcileProofs = false;
     await this.transaction("readwrite", (store, result, fail, tx) => {
       const now = Date.now(), requestedCloseDeadlineAt = now + safeTimeout;
       let expiresAt = now + METADATA_TTL_MS;
@@ -320,7 +358,11 @@ export class MetadataDeliveryBudget {
           const proven = new Set(matchingProofs.map(proofAttemptId));
           const noProviderPendingLocalIds = replayPolicyVersion
             ? pendingIds.filter(id => !proven.has(id)) : undefined;
-          const consumeProofs = () => { if (replayPolicyVersion) consumed.push(...matchingProofs.map(proof => proof.localId)); };
+          const consumeProofs = () => {
+            if (!replayPolicyVersion) return;
+            reconcileProofs = true;
+            consumed.push(...matchingProofs.map(proof => proof.localId));
+          };
           for (const id of applicable) {
             const row = byId.get(id)!;
             if (row.closeObservation) continue;
@@ -346,6 +388,7 @@ export class MetadataDeliveryBudget {
         };
       };
     }, ["lifecycle", "envelopes"]);
+    if (reconcileProofs) await this.reconcileLaterProofs(conversationId, expectedVersion, consumed);
     await this.deleteProofKeys(consumed);
   }
   ends(): Promise<EndIntent[]> {

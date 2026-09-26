@@ -215,7 +215,6 @@ export function ContextScreen({
     (sessionState === "error" && controller.hasEnteredInterpreter === true);
   const isOwnerSetup = !isConversation;
   const isBusy =
-    sessionState === "connecting" ||
     sessionState === "error" ||
     controller.isConnectInFlight === true || controller.retainedRecoveryState !== undefined;
   const recovery = controller.retainedRecoveryState;
