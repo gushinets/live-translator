@@ -1,16 +1,7 @@
 import process from "node:process";
+import { parseCliArguments } from "../dist/cli/arguments.js";
 import { DatabaseSync } from "node:sqlite";
 import { buildUnitEconomicsReport } from "../dist/reports/unitEconomics.js";
-
-function argumentsFor(args) {
-  const values = {};
-  for (let index = 0; index < args.length; index += 2) {
-    const key = args[index], value = args[index + 1];
-    if (!key?.startsWith("--") || !value || key in values) throw new Error("invalid_arguments");
-    values[key.slice(2)] = value;
-  }
-  return values;
-}
 
 function instant(value) {
   if (!/^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(?:\.\d{1,3})?(?:Z|[+-]\d\d:\d\d)$/.test(value)) throw new Error("invalid_arguments");
@@ -21,7 +12,7 @@ function instant(value) {
 
 let db;
 try {
-  const options = argumentsFor(process.argv.slice(2));
+  const options = parseCliArguments(process.argv.slice(2));
   if (!("db" in options) || !("from" in options) || !("to" in options) || !("dataset" in options) ||
       Object.keys(options).some(key => !["db", "from", "to", "as-of", "dataset"].includes(key)) ||
       !["product", "experimental", "synthetic"].includes(options.dataset)) throw new Error("invalid_arguments");
@@ -31,7 +22,8 @@ try {
     asOf: options["as-of"] ? instant(options["as-of"]) : now, generatedAt: now, dataClass: options.dataset });
   process.stdout.write(`${JSON.stringify(report, null, 2)}\n`);
 } catch (error) {
-  const code = error instanceof Error && "code" in error ? error.code : "report_failed";
+  const code = error instanceof Error && "code" in error ? error.code
+    : error instanceof Error && error.message === "invalid_arguments" ? "invalid_arguments" : "report_failed";
   process.stderr.write(`${JSON.stringify({ error: code })}\n`);
   process.exitCode = 2;
 } finally { db?.close(); }

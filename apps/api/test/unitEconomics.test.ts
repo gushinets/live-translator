@@ -25,7 +25,7 @@ function fixture(pricingPolicies: readonly PricingPolicy[] = []) {
   let now = Date.UTC(2026, 8, 25);
   const ledger = new UsageLedger(db, { now: () => now, pricingPolicies,
     policy: { ...DEFAULT_LEDGER_POLICY, conversationRetentionMs: 300000 } });
-  const conversation = () => ledger.createConversation(owner, randomUUID(), "synthetic-app-v1");
+  const conversation = (appVersion = "synthetic-app-v1") => ledger.createConversation(owner, randomUUID(), appVersion);
   const dispatched = (c: ReturnType<typeof conversation>) => {
     const id = randomUUID();
     ledger.registerAttempt(owner, { liveSessionId: id, conversationId: c.id, conversationVersion: c.version,
@@ -100,6 +100,24 @@ describe("cross-conversation unit economics", () => {
     expect(result.ratios.providerSecondsPerAcceptedSpeechMinute).toMatchObject({ value: null, excludedReasons: { incomplete_speech_coverage: 1 } });
     expect(result.usage.finalCount).toBe(1);
     expect(f.db.prepare("SELECT status FROM conversations WHERE id=?").get(paused.id)!.status).toBe("paused");
+  });
+
+  it("converts each compatible accepted-speech segment to provider seconds per speech second", () => {
+    const f = fixture();
+    for (const appVersion of ["synthetic-app-v1", "synthetic-app-v2"]) {
+      const c = f.conversation(appVersion), id = f.dispatched(c);
+      f.report(id, c.id, { providerClosed: { seconds: 120 }, app: appMetrics });
+    }
+    const report = buildUnitEconomicsReport(f.db, { from: Date.UTC(2026, 8, 24), to: Date.UTC(2026, 8, 26),
+      asOf: Date.UTC(2026, 8, 27), generatedAt: Date.UTC(2026, 8, 27), dataClass: "synthetic" });
+
+    expect(report.ratios.providerSecondsPerAcceptedSpeechSecond).toMatchObject({
+      value: null, nullReason: "multiple_compatible_segments", includedConversations: 2,
+      segments: [
+        { includedConversations: 1, numeratorProviderSeconds: 120, denominatorMs: 30000, value: 4 },
+        { includedConversations: 1, numeratorProviderSeconds: 120, denominatorMs: 30000, value: 4 },
+      ],
+    });
   });
 
   it("fails diagnostically on corrupted metadata without echoing it", () => {

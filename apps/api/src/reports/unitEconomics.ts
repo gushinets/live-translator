@@ -296,7 +296,10 @@ function readReport(db: DatabaseSync, options: UnitEconomicsOptions) {
       providerSecondsPerCompletedSpeechMinute: ratioReport(infos, "completed"),
       providerSecondsPerAcceptedSpeechSecond: (() => {
         const report = ratioReport(infos, "accepted");
-        return { ...report, value: report.value === null ? null : report.value / 60, unit: "provider_seconds_per_accepted_speech_second" };
+        const perSecond = (value: number | null) => value === null ? null : value / 60;
+        return { ...report, value: perSecond(report.value),
+          segments: report.segments.map(segment => ({ ...segment, value: perSecond(segment.value) })),
+          unit: "provider_seconds_per_accepted_speech_second" };
       })(),
     },
     distributions: { providerSecondsPerConversation: distribution(infos) },

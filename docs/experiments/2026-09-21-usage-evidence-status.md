@@ -2,12 +2,12 @@
 
 Дата: 2026-09-21. Baseline code: `5a32ee2a1c3fe81e12b00be404214f0887c27e82`. Этот файл **не является** raw-log эксперимента 20 сентября и не восстанавливает отсутствующие события из пересказа.
 
-**Обновление 2026-09-26:** Stage 6 выполнил только локальные synthetic checks
+**Обновление 2026-09-26–27 (Asia/Novosibirsk, UTC+07:00):** Stage 6 выполнил только локальные synthetic checks
 для части E4; см. [отчёт deterministic E4](2026-09-26-stage6-deterministic-e4.md).
 Он не меняет статусы E1/E2/E3, не закрывает Gate G3 и не является production
 restore или billing evidence.
 
-Итоговый regression run завершён 2026-09-27: 55 test files / 1120 tests.
+Итоговый regression run завершён 2026-09-27 (Asia/Novosibirsk, UTC+07:00): 56 test files / 1123 tests.
 Протокол и область этих проверок не изменяют внешние gates.
 
 ## E1 — первичный background experiment

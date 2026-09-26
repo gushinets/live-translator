@@ -1,6 +1,6 @@
 # Stage 6 deterministic recovery and restore checks
 
-**Date performed:** 2026-09-26–27. **Code under test:** Stage 6 branch from baseline
+**Date performed:** 2026-09-26–27, Asia/Novosibirsk (UTC+07:00). **Code under test:** Stage 6 branch from baseline
 `950285eb679dc57bfc23582b162205a65cd4e9f7`; final published code SHA is recorded
 in the PR. **Environment:** Windows isolated worktree, Node 24.18.0, SQLite
 3.53.1, pnpm 10.34.1, Docker 29.8.0 / Compose 5.5.1, Playwright 1.63.0.
@@ -18,7 +18,7 @@ called.
 
 - `pnpm install --frozen-lockfile`, `pnpm test`, `pnpm typecheck`, `pnpm lint`,
   `pnpm build` and `node apps/api/scripts/g1-mock-report.mjs` passed. The full
-  unit suite reported 55 files and 1120 tests. Build retained the existing
+  unit suite reported 56 files and 1123 tests. Build retained the existing
   advisory for the large web bundle.
 - The backup regression test wrote to a live SQLite WAL, created an online
   backup, restored into a separate directory and compared the unit-economics

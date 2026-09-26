@@ -1,18 +1,9 @@
 import process from "node:process";
+import { parseCliArguments } from "../dist/cli/arguments.js";
 import { backupUsageDatabase, restoreUsageDatabase, verifyUsageDatabase } from "../dist/persistence/sqliteBackup.js";
 
-function argumentsFor(args) {
-  const values = {};
-  for (let index = 0; index < args.length; index += 2) {
-    const key = args[index], value = args[index + 1];
-    if (!key?.startsWith("--") || !value || key in values) throw new Error("invalid_arguments");
-    values[key.slice(2)] = value;
-  }
-  return values;
-}
-
 try {
-  const [operation, ...args] = process.argv.slice(2), options = argumentsFor(args);
+  const [operation, ...args] = process.argv.slice(2), options = parseCliArguments(args);
   let result;
   if (operation === "backup" && Object.keys(options).length === 2 && options.source && options.target) {
     result = await backupUsageDatabase(options.source, options.target);
