@@ -85,13 +85,22 @@ export class MetadataDeliveryBudget {
     this.opening = pending;
     return pending;
   }
+  private storeKeyPath(db: IDBDatabase, storeName: string): string | string[] | null {
+    if (!db.objectStoreNames.contains(storeName)) return null;
+    return db.transaction(storeName).objectStore(storeName).keyPath;
+  }
   private async openExistingMetadata(): Promise<IDBDatabase> {
     const db = await this.openConnection(this.name, undefined, () => undefined);
-    if (!db.objectStoreNames.contains("envelopes") || !db.objectStoreNames.contains("lifecycle")) {
+    const proofs = db.objectStoreNames.contains("noProviderProofs");
+    const compatible = db.version === 3
+      && this.storeKeyPath(db, "envelopes") === "localId"
+      && this.storeKeyPath(db, "lifecycle") === "conversationId"
+      && (!proofs || this.storeKeyPath(db, "noProviderProofs") === "localId");
+    if (!compatible) {
       db.close();
       throw new Error("Metadata storage unavailable");
     }
-    if (db.objectStoreNames.contains("noProviderProofs")) {
+    if (proofs) {
       try { await this.adoptLegacyProofs(db); }
       catch (error) {
         console.error("Legacy no-provider proof adoption failed", { name: this.name, error });

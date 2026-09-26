@@ -249,6 +249,39 @@ describe("shared IndexedDB metadata budget", () => {
     expect(await store.ends()).toMatchObject([{ conversationId: "c", expectedVersion: 1 }]);
     await store.close();
   });
+  it("rejects a version 4 metadata database that still has envelope stores", async () => {
+    const indexedDB = new IDBFactory(), name = crypto.randomUUID();
+    const created = await new Promise<IDBDatabase>((resolve, reject) => {
+      const request = indexedDB.open(name, 4);
+      request.onupgradeneeded = () => {
+        request.result.createObjectStore("envelopes", { keyPath: "localId" });
+        request.result.createObjectStore("lifecycle", { keyPath: "conversationId" });
+      };
+      request.onsuccess = () => resolve(request.result);
+      request.onerror = () => reject(request.error ?? new Error("seed failed"));
+    });
+    created.close();
+    const store = new MetadataDeliveryBudget({ indexedDB, name });
+    await expect(store.enqueueEnd("c", 1, "user_end")).rejects.toThrow("Metadata storage unavailable");
+    await store.close();
+  });
+  it("rejects a version 3 metadata database whose envelope key path changed", async () => {
+    const indexedDB = new IDBFactory(), name = crypto.randomUUID();
+    const created = await new Promise<IDBDatabase>((resolve, reject) => {
+      const request = indexedDB.open(name, 3);
+      request.onupgradeneeded = () => {
+        request.result.createObjectStore("envelopes", { keyPath: "id" });
+        request.result.createObjectStore("lifecycle", { keyPath: "conversationId" });
+        request.result.createObjectStore("noProviderProofs", { keyPath: "localId" });
+      };
+      request.onsuccess = () => resolve(request.result);
+      request.onerror = () => reject(request.error ?? new Error("seed failed"));
+    });
+    created.close();
+    const store = new MetadataDeliveryBudget({ indexedDB, name });
+    await expect(store.enqueueEnd("c", 1, "user_end")).rejects.toThrow("Metadata storage unavailable");
+    await store.close();
+  });
   it("rejects a higher metadata version that lacks envelope stores", async () => {
     const indexedDB = new IDBFactory(), name = crypto.randomUUID();
     const created = await new Promise<IDBDatabase>((resolve, reject) => {
