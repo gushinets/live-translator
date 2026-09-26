@@ -1,15 +1,25 @@
 import { IDBFactory } from "fake-indexeddb";
+import { existsSync, readFileSync } from "node:fs";
+import { resolve } from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import { describe, expect, it, vi } from "vitest";
-import { MetadataDeliveryBudget } from "./MetadataDeliveryBudget";
-import { ATTEMPT_REGISTRATION_GRACE_MS, type CleanupTransport } from "./CleanupIntentOutbox";
+import { MetadataDeliveryBudget, METADATA_TTL_MS, noProviderProofDatabaseName } from "./MetadataDeliveryBudget";
+import { ATTEMPT_REGISTRATION_GRACE_MS, CleanupIntentOutbox, type CleanupTransport } from "./CleanupIntentOutbox";
 import { ConversationAccounting } from "./ConversationAccounting";
 import { AccountingRequestError, type LedgerApi, type ConversationMetadata } from "../api/AccountingBackend";
+import type { ResumeSnapshotStore } from "./ResumeSnapshotStore";
+import { UsageLedger } from "../../../api/src/accounting/UsageLedger";
+import { LedgerError } from "../../../api/src/accounting/types";
 
 function budget(capacity = 1000) { return new MetadataDeliveryBudget({ indexedDB: new IDBFactory(), name: crypto.randomUUID(), capacity }); }
 function fixture(store = budget()) {
-  const c: ConversationMetadata = { conversationId: "conversation", version: 1, status: "active", productDeadlineAt: null, serverTime: Date.now(), policy: { sessionCloseTimeoutMs: 10 } };
+  const c: ConversationMetadata = { conversationId: "conversation", version: 1, status: "active", productDeadlineAt: null,
+    resumeExpiresAt: null, resumeAttemptId: null, serverTime: Date.now(), policy: { sessionCloseTimeoutMs: 10,
+      backgroundSessionCloseEnabled: false, conversationRetentionMs: 300000, maxProviderSessionMs: 900000,
+      maxConversationElapsedMs: 900000, sessionHandoffAckTimeoutMs: 30000, resumeClaimTimeoutMs: 60000,
+      policyVersion: "unit-economics-v1.1" } };
   const api = {
-    policy: vi.fn<LedgerApi["policy"]>(async () => ({ usageLedgerEnabled: true })),
+    policy: vi.fn<LedgerApi["policy"]>(async () => ({ usageLedgerEnabled: true, backgroundSessionCloseEnabled: false })),
     createConversation: vi.fn<LedgerApi["createConversation"]>(async () => c),
     createSession: vi.fn<LedgerApi["createSession"]>(async () => ({ session: { id: "provider" }, transport: { type: "webrtc", sdp: "answer" } })),
     handoff: vi.fn<LedgerApi["handoff"]>(async id => ({ liveSessionId: id, state: "active", handoffAcknowledgedAt: Date.now(), cleanupRequestedAt: null, conversation: c })),
@@ -20,6 +30,10 @@ function fixture(store = budget()) {
     }),
     closed: vi.fn<CleanupTransport["closed"]>(async () => ({ state: "closed", closeConfirmed: true })),
     readConversation: vi.fn<LedgerApi["readConversation"]>(async () => c),
+    pause: vi.fn<LedgerApi["pause"]>(),
+    claimResume: vi.fn<LedgerApi["claimResume"]>(),
+    completeResume: vi.fn<LedgerApi["completeResume"]>(),
+    abortResume: vi.fn<LedgerApi["abortResume"]>(),
     end: vi.fn<LedgerApi["end"]>(async () => ({ ...c, status: "ended" })),
   };
   const scope = new ConversationAccounting({ api, budget: store, autoDelivery: false });
@@ -32,6 +46,17 @@ async function updateEnvelope(indexedDB: IDBFactory, name: string, id: string, p
   await new Promise<void>((resolve, reject) => {
     const tx = db.transaction("envelopes", "readwrite"), store = tx.objectStore("envelopes"), get = store.get(id);
     get.onsuccess = () => store.put({ ...get.result, ...patch });
+    tx.oncomplete = () => resolve(); tx.onerror = () => reject(tx.error);
+  });
+  db.close();
+}
+async function expireEnd(indexedDB: IDBFactory, name: string, id: string) {
+  const db = await new Promise<IDBDatabase>((resolve, reject) => {
+    const request = indexedDB.open(name); request.onsuccess = () => resolve(request.result); request.onerror = () => reject(request.error);
+  });
+  await new Promise<void>((resolve, reject) => {
+    const tx = db.transaction("lifecycle", "readwrite"), store = tx.objectStore("lifecycle"), get = store.get(id);
+    get.onsuccess = () => store.put({ ...get.result, expiresAt: Date.now() - 1 });
     tx.oncomplete = () => resolve(); tx.onerror = () => reject(tx.error);
   });
   db.close();
@@ -69,6 +94,441 @@ describe("shared IndexedDB metadata budget", () => {
   it("reclaims a proven never-dispatched cancelled attempt", async () => {
     const b = budget(); await b.reserve("id", "c"); await b.finishProducer("id", "no_provider"); await b.releaseIfSafe("id");
     expect(await b.entries()).toHaveLength(0); await b.close();
+  });
+  it("keeps proof for one attempt separate from another attempt's cleanup ACK", async () => {
+    const b = budget();
+    for (const id of ["proven", "uncertain"]) { await b.reserve(id, "c"); await b.markDispatchStarted(id); }
+    await b.finishProducerAndRelease("proven", "no_provider");
+    await b.enqueueEnd("c", 1, "setup_cancel", ["proven", "uncertain"], 0, "policy");
+    expect((await b.ends())[0]).toMatchObject({ cleanupLocalIds: ["uncertain"], noProviderPendingLocalIds: ["uncertain"] });
+    await b.acknowledgeCleanupAndRelease("uncertain");
+    expect((await b.ends())[0]).toMatchObject({ cleanupLocalIds: [], noProviderPendingLocalIds: ["uncertain"] });
+    await b.close();
+  });
+  it("drops a no-provider id proven after End snapshots proofs and before End commits", async () => {
+    const indexedDB = new IDBFactory(), name = crypto.randomUUID();
+    const b = new MetadataDeliveryBudget({ indexedDB, name });
+    await b.reserve("attempt", "c");
+    await b.markDispatchStarted("attempt");
+    const target = b as unknown as { listProofs(): Promise<Array<{ localId: string | [string, string] }>> };
+    const readProofs = target.listProofs.bind(target);
+    let release!: () => void;
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    let listed!: () => void;
+    const sawList = new Promise<void>(resolve => { listed = resolve; });
+    vi.spyOn(target, "listProofs").mockImplementationOnce(async () => {
+      const proofs = await readProofs();
+      listed();
+      await gate;
+      return proofs;
+    });
+    const ending = b.enqueueEnd("c", 1, "setup_cancel", [], 0, "policy", ["attempt"]);
+    await sawList;
+    await b.finishProducerAndRelease("attempt", "no_provider", "c");
+    release();
+    await ending;
+    expect((await b.ends())[0]?.noProviderPendingLocalIds).toEqual([]);
+    const remaining = await new Promise<unknown[]>((resolve, reject) => {
+      const request = indexedDB.open(noProviderProofDatabaseName(name));
+      request.onerror = () => reject(request.error ?? new Error("proof database unavailable"));
+      request.onsuccess = () => {
+        const db = request.result;
+        const tx = db.transaction("noProviderProofs", "readonly");
+        const all = tx.objectStore("noProviderProofs").getAll();
+        all.onsuccess = () => { db.close(); resolve(all.result as unknown[]); };
+        tx.onerror = () => { db.close(); reject(tx.error ?? new Error("proof read failed")); };
+      };
+    });
+    expect(remaining).toEqual([]);
+    await b.close();
+  });
+  it("applies an unexpired version-3 no-provider proof once and does not copy it back", async () => {
+    const indexedDB = new IDBFactory(), name = crypto.randomUUID(), now = Date.now();
+    const created = await new Promise<IDBDatabase>((resolve, reject) => {
+      const request = indexedDB.open(name, 3);
+      request.onupgradeneeded = () => {
+        request.result.createObjectStore("envelopes", { keyPath: "localId" });
+        request.result.createObjectStore("lifecycle", { keyPath: "conversationId" });
+        request.result.createObjectStore("noProviderProofs", { keyPath: "localId" });
+      };
+      request.onsuccess = () => resolve(request.result);
+      request.onerror = () => reject(request.error ?? new Error("seed failed"));
+    });
+    await new Promise<void>((resolve, reject) => {
+      const tx = created.transaction("noProviderProofs", "readwrite");
+      const proofs = tx.objectStore("noProviderProofs");
+      proofs.put({ localId: ["c", "attempt"], attemptLocalId: "attempt", conversationId: "c", expiresAt: now + METADATA_TTL_MS });
+      proofs.put({ localId: ["c", "stale"], attemptLocalId: "stale", conversationId: "c", expiresAt: now - 1 });
+      tx.oncomplete = () => resolve();
+      tx.onerror = () => reject(tx.error ?? new Error("proof seed failed"));
+    });
+    created.close();
+    const store = new MetadataDeliveryBudget({ indexedDB, name });
+    await store.enqueueEnd("c", 1, "setup_cancel", [], 0, "policy", ["attempt", "stale"]);
+    expect((await store.ends())[0]?.noProviderPendingLocalIds).toEqual(["stale"]);
+    await store.close();
+    const legacy = await new Promise<unknown[]>((resolve, reject) => {
+      const request = indexedDB.open(name);
+      request.onerror = () => reject(request.error ?? new Error("legacy reopen failed"));
+      request.onsuccess = () => {
+        const db = request.result;
+        const tx = db.transaction("noProviderProofs", "readonly");
+        const all = tx.objectStore("noProviderProofs").getAll();
+        all.onsuccess = () => { db.close(); resolve(all.result as unknown[]); };
+        tx.onerror = () => { db.close(); reject(tx.error ?? new Error("legacy proof read failed")); };
+      };
+    });
+    expect(legacy).toEqual([]);
+    const again = new MetadataDeliveryBudget({ indexedDB, name });
+    await again.enqueueEnd("c", 2, "setup_cancel", [], 0, "policy", ["attempt", "stale"]);
+    expect((await again.ends())[0]?.noProviderPendingLocalIds).toEqual(["attempt", "stale"]);
+    await again.close();
+  });
+  it("replays an expired End when a no-provider proof survives an interrupted reconcile", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    const b = budget();
+    try {
+    await b.reserve("attempt", "c");
+    await b.markDispatchStarted("attempt");
+    const target = b as unknown as {
+      listProofs(): Promise<unknown[]>;
+      reconcileLaterProofs(conversationId: string, expectedVersion: number, consumed: unknown[]): Promise<void>;
+    };
+    const readProofs = target.listProofs.bind(target);
+    let release!: () => void;
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    let listed!: () => void;
+    const sawList = new Promise<void>(resolve => { listed = resolve; });
+    vi.spyOn(target, "listProofs").mockImplementationOnce(async () => {
+      const proofs = await readProofs();
+      listed();
+      await gate;
+      return proofs;
+    });
+    vi.spyOn(target, "reconcileLaterProofs").mockRejectedValueOnce(new Error("reconcile did not commit"));
+    const ending = b.enqueueEnd("c", 1, "setup_cancel", [], 0, "policy", ["attempt"]);
+    await sawList;
+    await b.finishProducerAndRelease("attempt", "no_provider", "c");
+    release();
+    await expect(ending).rejects.toThrow("reconcile did not commit");
+    expect((await b.ends())[0]?.noProviderPendingLocalIds).toEqual(["attempt"]);
+    vi.mocked(target.reconcileLaterProofs).mockRestore();
+    const ended = vi.fn()
+      .mockRejectedValueOnce(new Error("offline"))
+      .mockResolvedValueOnce({ status: "ended" });
+    const outbox = new CleanupIntentOutbox(b, {
+      cleanup: async () => ({}), closed: async () => ({}),
+      readConversation: async () => ({ conversationId: "c", version: 1, status: "active", productDeadlineAt: null,
+        resumeAttemptId: null, serverTime: Date.now(),
+        policy: { policyVersion: "policy", backgroundSessionCloseEnabled: true } }),
+      end: ended,
+    });
+    await outbox.flush();
+    expect((await b.ends())[0]?.noProviderPendingLocalIds).toEqual([]);
+    vi.setSystemTime(Date.now() + METADATA_TTL_MS + 1);
+    await outbox.flush();
+    expect(ended).toHaveBeenNthCalledWith(2, "c", 1, "setup_cancel");
+    expect(await b.ends()).toEqual([]);
+    } finally { await b.close(); vi.useRealTimers(); }
+  });
+  it("opens a metadata database left at version 3 when envelope stores exist", async () => {
+    const indexedDB = new IDBFactory(), name = crypto.randomUUID();
+    const created = await new Promise<IDBDatabase>((resolve, reject) => {
+      const request = indexedDB.open(name, 3);
+      request.onupgradeneeded = () => {
+        request.result.createObjectStore("envelopes", { keyPath: "localId" });
+        request.result.createObjectStore("lifecycle", { keyPath: "conversationId" });
+        request.result.createObjectStore("noProviderProofs", { keyPath: "localId" });
+      };
+      request.onsuccess = () => resolve(request.result);
+      request.onerror = () => reject(request.error ?? new Error("seed failed"));
+    });
+    created.close();
+    const store = new MetadataDeliveryBudget({ indexedDB, name });
+    await store.enqueueEnd("c", 1, "user_end");
+    expect(await store.ends()).toMatchObject([{ conversationId: "c", expectedVersion: 1 }]);
+    await store.close();
+  });
+  it("rejects a version 4 metadata database that still has envelope stores", async () => {
+    const indexedDB = new IDBFactory(), name = crypto.randomUUID();
+    const created = await new Promise<IDBDatabase>((resolve, reject) => {
+      const request = indexedDB.open(name, 4);
+      request.onupgradeneeded = () => {
+        request.result.createObjectStore("envelopes", { keyPath: "localId" });
+        request.result.createObjectStore("lifecycle", { keyPath: "conversationId" });
+      };
+      request.onsuccess = () => resolve(request.result);
+      request.onerror = () => reject(request.error ?? new Error("seed failed"));
+    });
+    created.close();
+    const store = new MetadataDeliveryBudget({ indexedDB, name });
+    await expect(store.enqueueEnd("c", 1, "user_end")).rejects.toThrow("Metadata storage unavailable");
+    await store.close();
+  });
+  it("rejects a version 3 metadata database whose envelope key path changed", async () => {
+    const indexedDB = new IDBFactory(), name = crypto.randomUUID();
+    const created = await new Promise<IDBDatabase>((resolve, reject) => {
+      const request = indexedDB.open(name, 3);
+      request.onupgradeneeded = () => {
+        request.result.createObjectStore("envelopes", { keyPath: "id" });
+        request.result.createObjectStore("lifecycle", { keyPath: "conversationId" });
+        request.result.createObjectStore("noProviderProofs", { keyPath: "localId" });
+      };
+      request.onsuccess = () => resolve(request.result);
+      request.onerror = () => reject(request.error ?? new Error("seed failed"));
+    });
+    created.close();
+    const store = new MetadataDeliveryBudget({ indexedDB, name });
+    await expect(store.enqueueEnd("c", 1, "user_end")).rejects.toThrow("Metadata storage unavailable");
+    await store.close();
+  });
+  it("rejects a higher metadata version that lacks envelope stores", async () => {
+    const indexedDB = new IDBFactory(), name = crypto.randomUUID();
+    const created = await new Promise<IDBDatabase>((resolve, reject) => {
+      const request = indexedDB.open(name, 3);
+      request.onupgradeneeded = () => { request.result.createObjectStore("other", { keyPath: "id" }); };
+      request.onsuccess = () => resolve(request.result);
+      request.onerror = () => reject(request.error ?? new Error("seed failed"));
+    });
+    created.close();
+    const store = new MetadataDeliveryBudget({ indexedDB, name });
+    await expect(store.enqueueEnd("c", 1, "user_end")).rejects.toThrow("Metadata storage unavailable");
+    await store.close();
+  });
+  it("does not apply a no-provider proof to another conversation", async () => {
+    const b = budget(); await b.reserve("attempt", "original"); await b.markDispatchStarted("attempt");
+    await b.finishProducerAndRelease("attempt", "no_provider");
+    await b.enqueueEnd("foreign", 1, "setup_cancel", [], 0, "policy", ["attempt"]);
+    expect((await b.ends())[0]?.noProviderPendingLocalIds).toEqual(["attempt"]);
+    await b.close();
+  });
+  it.each([
+    { order: "End before proof", releaseEnvelope: false },
+    { order: "End before proof", releaseEnvelope: true },
+    { order: "proof before End", releaseEnvelope: false },
+  ])("does not release a foreign End sharing an attempt ID: $order, envelope released $releaseEnvelope", async ({ order, releaseEnvelope }) => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    const b = budget();
+    try {
+      await b.reserve("shared", "original"); await b.markDispatchStarted("shared");
+      const enqueueBothEnds = async () => {
+        await b.enqueueEnd("original", 1, "setup_cancel", ["shared"], 0, "policy", ["shared"]);
+        await b.enqueueEnd("foreign", 1, "setup_cancel", [], 0, "policy", ["shared"]);
+      };
+      if (order === "End before proof") await enqueueBothEnds();
+      if (releaseEnvelope) {
+        await b.enqueueCleanup("shared", "cancelled"); await b.acknowledgeDirectCleanupAndRelease("shared");
+        expect(await b.get("shared")).toBeNull();
+      }
+      await b.finishProducerAndRelease("shared", "no_provider", "original");
+      if (order === "proof before End") await enqueueBothEnds();
+      const ends = new Map((await b.ends()).map(end => [end.conversationId, end]));
+      expect(ends.get("original")?.noProviderPendingLocalIds).toEqual([]);
+      expect(ends.get("foreign")?.noProviderPendingLocalIds).toEqual(["shared"]);
+
+      vi.setSystemTime(Date.now() + METADATA_TTL_MS + 1);
+      const end = vi.fn<NonNullable<CleanupTransport["end"]>>(async () => ({ status: "ended" }));
+      const outbox = new CleanupIntentOutbox(b, {
+        cleanup: async () => ({}), closed: async () => ({}), end,
+        readConversation: async conversationId => ({ conversationId, version: 1, status: "active", productDeadlineAt: null,
+          resumeAttemptId: null, serverTime: Date.now(), policy: { policyVersion: "policy", backgroundSessionCloseEnabled: true } }),
+      });
+      await outbox.flush();
+      expect(end).toHaveBeenCalledExactlyOnceWith("original", 1, "setup_cancel");
+      expect((await b.ends())[0]).toMatchObject({ conversationId: "foreign", noProviderPendingLocalIds: ["shared"] });
+    } finally { await b.close(); vi.useRealTimers(); }
+  });
+  it("preserves a late original proof without changing a reused local ID", async () => {
+    const b = budget();
+    await b.reserve("shared", "original"); await b.markDispatchStarted("shared");
+    await b.finishProducerAndRelease("shared", "no_provider", "original");
+    await b.reserve("shared", "foreign"); await b.markDispatchStarted("shared");
+    await b.enqueueEnd("foreign", 1, "setup_cancel", ["shared"], 0, "policy", ["shared"]);
+    await b.finishProducerAndRelease("shared", "no_provider", "original");
+    await expect(b.finishProducer("shared", "no_provider", "original")).rejects.toThrow("Metadata identity conflict");
+    expect((await b.ends())[0]).toMatchObject({ cleanupLocalIds: ["shared"], noProviderPendingLocalIds: ["shared"] });
+    expect(await b.get("shared")).toMatchObject({ conversationId: "foreign", producerFinalized: false });
+    await b.enqueueEnd("original", 1, "setup_cancel", [], 0, "policy", ["shared"]);
+    expect((await b.ends()).find(end => end.conversationId === "original")?.noProviderPendingLocalIds).toEqual([]);
+    await b.close();
+  });
+  it("keeps simultaneous no-provider proofs for different conversations sharing a local ID", async () => {
+    const b = budget();
+    await b.reserve("shared", "original"); await b.markDispatchStarted("shared");
+    await b.finishProducerAndRelease("shared", "no_provider", "original");
+    await b.reserve("shared", "foreign"); await b.markDispatchStarted("shared");
+    await b.finishProducerAndRelease("shared", "no_provider", "foreign");
+    for (const id of ["original", "foreign"]) await b.enqueueEnd(id, 1, "setup_cancel", [], 0, "policy", ["shared"]);
+    const ends = new Map((await b.ends()).map(end => [end.conversationId, end]));
+    expect(ends.get("original")?.noProviderPendingLocalIds).toEqual([]);
+    expect(ends.get("foreign")?.noProviderPendingLocalIds).toEqual([]);
+    await b.close();
+  });
+  it("keeps an open version-2 metadata tab usable when a new tab stores no-provider proof", async () => {
+    const indexedDB = new IDBFactory(), name = crypto.randomUUID();
+    const legacy = await new Promise<IDBDatabase>((resolve, reject) => {
+      const request = indexedDB.open(name, 2);
+      request.onupgradeneeded = () => {
+        const db = request.result;
+        if (!db.objectStoreNames.contains("envelopes")) db.createObjectStore("envelopes", { keyPath: "localId" });
+        if (!db.objectStoreNames.contains("lifecycle")) db.createObjectStore("lifecycle", { keyPath: "conversationId" });
+      };
+      request.onsuccess = () => resolve(request.result);
+      request.onerror = () => reject(request.error ?? new Error("legacy metadata open failed"));
+    });
+    let upgraded = false;
+    legacy.onversionchange = () => { upgraded = true; legacy.close(); };
+    const next = new MetadataDeliveryBudget({ indexedDB, name });
+    await next.reserve("attempt", "conversation");
+    await next.markDispatchStarted("attempt");
+    await next.finishProducerAndRelease("attempt", "no_provider", "conversation");
+    expect(upgraded).toBe(false);
+    await new Promise<void>((resolve, reject) => {
+      const tx = legacy.transaction("envelopes", "readonly");
+      tx.oncomplete = () => resolve();
+      tx.onerror = () => reject(tx.error ?? new Error("legacy metadata transaction failed"));
+      tx.objectStore("envelopes").get("attempt");
+    });
+    const reopened = await new Promise<IDBDatabase>((resolve, reject) => {
+      const request = indexedDB.open(name, 2);
+      request.onsuccess = () => resolve(request.result);
+      request.onerror = () => reject(request.error ?? new Error("version-2 metadata reopen failed"));
+    });
+    expect(reopened.version).toBe(2);
+    reopened.close();
+    legacy.close();
+    await next.close();
+  });
+  it("keeps a legacy string-keyed no-provider proof when a new conversation reuses its local ID", async () => {
+    const indexedDB = new IDBFactory(), name = crypto.randomUUID();
+    const b = new MetadataDeliveryBudget({ indexedDB, name });
+    await b.reserve("shared", "foreign"); await b.markDispatchStarted("shared");
+    const db = await new Promise<IDBDatabase>((resolve, reject) => {
+      const request = indexedDB.open(noProviderProofDatabaseName(name), 1);
+      request.onupgradeneeded = () => {
+        if (!request.result.objectStoreNames.contains("noProviderProofs"))
+          request.result.createObjectStore("noProviderProofs", { keyPath: "localId" });
+      };
+      request.onsuccess = () => resolve(request.result);
+      request.onerror = () => reject(request.error);
+    });
+    await new Promise<void>((resolve, reject) => {
+      const tx = db.transaction("noProviderProofs", "readwrite");
+      tx.objectStore("noProviderProofs").put({ localId: "shared", conversationId: "original", expiresAt: Date.now() + METADATA_TTL_MS });
+      tx.oncomplete = () => resolve(); tx.onerror = () => reject(tx.error);
+    });
+    db.close();
+    await b.finishProducerAndRelease("shared", "no_provider", "foreign");
+    for (const id of ["original", "foreign"]) await b.enqueueEnd(id, 1, "setup_cancel", [], 0, "policy", ["shared"]);
+    for (const end of await b.ends()) expect(end.noProviderPendingLocalIds).toEqual([]);
+    await b.close();
+  });
+  it.each([
+    { route: "readAttempt", reuseId: false }, { route: "readAttempt", reuseId: true }, { route: "recover", reuseId: true },
+  ])("keeps a delayed $route no-provider proof after the old row is ACKed, reused ID $reuseId", async ({ route, reuseId }) => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    const indexedDB = new IDBFactory(), name = crypto.randomUUID();
+    const owner = new MetadataDeliveryBudget({ indexedDB, name, producerId: "owner" });
+    const otherTab = new MetadataDeliveryBudget({ indexedDB, name, producerId: "other" });
+    const reloadedBudget = new MetadataDeliveryBudget({ indexedDB, name, producerId: "reload" });
+    try {
+      await owner.reserve("shared", "original"); await owner.markDispatchStarted("shared");
+      await owner.enqueueCleanup("shared", "cancelled");
+      if (route === "readAttempt") await owner.acknowledgeCleanup("shared");
+      await owner.enqueueEnd("original", 1, "setup_cancel", route === "recover" ? ["shared"] : [], 0, "policy", ["shared"]);
+      let proofRequested!: () => void, releaseProof!: () => void;
+      const requested = new Promise<void>(resolve => { proofRequested = resolve; });
+      const gate = new Promise<void>(resolve => { releaseProof = resolve; });
+      const delayedProof = async () => { proofRequested(); await gate; return { state: "failed", openaiSessionId: null, cleanupRequestedAt: Date.now() }; };
+      const offline = new CleanupIntentOutbox(otherTab, {
+        cleanup: async () => ({}), closed: async () => ({}),
+        readAttempt: route === "readAttempt" ? delayedProof : undefined,
+        recover: route === "recover" ? delayedProof : undefined,
+        readConversation: async () => ({}), end: async () => { throw new Error("offline"); },
+      });
+      const flushing = offline.flush();
+      await requested;
+      await owner.acknowledgeDirectCleanupAndRelease("shared");
+      expect(await owner.get("shared")).toBeNull();
+      if (reuseId) { await owner.reserve("shared", "foreign", true); await owner.markDispatchStarted("shared"); }
+      releaseProof();
+      await flushing;
+      expect((await owner.ends())[0]).toMatchObject({ conversationId: "original", noProviderPendingLocalIds: [] });
+      if (reuseId) expect(await owner.get("shared")).toMatchObject({ conversationId: "foreign", producerFinalized: false, usagePending: true });
+
+      vi.setSystemTime(Date.now() + METADATA_TTL_MS + 1);
+      const end = vi.fn<NonNullable<CleanupTransport["end"]>>(async () => ({ status: "ended" }));
+      const reloaded = new CleanupIntentOutbox(reloadedBudget, {
+        cleanup: async () => ({}), closed: async () => ({}), end,
+        readConversation: async conversationId => ({ conversationId, version: 1, status: "active", productDeadlineAt: null,
+          resumeAttemptId: null, serverTime: Date.now(), policy: { policyVersion: "policy", backgroundSessionCloseEnabled: true } }),
+      });
+      await reloaded.flush();
+      expect(end).toHaveBeenCalledExactlyOnceWith("original", 1, "setup_cancel");
+    } finally { await owner.close(); await otherTab.close(); await reloadedBudget.close(); vi.useRealTimers(); }
+  });
+  it.each(["cleanup", "closed"])("does not apply a delayed %s ACK to a reused local ID", async route => {
+    const indexedDB = new IDBFactory(), name = crypto.randomUUID();
+    const owner = new MetadataDeliveryBudget({ indexedDB, name, producerId: "owner" });
+    const otherTab = new MetadataDeliveryBudget({ indexedDB, name, producerId: "other" });
+    await owner.reserve("shared", "original"); await owner.markDispatchStarted("shared");
+    if (route === "cleanup") await owner.enqueueCleanup("shared", "user_end");
+    else await owner.enqueueClose("shared", {});
+    await owner.enqueueEnd("original", 1, "user_end", ["shared"]);
+    let proofRequested!: () => void, releaseProof!: () => void;
+    const requested = new Promise<void>(resolve => { proofRequested = resolve; });
+    const gate = new Promise<void>(resolve => { releaseProof = resolve; });
+    const delayedProof = async () => { proofRequested(); await gate; return { state: "closed", closeConfirmed: true, cleanupRequestedAt: Date.now() }; };
+    const outbox = new CleanupIntentOutbox(owner, {
+      cleanup: delayedProof, closed: delayedProof, readConversation: async () => ({}), end: async () => { throw new Error("offline"); },
+    });
+    const flushing = outbox.flush();
+    await requested;
+    if (route === "cleanup") await otherTab.acknowledgeDirectCleanupAndRelease("shared");
+    else await otherTab.acknowledgeCloseAndRelease("shared");
+    await otherTab.reserve("shared", "foreign", true); await otherTab.markDispatchStarted("shared");
+    releaseProof();
+    await flushing;
+    expect((await owner.ends())[0]).toMatchObject({ conversationId: "original", cleanupLocalIds: [] });
+    expect(await owner.get("shared")).toMatchObject({ conversationId: "foreign", producerFinalized: false,
+      usagePending: true, cleanup: null, closeObservation: null });
+    expect((await owner.get("shared"))?.cleanupAcknowledged).toBeUndefined();
+    await owner.close(); await otherTab.close();
+  });
+  it("retains definitive proof after direct cleanup removed the original envelope", async () => {
+    const b = budget(); await b.reserve("attempt", "c"); await b.markDispatchStarted("attempt");
+    await b.enqueueCleanup("attempt", "cancelled"); await b.acknowledgeDirectCleanupAndRelease("attempt");
+    expect(await b.get("attempt")).toBeNull();
+    await b.finishProducerAndRelease("attempt", "no_provider", "c");
+    await b.enqueueEnd("c", 1, "setup_cancel", [], 0, "policy", ["attempt"]);
+    expect((await b.ends())[0]?.noProviderPendingLocalIds).toEqual([]);
+    await b.close();
+  });
+  it("bounds unconsumed no-provider proofs and reclaims them after TTL", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    try {
+      const b = budget(1);
+      await b.reserve("first", "c"); await b.markDispatchStarted("first");
+      await b.finishProducerAndRelease("first", "no_provider");
+      await b.reserve("second", "c"); await b.markDispatchStarted("second");
+      await expect(b.finishProducerAndRelease("second", "no_provider")).rejects.toThrow("proof storage is full");
+      expect(await b.get("second")).not.toBeNull();
+      vi.setSystemTime(Date.now() + METADATA_TTL_MS + 1);
+      await b.finishProducerAndRelease("second", "no_provider");
+      expect(await b.entries()).toEqual([]);
+      await b.close();
+    } finally { vi.useRealTimers(); }
+  });
+  it("reclaims a late no-provider proof when End is acknowledged", async () => {
+    const b = budget(1);
+    await b.reserve("first", "c"); await b.markDispatchStarted("first");
+    await b.enqueueEnd("c", 1, "setup_cancel", ["first"], 0, "policy");
+    await b.finishProducerAndRelease("first", "no_provider");
+    await b.acknowledgeEnd("c", 1);
+    await b.reserve("second", "next"); await b.markDispatchStarted("second");
+    await b.finishProducerAndRelease("second", "no_provider");
+    expect(await b.entries()).toEqual([]);
+    await b.close();
   });
 });
 describe("cleanup and End delivery", () => {
@@ -572,7 +1032,7 @@ describe("cleanup and End delivery", () => {
     await f.budget.markDispatchStarted("attempt");
     await f.budget.enqueueEnd("c", 1, "user_end", ["attempt"]);
 
-    await f.scope.acknowledgeDirectCleanup("attempt");
+    await f.scope.acknowledgeDirectCleanup("attempt", "c");
 
     expect((await f.budget.ends())[0]?.cleanupLocalIds).toEqual([]);
     await f.budget.close();
@@ -626,10 +1086,115 @@ describe("cleanup and End delivery", () => {
 
     await next.abandon("cancelled"); await f.scope.outbox.flush(); await f.budget.close();
   });
-  it("drops stale End after conflict instead of taking over a newer conversation version", async () => {
+  it("keeps stale End as an admission barrier without taking over a newer conversation version", async () => {
     const f = fixture(); f.api.end.mockRejectedValue({ status: 409 }); f.api.readConversation.mockResolvedValue({ ...f.c, version: 3 });
-    await f.scope.outbox.enqueueEnd("c", 2, "user_end"); await f.scope.outbox.flush(); expect(await f.budget.ends()).toHaveLength(0);
+    await f.scope.outbox.enqueueEnd("c", 2, "user_end"); await f.scope.outbox.flush(); expect(await f.budget.ends()).toHaveLength(1);
     expect(f.api.end).toHaveBeenCalledTimes(1); await f.budget.close();
+  });
+  it.each(["cleanup", "closed"])("does not apply a late direct %s ACK to a reused attempt ID", async kind => {
+    const f = fixture(), attempt = f.scope.newAttempt(); await attempt.create("offer");
+    const localId = attempt.localId;
+    if (kind === "cleanup") vi.spyOn(f.scope.outbox, "enqueue").mockRejectedValue(new Error("storage unavailable"));
+    else vi.spyOn(f.scope.outbox, "observeClosed").mockRejectedValue(new Error("storage unavailable"));
+    let releaseProof!: () => void;
+    const proofGate = new Promise<void>(resolve => { releaseProof = resolve; });
+    let proofStarted!: () => void;
+    const started = new Promise<void>(resolve => { proofStarted = resolve; });
+    if (kind === "cleanup") f.api.cleanup.mockImplementation(async () => { proofStarted(); await proofGate; return { cleanupRequestedAt: Date.now() }; });
+    else f.api.closed.mockImplementation(async () => { proofStarted(); await proofGate; return { state: "closed", closeConfirmed: true }; });
+    const retiring = kind === "cleanup" ? attempt.abandon("user_end") : attempt.finish({ finalized: true, usageSeconds: 7 });
+    await started;
+    await f.budget.finishUsageProducer(localId, "conversation");
+    await f.budget.finishProducerAndRelease(localId, "provider_closed", "conversation");
+    expect(await f.budget.get(localId)).toBeNull();
+    await f.budget.reserve(localId, "foreign"); await f.budget.markDispatchStarted(localId);
+    await f.budget.enqueueEnd("foreign", 1, "setup_cancel", [localId], 0, "policy");
+    releaseProof(); await retiring;
+    expect(await f.budget.get(localId)).toMatchObject({ conversationId: "foreign", producerFinalized: false });
+    expect((await f.budget.ends())[0]?.cleanupLocalIds).toEqual([localId]);
+    await f.budget.close();
+  });
+  it.each(["cleanup", "closed"])("does not retry an old direct %s ACK against a reused attempt ID", async kind => {
+    const f = fixture(), attempt = f.scope.newAttempt(); await attempt.create("offer");
+    const localId = attempt.localId;
+    if (kind === "cleanup") {
+      vi.spyOn(f.scope.outbox, "enqueue").mockRejectedValue(new Error("storage unavailable"));
+      vi.spyOn(f.budget, "acknowledgeDirectCleanupAndRelease").mockRejectedValueOnce(new Error("ACK write failed"));
+      await attempt.abandon("user_end");
+    } else {
+      vi.spyOn(f.scope.outbox, "observeClosed").mockRejectedValue(new Error("storage unavailable"));
+      vi.spyOn(f.budget, "finishProducerAndRelease").mockRejectedValueOnce(new Error("ACK write failed"));
+      await attempt.finish({ finalized: true, usageSeconds: 7 });
+    }
+    await f.budget.finishProducerAndRelease(localId, "provider_closed", "conversation");
+    await f.budget.reserve(localId, "foreign"); await f.budget.markDispatchStarted(localId);
+    await f.scope.prepare(f.scope.newAttempt());
+    expect(await f.budget.get(localId)).toMatchObject({ conversationId: "foreign", producerFinalized: false });
+    await f.budget.close();
+  });
+  it.each(["cleanup", "closed"])("does not enqueue stale %s metadata onto a reused attempt ID", async kind => {
+    const f = fixture(), localId = "shared";
+    await f.budget.reserve(localId, "original"); await f.budget.markDispatchStarted(localId);
+    let release!: () => void, entered!: () => void;
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    const started = new Promise<void>(resolve => { entered = resolve; });
+    if (kind === "cleanup") {
+      const original = f.budget.enqueueCleanup.bind(f.budget);
+      vi.spyOn(f.budget, "enqueueCleanup").mockImplementation(async (...args) => { entered(); await gate; return original(...args); });
+    } else {
+      const original = f.budget.enqueueClose.bind(f.budget);
+      vi.spyOn(f.budget, "enqueueClose").mockImplementation(async (...args) => { entered(); await gate; return original(...args); });
+    }
+    const operation = kind === "cleanup" ? f.scope.outbox.enqueue(localId, "user_end", "original") :
+      f.scope.outbox.observeClosed(localId, { seconds: 7 }, "original");
+    await started;
+    await f.budget.finishProducerAndRelease(localId, "provider_closed", "original");
+    await f.budget.reserve(localId, "foreign"); await f.budget.markDispatchStarted(localId);
+    release();
+    if (kind === "cleanup") await expect(operation).rejects.toThrow("Metadata identity conflict");
+    else await operation;
+    expect(await f.budget.get(localId)).toMatchObject({ conversationId: "foreign", producerFinalized: false, cleanup: null, closeObservation: null });
+    await f.budget.close();
+  });
+  it("does not let an old direct proof suppress a new conversation's End dependency", async () => {
+    const f = fixture(), first = f.scope.newAttempt(); await first.create("first");
+    const degraded = vi.spyOn(f.scope.outbox, "enqueue").mockRejectedValue(new Error("storage unavailable"));
+    await first.abandon("user_end"); degraded.mockRestore();
+    await f.scope.end("user_end"); await f.scope.outbox.flush();
+    const foreign = { ...f.c, conversationId: "foreign" };
+    f.api.createConversation.mockResolvedValueOnce(foreign);
+    const uuid = vi.spyOn(crypto, "randomUUID").mockReturnValueOnce(first.localId as `${string}-${string}-${string}-${string}-${string}`);
+    const next = f.scope.newAttempt(); uuid.mockRestore();
+    expect(next.localId).toBe(first.localId);
+    await next.create("second");
+    let release!: () => void, entered!: () => void;
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    const started = new Promise<void>(resolve => { entered = resolve; });
+    vi.spyOn(f.scope.outbox, "enqueue").mockImplementation(async () => { entered(); await gate; });
+    const ending = f.scope.end("setup_cancel"); await started;
+    expect((await f.budget.ends()).find(end => end.conversationId === "foreign")?.cleanupLocalIds).toEqual([first.localId]);
+    release(); await ending; await f.budget.close();
+  });
+  it("does not defer a reused attempt's cleanup because an older conversation staged End", async () => {
+    const f = fixture(), localId = "shared";
+    await f.budget.reserve(localId, "original"); await f.budget.markDispatchStarted(localId);
+    f.scope.outbox.deferCleanup("original", [localId]);
+    await f.budget.finishProducerAndRelease(localId, "provider_closed", "original");
+    await f.budget.reserve(localId, "foreign"); await f.budget.markDispatchStarted(localId);
+    await f.budget.enqueueCleanup(localId, "user_end", "foreign");
+    await f.budget.finishProducer(localId, "lost", "foreign");
+    await f.scope.outbox.flush();
+    expect(f.api.cleanup).toHaveBeenCalledWith(localId, "user_end");
+    expect(await f.budget.get(localId)).toBeNull();
+    await f.budget.close();
+  });
+  it("clears a stale End only after read-back confirms that conversation ended", async () => {
+    const f = fixture(); f.api.end.mockRejectedValue(new AccountingRequestError(409, "conversation_version_conflict"));
+    f.api.readConversation.mockResolvedValue({ ...f.c, status: "ended", version: 3 });
+    await f.scope.outbox.enqueueEnd(f.c.conversationId, 1, "user_end");
+    await f.scope.outbox.flush();
+    expect(await f.budget.ends()).toHaveLength(0);
+    await f.budget.close();
   });
 });
 describe("controller-owned conversation accounting", () => {
@@ -656,6 +1221,31 @@ describe("controller-owned conversation accounting", () => {
     expect(f.api.createSession.mock.calls[1]![0].startReason).toBe("initial");
 
     await retry.abandon("cancelled"); await f.scope.outbox.flush(); await f.budget.close();
+  });
+  it("does not discard a reused conversation's usage after definitive pre-registration rejection", async () => {
+    const f = fixture();
+    const api = { ...f.api, usage: vi.fn<NonNullable<LedgerApi["usage"]>>(async () => ({ schemaVersion: 1, appAccepted: true, activityReportSeq: null, appMetricsFinalized: false })) };
+    const scope = new ConversationAccounting({ api, budget: f.budget, autoDelivery: false });
+    const attempt = scope.newAttempt();
+    let rejectCreate!: (error: Error) => void;
+    api.createSession.mockImplementationOnce(() => new Promise((_resolve, reject) => { rejectCreate = reject; }));
+    const creating = attempt.create("offer").catch(error => error);
+    await vi.waitFor(() => expect(rejectCreate).toBeDefined());
+    attempt.observeUsage({ kind: "checkpoint", seconds: 15 });
+    await vi.waitFor(async () => expect((await f.budget.get(attempt.localId))?.usage?.report.checkpointSeconds).toBe(15));
+    let entered!: () => void, release!: () => void;
+    const started = new Promise<void>(resolve => { entered = resolve; });
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    vi.spyOn(f.budget, "discardUsage").mockImplementationOnce(async (...args) => { entered(); await gate; return MetadataDeliveryBudget.prototype.discardUsage.call(f.budget, ...args); });
+    rejectCreate(new AccountingRequestError(503, "provider_key_missing")); await started;
+    await MetadataDeliveryBudget.prototype.discardUsage.call(f.budget, attempt.localId, f.c.conversationId);
+    await f.budget.finishProducerAndRelease(attempt.localId, "no_provider", f.c.conversationId);
+    await f.budget.reserve(attempt.localId, "foreign", true);
+    await f.budget.enqueueUsage(attempt.localId, "foreign", { schemaVersion: 1, checkpointSeconds: 33 });
+    release(); await creating;
+    expect((await f.budget.get(attempt.localId))?.usage?.report.checkpointSeconds).toBe(33);
+    expect(api.cleanup).not.toHaveBeenCalled();
+    await f.budget.close();
   });
 
   it("removes staged cleanup dependency when a pending create definitively creates no provider", async () => {
@@ -868,7 +1458,7 @@ describe("controller-owned conversation accounting", () => {
     const creating = attempt.create("offer").catch(error => error);
     await vi.waitFor(() => expect(rejectCreate).toBeDefined());
     await f.scope.stageEnd("setup_cancel");
-    await originalBudget.enqueueUsage(attempt.localId, { schemaVersion: 1, checkpointSeconds: 12 });
+    await originalBudget.enqueueUsage(attempt.localId, f.c.conversationId, { schemaVersion: 1, checkpointSeconds: 12 });
     vi.spyOn(originalBudget, "finishProducerAndRelease").mockRejectedValueOnce(new Error("finalization storage failed"));
     rejectCreate(new AccountingRequestError(404, "attempt_not_found"));
     await expect(creating).resolves.toMatchObject({ message: "finalization storage failed" });
@@ -920,7 +1510,7 @@ describe("controller-owned conversation accounting", () => {
     await vi.waitFor(async () => expect(await store.get(attempt.localId)).toBeNull());
 
     expect(release).toHaveBeenCalled();
-    expect(release).toHaveBeenLastCalledWith(attempt.localId, "no_provider");
+    expect(release).toHaveBeenLastCalledWith(attempt.localId, "no_provider", f.c.conversationId);
     expect(f.api.cleanup).not.toHaveBeenCalled();
     await scope.outbox.stop(); await scope.usageOutbox?.stop(); await store.close();
   });
@@ -952,10 +1542,25 @@ describe("controller-owned conversation accounting", () => {
     await second.abandon("cancelled"); await f.scope.outbox.flush(); await f.budget.close();
   });
   it("cancels an in-flight policy lookup before any provider can be created", async () => {
-    const f = fixture(); let resolve!: (value: { usageLedgerEnabled: boolean }) => void;
+    const f = fixture(); let resolve!: (value: { usageLedgerEnabled: boolean; backgroundSessionCloseEnabled: boolean }) => void;
     f.api.policy.mockImplementation(() => new Promise(ok => { resolve = ok; })); const a = f.scope.newAttempt(); const create = a.create("offer").catch((e: unknown) => e);
-    await vi.waitFor(() => expect(resolve).toBeDefined()); await a.abandon("cancelled"); resolve({ usageLedgerEnabled: true }); await create;
+    await vi.waitFor(() => expect(resolve).toBeDefined()); await a.abandon("cancelled"); resolve({ usageLedgerEnabled: true, backgroundSessionCloseEnabled: false }); await create;
     expect(f.api.createSession).not.toHaveBeenCalled(); await f.budget.close();
+  });
+  it("rejects background close policy when the ledger is disabled", async () => {
+    const f = fixture();
+    f.api.policy.mockResolvedValue({ usageLedgerEnabled: false, backgroundSessionCloseEnabled: true });
+    await expect(f.scope.prepare(f.scope.newAttempt())).rejects.toThrow("ledger");
+    expect(f.api.createConversation).not.toHaveBeenCalled();
+    await f.budget.close();
+  });
+  it("exposes the conversation's retained background policy to its owner", async () => {
+    const f = fixture();
+    f.c.policy.backgroundSessionCloseEnabled = true;
+    f.scope.setSnapshotStore(Promise.resolve({ available: true } as ResumeSnapshotStore));
+    await f.scope.prepare(f.scope.newAttempt());
+    expect(f.scope.backgroundSessionCloseEnabled).toBe(true);
+    await f.budget.close();
   });
   it("recovers a lost handoff ACK from read-back without creating a second provider", async () => {
     const f = fixture(); const a = f.scope.newAttempt(); await a.create("offer"); const receipt = await f.api.handoff(a.localId);
@@ -966,6 +1571,181 @@ describe("controller-owned conversation accounting", () => {
 });
 
 describe("stage 4 durable lifecycle boundary", () => {
+  it.each(["expired", "identity_401", "identity_403", "identity_404"])("keeps an unproven %s End across reload and blocks new provider admission", async outcome => {
+    const indexedDB = new IDBFactory(), name = crypto.randomUUID();
+    const original = fixture(new MetadataDeliveryBudget({ indexedDB, name }));
+    await original.scope.prepare(original.scope.newAttempt());
+    await original.scope.stageEnd("user_end");
+    if (outcome === "expired") await expireEnd(indexedDB, name, original.c.conversationId);
+    else {
+      const status = Number(outcome.slice(-3));
+      original.api.end.mockRejectedValue(new AccountingRequestError(status, "identity_required"));
+      original.api.readConversation.mockRejectedValue(new AccountingRequestError(status, "identity_required"));
+    }
+    await original.scope.outbox.flush();
+    if (outcome === "expired") expect(original.api.end).not.toHaveBeenCalled();
+    expect(await original.budget.ends()).toHaveLength(1);
+    await original.budget.close();
+
+    const recoveredBudget = new MetadataDeliveryBudget({ indexedDB, name });
+    const recovered = new ConversationAccounting({ api: original.api, budget: recoveredBudget, autoDelivery: false });
+    await expect(recovered.newAttempt().create("offer")).rejects.toThrow("End is pending");
+    expect(original.api.createConversation).toHaveBeenCalledTimes(1);
+    expect(original.api.createSession).not.toHaveBeenCalled();
+    await recoveredBudget.close();
+  });
+
+  it.each([false, true])("does not rotate after a staged End loses to a server pause (preflushed=%s)", async preflushed => {
+    const db = new DatabaseSync(":memory:");
+    const root = resolve(process.cwd(), "apps/api/src/persistence/migrations");
+    const migrations = existsSync(root) ? root : resolve(process.cwd(), "../api/src/persistence/migrations");
+    for (const name of ["001-usage-ledger.sql", "002-live-session-recovery-fences.sql", "003-usage-identity.sql"])
+      db.exec(readFileSync(resolve(migrations, name), "utf8"));
+    const ledger = new UsageLedger(db), owner = crypto.randomUUID(), f = fixture();
+    const metadata = (row: ReturnType<typeof ledger.createConversation>): ConversationMetadata => ({
+      ...f.c, conversationId: row.id, version: row.version, status: row.status,
+    });
+    f.api.createConversation.mockImplementation(async requestId => metadata(ledger.createConversation(owner, requestId, "test")));
+    f.api.readConversation.mockImplementation(async id => metadata(ledger.getConversation(owner, id)));
+    f.api.end.mockImplementation(async (id, version, reason) => {
+      try { return metadata(ledger.endConversation(owner, id, version, reason)); }
+      catch (error) {
+        if (!(error instanceof LedgerError)) throw error;
+        throw new AccountingRequestError(error.status, error.code);
+      }
+    });
+    try {
+      const first = await f.scope.prepare(f.scope.newAttempt());
+      await f.scope.stageEnd("user_end");
+      expect(ledger.pauseConversation(owner, first!.conversationId, first!.version).status).toBe("paused");
+      if (preflushed) await f.scope.outbox.flush();
+
+      await expect(f.scope.newAttempt().create("offer")).rejects.toThrow("End is pending");
+      expect(ledger.getConversation(owner, first!.conversationId).status).toBe("paused");
+      expect(f.api.createConversation).toHaveBeenCalledTimes(1);
+      expect(f.api.createSession).not.toHaveBeenCalled();
+    } finally { await f.budget.close(); db.close(); }
+  });
+
+  it.each([false, true])("starts a new ledger conversation after its own staged End is confirmed (preflushed=%s)", async preflushed => {
+    const db = new DatabaseSync(":memory:");
+    const root = resolve(process.cwd(), "apps/api/src/persistence/migrations");
+    const migrations = existsSync(root) ? root : resolve(process.cwd(), "../api/src/persistence/migrations");
+    for (const name of ["001-usage-ledger.sql", "002-live-session-recovery-fences.sql", "003-usage-identity.sql"])
+      db.exec(readFileSync(resolve(migrations, name), "utf8"));
+    const ledger = new UsageLedger(db), owner = crypto.randomUUID(), f = fixture();
+    const metadata = (row: ReturnType<typeof ledger.createConversation>): ConversationMetadata => ({
+      ...f.c, conversationId: row.id, version: row.version, status: row.status,
+    });
+    f.api.createConversation.mockImplementation(async requestId => metadata(ledger.createConversation(owner, requestId, "test")));
+    f.api.readConversation.mockImplementation(async id => metadata(ledger.getConversation(owner, id)));
+    f.api.end.mockImplementation(async (id, version, reason) => metadata(ledger.endConversation(owner, id, version, reason)));
+    f.api.createSession.mockImplementation(async body => {
+      ledger.registerAttempt(owner, { liveSessionId: body.liveSessionId, conversationId: body.conversationId,
+        conversationVersion: body.conversationVersion, initialMode: body.initialMode,
+        startReason: body.startReason, fingerprint: "sdp-hash" });
+      return { session: { id: "provider" }, transport: { type: "webrtc", sdp: "answer" } };
+    });
+    try {
+      const oldAttempt = f.scope.newAttempt();
+      const first = await f.scope.prepare(oldAttempt);
+      expect(first).not.toBeNull();
+      await f.scope.stageEnd("user_end");
+      if (preflushed) await f.scope.outbox.flush();
+      await f.scope.newAttempt().create("offer");
+      expect(ledger.getConversation(owner, first!.conversationId).status).toBe("ended");
+      expect(f.api.createConversation).toHaveBeenCalledTimes(2);
+      expect(f.api.createSession.mock.calls[0]![0]).toMatchObject({ startReason: "initial" });
+      expect(f.api.createSession.mock.calls[0]![0].conversationId).not.toBe(first!.conversationId);
+      expect(() => oldAttempt.assertCurrent()).toThrow("Provider attempt cancelled");
+    } finally { await f.budget.close(); db.close(); }
+  });
+
+  it("retries a confirmed End from another scope before replacing an active conversation", async () => {
+    const indexedDB = new IDBFactory(), name = crypto.randomUUID();
+    const a = fixture(new MetadataDeliveryBudget({ indexedDB, name }));
+    const b = fixture(new MetadataDeliveryBudget({ indexedDB, name }));
+    b.c.conversationId = "conversation-b";
+    await a.scope.prepare(a.scope.newAttempt());
+    const first = b.scope.newAttempt();
+    await first.create("first");
+    await first.finish({ finalized: true });
+    await b.scope.outbox.flush();
+
+    await a.scope.stageEnd("user_end");
+    vi.spyOn(a.budget, "acknowledgeEnd").mockRejectedValueOnce(new Error("storage unavailable"));
+    await a.scope.outbox.flush();
+    expect(a.api.end).toHaveBeenCalledWith(a.c.conversationId, a.c.version, "user_end");
+    expect(await a.budget.ends()).toHaveLength(1);
+
+    b.api.end.mockRejectedValueOnce(new Error("offline"));
+    await expect(b.scope.newAttempt().create("blocked")).rejects.toThrow("End is pending");
+    expect(b.api.end).toHaveBeenCalledTimes(1);
+    expect(b.api.createSession).toHaveBeenCalledTimes(1);
+    expect(await b.budget.ends()).toHaveLength(1);
+
+    const replacement = b.scope.newAttempt();
+    await replacement.create("replacement");
+    expect(b.api.end).toHaveBeenCalledTimes(2);
+    expect(await b.budget.ends()).toHaveLength(0);
+    expect(b.api.createConversation).toHaveBeenCalledTimes(1);
+    expect(b.api.createSession).toHaveBeenCalledTimes(2);
+    expect(b.api.createSession.mock.calls[1]![0]).toMatchObject({ conversationId: b.c.conversationId, startReason: "bootstrap_replacement" });
+    await a.budget.close(); await b.budget.close();
+  });
+
+  it("blocks provider dispatch while the current conversation has a staged End", async () => {
+    const f = fixture();
+    await f.scope.prepare(f.scope.newAttempt());
+    f.api.end.mockRejectedValue(new Error("offline"));
+    await f.scope.stageEnd("user_end");
+
+    await expect(f.scope.newAttempt().create("offer")).rejects.toThrow("End is pending");
+    expect(f.api.createConversation).toHaveBeenCalledTimes(1);
+    expect(f.api.createSession).not.toHaveBeenCalled();
+    await f.budget.close();
+  });
+
+  it("keeps a background pause that begins while the staged End is flushed", async () => {
+    const f = fixture();
+    await f.scope.prepare(f.scope.newAttempt());
+    await f.scope.stageEnd("user_end");
+    const flush = f.scope.outbox.flush.bind(f.scope.outbox);
+    vi.spyOn(f.scope.outbox, "flush").mockImplementationOnce(async () => { await flush(); f.scope.beginBackgroundPause(); });
+    await expect(f.scope.newAttempt().create("offer")).rejects.toThrow("Provider attempt cancelled");
+    expect(f.api.createSession).not.toHaveBeenCalled();
+    await f.budget.close();
+  });
+
+  it("blocks a fresh scope with a lost identity pointer until its durable End is confirmed", async () => {
+    const indexedDB = new IDBFactory(), name = crypto.randomUUID();
+    const originalBudget = new MetadataDeliveryBudget({ indexedDB, name });
+    const original = fixture(originalBudget);
+    await original.scope.prepare(original.scope.newAttempt());
+    sessionStorage.setItem("live-translator-retained-conversation-v1", original.c.conversationId);
+    original.api.end.mockRejectedValue(new Error("offline"));
+    await original.scope.stageEnd("user_end");
+    await expect(original.scope.end("user_end")).rejects.toThrow("offline");
+    expect(await originalBudget.ends()).toHaveLength(1);
+    sessionStorage.removeItem("live-translator-retained-conversation-v1");
+    expect(sessionStorage.getItem("live-translator-retained-conversation-v1")).toBeNull();
+    await originalBudget.close();
+
+    const reloadedBudget = new MetadataDeliveryBudget({ indexedDB, name });
+    const reloaded = new ConversationAccounting({ api: original.api, budget: reloadedBudget, autoDelivery: false });
+    await expect(reloaded.newAttempt().create("offer")).rejects.toThrow("End is pending");
+    expect(original.api.createConversation).toHaveBeenCalledTimes(1);
+    expect(original.api.createSession).not.toHaveBeenCalled();
+    expect(await reloadedBudget.ends()).toHaveLength(1);
+
+    original.api.end.mockResolvedValue({ ...original.c, status: "ended" });
+    await reloaded.newAttempt().create("offer");
+    expect(await reloadedBudget.ends()).toHaveLength(0);
+    expect(original.api.createConversation).toHaveBeenCalledTimes(2);
+    expect(original.api.createSession).toHaveBeenCalledTimes(1);
+    await reloadedBudget.close();
+  });
+
   it("reruns pending no-provider finalization when its wake coalesces with an in-flight flush", async () => {
     const f = fixture();
     await f.budget.reserve("attempt", f.c.conversationId);
@@ -977,7 +1757,7 @@ describe("stage 4 durable lifecycle boundary", () => {
     await atRead; // This flush has already passed retryPendingFinalizations.
     const finish = vi.spyOn(f.budget, "finishProducerAndRelease").mockRejectedValueOnce(new Error("IDB write failed"));
     const fallback = vi.spyOn(f.budget, "finishProducer").mockRejectedValueOnce(new Error("IDB write failed"));
-    await expect(f.scope.finalizeNoProvider("attempt")).rejects.toThrow("IDB write failed");
+    await expect(f.scope.finalizeNoProvider("attempt", f.c.conversationId)).rejects.toThrow("IDB write failed");
     finish.mockImplementation((id, outcome) => MetadataDeliveryBudget.prototype.finishProducerAndRelease.call(f.budget, id, outcome));
     fallback.mockImplementation((id, outcome) => MetadataDeliveryBudget.prototype.finishProducer.call(f.budget, id, outcome));
     releaseRead();
@@ -997,7 +1777,7 @@ describe("stage 4 durable lifecycle boundary", () => {
       const finalize = vi.spyOn(f.budget, "finishProducer").mockRejectedValue(new Error("IDB unavailable"));
       vi.spyOn(f.budget, "entries").mockRejectedValueOnce(new Error("IDB unavailable"));
 
-      await expect(f.scope.finalizeNoProvider("attempt")).rejects.toThrow("IDB unavailable");
+      await expect(f.scope.finalizeNoProvider("attempt", f.c.conversationId)).rejects.toThrow("IDB unavailable");
       release.mockRestore(); finalize.mockRestore();
       await vi.waitFor(async () => expect(await f.budget.get("attempt")).toBeNull(), { timeout: 7000, interval: 50 });
     } finally {
@@ -1013,7 +1793,7 @@ describe("stage 4 durable lifecycle boundary", () => {
     f.scope.outbox.start();
     await f.scope.outbox.flush();
 
-    await expect(f.scope.finalizeNoProvider("attempt")).rejects.toThrow("IDB write failed");
+    await expect(f.scope.finalizeNoProvider("attempt", f.c.conversationId)).rejects.toThrow("IDB write failed");
     release.mockRestore(); finalize.mockRestore();
     await vi.waitFor(async () => expect(await f.budget.get("attempt")).toBeNull());
     expect(await f.budget.ends()).toEqual([]);
@@ -1102,7 +1882,7 @@ describe("stage 4 durable lifecycle boundary", () => {
     const f = fixture();
     await f.budget.reserve("attempt", f.c.conversationId, true);
     await f.budget.markDispatchStarted("attempt");
-    await f.budget.enqueueUsage("attempt", { schemaVersion: 1, checkpointSeconds: 10 });
+    await f.budget.enqueueUsage("attempt", f.c.conversationId, { schemaVersion: 1, checkpointSeconds: 10 });
     await f.scope.outbox.enqueue("attempt", "response_not_received");
     await f.scope.outbox.flush();
     expect(await f.budget.get("attempt")).toMatchObject({ cleanup: null, usagePending: true, producerOutcome: "lost" });
@@ -1130,6 +1910,24 @@ describe("stage 4 durable lifecycle boundary", () => {
     await f.scope.end("user_end", epoch);
     expect(f.api.end).toHaveBeenCalledTimes(1);
     expect(f.api.end).toHaveBeenCalledWith(f.c.conversationId, 1, "user_end"); await f.budget.close();
+  });
+
+  it("does not turn a direct cleanup ACK into no-provider proof after staging fails", async () => {
+    const f = fixture();
+    f.c.policy.backgroundSessionCloseEnabled = true;
+    f.api.policy.mockResolvedValue({ usageLedgerEnabled: true, backgroundSessionCloseEnabled: true });
+    f.scope.setSnapshotStore(Promise.resolve({ available: true } as ResumeSnapshotStore));
+    const attempt = f.scope.newAttempt(); await attempt.create("offer");
+    vi.spyOn(f.scope.outbox, "enqueueEnd").mockRejectedValueOnce(new Error("storage unavailable"));
+    await expect(f.scope.stageEnd("setup_cancel")).rejects.toThrow("storage unavailable");
+    await f.api.cleanup(attempt.localId, "cancelled");
+    await f.scope.acknowledgeDirectCleanup(attempt.localId, f.c.conversationId);
+    f.api.end.mockRejectedValue(new Error("offline"));
+    await expect(f.scope.end("setup_cancel")).rejects.toThrow("offline");
+
+    expect((await f.budget.ends())[0]).toMatchObject({ cleanupLocalIds: [],
+      noProviderPendingLocalIds: [attempt.localId] });
+    await f.budget.close();
   });
 
   it("does not treat a release-only degraded response as a cleanup proof", async () => {
@@ -1163,7 +1961,7 @@ describe("stage 4 durable lifecycle boundary", () => {
     const indexedDB = new IDBFactory(), name = crypto.randomUUID();
     const store = new MetadataDeliveryBudget({ indexedDB, name });
     await store.reserve("attempt", "c", true); await store.markDispatchStarted("attempt");
-    await store.enqueueUsage("attempt", { schemaVersion: 1, checkpointSeconds: 43 });
+    await store.enqueueUsage("attempt", "c", { schemaVersion: 1, checkpointSeconds: 43 });
     const enqueue = store.enqueueEnd.bind(store) as (id: string, version: number, reason: "user_end", cleanupIds: string[]) => Promise<void>;
     await enqueue("c", 1, "user_end", ["attempt"]); await store.close();
     const reloaded = new MetadataDeliveryBudget({ indexedDB, name });

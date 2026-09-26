@@ -1,4 +1,5 @@
 import { readFileSync } from "node:fs";
+import "fake-indexeddb/auto";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
@@ -39,14 +40,14 @@ describe("App", () => {
     expect(screen.getByText("Transcript/caption deltas: none")).toBeInTheDocument();
   });
 
-  it("shows the context screen in production and keeps the DEV spike hidden", () => {
+  it("shows the context screen in production and keeps the DEV spike hidden", async () => {
     render(<App isDevelopment={false} />);
 
     expect(
       screen.getByRole("heading", { name: "Переводчик" }),
     ).toBeInTheDocument();
     expect(
-      screen.getByRole("button", { name: "Начать перевод" }),
+      await screen.findByRole("button", { name: "Начать перевод" }),
     ).toBeInTheDocument();
     expect(screen.queryByText(/Речь обрабатывает OpenAI/i)).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Connect" })).not.toBeInTheDocument();

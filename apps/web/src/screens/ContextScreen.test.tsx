@@ -1,4 +1,5 @@
 import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { Profiler } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createInitialSession, type TranslationSession } from "../session/SessionState";
 import { STARTUP_TRACE_STORAGE_KEY } from "../live/StartupTrace";
@@ -29,6 +30,7 @@ class FakeOwnerController implements ContextScreenController {
   isConnectInFlight = false;
   isInterpreterStarting = false;
   audioElement: HTMLAudioElement | undefined;
+  retainedRecoveryState: "checking" | "paused" | "resuming" | "ending" | "failed" | "active" | "pending_end" | "pending_claim" | "blocked" | "unresolved_create" | "unavailable" | undefined;
   private readonly listeners = new Set<() => void>();
 
   subscribe(listener: () => void): () => void {
@@ -72,6 +74,8 @@ class FakeOwnerController implements ContextScreenController {
   endConversation = vi.fn(async () => {});
 
   resumeFromSourceTimeout = vi.fn(async () => {});
+  resumeRetainedConversation = vi.fn(async () => {});
+  verifyRetainedConversation = vi.fn(async () => {});
 
   setBootstrapText(text: string): void {
     this.bootstrapText = text;
@@ -91,6 +95,132 @@ class FakeOwnerController implements ContextScreenController {
 }
 
 describe("ContextScreen", () => {
+  it("does not render again when subscribing to an unchanged controller", () => {
+    let renders = 0;
+    render(<Profiler id="setup" onRender={() => { renders++; }}><ContextScreen controller={new FakeOwnerController()} /></Profiler>);
+    expect(renders).toBe(1);
+  });
+  it("catches a recovery change between render and subscription", () => {
+    const controller = new FakeOwnerController();
+    const subscribe = controller.subscribe.bind(controller);
+    controller.subscribe = listener => { controller.retainedRecoveryState = "paused"; return subscribe(listener); };
+    render(<ContextScreen controller={controller} />);
+    expect(screen.getByRole("button", { name: "Продолжить разговор" })).toBeInTheDocument();
+  });
+  it("keeps an unresolved create blocked without impossible recovery actions", () => {
+    const controller = new FakeOwnerController();
+    controller.retainedRecoveryState = "unresolved_create";
+    render(<ContextScreen controller={controller} />);
+    expect(screen.getByRole("alert")).toHaveTextContent("не удалось подтвердить");
+    expect(screen.queryByRole("button", { name: "Повторить проверку" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Завершить сохранённый разговор" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Начать перевод" })).not.toBeInTheDocument();
+  });
+  it("reserves the first action slot while initial recovery is checking", () => {
+    const controller = new FakeOwnerController();
+    controller.retainedRecoveryState = "checking";
+    const view = render(<ContextScreen controller={controller} />);
+    const actions = view.container.querySelector(".retained-recovery__actions")!;
+    expect(actions.firstElementChild).toHaveClass("retained-recovery__placeholder");
+    const end = screen.getByRole("button", { name: "Завершить сохранённый разговор" });
+    expect(end).toBeDisabled();
+    controller.retainedRecoveryState = "paused";
+    view.rerender(<ContextScreen controller={controller} />);
+    expect(actions.firstElementChild).toHaveTextContent("Продолжить разговор");
+    expect(actions.lastElementChild).toBe(end);
+  });
+  it("focuses the bootstrap action after retained recovery clears", () => {
+    const controller = new FakeOwnerController();
+    controller.retainedRecoveryState = "paused";
+    const view = render(<ContextScreen controller={controller} />);
+    screen.getByRole("button", { name: "Продолжить разговор" }).focus();
+    controller.retainedRecoveryState = undefined;
+    controller.bootstrapRecording = false;
+    controller.session = { ...controller.session, state: "bootstrap" };
+    view.rerender(<ContextScreen controller={controller} />);
+    expect(screen.getByRole("button", { name: "Записать образец A" })).toHaveFocus();
+  });
+  it("focuses the enabled repeat action when bootstrap Save is disabled", () => {
+    const controller = new FakeOwnerController();
+    controller.retainedRecoveryState = "paused";
+    const view = render(<ContextScreen controller={controller} />);
+    screen.getByRole("button", { name: "Продолжить разговор" }).focus();
+    controller.retainedRecoveryState = undefined;
+    controller.session = { ...controller.session, state: "bootstrap" };
+    view.rerender(<ContextScreen controller={controller} />);
+    expect(screen.getByRole("button", { name: "Записать заново" })).toHaveFocus();
+  });
+  it("offers a keyboard-accessible retained resume without starting a new conversation", async () => {
+    const controller = new FakeOwnerController();
+    controller.retainedRecoveryState = "failed";
+    const startBootstrap = vi.spyOn(controller, "startBootstrap");
+    render(<ContextScreen controller={controller} />);
+
+    const retry = screen.getByRole("button", { name: "Повторить восстановление" });
+    retry.focus();
+    fireEvent.keyDown(retry, { key: "Enter" });
+    fireEvent.click(retry);
+
+    expect(controller.resumeRetainedConversation).toHaveBeenCalledOnce();
+    expect(startBootstrap).not.toHaveBeenCalled();
+    expect(screen.queryByRole("button", { name: "Начать перевод" })).not.toBeInTheDocument();
+  });
+  it("offers only End for an active retained conversation", () => {
+    const controller = new FakeOwnerController();
+    controller.retainedRecoveryState = "active";
+    render(<ContextScreen controller={controller} />);
+    expect(screen.queryByRole("button", { name: "Повторить восстановление" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Начать перевод" })).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Завершить сохранённый разговор" }));
+    expect(controller.endConversation).toHaveBeenCalledOnce();
+  });
+  it("announces retained End as ending and disables both actions", () => {
+    const controller = new FakeOwnerController();
+    controller.retainedRecoveryState = "ending";
+    render(<ContextScreen controller={controller} />);
+    expect(screen.getByRole("status")).toHaveTextContent("Завершаем сохранённый разговор…");
+    expect(screen.getByRole("button", { name: "Завершить сохранённый разговор" })).toBeDisabled();
+    expect(screen.queryByRole("button", { name: "Продолжить разговор" })).not.toBeInTheDocument();
+  });
+  it("blocks setup while End proof is pending and offers an explicit retry", () => {
+    const controller = new FakeOwnerController();
+    controller.retainedRecoveryState = "pending_end";
+    render(<ContextScreen controller={controller} />);
+    expect(screen.queryByRole("button", { name: "Начать перевод" })).not.toBeInTheDocument();
+    expect(screen.getByRole("alert")).toHaveTextContent("Завершение не подтверждено");
+    fireEvent.click(screen.getByRole("button", { name: "Повторить проверку" }));
+    expect(controller.verifyRetainedConversation).toHaveBeenCalledOnce();
+  });
+  it("prevents competing End while a verification request is pending", () => {
+    const controller = new FakeOwnerController();
+    controller.retainedRecoveryState = "pending_end";
+    controller.verifyRetainedConversation.mockImplementation(() => new Promise<void>(() => {}));
+    render(<ContextScreen controller={controller} />);
+    fireEvent.click(screen.getByRole("button", { name: "Повторить проверку" }));
+    fireEvent.click(screen.getByRole("button", { name: "Завершить сохранённый разговор" }));
+    expect(screen.getByRole("button", { name: "Завершить сохранённый разговор" })).toBeDisabled();
+    expect(controller.endConversation).not.toHaveBeenCalled();
+  });
+  it("keeps an uncertain retained conversation blocked with verification and safe End", async () => {
+    const controller = new FakeOwnerController();
+    controller.retainedRecoveryState = "blocked";
+    render(<ContextScreen controller={controller} />);
+    expect(screen.getByRole("alert")).toHaveTextContent("Не удалось проверить сохранённый разговор");
+    fireEvent.click(screen.getByRole("button", { name: "Повторить проверку" }));
+    await act(async () => { await Promise.resolve(); });
+    fireEvent.click(screen.getByRole("button", { name: "Завершить сохранённый разговор" }));
+    expect(controller.verifyRetainedConversation).toHaveBeenCalledOnce();
+    expect(controller.endConversation).toHaveBeenCalledOnce();
+  });
+  it("returns focus to Start after confirmed recovery clears the blocked controls", () => {
+    const controller = new FakeOwnerController();
+    controller.retainedRecoveryState = "pending_end";
+    const view = render(<ContextScreen controller={controller} />);
+    screen.getByRole("button", { name: "Повторить проверку" }).focus();
+    controller.retainedRecoveryState = undefined;
+    view.rerender(<ContextScreen controller={controller} />);
+    expect(screen.getByRole("button", { name: "Начать перевод" })).toHaveFocus();
+  });
   it("treats context as optional without extra footer copy", () => {
     render(<ContextScreen controller={new FakeOwnerController()} />);
 

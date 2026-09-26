@@ -10,13 +10,19 @@ export function openUsageDatabase(path: string, busyTimeoutMs = 1000): DatabaseS
   try {
     db.exec(`PRAGMA foreign_keys=ON; PRAGMA busy_timeout=${busyTimeoutMs}; PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL;`);
     const version = Number(db.prepare("PRAGMA user_version").get()!.user_version);
-    if (version > 2) throw new Error("Usage database schema is newer than this application");
+    if (version > 3) throw new Error("Usage database schema is newer than this application");
     if (version < 1) transaction(db, () => {
       db.exec(readFileSync(new URL("./migrations/001-usage-ledger.sql", import.meta.url), "utf8"));
       db.exec("PRAGMA user_version=1");
     });
     if (version < 2) transaction(db, () => {
       db.exec(readFileSync(new URL("./migrations/002-live-session-recovery-fences.sql", import.meta.url), "utf8"));
+      db.exec("PRAGMA user_version=2");
+    });
+    const hasUsageIdentity = db.prepare("SELECT 1 FROM pragma_table_info('live_sessions') WHERE name='usage_identity_version'").get();
+    if (!hasUsageIdentity || version === 3) transaction(db, () => {
+      if (!hasUsageIdentity) db.exec(readFileSync(new URL("./migrations/003-usage-identity.sql", import.meta.url), "utf8"));
+      // The nullable column is safe for the previous v2 binary to ignore on rollback.
       db.exec("PRAGMA user_version=2");
     });
     return db;

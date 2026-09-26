@@ -1,7 +1,8 @@
-import { createAccountedSessionController } from "../session/createAccountedSessionController";
-import { useEffect, useReducer, useRef, useState } from "react";
+import { createAccountedSessionController, type AccountedSessionController } from "../session/createAccountedSessionController";
+import { useEffect, useLayoutEffect, useReducer, useRef, useState } from "react";
 import { ErrorOverlay } from "../components/ErrorOverlay";
 import { BootstrapPrompt } from "../components/BootstrapPrompt";
+import { RetainedRecovery, type RetainedRecoveryState } from "../components/RetainedRecovery";
 import { ContextTooLongError } from "../live/LiveEvents";
 import {
   type LifecycleSuspendReason,
@@ -33,6 +34,7 @@ export interface ContextScreenController {
   readonly audioElement?: HTMLAudioElement;
   readonly recoveryPrompt?: RecoveryPrompt;
   readonly suspendReason?: LifecycleSuspendReason;
+  readonly retainedRecoveryState?: RetainedRecoveryState;
   subscribe(listener: () => void): () => void;
   startContextCapture(): Promise<void>;
   finishContextCapture(): void;
@@ -47,6 +49,50 @@ export interface ContextScreenController {
   correctLastTurn(side: Side): Promise<void>;
   endConversation(): Promise<void>;
   resumeFromSourceTimeout(): Promise<void>;
+  resumeRetainedConversation?(): Promise<void>;
+  verifyRetainedConversation?(): Promise<void>;
+}
+
+function uiSnapshot(controller: ContextScreenController): unknown[] {
+  return [controller.session, controller.inputReady, controller.contextText, controller.bootstrapText,
+    controller.bootstrapSide, controller.bootstrapRecording, controller.ownerError,
+    controller.hasEnteredInterpreter, controller.isConnectInFlight, controller.isInterpreterStarting,
+    controller.recoveryPrompt, controller.suspendReason, controller.retainedRecoveryState,
+    controller.audioElement];
+}
+
+let documentController: AccountedSessionController | null = null;
+let documentOwners = 0;
+let disposalToken = 0;
+let pendingDisposal: Promise<void> | null = null;
+let documentDisposalFailed = false;
+
+function acquireDocumentController(): AccountedSessionController {
+  disposalToken++;
+  documentController ??= createAccountedSessionController();
+  documentOwners++;
+  documentController.start();
+  return documentController;
+}
+
+function releaseDocumentController(): void {
+  documentOwners--;
+  const token = ++disposalToken;
+  queueMicrotask(() => {
+    if (documentOwners !== 0 || token !== disposalToken) return;
+    const controller = documentController;
+    documentController = null;
+    if (controller) {
+      const work = controller.dispose().catch(error => {
+        documentDisposalFailed = true;
+        console.error("Session disposal incomplete", { error });
+      });
+      const settled = work.finally(() => {
+        if (pendingDisposal === settled) pendingDisposal = null;
+      });
+      pendingDisposal = settled;
+    }
+  });
 }
 
 export function ContextScreen({
@@ -54,21 +100,56 @@ export function ContextScreen({
 }: {
   controller?: ContextScreenController;
 } = {}) {
-  const [ownedController] = useState<SessionController | null>(() =>
-    injectedController === undefined ? createAccountedSessionController() : null,
-  );
+  const [ownedController, setOwnedController] = useState<SessionController | null>(null);
+  const [ownerFailed, setOwnerFailed] = useState(false);
+  useEffect(() => {
+    if (injectedController !== undefined) return;
+    let mounted = true, acquired = false;
+    const attach = () => {
+      if (!mounted) return;
+      if (documentDisposalFailed) { setOwnerFailed(true); return; }
+      setOwnedController(acquireDocumentController());
+      acquired = true;
+    };
+    if (pendingDisposal) void pendingDisposal.then(attach);
+    else attach();
+    return () => {
+      mounted = false;
+      if (acquired) releaseDocumentController();
+    };
+  }, [injectedController]);
   const resolvedController = injectedController ?? ownedController;
-  if (resolvedController === null) {
-    throw new Error("ContextScreen controller is missing");
-  }
-  const controller: ContextScreenController = resolvedController;
+  const controller: ContextScreenController | null = resolvedController;
 
   const [, rerender] = useReducer((count: number) => count + 1, 0);
   const audioHostRef = useRef<HTMLDivElement>(null);
-  useEffect(() => controller.subscribe(rerender), [controller]);
+  const startRef = useRef<HTMLButtonElement>(null);
+  const bootstrapPrimaryRef = useRef<HTMLButtonElement>(null);
+  const bootstrapRepeatRef = useRef<HTMLButtonElement>(null);
+  const renderedSnapshot = useRef<unknown[]>([]);
+  const snapshot = controller ? uiSnapshot(controller) : [];
+  useLayoutEffect(() => { renderedSnapshot.current = snapshot; });
+  const previousRecovery = useRef<RetainedRecoveryState | undefined>(undefined);
+  const recoveryState = controller?.retainedRecoveryState;
+  useEffect(() => {
+    if (!controller) return;
+    const unsubscribe = controller.subscribe(rerender);
+    // Catch a recovery probe that settled between render and subscription.
+    if (uiSnapshot(controller).some((value, index) => !Object.is(value, renderedSnapshot.current[index]))) rerender();
+    return unsubscribe;
+  }, [controller]);
+  useEffect(() => {
+    if (previousRecovery.current !== undefined && recoveryState === undefined) {
+      const target = controller?.session.state === "bootstrap"
+        ? [bootstrapPrimaryRef.current, bootstrapRepeatRef.current].find(button => button && !button.disabled)
+        : startRef.current;
+      if (target && !target.disabled) target.focus();
+    }
+    previousRecovery.current = recoveryState;
+  }, [recoveryState]);
   useEffect(() => {
     const host = audioHostRef.current;
-    const element = controller.audioElement;
+    const element = controller?.audioElement;
     if (host === null || element === undefined) {
       return;
     }
@@ -78,31 +159,35 @@ export function ContextScreen({
         host.removeChild(element);
       }
     };
-  }, [controller.audioElement]);
+  }, [controller?.audioElement]);
+
+  if (ownerFailed) return <main role="alert">Не удалось завершить предыдущий разговор.</main>;
+  if (controller === null) return <main aria-busy="true">Подготовка сеанса…</main>;
+  const activeController = controller;
 
   async function handleStart(): Promise<void> {
-    if (controller.session.state === "context") {
-      controller.finishContextCapture();
+    if (activeController.session.state === "context") {
+      activeController.finishContextCapture();
     }
     try {
-      await controller.startBootstrap();
+      await activeController.startBootstrap();
     } catch (error) {
       console.error("Failed to enter language bootstrap", {
         error,
-        state: controller.session.state,
+        state: activeController.session.state,
       });
     }
   }
 
   async function handleBegin(): Promise<void> {
-    if (controller.isInterpreterStarting === true) return;
+    if (activeController.isInterpreterStarting === true) return;
     traceBootstrapAction("accept", {
-      state: controller.session.state,
+      state: activeController.session.state,
       isInterpreterStarting: false,
-      enteredInterpreter: controller.hasEnteredInterpreter === true,
+      enteredInterpreter: activeController.hasEnteredInterpreter === true,
     });
     try {
-      await controller.beginInterpreter();
+      await activeController.beginInterpreter();
     } catch (error) {
       if (!(error instanceof ContextTooLongError)) {
         console.error("Failed to begin interpreter", { error });
@@ -111,9 +196,9 @@ export function ContextScreen({
   }
 
   async function handleAccept(): Promise<void> {
-    if (controller.isInterpreterStarting === true) return;
+    if (activeController.isInterpreterStarting === true) return;
     try {
-      await controller.acceptBootstrap(controller.bootstrapText.trim());
+      await activeController.acceptBootstrap(activeController.bootstrapText.trim());
     } catch (error) {
       console.error("Failed to save language sample", { error });
     }
@@ -130,14 +215,14 @@ export function ContextScreen({
     (sessionState === "error" && controller.hasEnteredInterpreter === true);
   const isOwnerSetup = !isConversation;
   const isBusy =
-    sessionState === "connecting" ||
     sessionState === "error" ||
-    controller.isConnectInFlight === true;
+    controller.isConnectInFlight === true || controller.retainedRecoveryState !== undefined;
+  const recovery = controller.retainedRecoveryState;
   const isContextListening = sessionState === "context";
   const showCancel =
-    controller.session.state !== "idle" ||
+    recovery === undefined && (controller.session.state !== "idle" ||
     controller.ownerError !== undefined ||
-    controller.isConnectInFlight === true;
+    controller.isConnectInFlight === true);
 
   traceConversationRenderPredicate({
     state: sessionState,
@@ -162,11 +247,15 @@ export function ContextScreen({
           </header>
 
           <div className="setup-card">
-            {controller.ownerError !== undefined ? (
+            {recovery === undefined && controller.ownerError !== undefined ? (
               <ErrorOverlay message={controller.ownerError} />
             ) : null}
-
-            {isBootstrap ? (
+            {recovery !== undefined ? (
+              <RetainedRecovery state={recovery} surface="setup"
+                onResume={controller.resumeRetainedConversation?.bind(controller)}
+                onVerify={controller.verifyRetainedConversation?.bind(controller)}
+                onEnd={() => controller.endConversation()} />
+            ) : isBootstrap ? (
               <BootstrapPrompt
                 transcript={controller.bootstrapText}
                 side={controller.bootstrapSide}
@@ -174,6 +263,8 @@ export function ContextScreen({
                 languageA={controller.session.participantA.language}
                 languageB={controller.session.participantB.language}
                 actionsDisabled={controller.isInterpreterStarting === true || isBusy}
+                primaryActionRef={bootstrapPrimaryRef}
+                repeatActionRef={bootstrapRepeatRef}
                 onRecord={() => { void handleStart(); }}
                 onBegin={() => { void handleBegin(); }}
                 onAccept={() => {
@@ -232,6 +323,7 @@ export function ContextScreen({
                 </div>
 
                 <button
+                  ref={startRef}
                   className="setup-primary-action"
                   type="button"
                   disabled={isBusy}

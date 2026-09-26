@@ -10,6 +10,7 @@ const creationSchema = z.object({
   sdp: z.string().min(1).max(64000).refine(s => s.trim().length > 0), conversationId: uuidSchema,
   conversationVersion: z.number().int().positive().max(Number.MAX_SAFE_INTEGER), liveSessionId: uuidSchema,
   initialMode: modeSchema, startReason: z.enum(["initial", "bootstrap_replacement", "resume"]),
+  usageIdentityVersion: z.literal(1).optional(),
 }).strict();
 export function createManagedSessionRouter(runtime: LedgerRuntime, identity: AnonymousIdentity, webOrigin: string, allowCreate = true) {
   const router = Router(), ledger = runtime.ledger;

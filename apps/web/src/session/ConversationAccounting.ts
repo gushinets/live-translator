@@ -1,11 +1,12 @@
 import { UsageReporter, type ProductObservation } from "../metrics/UsageReporter";
 import { UsageOutbox } from "../metrics/UsageOutbox";
 import type { UsageObservation } from "../metrics/UsageTypes";
-import { AccountingBackend, AccountingRequestError, type LedgerApi, type ConversationMetadata } from "../api/AccountingBackend";
+import { AccountingBackend, AccountingRequestError, type LedgerApi, type ConversationMetadata, type ResumeClaimMetadata, type ResumeAbortReason, type ProviderCreateBody } from "../api/AccountingBackend";
 import { BackendClient, type CreateLiveSessionResponse } from "../api/BackendClient";
 import { CleanupIntentOutbox, cleanupProofReceived, producerLeaseKey } from "./CleanupIntentOutbox";
-import { MetadataDeliveryBudget, type CleanupReason } from "./MetadataDeliveryBudget";
+import { MetadataDeliveryBudget, attemptKey, type CleanupReason } from "./MetadataDeliveryBudget";
 import type { LiveCloseResult } from "../live/LiveClient";
+import type { ReloadInspection, ResumeSnapshotStore } from "./ResumeSnapshotStore";
 
 const DEFINITIVE_NO_PROVIDER_CODES = new Set([
   "new_creations_paused", "client_upgrade_required", "invalid_request", "unexpected_origin",
@@ -40,6 +41,9 @@ export class ConversationAccounting {
   readonly outbox: CleanupIntentOutbox;
   readonly usageOutbox: UsageOutbox | undefined;
   private enabled: Promise<boolean> | undefined;
+  private backgroundPolicy = false;
+  private pausing = false;
+  private resume: { id: string; version: number; mode: ProviderCreateBody["initialMode"] } | undefined;
   private creating: Promise<ConversationMetadata> | undefined;
   private current: ConversationMetadata | undefined;
   private last: ProviderAccounting | undefined;
@@ -48,15 +52,17 @@ export class ConversationAccounting {
   private epoch = 0;
   private dispatchCount = 0;
   private requestId = crypto.randomUUID();
+  private stagedEndConversationId: string | undefined;
   private readonly autoDelivery: boolean;
   private readonly producerId: string;
   private producerLock: Promise<void> | undefined;
   private readonly pendingEndBoundaries = new Map<number, PendingEndBoundary>();
   private readonly pendingDirectEnds = new Map<number, PendingDirectEnd>();
-  private readonly pendingDirectCleanupAcks = new Set<string>();
-  private readonly pendingDirectCloseAcks = new Set<string>();
-  private readonly pendingNoProviderFinalizations = new Set<string>();
+  private readonly pendingDirectCleanupAcks = new Map<string, { localId: string; conversationId: string }>();
+  private readonly pendingDirectCloseAcks = new Map<string, { localId: string; conversationId: string }>();
+  private readonly pendingNoProviderFinalizations = new Map<string, { localId: string; conversationId: string }>();
   private readonly directRetirementProofs = new Set<string>();
+  private snapshotStore: Promise<ResumeSnapshotStore> | undefined;
   constructor(options: { api?: LedgerApi; budget?: MetadataDeliveryBudget; autoDelivery?: boolean } = {}) {
     this.api = options.api ?? new AccountingBackend();
     this.producerId = options.budget?.ownerProducerId ?? crypto.randomUUID();
@@ -66,9 +72,212 @@ export class ConversationAccounting {
     if (this.autoDelivery) { this.outbox.start(); this.usageOutbox?.start(); }
   }
   get revision() { return this.epoch; }
+  get isPausing() { return this.pausing; }
   get conversationId(): string | null { return this.current?.conversationId ?? null; }
+  get conversationStatus(): ConversationMetadata["status"] | null { return this.current?.status ?? null; }
+  get resumeDispatched(): boolean { return [...this.attempts].some(attempt => attempt.localId === this.resume?.id && attempt.dispatched); }
+  get isCreating(): boolean { return this.creating !== undefined; }
+  setSnapshotStore(store: Promise<ResumeSnapshotStore>): void { this.snapshotStore = store; }
+  clearIdleBackgroundPause(): boolean {
+    if (this.current || this.creating) return false;
+    this.pausing = false;
+    return true;
+  }
+  keepUnpausedConversation(conversation: ConversationMetadata): void {
+    if (conversation.status !== "active" || conversation.policy.backgroundSessionCloseEnabled)
+      throw new Error("Conversation policy does not permit legacy continuation");
+    this.current = conversation;
+    this.pausing = false;
+  }
+  async pendingConversation(): Promise<ConversationMetadata | null> { return this.current ?? await this.creating?.catch(() => undefined) ?? null; }
+  get backgroundSessionCloseEnabled(): boolean { return this.current?.policy.backgroundSessionCloseEnabled ?? this.backgroundPolicy; }
+  confirmHandoffConversation(result: ConversationMetadata, attemptConversation: ConversationMetadata): void {
+    const current = this.current;
+    if (!current || current.conversationId !== attemptConversation.conversationId ||
+      current.version !== attemptConversation.version || current.status !== "active" ||
+      result.conversationId !== current.conversationId || result.version !== current.version || result.status !== "active" ||
+      result.policy.policyVersion !== current.policy.policyVersion ||
+      current.productDeadlineAt !== null && current.productDeadlineAt !== result.productDeadlineAt)
+      throw new Error("Provider handoff conversation does not match local ownership");
+    this.current = result;
+  }
+  async loadPolicy(): Promise<void> {
+    this.enabled ??= this.api.policy().then(p => {
+      if (p.creationPaused) throw new Error("New sessions are temporarily paused");
+      if (typeof p.usageLedgerEnabled !== "boolean") throw new Error("Invalid accounting policy");
+      if (p.backgroundSessionCloseEnabled && !p.usageLedgerEnabled) throw new Error("Background close requires the usage ledger");
+      this.backgroundPolicy = p.backgroundSessionCloseEnabled;
+      return p.usageLedgerEnabled;
+    }).catch(error => { this.enabled = undefined; throw error; });
+    await this.enabled;
+  }
+  beginBackgroundPause(): void { this.pausing = true; }
+  beginResume(claim: ResumeClaimMetadata): void {
+    if (claim.status !== "resuming" || claim.resumeAttemptId !== claim.attempt.liveSessionId || claim.attempt.resumeOutcome !== "pending")
+      throw new Error("Resume claim was not confirmed");
+    this.current = claim;
+    this.resume = { id: claim.attempt.liveSessionId, version: claim.attempt.resumeClaimVersion, mode: claim.attempt.initialMode };
+    this.pausing = false;
+  }
+  adoptRetained(conversation: ConversationMetadata): void {
+    if (this.current || this.creating || [...this.attempts].some(attempt => attempt.dispatched) || conversation.status === "ended")
+      throw new Error("Retained conversation cannot be adopted for End");
+    this.current = conversation;
+    this.pausing = true;
+  }
+  adoptHiddenCreation(conversation: ConversationMetadata): void {
+    if (conversation.status !== "active" || !conversation.policy.backgroundSessionCloseEnabled)
+      throw new Error("Hidden start conversation is not activatable");
+    if (this.current) {
+      if (this.current.conversationId !== conversation.conversationId || this.current.version !== conversation.version ||
+        this.current.policy.policyVersion !== conversation.policy.policyVersion)
+        throw new Error("Hidden start conversation does not match local ownership");
+      return;
+    }
+    this.current = conversation;
+  }
+  confirmRecoveredPause(conversation: ConversationMetadata): void {
+    const local = this.current;
+    if (!local || local.status !== "active" || conversation.status !== "paused" ||
+      local.conversationId !== conversation.conversationId || conversation.version !== local.version + 1 ||
+      local.policy.policyVersion !== conversation.policy.policyVersion ||
+      local.productDeadlineAt !== conversation.productDeadlineAt || conversation.resumeAttemptId !== null ||
+      !Number.isSafeInteger(conversation.resumeExpiresAt) || conversation.resumeExpiresAt! <= 0)
+      throw new Error("Recovered pause does not match local ownership");
+    this.current = conversation; this.pausing = true;
+  }
+  confirmRecoveredSettledClaim(conversation: ConversationMetadata): void {
+    const local = this.current;
+    if (!local || local.status !== "paused" || conversation.status !== "paused" ||
+      local.conversationId !== conversation.conversationId || conversation.version !== local.version + 2 ||
+      local.policy.policyVersion !== conversation.policy.policyVersion ||
+      local.productDeadlineAt !== conversation.productDeadlineAt ||
+      local.resumeExpiresAt !== conversation.resumeExpiresAt || conversation.resumeAttemptId !== null)
+      throw new Error("Recovered claim rollback does not match local ownership");
+    this.current = conversation; this.pausing = true;
+  }
+  confirmRecoveredClaimForEnd(conversation: ConversationMetadata): void {
+    const local = this.current;
+    if (!local || local.status !== "paused" || conversation.status !== "resuming" ||
+      local.conversationId !== conversation.conversationId || conversation.version !== local.version + 1 ||
+      local.policy.policyVersion !== conversation.policy.policyVersion ||
+      local.productDeadlineAt !== conversation.productDeadlineAt ||
+      local.resumeExpiresAt !== conversation.resumeExpiresAt || !conversation.resumeAttemptId ||
+      !Number.isSafeInteger(conversation.serverTime) || conversation.serverTime >= conversation.resumeExpiresAt! ||
+      (conversation.productDeadlineAt !== null && conversation.serverTime >= conversation.productDeadlineAt))
+      throw new Error("Recovered claim does not match local ownership");
+    this.current = conversation; this.pausing = true;
+  }
+  reconcileRetained(result: ReloadInspection | null): void {
+    if (!result || result.kind === "active" || !this.current) return;
+    const { snapshot, conversation } = result, local = this.current;
+    if (local.conversationId !== snapshot.conversationId || conversation.conversationId !== local.conversationId ||
+      local.policy.policyVersion !== snapshot.policyVersion || conversation.policy.policyVersion !== snapshot.policyVersion ||
+      local.productDeadlineAt !== conversation.productDeadlineAt)
+      throw new Error("Retained conversation does not match local ownership");
+    if (local.status === "active" && conversation.status === "paused") {
+      if (result.kind !== "paused" || snapshot.conversationVersion !== conversation.version)
+        throw new Error("Recovered pause does not match local ownership");
+      this.confirmRecoveredPause(conversation);
+    } else if (local.status === "paused" && conversation.status === "resuming") {
+      if (result.kind !== "pending" || this.resume || conversation.version !== local.version + 1 ||
+        snapshot.conversationVersion !== local.version || !snapshot.resumeAttemptId ||
+        conversation.resumeAttemptId !== snapshot.resumeAttemptId)
+        throw new Error("Recovered claim does not match local ownership");
+      this.current = conversation;
+      this.resume = { id: snapshot.resumeAttemptId, version: conversation.version,
+        mode: snapshot.setupStage === "interpreter" ? "interpreter" : "setup" };
+      this.pausing = true;
+    }
+  }
+  isResumeAttempt(attempt: ProviderAccounting): boolean { return this.resume?.id === attempt.localId; }
+  resumeMode(attempt: ProviderAccounting): ProviderCreateBody["initialMode"] {
+    return this.isResumeAttempt(attempt) ? this.resume!.mode : "setup";
+  }
+  async completeResume(startedAt: number): Promise<ConversationMetadata> {
+    const resume = this.resume, c = this.current;
+    if (!resume || !c) throw new Error("Resume claim unavailable");
+    let result: ConversationMetadata;
+    try { result = await this.api.completeResume(c.conversationId, resume.version, resume.id, startedAt, resume.mode); }
+    catch (error) {
+      // A lost response may follow a committed transaction. Read this immutable claim before any retry.
+      const receipt = await this.api.claimResume(c.conversationId, resume.version - 1, resume.id, resume.mode)
+        .catch(() => { throw error; });
+      if (receipt.attempt.liveSessionId !== resume.id || receipt.attempt.resumeClaimVersion !== resume.version ||
+        receipt.attempt.resumeOutcome !== "committed" || receipt.status !== "active" || receipt.version !== resume.version + 1)
+        throw error;
+      result = receipt;
+    }
+    if (result.status !== "active" || result.conversationId !== c.conversationId ||
+      result.version !== resume.version + 1 || result.resumeAttemptId !== null)
+      throw new Error("Resume completion was not confirmed");
+    this.current = result; this.resume = undefined;
+    return result;
+  }
+  async abortResume(reason: ResumeAbortReason): Promise<ConversationMetadata | null> {
+    const resume = this.resume, c = this.current;
+    this.pausing = true;
+    if (!resume || !c) return null;
+    const result = await this.api.abortResume(c.conversationId, resume.version, resume.id, reason);
+    if (result.conversationId !== c.conversationId || !["paused", "ended"].includes(result.status))
+      throw new Error("Resume abort was not confirmed");
+    this.current = result; this.resume = undefined;
+    return result;
+  }
+  confirmRecoveredAbort(result: ConversationMetadata, attemptId: string): void {
+    const resume = this.resume, c = this.current;
+    if (!resume || !c || c.status !== "resuming" || resume.id !== attemptId ||
+      result.conversationId !== c.conversationId || result.status !== "paused" ||
+      result.version !== resume.version + 1 || result.resumeAttemptId !== null)
+      throw new Error("Recovered resume abort does not match the local claim");
+    this.current = result; this.resume = undefined; this.pausing = true;
+  }
+  async reconcileRecoveredAbort(result: ConversationMetadata): Promise<void> {
+    const resume = this.resume;
+    if (!resume || result.version !== resume.version + 1 || result.status !== "paused")
+      throw new Error("Recovered resume abort does not match the local claim");
+    const receipt = await this.api.readAttempt(resume.id);
+    if (receipt.liveSessionId !== resume.id || receipt.conversation.conversationId !== result.conversationId ||
+      receipt.conversation.version !== result.version || receipt.conversation.status !== "paused" ||
+      receipt.conversation.resumeAttemptId !== null ||
+      receipt.resumeClaimVersion !== resume.version || !["aborted", "expired"].includes(receipt.resumeOutcome ?? "") ||
+      !["failed", "closed"].includes(receipt.state ?? "") || receipt.cleanupRequestedAt == null)
+      throw new Error("Recovered resume cleanup is still pending");
+    this.confirmRecoveredAbort(result, resume.id);
+  }
+  confirmRecoveredCompletion(result: ConversationMetadata): string {
+    const resume = this.resume, c = this.current;
+    if (!resume || !c || c.status !== "resuming" || result.conversationId !== c.conversationId ||
+      result.status !== "active" || result.version !== resume.version + 1 ||
+      result.resumeAttemptId !== null || result.resumeExpiresAt !== null)
+      throw new Error("Recovered resume completion does not match the local claim");
+    this.current = result; this.resume = undefined; this.pausing = true;
+    return resume.id;
+  }
+  confirmRecoveredEnd(result: ConversationMetadata): void {
+    const c = this.current;
+    if (!c) return;
+    if (result.conversationId !== c.conversationId || result.status !== "ended" ||
+      !Number.isSafeInteger(result.version) || result.version < c.version ||
+      (result.version === c.version && c.status !== "ended") || result.resumeAttemptId !== null)
+      throw new Error("Recovered conversation End does not match local ownership");
+    this.resetConversation();
+  }
+  async pause(close: Promise<unknown>): Promise<ConversationMetadata | null> {
+    const c = await this.pendingConversation();
+    await close.catch(() => undefined);
+    const attempts = [...this.attempts];
+    const results = await Promise.allSettled(attempts.map(a => a.finished ? a.waitForRetirement() : a.abandon("hidden")));
+    const failure = results.find((r, i) => r.status === "rejected" && attempts[i]!.dispatched);
+    if (failure?.status === "rejected") throw failure.reason;
+    if (!c) return null;
+    const paused = await this.api.pause(c.conversationId, c.version);
+    if (paused.status !== "paused" || paused.conversationId !== c.conversationId) throw new Error("Conversation pause was not confirmed");
+    this.current = paused;
+    return paused;
+  }
   newAttempt(): ProviderAccounting {
-    const attempt = new ProviderAccounting(this, this.epoch); this.attempts.add(attempt); return attempt;
+    const attempt = new ProviderAccounting(this, this.epoch, this.resume?.id); this.attempts.add(attempt); return attempt;
   }
   isCurrent(epoch: number) { return epoch === this.epoch; }
   private async holdProducerLock(): Promise<void> {
@@ -92,20 +301,17 @@ export class ConversationAccounting {
         await this.budget.reclaimUndispatched(id);
         for (const row of await this.budget.entries()) {
           if (row.producerId !== id || row.dispatchStartedAt === null) continue;
-          if (!row.producerFinalized && !row.cleanup && !row.closeObservation) await this.outbox.enqueue(row.localId, "response_not_received");
+          if (!row.producerFinalized && !row.cleanup && !row.closeObservation) await this.outbox.enqueue(row.localId, "response_not_received", row.conversationId);
           // The exclusive producer lock proves the app producer died, not that its metrics are complete.
           // Keep its last partial report for delivery; release the producer hold only.
-          if (row.usageProducerFinalized === false) await this.budget.finishUsageProducer(row.localId);
+          if (row.usageProducerFinalized === false) await this.budget.finishUsageProducer(row.localId, row.conversationId);
         }
       });
     }
   }
   async prepare(attempt: ProviderAccounting): Promise<ConversationMetadata | null> {
-    this.enabled ??= this.api.policy().then(p => {
-      if (p.creationPaused) throw new Error("New sessions are temporarily paused");
-      if (typeof p.usageLedgerEnabled !== "boolean") throw new Error("Invalid accounting policy");
-      return p.usageLedgerEnabled;
-    }).catch(error => { this.enabled = undefined; throw error; });
+    await this.loadPolicy();
+    if (this.pausing) throw new Error("Provider attempt cancelled");
     if (!await this.enabled) return null;
     await this.flushPendingNoProviderFinalizations();
     for (const boundary of [...this.pendingEndBoundaries.values()]) await this.finishEndBoundary(boundary);
@@ -114,8 +320,27 @@ export class ConversationAccounting {
     await this.flushPendingDirectCloseAcks();
     attempt.managed = true; attempt.assertCurrent();
     await this.holdProducerLock();
-    this.creating ??= this.api.createConversation(this.requestId).catch(error => { this.creating = undefined; throw error; });
-    const c = await this.creating; attempt.assertCurrent(); this.current = c;
+    await this.outbox.flush();
+    const ends = await this.budget.ends();
+    if (this.stagedEndConversationId &&
+        this.stagedEndConversationId === (this.current ?? await this.creating?.catch(() => undefined))?.conversationId &&
+        !ends.some(end => end.conversationId === this.stagedEndConversationId)) {
+      const ended = await this.api.readConversation(this.stagedEndConversationId) as ConversationMetadata;
+      attempt.assertCurrent();
+      if (ended.conversationId !== this.stagedEndConversationId || ended.status !== "ended") throw new Error("Previous conversation End is pending");
+      this.resetConversation(attempt);
+      await this.loadPolicy();
+      attempt.assertCurrent();
+      if (!await this.enabled) { attempt.managed = false; return null; }
+    }
+    if (ends.length) throw new Error("Previous conversation End is pending");
+    if (!this.current) this.creating ??= this.api.createConversation(this.requestId).catch(error => { this.creating = undefined; throw error; });
+    const c = this.current ?? await this.creating!; attempt.assertCurrent(); this.current = c;
+    if (c.status !== "active" && !(c.status === "resuming" && this.resume?.id === attempt.localId))
+      throw new Error("Conversation is not activatable");
+    if (c.policy.backgroundSessionCloseEnabled &&
+      !await this.snapshotStore?.then(store => store.available, () => false))
+      throw new Error("Retained conversation ownership unavailable");
     // close() only joins local media retirement; do not race its pending durable write.
     if (this.last && this.last !== attempt && this.last.dispatched) await this.last.waitForRetirement();
     await this.outbox.flush(); attempt.assertCurrent();
@@ -131,10 +356,11 @@ export class ConversationAccounting {
     }
     return c;
   }
-  noteDispatch(attempt: ProviderAccounting): "initial" | "bootstrap_replacement" {
+  noteDispatch(attempt: ProviderAccounting): ProviderCreateBody["startReason"] {
     this.previousDispatch.set(attempt, this.last);
     this.last = attempt;
-    return this.dispatchCount++ === 0 ? "initial" : "bootstrap_replacement";
+    this.dispatchCount++;
+    return this.resume?.id === attempt.localId ? "resume" : this.dispatchCount === 1 ? "initial" : "bootstrap_replacement";
   }
   noteNoProvider(attempt: ProviderAccounting): void {
     const previous = this.previousDispatch.get(attempt);
@@ -142,10 +368,19 @@ export class ConversationAccounting {
     this.dispatchCount = Math.max(0, this.dispatchCount - 1);
     if (this.last === attempt) this.last = previous;
   }
+  private resetConversation(nextAttempt?: ProviderAccounting): void {
+    this.epoch++;
+    nextAttempt?.rebase(this.epoch);
+    this.current = undefined; this.creating = undefined; this.last = undefined;
+    this.pausing = false; this.enabled = undefined; this.backgroundPolicy = false;
+    this.resume = undefined;
+    this.dispatchCount = 0; this.requestId = crypto.randomUUID(); this.attempts = new Set(nextAttempt ? [nextAttempt] : []);
+    this.stagedEndConversationId = undefined;
+  }
   private async deliverDirectEnd(intent: PendingDirectEnd): Promise<void> {
     if (intent.inFlight) return intent.inFlight;
     const operation = (async () => {
-      const pending = intent.cleanupLocalIds.filter(localId => !this.directRetirementProofs.has(localId));
+      const pending = intent.cleanupLocalIds.filter(localId => !this.directRetirementProofs.has(attemptKey(intent.conversationId, localId)));
       if (pending.length) await this.outbox.flush();
       for (const localId of pending) {
         const row = await this.budget.get(localId);
@@ -162,53 +397,56 @@ export class ConversationAccounting {
   private async flushPendingDirectEnds(): Promise<void> {
     for (const intent of [...this.pendingDirectEnds.values()]) await this.deliverDirectEnd(intent);
   }
-  async acknowledgeDirectCleanup(localId: string): Promise<void> {
-    this.directRetirementProofs.add(localId);
-    this.outbox.confirmRetirement(localId);
+  async acknowledgeDirectCleanup(localId: string, conversationId: string): Promise<void> {
+    const key = attemptKey(conversationId, localId);
+    this.directRetirementProofs.add(key);
+    this.outbox.confirmRetirement(localId, conversationId);
     try {
-      await this.budget.acknowledgeDirectCleanupAndRelease(localId);
-      this.pendingDirectCleanupAcks.delete(localId);
+      await this.budget.acknowledgeDirectCleanupAndRelease(localId, conversationId);
+      this.pendingDirectCleanupAcks.delete(key);
     } catch {
-      this.pendingDirectCleanupAcks.add(localId);
+      this.pendingDirectCleanupAcks.set(key, { localId, conversationId });
     }
   }
   private async flushPendingDirectCleanupAcks(): Promise<void> {
-    for (const localId of [...this.pendingDirectCleanupAcks]) {
-      await this.budget.acknowledgeDirectCleanupAndRelease(localId);
-      this.pendingDirectCleanupAcks.delete(localId);
+    for (const [key, { localId, conversationId }] of [...this.pendingDirectCleanupAcks]) {
+      await this.budget.acknowledgeDirectCleanupAndRelease(localId, conversationId);
+      this.pendingDirectCleanupAcks.delete(key);
     }
   }
-  async acknowledgeDirectClose(localId: string): Promise<void> {
-    this.directRetirementProofs.add(localId);
-    this.outbox.confirmRetirement(localId);
+  async acknowledgeDirectClose(localId: string, conversationId: string): Promise<void> {
+    const key = attemptKey(conversationId, localId);
+    this.directRetirementProofs.add(key);
+    this.outbox.confirmRetirement(localId, conversationId);
     try {
-      await this.budget.finishProducerAndRelease(localId, "provider_closed");
-      this.pendingDirectCloseAcks.delete(localId);
+      await this.budget.finishProducerAndRelease(localId, "provider_closed", conversationId);
+      this.pendingDirectCloseAcks.delete(key);
     } catch {
-      this.pendingDirectCloseAcks.add(localId);
+      this.pendingDirectCloseAcks.set(key, { localId, conversationId });
     }
   }
   private async flushPendingDirectCloseAcks(): Promise<void> {
-    for (const localId of [...this.pendingDirectCloseAcks]) {
-      await this.budget.finishProducerAndRelease(localId, "provider_closed");
-      this.pendingDirectCloseAcks.delete(localId);
+    for (const [key, { localId, conversationId }] of [...this.pendingDirectCloseAcks]) {
+      await this.budget.finishProducerAndRelease(localId, "provider_closed", conversationId);
+      this.pendingDirectCloseAcks.delete(key);
     }
   }
-  async finalizeNoProvider(localId: string): Promise<void> {
-    this.directRetirementProofs.add(localId);
-    this.pendingNoProviderFinalizations.add(localId);
+  async finalizeNoProvider(localId: string, conversationId: string): Promise<void> {
+    const key = attemptKey(conversationId, localId);
+    this.directRetirementProofs.add(key);
+    this.pendingNoProviderFinalizations.set(key, { localId, conversationId });
     try { await this.flushPendingNoProviderFinalizations(); }
     catch (error) { this.outbox.wake(); throw error; }
   }
   private async flushPendingNoProviderFinalizations(): Promise<void> {
-    for (const localId of [...this.pendingNoProviderFinalizations]) {
-      try { await this.budget.finishProducerAndRelease(localId, "no_provider"); }
+    for (const [key, { localId, conversationId }] of [...this.pendingNoProviderFinalizations]) {
+      try { await this.budget.finishProducerAndRelease(localId, "no_provider", conversationId); }
       catch (error) {
-        try { await this.budget.finishProducer(localId, "no_provider"); } catch { /* Preserve the confirmed outcome if IDB permits. */ }
+        try { await this.budget.finishProducer(localId, "no_provider", conversationId); } catch { /* Preserve the confirmed outcome if IDB permits. */ }
         throw error;
       }
-      this.outbox.confirmRetirement(localId);
-      this.pendingNoProviderFinalizations.delete(localId);
+      this.outbox.confirmRetirement(localId, conversationId);
+      this.pendingNoProviderFinalizations.delete(key);
     }
   }
   async stageEnd(reason: "user_end" | "setup_cancel", expectedEpoch = this.epoch): Promise<void> {
@@ -219,8 +457,11 @@ export class ConversationAccounting {
     // Persist intent before waiting for provider final. Do not terminate the usage producer
     // or enqueue HTTP here: a crash can replay both stores, and a late final remains valid.
     const dispatched = attempts.filter(a => a.dispatched);
-    this.outbox.deferCleanup(dispatched.filter(a => !a.finished).map(a => a.localId));
-    await this.outbox.enqueueEnd(c.conversationId, c.version, reason, dispatched.map(a => a.localId), c.policy.sessionCloseTimeoutMs);
+    this.outbox.deferCleanup(c.conversationId, dispatched.filter(a => !a.finished).map(a => a.localId));
+    await this.outbox.enqueueEnd(c.conversationId, c.version, reason, dispatched.map(a => a.localId), c.policy.sessionCloseTimeoutMs,
+      reason === "setup_cancel" && c.productDeadlineAt === null && c.policy.backgroundSessionCloseEnabled
+        ? c.policy.policyVersion : undefined);
+    this.stagedEndConversationId = c.conversationId;
   }
 
   async end(reason: "user_end" | "setup_cancel", expectedEpoch = this.epoch): Promise<void> {
@@ -228,8 +469,7 @@ export class ConversationAccounting {
     if (!boundary && expectedEpoch === this.epoch) {
       boundary = { epoch: expectedEpoch, reason, attempts: [...this.attempts], conversation: this.current, creating: this.creating };
       this.pendingEndBoundaries.set(expectedEpoch, boundary);
-      this.epoch++; this.current = undefined; this.creating = undefined; this.last = undefined;
-      this.dispatchCount = 0; this.requestId = crypto.randomUUID(); this.attempts = new Set();
+      this.resetConversation();
     }
     if (boundary) return this.finishEndBoundary(boundary); // First reason/version wins across retries.
     const pending = this.pendingDirectEnds.get(expectedEpoch);
@@ -250,9 +490,12 @@ export class ConversationAccounting {
     const c = boundary.conversation ?? await boundary.creating?.catch(() => undefined);
     let persisted = false;
     if (c) {
+      const dispatched = boundary.attempts.filter(a => a.dispatched);
       try {
         await this.outbox.enqueueEnd(c.conversationId, c.version, boundary.reason,
-          boundary.attempts.filter(a => a.dispatched && !this.directRetirementProofs.has(a.localId)).map(a => a.localId), c.policy.sessionCloseTimeoutMs);
+          dispatched.filter(a => !this.directRetirementProofs.has(attemptKey(c.conversationId, a.localId))).map(a => a.localId), c.policy.sessionCloseTimeoutMs,
+          boundary.reason === "setup_cancel" && c.productDeadlineAt === null && c.policy.backgroundSessionCloseEnabled
+            ? c.policy.policyVersion : undefined, dispatched.map(a => a.localId));
         persisted = true;
       } catch { console.error("Conversation end storage degraded", { conversationId: c.conversationId }); }
     }
@@ -262,7 +505,7 @@ export class ConversationAccounting {
     if (!persisted && dispatchedFailure?.status === "rejected") throw dispatchedFailure.reason;
     if (c) {
       const dispatched = boundary.attempts.filter(a => a.dispatched);
-      if (!persisted || dispatched.every(a => this.directRetirementProofs.has(a.localId))) {
+      if (!persisted || dispatched.every(a => this.directRetirementProofs.has(attemptKey(c.conversationId, a.localId)))) {
         const intent = this.pendingDirectEnds.get(boundary.epoch) ?? {
           conversationId: c.conversationId, version: c.version, reason: boundary.reason, epoch: boundary.epoch,
           cleanupLocalIds: dispatched.map(a => a.localId),
@@ -277,7 +520,7 @@ export class ConversationAccounting {
   }
 }
 export class ProviderAccounting {
-  readonly localId = crypto.randomUUID();
+  readonly localId: string;
   managed = false;
   dispatched = false;
   finished = false;
@@ -287,6 +530,7 @@ export class ProviderAccounting {
   private hasReservation = false;
   private controller: AbortController | undefined;
   private conversation: ConversationMetadata | undefined;
+  private attemptConversationId: string | undefined;
   private finishing: Promise<void> | undefined;
   private reporter: UsageReporter | undefined;
   private lastProduct: ProductObservation | undefined;
@@ -294,14 +538,15 @@ export class ProviderAccounting {
   observeProduct(observation: ProductObservation): void { this.lastProduct = observation; this.reporter?.observeProduct(observation); }
   observeUsage(observation: UsageObservation): void { this.reporter?.observeUsage(observation); }
   providerStarted(): void { this.reporter?.providerStarted(); }
-  constructor(private readonly scope: ConversationAccounting, private readonly epoch: number) {}
+  constructor(private readonly scope: ConversationAccounting, private epoch: number, id?: string) { this.localId = id ?? crypto.randomUUID(); }
+  rebase(epoch: number): void { this.epoch = epoch; }
   assertCurrent(): void {
-    if (this.cancelled || !this.scope.isCurrent(this.epoch) || (typeof document !== "undefined" && document.visibilityState === "hidden" && this.managed)) throw new Error("Provider attempt cancelled");
+    if (this.cancelled || this.scope.isPausing || !this.scope.isCurrent(this.epoch) || (typeof document !== "undefined" && document.visibilityState === "hidden" && this.managed)) throw new Error("Provider attempt cancelled");
   }
   async create(sdp: string, beforeManagedCreate?: () => void): Promise<CreateLiveSessionResponse> {
     const c = await this.scope.prepare(this); this.assertCurrent();
     if (!c) return new BackendClient().createLiveSession(sdp);
-    this.conversation = c; beforeManagedCreate?.();
+    this.conversation = c; this.attemptConversationId = c.conversationId; beforeManagedCreate?.();
     this.reservation = this.scope.budget.reserve(this.localId, c.conversationId, this.scope.usageOutbox !== undefined);
     await this.reservation; this.hasReservation = true;
     try {
@@ -309,15 +554,16 @@ export class ProviderAccounting {
       if (this.scope.usageOutbox) this.reporter = new UsageReporter(this.localId, c.conversationId, this.scope.usageOutbox, { initial: this.lastProduct });
       this.controller = new AbortController(); this.dispatched = true;
       return await this.scope.api.createSession({ sdp, liveSessionId: this.localId, conversationId: c.conversationId,
-        conversationVersion: c.version, initialMode: "setup", startReason: this.scope.noteDispatch(this) }, this.controller.signal);
+        conversationVersion: c.version, initialMode: this.scope.resumeMode(this), startReason: this.scope.noteDispatch(this) }, this.controller.signal);
     } catch (error) {
       if (isDefinitiveNoProviderError(error)) {
         this.cancelled = true;
         await this.reporter?.noProvider();
-        if (!this.reporter && this.scope.usageOutbox) await this.scope.usageOutbox.noProvider(this.localId);
+        if (!this.reporter && this.scope.usageOutbox) await this.scope.usageOutbox.noProvider(this.localId, c.conversationId);
         this.scope.noteNoProvider(this);
         this.finished = true;
-        await this.scope.finalizeNoProvider(this.localId);
+        await this.scope.finalizeNoProvider(this.localId, c.conversationId);
+        this.dispatched = false;
       } else {
         await this.abandon("response_not_received");
       }
@@ -330,8 +576,10 @@ export class ProviderAccounting {
     try { receipt = await this.scope.api.handoff(this.localId); }
     catch { receipt = await this.scope.api.readAttempt(this.localId); }
     this.assertCurrent();
-    if (receipt.state !== "active" || receipt.handoffAcknowledgedAt == null || receipt.cleanupRequestedAt != null || receipt.conversation.status !== "active" ||
+    if (receipt.state !== "active" || receipt.handoffAcknowledgedAt == null || receipt.cleanupRequestedAt != null ||
+        receipt.conversation.status !== (this.scope.isResumeAttempt(this) ? "resuming" : "active") ||
         receipt.conversation.version !== this.conversation?.version || (receipt.conversation.productDeadlineAt !== null && receipt.conversation.serverTime >= receipt.conversation.productDeadlineAt)) throw new Error("Provider handoff was not confirmed");
+    if (!this.scope.isResumeAttempt(this)) this.scope.confirmHandoffConversation(receipt.conversation, this.conversation!);
   }
   async waitForRetirement(): Promise<void> {
     if (this.finishing) await this.finishing;
@@ -348,10 +596,10 @@ export class ProviderAccounting {
     if (this.finishing) return this.finishing;
     const operation = (async () => {
       try {
-        if (this.dispatched) { await this.scope.outbox.enqueue(this.localId, committedReason); this.controller?.abort(); }
+        if (this.dispatched) { await this.scope.outbox.enqueue(this.localId, committedReason, this.attemptConversationId!); this.controller?.abort(); }
         else {
-          await this.scope.usageOutbox?.noProvider(this.localId);
-          await this.scope.finalizeNoProvider(this.localId);
+          await this.scope.usageOutbox?.noProvider(this.localId, this.attemptConversationId!);
+          await this.scope.finalizeNoProvider(this.localId, this.attemptConversationId!);
         }
         this.finished = true;
       } catch (error) {
@@ -360,7 +608,7 @@ export class ProviderAccounting {
         if (!this.dispatched) throw error;
         const proof = await this.scope.api.cleanup(this.localId, committedReason);
         if (!cleanupProofReceived(proof)) throw new Error("Provider cleanup was not confirmed", { cause: error });
-        await this.scope.acknowledgeDirectCleanup(this.localId);
+        await this.scope.acknowledgeDirectCleanup(this.localId, this.attemptConversationId!);
         this.finished = true;
       }
     })();
@@ -381,14 +629,14 @@ export class ProviderAccounting {
     if (this.finishing) return this.finishing;
     const operation = (async () => {
       try {
-        await this.scope.outbox.observeClosed(this.localId, observation);
+        await this.scope.outbox.observeClosed(this.localId, observation, this.attemptConversationId!);
       } catch {
         console.error("Provider close metadata storage degraded", { localId: this.localId });
         const proof = await this.scope.api.closed(this.localId, observation);
         if (proof.closeConfirmed !== true && proof.state !== "closed" && !(proof.state === "failed" && !proof.openaiSessionId)) {
           throw new Error("Provider close was not confirmed");
         }
-        await this.scope.acknowledgeDirectClose(this.localId);
+        await this.scope.acknowledgeDirectClose(this.localId, this.attemptConversationId!);
       }
       this.finished = true;
     })();

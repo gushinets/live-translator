@@ -3,7 +3,8 @@ import type { DatabaseSync } from "node:sqlite";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { openUsageDatabase } from "../src/persistence/database.js";
 import { UsageLedger } from "../src/accounting/UsageLedger.js";
-import type { AttemptInput } from "../src/accounting/types.js";
+import { LedgerRuntime } from "../src/accounting/LedgerRuntime.js";
+import { DEFAULT_LEDGER_POLICY, type AttemptInput } from "../src/accounting/types.js";
 
 let db: DatabaseSync;
 let ledger: UsageLedger;
@@ -200,6 +201,34 @@ describe("persistent provider ledger", () => {
     const { c, id } = resumed(); ledger.acknowledgeHandoff(owner, id); now += 60000; ledger.watchdog();
     expect(ledger.getConversation(owner, c.id).status).toBe("paused");
     const s = ledger.getAttempt(owner, id); expect(s.resume_outcome).toBe("expired"); expect(s.cleanup_reason).toBe("resume_claim_expired"); expect(s.cleanup_next_attempt_at).toBe(now); expect(s.lease_released_at).toBeNull();
+  });
+  it.each([false, true])("recovers a valid resume claim and completes after restart (handoff=%s)", handedOff => {
+    ledger = new UsageLedger(db, { now: () => now, policy: { ...DEFAULT_LEDGER_POLICY, sessionHandoffAckTimeoutMs: 120000 } });
+    const { c, id, v } = resumed();
+    if (handedOff) ledger.acknowledgeHandoff(owner, id);
+    now += 59999;
+    new LedgerRuntime(ledger, { startWorker: false });
+    expect(ledger.getConversation(owner, c.id)).toMatchObject({ status: "resuming", resume_attempt_id: id });
+    expect(ledger.getAttempt(owner, id)).toMatchObject({ state: handedOff ? "active" : "creating", cleanup_requested_at: null });
+    if (!handedOff) expect(ledger.acknowledgeHandoff(owner, id).state).toBe("active");
+    expect(ledger.completeResume(owner, c.id, v, id, now, "setup")).toMatchObject({ status: "active", resume_attempt_id: null });
+    expect(ledger.getAttempt(owner, id)).toMatchObject({ state: "active", resume_outcome: "committed", cleanup_requested_at: null });
+  });
+  it.each([false, true])("fences provisional and handed-off resume during downtime at/after the claim deadline (handoff=%s)", handedOff => {
+    ledger = new UsageLedger(db, { now: () => now, policy: { ...DEFAULT_LEDGER_POLICY, sessionHandoffAckTimeoutMs: 120000 } });
+    for (const overdueMs of [0, 1]) {
+      const { c, p, id, v, claim } = resumed();
+      if (handedOff) ledger.acknowledgeHandoff(owner, id);
+      now = claim.attempt.resume_claim_expires_at! + overdueMs;
+      expect(now).toBeLessThan(ledger.getAttempt(owner, id).handoff_ack_deadline_at!);
+      expect(now).toBeLessThan(p.resume_expires_at!);
+      new LedgerRuntime(ledger, { startWorker: false });
+      expect(ledger.getConversation(owner, c.id)).toMatchObject({ status: "paused", resume_attempt_id: null });
+      expect(ledger.getAttempt(owner, id)).toMatchObject({ state: "closing", resume_outcome: "expired",
+        cleanup_reason: "resume_claim_expired", cleanup_next_attempt_at: now, lease_released_at: null });
+      expect(() => handedOff ? ledger.completeResume(owner, c.id, v, id, now, "setup") : ledger.acknowledgeHandoff(owner, id))
+        .toThrow(handedOff ? "resume_not_activatable" : "handoff_not_activatable");
+    }
   });
   it("rolls all provider/claim changes back if expiry commit fails", () => {
     const { c, id } = resumed(); ledger.acknowledgeHandoff(owner, id); now += 60000;

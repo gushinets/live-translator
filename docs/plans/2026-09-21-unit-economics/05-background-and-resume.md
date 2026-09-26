@@ -1,6 +1,6 @@
 # PR 5 — immediate background close и retained conversation
 
-**Статус:** `planned`, реализация не начата этим документом.  
+**Статус:** `in-progress` в `feat/background-close-and-resume`; [draft PR #21](https://github.com/gushinets/live-translator/pull/21) открыт, merge и Gate G2 не заявлены.
 **Зависимости:** Зависит от PR 4. Отдельный feature flag; не меняет fixed-language routing.  
 **Спецификация:** [v1.1](../../specs/2026-09-21-unit-economics-and-session-lifecycle.md).\
 **Общие ограничения и проверки:** [README плана](README.md).
@@ -64,10 +64,14 @@ Resume: atomic server version claim (`paused → resuming`, durable local row/ID
 
 Каждый criterion сначала закрепляется regression test, затем изменением кода, затем повторной проверкой. Ожидаемый RED в новом тесте — обнаружение конкретного отсутствующего контракта, не случайная ошибка окружения. Общие root-команды обязательны; реальные provider/device tests — только в разрешённой среде.
 
+## Локальная проверка feature branch
+
+На 2026-09-26: `pnpm test` — 1100/1100, `pnpm typecheck` — exit 0. Это локальный прогон текущего head; CI run 36188651465 на `d9481c0` его не подтверждает. Regression покрывают rejected/pending claims, lost pause ACK, недоступный storage, retained End, no-provider proof, usage identity, паузу ON-policy разговора, если cached flag-off create скрывается при доступных Web Locks/IDB, явный Retry того же неподтверждённого claim id и отдельную БД no-provider proof: уже открытая metadata БД версии 2 не получает versionchange. G1 mock report воспроизведён ранее скриптом `node apps/api/scripts/g1-mock-report.mjs`; это synthetic fixture без provider charges. Это локальный unit suite, не CI/device/provider evidence и не закрытие Gate G2. Server regression для provisional/handed-off resume на точной claim boundary и browser opener-clone lock находятся в `apps/api/test/UsageLedger.test.ts` и `apps/web/tests/e2e/recovery.spec.ts`.
+
 ## Откат
 
-Отключить background flag для новых conversations. Существующий paused snapshot не пытаться unmute на мёртвом peer: либо завершить уже начатый новый-session restore, либо безопасно закончить conversation. Ledger/outbox остаются активны.
+`BACKGROUND_SESSION_CLOSE_ENABLED=false` — default. Включать только при `USAGE_LEDGER_ENABLED=true` после review и разрешённой E3/G2 проверки; изменение действует на новые conversations, уже созданные сохраняют свою записанную policy. Для отката выключить background flag для новых conversations, сохранив ledger/outbox и маршруты cleanup. Существующий paused snapshot не пытаться unmute на мёртвом peer: либо завершить уже начатый restore с новой provider session, либо безопасно закончить conversation. E1/E2 provider calibration, E3/G2 physical-device smoke, spend reconciliation и production flag rollout остаются внешними gates; локальные fake-provider tests их не заменяют.
 
 ## Что приложить к PR
 
-Baseline SHA, связанные ADR/spec, список реально изменённых файлов, команды и вывод проверок, отмеченные критерии, новые известные ограничения и rollout/rollback policy. Не писать «все тесты прошли», если запускалась только часть. GitHub PR number появляется здесь только после фактического создания PR.
+Baseline SHA, связанные ADR/spec, список реально изменённых файлов, команды и вывод проверок, отмеченные критерии, новые известные ограничения и rollout/rollback policy. Не писать «все тесты прошли», если запускалась только часть. Draft PR #21 остаётся на review; открытый PR не означает принятие Gate G2.

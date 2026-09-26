@@ -8,6 +8,7 @@ import {
   evaluateTurnCompletion,
 } from "../conversation/TurnCompletion";
 import { canAssignUnresolvedSource, createTranscriptFragment } from "../conversation/TurnBuffer";
+import type { ResumeSnapshot, ResumeSnapshotInput } from "./ResumeSnapshotStore";
 import type { Side, Turn } from "../conversation/Turn";
 import { AckTimeoutError } from "../live/AckRegistry";
 import { LiveClient, type LiveClientErrorEvent } from "../live/LiveClient";
@@ -92,6 +93,7 @@ export class SessionController {
   private bootstrapAccepting = false;
   private capturingContext = false;
   private capturingBootstrap = false;
+  private freshBootstrapReady = false;
   private contextFrozenByUser = false;
   private authoritativeContextSent = false;
   private hasConnected = false;
@@ -121,6 +123,11 @@ export class SessionController {
   private playbackActive = false;
   private remotePlaybackGeneration = 0;
   private remotePlaybackState: RemotePlaybackState = "ready";
+  private remotePlaybackWork: Promise<void> | null = null;
+  private remotePlaybackTrack: MediaStreamTrack | null = null;
+  private remoteTrackArrived: (() => void) | null = null;
+  private retainedProductDeadlineAt: number | null = null;
+  private retainedPlaybackCommitted = false;
   private pendingRemotePlaybackActivity: AudioActivityEvent | null = null;
   private turnClosing = false;
   private speechInputReady = false;
@@ -133,6 +140,14 @@ export class SessionController {
   private playbackIdleWaitResolve: (() => void) | null = null;
   private playbackIdleWaitTimer: number | null = null;
   private platformStarted = false;
+  private earlyVisibilityStarted = false;
+  private backgroundPaused = false;
+  private backgroundCloseWork: Promise<void> | null = null;
+  protected retainedResumeInFlight = false;
+  protected retainedResumeCaptureEnded = false;
+  private visibleAgainDuringResume = false;
+  private providerStartedObservedAt = 0;
+  protected retainedResumePhase: "media" | "create" | "restore" | "complete" = "media";
   private lifecycleSuspendReason: LifecycleSuspendReason | undefined;
   private discardedUnfinishedOnSuspend = false;
   private enteredInterpreter = false;
@@ -152,9 +167,12 @@ export class SessionController {
       void this.handleOrientationChange(orientation);
     };
     this.visibility.onHidden = () => {
+      this.onVisibilityHidden();
+      if (!this.backgroundCloseEnabled && !this.platformStarted) return;
       void this.handleVisibilityHidden();
     };
     this.visibility.onVisible = () => {
+      if (!this.backgroundCloseEnabled && !this.platformStarted) return;
       void this.handleVisibilityVisible();
     };
     this.bindLive();
@@ -163,6 +181,216 @@ export class SessionController {
 
   get session(): TranslationSession {
     return this.currentSession;
+  }
+
+  protected get backgroundCloseEnabled(): boolean { return false; }
+  protected onVisibilityHidden(): void {}
+  protected get retainedPaused(): boolean { return this.backgroundPaused; }
+  protected beginBackgroundPause(): void {}
+  protected resumeBackground(): Promise<void> { return Promise.resolve(); }
+  protected get backgroundResumeGeneration(): number { return this.sessionGeneration; }
+  protected adoptRetainedPause(): void {
+    if (this.backgroundPaused || this.currentSession.state !== "idle") return;
+    this.sessionGeneration++;
+    this.backgroundPaused = true;
+    this.currentSession = { ...this.currentSession, state: "suspended" };
+    this.lifecycleSuspendReason = "visibility";
+    this.notify();
+  }
+  protected clearRetainedAfterEnd(): void { this.resetToIdle(); }
+  protected backgroundResumeCurrent(generation: number): boolean {
+    return this.backgroundPaused && this.sessionGeneration === generation && !this.visibility.isHidden() &&
+      this.orientation.isPortrait() && this.endWork === null && this.cancelWork === null;
+  }
+  protected beginOutputPriming(): Promise<void> {
+    const priming = this.audio.primeOutput();
+    void priming.catch(() => undefined); // Policy/claim may reject before the priming result is awaited.
+    return priming;
+  }
+  protected async restoreRetained(snapshot: ResumeSnapshot, complete: (startedAt: number) => Promise<void>,
+    primedOutput?: Promise<void>): Promise<void> {
+    const generation = this.sessionGeneration;
+    this.retainedResumePhase = "media";
+    const current = () => this.backgroundResumeCurrent(generation);
+    if (!current()) throw new Error("Resume cancelled");
+    await (primedOutput ?? this.audio.primeOutput());
+    if (!current()) throw new Error("Resume cancelled");
+    this.audio.setOutputAudible(false);
+    await this.audio.startCapture();
+    if (!current()) throw new Error("Resume cancelled");
+    const stream = this.audio.getCaptureStream();
+    if (!stream) throw new Error("Microphone capture stream is unavailable");
+    this.assertCaptureStreamLive(stream);
+    this.audio.setCaptureEnabled(false);
+    const live = this.live = this.deps.createLive();
+    this.bindLive();
+    this.retainedProductDeadlineAt = snapshot.productDeadlineAt;
+    this.conversationMetrics = new ConversationMetrics();
+    this.conversationMetrics.restoreCounters(snapshot.counters);
+    this.publishRetainedCounterBaseline();
+    const remoteTrack = new Promise<void>(resolve => { this.remoteTrackArrived = resolve; });
+    this.liveConnectStarted = true;
+    this.retainedResumePhase = "create";
+    await live.connect(stream);
+    this.retainedResumePhase = "restore";
+    if (!current()) throw new Error("Resume cancelled");
+    const waitMs = Math.min(runtime.steeringAckTimeoutMs, (snapshot.localResumeDeadlineAt ?? 0) - Date.now(),
+      (snapshot.serverResumeExpiresAt ?? 0) - Date.now(),
+      (snapshot.productDeadlineAt ?? Infinity) - Date.now());
+    if (waitMs <= 0) throw new Error("Remote playback deadline expired");
+    let trackTimer: number | undefined;
+    try {
+      await Promise.race([remoteTrack.then(async () => {
+        if (!current() || !this.remotePlaybackWork) throw new Error("Remote playback is unavailable");
+        await this.remotePlaybackWork;
+      }), new Promise<never>((_, reject) => {
+        trackTimer = window.setTimeout(() => reject(new Error("Remote audio track unavailable")), waitMs);
+      })]);
+    } finally {
+      if (trackTimer !== undefined) window.clearTimeout(trackTimer);
+      this.remoteTrackArrived = null;
+    }
+    if (!current()) throw new Error("Resume cancelled");
+    this.assertRemotePlaybackReady();
+    await this.muteGateB(generation);
+    if (!current()) throw new Error("Resume cancelled");
+    const languages = { A: snapshot.participantA.language, B: snapshot.participantB.language };
+    if (snapshot.setupStage === "interpreter" && snapshot.contextText.trim()) {
+      await live.appendThinking(buildAuthoritativeContext(snapshot.contextText.trim()), { kind: "startup_interpreter" });
+      if (!current()) throw new Error("Resume cancelled");
+      this.authoritativeContextSent = true;
+    }
+    if (snapshot.setupStage === "interpreter") {
+      if (!languages.A || !languages.B || languages.A === languages.B) throw new Error("Invalid retained language pair");
+      await live.appendInstructions(buildInterpreterInstructions({ A: languages.A, B: languages.B }), { kind: "startup_interpreter" });
+      if (!current()) throw new Error("Resume cancelled");
+      await live.appendInstructions(buildSteering({ A: languages.A, B: languages.B }),
+        { kind: "first_steering", sessionState: "suspended" });
+      if (!current()) throw new Error("Resume cancelled");
+    }
+    if (!this.providerStartedObservedAt ||
+      Date.now() >= (snapshot.localResumeDeadlineAt ?? 0) ||
+      Date.now() >= (snapshot.serverResumeExpiresAt ?? 0) ||
+      (snapshot.productDeadlineAt !== null && Date.now() >= snapshot.productDeadlineAt))
+      throw new Error("Resume readiness or deadline expired");
+    this.assertCaptureStreamLive(stream);
+    this.assertRemotePlaybackReady();
+    this.retainedResumePhase = "complete";
+    await complete(this.providerStartedObservedAt);
+    if (!current() || Date.now() >= (snapshot.localResumeDeadlineAt ?? 0) ||
+      Date.now() >= (snapshot.serverResumeExpiresAt ?? 0) ||
+      (snapshot.productDeadlineAt !== null && Date.now() >= snapshot.productDeadlineAt))
+      throw new Error("Resume cancelled after commit");
+    this.assertCaptureStreamLive(stream);
+    this.assertRemotePlaybackReady();
+    this.contextBuffer = snapshot.contextText;
+    this.contextFrozenByUser = true;
+    this.bootstrapBuffer = "";
+    this.currentSession = { state: snapshot.setupStage === "interpreter" ? "listening" : snapshot.setupStage === "bootstrap" ? "bootstrap" : "connecting",
+      contextText: snapshot.contextText, recentTurns: [],
+      participantA: { side: "A", ...snapshot.participantA }, participantB: { side: "B", ...snapshot.participantB } };
+    this.enteredInterpreter = snapshot.enteredInterpreter;
+    this.freshBootstrapReady = snapshot.setupStage === "bootstrap";
+    this.hasConnected = true;
+    this.retainedPlaybackCommitted = true;
+    this.lifecycleSuspendReason = undefined;
+    this.discardedUnfinishedOnSuspend = snapshot.interruptedUtterance;
+    this.recoveryPromptKind = snapshot.interruptedUtterance ? "repeat" : undefined;
+    if (snapshot.setupStage === "interpreter") {
+      this.assertCaptureStreamLive(stream);
+      this.assertRemotePlaybackReady();
+      if (!(await this.unmuteGateB(generation)) || this.sessionGeneration !== generation || this.visibility.isHidden())
+        throw new Error("Resume cancelled before input opened");
+      this.assertCaptureStreamLive(stream);
+      this.assertRemotePlaybackReady();
+      this.audio.resetVoiceActivityBaseline();
+      this.audio.setCaptureEnabled(true);
+      this.assertRemotePlaybackReady();
+      this.audio.setOutputAudible(true);
+      this.speechInputReady = true;
+      await this.startPlatformLifecycle();
+    } else {
+      this.assertCaptureStreamLive(stream);
+      this.assertRemotePlaybackReady();
+      if (!(await this.unmuteGateB(generation))) throw new Error("Resume cancelled before setup input opened");
+      this.assertCaptureStreamLive(stream);
+      this.assertRemotePlaybackReady();
+    }
+    if (!current()) throw new Error("Resume cancelled after commit");
+    this.assertRemotePlaybackReady();
+    this.backgroundPaused = false;
+    this.backgroundCloseWork = null;
+    this.notify();
+  }
+  private assertRemotePlaybackReady(): void {
+    if (this.remotePlaybackState !== "ready" || this.remotePlaybackTrack?.readyState !== "live")
+      throw new Error("Remote playback is unavailable");
+  }
+  protected async abandonRetainedMedia(reason: "hidden" | "abandoned_connect"): Promise<void> {
+    this.stopLocalMedia();
+    await this.live.disconnectImmediately(reason);
+  }
+  protected fenceRetainedResumeForDisposal(): void {
+    if (!this.retainedResumeInFlight) return;
+    this.sessionGeneration++;
+    this.bumpLifecycleEpoch();
+    try { this.stopLocalMedia(); } catch { this.closeGateAForSafety("Resume disposal capture gate failed"); }
+    void this.live.disconnectImmediately("cancelled").catch(() => console.error("Resume disposal cleanup incomplete"));
+  }
+  protected fenceRetainedRecoveryForEnd(): void {
+    this.sessionGeneration++;
+    this.bumpLifecycleEpoch();
+    this.stopLocalMedia();
+    void this.live.disconnectImmediately("user_end").catch(() => console.error("Retained End transport cleanup incomplete"));
+  }
+  protected beginRetainedResume(): boolean {
+    if (this.retainedResumeInFlight) return false;
+    this.retainedResumeCaptureEnded = false;
+    this.retainedResumeInFlight = true;
+    return true;
+  }
+  protected finishRetainedResume(): void {
+    this.retainedResumeInFlight = false;
+    this.retainedResumeCaptureEnded = false;
+    if (this.visibleAgainDuringResume) {
+      this.visibleAgainDuringResume = false;
+      if (this.backgroundPaused && !this.visibility.isHidden()) void this.handleVisibilityVisible();
+    }
+  }
+  protected clearIdleBackgroundPause(): boolean { return true; }
+  protected pauseBackground(_state: Omit<ResumeSnapshotInput, "conversationId" | "conversationVersion" | "policyVersion" | "productDeadlineAt">,
+    _hiddenAt: number, _close: Promise<unknown>): Promise<void> {
+    void _state; void _hiddenAt; void _close;
+    return Promise.resolve();
+  }
+  protected startEarlyVisibility(): void {
+    if (this.earlyVisibilityStarted) return;
+    this.visibility.start();
+    this.earlyVisibilityStarted = true;
+  }
+  protected stopEarlyVisibility(): void {
+    if (!this.earlyVisibilityStarted) return;
+    this.visibility.stop();
+    this.earlyVisibilityStarted = false;
+  }
+  protected async awaitBackgroundPause(): Promise<void> {
+    await this.backgroundCloseWork?.catch(() => undefined);
+  }
+  protected resetAfterUnpausedBackground(): void { this.resetToIdle(); }
+  protected sampleInitialHidden(): boolean {
+    if (!this.backgroundCloseEnabled) return false;
+    if (this.backgroundPaused && !this.visibility.isHidden() && this.currentSession.state === "idle" &&
+      this.clearIdleBackgroundPause()) {
+      this.backgroundPaused = false;
+      this.backgroundCloseWork = null;
+      this.sessionGeneration++;
+      this.live = this.deps.createLive();
+      this.bindLive();
+    }
+    if (this.backgroundPaused) return true;
+    if (!this.visibility.isHidden()) return false;
+    void this.handleVisibilityHidden();
+    return true;
   }
 
   get contextText(): string {
@@ -254,6 +482,7 @@ export class SessionController {
   }
 
   setContextText(text: string): void {
+    if (this.backgroundPaused) return;
     this.contextFrozenByUser = true;
     this.finishContextCapture();
     this.applyContextText(text);
@@ -263,7 +492,7 @@ export class SessionController {
     this.setContextText("");
   }
 
-  async startContextCapture(): Promise<void> {
+  async startContextCapture(primedOutput?: Promise<void>): Promise<void> {
     if (this.endWork !== null) await this.endWork;
     if (this.cancelWork !== null) {
       await this.cancelWork;
@@ -272,7 +501,7 @@ export class SessionController {
       await this.connectWork;
       return;
     }
-    const work = this.runStartContextCapture();
+    const work = this.runStartContextCapture(primedOutput);
     this.connectWork = work;
     try {
       await work;
@@ -287,7 +516,7 @@ export class SessionController {
     this.capturingContext = false;
   }
 
-  async startBootstrap(): Promise<void> {
+  async startBootstrap(primedOutput?: Promise<void>): Promise<void> {
     if (this.endWork !== null) await this.endWork;
     if (this.cancelWork !== null) {
       await this.cancelWork;
@@ -296,7 +525,7 @@ export class SessionController {
       await this.connectWork;
       return;
     }
-    const work = this.runStartBootstrap();
+    const work = this.runStartBootstrap(primedOutput);
     this.connectWork = work;
     try {
       await work;
@@ -310,19 +539,30 @@ export class SessionController {
   handleRemoteStream(stream: MediaStream, source: LiveClient): void {
     // Validate origin BEFORE attaching. A generation captured after a stale callback is too late.
     if (source !== this.live || this.liveProductGeneration !== this.sessionGeneration) return;
+    const track = stream.getAudioTracks().find(track => track.readyState === "live");
+    if (!track || this.remotePlaybackTrack) return;
+    this.remotePlaybackTrack = track;
     const sessionGeneration = this.sessionGeneration;
     const playbackGeneration = this.remotePlaybackGeneration + 1;
     this.remotePlaybackGeneration = playbackGeneration;
     this.remotePlaybackState = "pending";
     this.pendingRemotePlaybackActivity = null;
+    track.addEventListener("ended", () => {
+      if (this.remotePlaybackTrack === track) this.failRemotePlayback(source, sessionGeneration, playbackGeneration,
+        new Error("Remote audio track ended"));
+    }, { once: true });
     this.audio.attachRemoteStream(stream);
-    void this.audio.audioElement
+    this.remotePlaybackWork = this.audio.audioElement
       .play()
       .then(() => {
         if (
           source !== this.live || this.sessionGeneration !== sessionGeneration ||
-          this.remotePlaybackGeneration !== playbackGeneration
+          this.remotePlaybackGeneration !== playbackGeneration || this.remotePlaybackState !== "pending"
         ) {
+          return;
+        }
+        if (track.readyState !== "live") {
+          this.failRemotePlayback(source, sessionGeneration, playbackGeneration, new Error("Remote audio track ended"));
           return;
         }
         this.remotePlaybackState = "ready";
@@ -339,14 +579,30 @@ export class SessionController {
         ) {
           return;
         }
-        this.remotePlaybackState = "failed";
-        this.pendingRemotePlaybackActivity = null;
-        if (this.playbackActive) {
-          this.playbackActive = false;
-          this.finishPlaybackIdleWait();
-        }
-        console.error("Remote audio play failed", { error });
+        this.failRemotePlayback(source, sessionGeneration, playbackGeneration, error);
       });
+    this.remoteTrackArrived?.();
+  }
+
+  private failRemotePlayback(source: LiveClient, sessionGeneration: number, playbackGeneration: number, error: unknown): void {
+    if (source !== this.live || this.sessionGeneration !== sessionGeneration ||
+      this.remotePlaybackGeneration !== playbackGeneration || this.remotePlaybackState === "failed") return;
+    this.remotePlaybackState = "failed";
+    this.pendingRemotePlaybackActivity = null;
+    if (this.playbackActive) { this.playbackActive = false; this.finishPlaybackIdleWait(); }
+    console.error("Remote audio playback failed", { error });
+    if (this.retainedPlaybackCommitted) {
+      try { this.stopLocalMedia(); }
+      catch {
+        this.closeGateAForSafety("Remote playback capture gate failed");
+        try { this.audio.setOutputAudible(false); } catch { /* Continue retirement. */ }
+        try { this.audio.audioElement.srcObject = null; } catch { /* Continue retirement. */ }
+        try { this.audio.stopCapture(); } catch { /* Gate A remains closed. */ }
+      }
+      void this.live.disconnectImmediately("abandoned_connect")
+        .catch(retireError => console.error("Remote playback cleanup failed", { error: retireError }));
+      void this.endConversation().catch(retireError => console.error("Remote playback retirement failed", { error: retireError }));
+    }
   }
 
   private acceptRemotePlaybackActivity(event: AudioActivityEvent): boolean {
@@ -360,8 +616,13 @@ export class SessionController {
   }
 
   private resetRemotePlaybackTracking(): void {
+    this.remoteTrackArrived?.();
+    this.remoteTrackArrived = null;
+    this.retainedPlaybackCommitted = false;
     this.remotePlaybackGeneration += 1;
     this.remotePlaybackState = "ready";
+    this.remotePlaybackWork = null;
+    this.remotePlaybackTrack = null;
     this.pendingRemotePlaybackActivity = null;
     if (this.playbackActive) {
       this.playbackActive = false;
@@ -370,6 +631,7 @@ export class SessionController {
   }
 
   async resumeFromSourceTimeout(): Promise<void> {
+    if (this.backgroundPaused) return;
     if (this.sourceTimeoutResumeWork !== null) {
       await this.sourceTimeoutResumeWork;
       return;
@@ -500,7 +762,16 @@ export class SessionController {
     const work = new Promise<void>((ok, fail) => { resolve = ok; reject = fail; });
     // Publish the shared operation before synchronous UI observers can re-enter End/cancel.
     if (kind === "end") this.endWork = work; else this.cancelWork = work;
-    const operation = kind === "end" ? this.runEndConversation() : this.runCancel();
+    if (this.retainedResumeInFlight) {
+      this.sessionGeneration++;
+      this.bumpLifecycleEpoch();
+      this.stopLocalMedia();
+      void this.live.disconnectImmediately(kind === "end" ? "user_end" : "cancelled")
+        .catch(() => console.error("Retained transport cleanup incomplete"));
+    }
+    const retire = () => kind === "end" ? this.runEndConversation() : this.runCancel();
+    const operation = this.backgroundPaused && this.backgroundCloseWork
+      ? this.backgroundCloseWork.catch(() => undefined).then(retire) : retire();
     void operation.then(resolve, reject);
     try { await work; }
     finally {
@@ -510,6 +781,7 @@ export class SessionController {
   }
 
   async acceptBootstrap(text: string): Promise<void> {
+    if (this.backgroundPaused) return;
     if (this.bootstrapAccepting) return;
     if (this.currentSession.state !== "bootstrap" || !this.capturingBootstrap) {
       throw new Error("Сначала запишите образец речи.");
@@ -551,6 +823,7 @@ export class SessionController {
   }
 
   async beginInterpreter(): Promise<void> {
+    if (this.backgroundPaused) return;
     if (this.interpreterWork !== null) {
       await this.interpreterWork;
       return;
@@ -931,6 +1204,7 @@ export class SessionController {
       if (this.live !== live || this.sessionGeneration !== generation) {
         return;
       }
+      this.providerStartedObservedAt = Date.now();
       this.armMaxSessionTimer();
     };
     this.live.onSessionClosed = (event) => {
@@ -1055,6 +1329,7 @@ export class SessionController {
   }
 
   private async handleVoiceActivity(event: AudioActivityEvent): Promise<void> {
+    if (this.backgroundPaused) return;
     if (this.turnClosing) {
       return;
     }
@@ -1159,6 +1434,7 @@ export class SessionController {
   }
 
   private async handlePlaybackActivity(event: AudioActivityEvent): Promise<void> {
+    if (this.backgroundPaused) return;
     if (!this.acceptRemotePlaybackActivity(event)) {
       return;
     }
@@ -1763,11 +2039,11 @@ export class SessionController {
     return true;
   }
 
-  private async ensureConnected(): Promise<void> {
+  private async ensureConnected(primedOutput?: Promise<void>): Promise<void> {
     const live = this.live;
     const generation = this.sessionGeneration;
     try {
-      await this.audio.primeOutput();
+      await (primedOutput ?? this.audio.primeOutput());
     } catch (error) {
       if (this.sessionGeneration !== generation) {
         return;
@@ -1858,13 +2134,13 @@ export class SessionController {
     this.idleTimer = null;
   }
 
-  private async runStartContextCapture(): Promise<void> {
+  private async runStartContextCapture(primedOutput?: Promise<void>): Promise<void> {
     const generation = this.sessionGeneration;
     this.ownerErrorMessage = undefined;
     this.connectInFlight = true;
     this.notify();
     try {
-      await this.ensureConnected();
+      await this.ensureConnected(primedOutput);
       if (this.sessionGeneration !== generation) {
         return;
       }
@@ -1891,13 +2167,13 @@ export class SessionController {
     }
   }
 
-  private async runStartBootstrap(): Promise<void> {
+  private async runStartBootstrap(primedOutput?: Promise<void>): Promise<void> {
     const generation = this.sessionGeneration;
     this.ownerErrorMessage = undefined;
     this.connectInFlight = true;
     this.notify();
     try {
-      await this.ensureConnected();
+      await this.ensureConnected(primedOutput);
       if (this.sessionGeneration !== generation) {
         return;
       }
@@ -1911,9 +2187,10 @@ export class SessionController {
       // Transcript events do not carry a sample/attempt id, so reconnecting is
       // the only strict boundary that prevents a delayed event from the old
       // data channel from contaminating the next sample.
-      if (this.currentSession.state === "bootstrap") {
+      if (this.currentSession.state === "bootstrap" && !this.freshBootstrapReady) {
         if (!(await this.restartBootstrapLiveConnection(generation))) return;
       }
+      this.freshBootstrapReady = false;
 
       this.bootstrapBuffer = "";
       if (!(await this.unmuteGateB(generation))) return;
@@ -1974,6 +2251,7 @@ export class SessionController {
       throw new Error("Microphone capture stream has no audio track");
     }
     if (track.readyState !== "live") {
+      if (this.backgroundPaused && this.retainedResumeInFlight) this.retainedResumeCaptureEnded = true;
       throw new Error(MICROPHONE_CAPTURE_ENDED_MESSAGE);
     }
   }
@@ -2049,6 +2327,7 @@ export class SessionController {
     this.clearTurnEngineTimers();
     this.capturingContext = false;
     this.capturingBootstrap = false;
+    this.freshBootstrapReady = false;
     this.connectInFlight = false;
     this.interpreterInFlight = false;
     this.turnClosing = false;
@@ -2081,7 +2360,8 @@ export class SessionController {
     this.clearMaxSessionTimer();
     this.maxSessionTimer = window.setTimeout(() => {
       void this.endConversation();
-    }, runtime.maxSessionMs);
+    }, this.retainedProductDeadlineAt === null ? runtime.maxSessionMs :
+      Math.max(0, this.retainedProductDeadlineAt - Date.now()));
   }
 
   private clearMaxSessionTimer(): void {
@@ -2112,7 +2392,7 @@ export class SessionController {
     }
     this.platformStarted = true;
     this.orientation.start();
-    this.visibility.start();
+    if (!this.earlyVisibilityStarted) this.visibility.start();
     try {
       if (!this.orientation.isPortrait()) {
         await this.suspendFromLifecycle("orientation");
@@ -2129,7 +2409,7 @@ export class SessionController {
 
   private stopPlatformLifecycle(): void {
     this.orientation.stop();
-    this.visibility.stop();
+    if (!this.earlyVisibilityStarted) this.visibility.stop();
     void this.wakeLock.release();
     this.platformStarted = false;
     this.lifecycleSuspendReason = undefined;
@@ -2143,6 +2423,14 @@ export class SessionController {
   }
 
   private async handleOrientationChange(orientation: "portrait" | "landscape"): Promise<void> {
+    if (this.backgroundPaused) {
+      if (orientation === "landscape" && this.retainedResumeInFlight) {
+        this.sessionGeneration++;
+        this.stopLocalMedia();
+        void this.live.disconnectImmediately("abandoned_connect").catch(() => console.error("Resume cleanup incomplete"));
+      } else if (orientation === "portrait" && !this.visibility.isHidden()) void this.handleVisibilityVisible();
+      return;
+    }
     if (orientation === "landscape") {
       this.bumpLifecycleEpoch();
       await this.enqueueLifecycle(() => this.suspendFromLifecycle("orientation"));
@@ -2151,12 +2439,82 @@ export class SessionController {
     await this.enqueueLifecycle(() => this.resumeFromLifecycle());
   }
 
+  protected applyHiddenBackgroundClose(): Promise<void> { return this.handleVisibilityHidden(); }
   private async handleVisibilityHidden(): Promise<void> {
+    if (this.backgroundCloseEnabled) {
+      if (this.backgroundPaused) {
+        if (this.retainedResumeInFlight) {
+          this.sessionGeneration++;
+          this.bumpLifecycleEpoch();
+          this.stopLocalMedia();
+          void this.live.disconnectImmediately("hidden").catch(() => console.error("Resume cleanup incomplete"));
+        }
+        return;
+      }
+      if (this.endWork !== null || this.cancelWork !== null) return;
+      this.backgroundPaused = true;
+      this.beginBackgroundPause();
+      let resolveClose!: () => void;
+      let rejectClose!: (error: unknown) => void;
+      this.backgroundCloseWork = new Promise<void>((resolve, reject) => {
+        resolveClose = resolve; rejectClose = reject;
+      });
+      const state = this.currentSession;
+      const hadLive = this.hasConnected || this.liveConnectStarted;
+      const hiddenAt = Date.now();
+      const counters: MetricCounters = {};
+      const retained = {
+        participantA: { language: state.participantA.language, hasAcceptedConversationSpeech: state.participantA.hasAcceptedConversationSpeech },
+        participantB: { language: state.participantB.language, hasAcceptedConversationSpeech: state.participantB.hasAcceptedConversationSpeech },
+        contextText: this.capturingContext ? "" : this.contextBuffer,
+        setupStage: (this.enteredInterpreter ? "interpreter" : state.state === "bootstrap" ? "bootstrap" : "context") as ResumeSnapshotInput["setupStage"],
+        enteredInterpreter: this.enteredInterpreter,
+        interruptedUtterance: state.activeTurn !== undefined && state.activeTurn.turnCompletedAtMs === undefined && !state.activeTurn.corrected,
+        counters,
+      };
+      this.sessionGeneration += 1;
+      this.bumpLifecycleEpoch();
+      this.clearIdleTimer(); this.clearMaxSessionTimer(); this.clearTurnEngineTimers();
+      this.capturingContext = false; this.capturingBootstrap = false; this.bootstrapAccepting = false;
+      this.speechInputReady = false; this.turnClosing = false; this.recoveryPromptKind = undefined;
+      try { this.stopLocalMedia(); }
+      catch (error) {
+        console.error("Background local media stop failed", { error });
+        this.closeGateAForSafety("Background Gate A close failed");
+        try { this.audio.setOutputAudible(false); } catch { /* Provider close still proceeds. */ }
+        try { this.audio.audioElement.srcObject = null; } catch { /* Provider close still proceeds. */ }
+        try { this.audio.stopCapture(); } catch { /* Disabled tracks remain the safety boundary. */ }
+      }
+      if (this.platformStarted) this.stopPlatformLifecycle();
+      if (!["idle", "ended", "ending", "error", "suspended"].includes(state.state)) this.dispatch({ type: "SUSPEND" });
+      else if (state.state === "suspended") this.notify();
+      this.currentSession = { ...this.currentSession, recentTurns: [], activeTurn: undefined };
+      const snapshot = this.conversationMetrics.snapshot();
+      for (const name of COUNTER_NAMES) if (name in snapshot) counters[name] = snapshot[name as keyof typeof snapshot] as number;
+      this.lifecycleSuspendReason = "visibility";
+      this.authoritativeContextSent = false;
+      this.gateBMuted = false;
+      this.hasConnected = false; this.liveConnectStarted = false;
+      try {
+        const close = !hadLive && state.state === "idle" ? Promise.resolve() : this.live.close("hidden");
+        void this.pauseBackground(retained, hiddenAt, close).then(resolveClose, rejectClose);
+      } catch (error) { rejectClose(error); }
+      try { await this.backgroundCloseWork; }
+      catch (error) { console.error("Background pause incomplete", { error }); }
+      return;
+    }
     this.bumpLifecycleEpoch();
     await this.enqueueLifecycle(() => this.suspendFromLifecycle("visibility"));
   }
 
   private async handleVisibilityVisible(): Promise<void> {
+    if (this.backgroundPaused) {
+      if (this.retainedResumeInFlight) { this.visibleAgainDuringResume = true; return; }
+      this.beginRetainedResume();
+      try { await this.resumeBackground(); }
+      finally { this.finishRetainedResume(); }
+      return;
+    }
     await this.enqueueLifecycle(async () => {
       await this.wakeLock.reacquire();
       await this.resumeFromLifecycle();
@@ -2164,11 +2522,13 @@ export class SessionController {
   }
 
   private async handleAudioInterruption(): Promise<void> {
+    if (this.backgroundPaused) return;
     this.bumpLifecycleEpoch();
     await this.enqueueLifecycle(() => this.suspendFromLifecycle("audio"));
   }
 
   private async handleAudioRestored(): Promise<void> {
+    if (this.backgroundPaused) return;
     await this.enqueueLifecycle(async () => {
       await this.wakeLock.reacquire();
       await this.resumeFromLifecycle();
@@ -2176,6 +2536,16 @@ export class SessionController {
   }
 
   private handleCaptureEnded(): void {
+    if (this.backgroundPaused) {
+      if (this.retainedResumeInFlight) {
+        this.retainedResumeCaptureEnded = true;
+        this.sessionGeneration++;
+        this.bumpLifecycleEpoch();
+        this.stopLocalMedia();
+        void this.live.disconnectImmediately("abandoned_connect").catch(() => console.error("Resume cleanup incomplete"));
+      }
+      return;
+    }
     const state = this.currentSession.state;
     if (state === "idle" || state === "ending" || state === "ended" || state === "error") {
       return;
@@ -2186,6 +2556,7 @@ export class SessionController {
     this.sessionGeneration += 1;
     this.clearIdleTimer();
     this.clearMaxSessionTimer();
+    this.retainedProductDeadlineAt = null;
     this.clearTurnEngineTimers();
     this.capturingContext = false;
     this.capturingBootstrap = false;
@@ -2229,6 +2600,7 @@ export class SessionController {
   }
 
   private async suspendFromLifecycle(reason: LifecycleSuspendReason): Promise<void> {
+    if (this.backgroundPaused) return;
     if (this.currentSession.state === "suspended") {
       if (this.recoveryPromptKind !== "resume-repeat") {
         this.lifecycleSuspendReason = reason;
@@ -2290,6 +2662,7 @@ export class SessionController {
   }
 
   private async resumeFromLifecycle(): Promise<void> {
+    if (this.backgroundPaused) return;
     if (this.currentSession.state !== "suspended") {
       return;
     }
@@ -2467,11 +2840,14 @@ export class SessionController {
   }
 
   private resetToIdle(options: { preserveOwnerError?: boolean } = {}): void {
+    this.retainedProductDeadlineAt = null;
     const preservedError =
       options.preserveOwnerError === true ? this.ownerErrorMessage : undefined;
     this.audio.setOutputAudible(false);
     this.audio.audioElement.srcObject = null;
     this.hasConnected = false;
+    this.backgroundPaused = false;
+    this.backgroundCloseWork = null;
     this.contextBuffer = "";
     this.bootstrapBuffer = "";
     this.ownerErrorMessage = preservedError;
@@ -2511,7 +2887,7 @@ export class SessionController {
     this.notify();
   }
 
-  private dispatch(action: SessionAction): void {
+  protected dispatch(action: SessionAction): void {
     const previousTurn = this.currentSession.activeTurn;
     this.currentSession = sessionReducer(this.currentSession, action);
     let completedTurnId: string | undefined;
@@ -2526,6 +2902,21 @@ export class SessionController {
       this.conversationMetrics.recordTechnicalOutcome(previousTurn.id, action.type === "SESSION_ERROR" ? "failed" : "discarded");
     }
     this.notify(completedTurnId);
+  }
+
+  /** Seed the new attempt before managed create so retained totals are a baseline, not a delta. */
+  private publishRetainedCounterBaseline(): void {
+    if (typeof this.live.observeProductMetrics !== "function") return;
+    const counters: MetricCounters = {};
+    const snapshot = this.conversationMetrics.snapshot();
+    for (const name of COUNTER_NAMES) {
+      const value = snapshot[name as keyof typeof snapshot];
+      if (typeof value === "number") counters[name] = value;
+    }
+    try {
+      this.live.observeProductMetrics({ atMs: performance.now(), visible: document.visibilityState !== "hidden" && !this.visibility.isHidden(),
+        state: "connecting", interpreterReady: false, mediaReady: false, speechEligible: false, counters });
+    } catch { console.error("Product measurement unavailable"); }
   }
 
   /** Observe facts only. These hooks never change product states, thresholds, or audio gates. */
@@ -2547,7 +2938,7 @@ export class SessionController {
     } catch { console.error("Product measurement unavailable"); }
   }
 
-  private notify(completedTurnId?: string): void {
+  protected notify(completedTurnId?: string): void {
     this.observeMetrics(completedTurnId);
     for (const listener of this.listeners) {
       listener();

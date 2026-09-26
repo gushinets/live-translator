@@ -1,10 +1,11 @@
 import type { Side } from "../conversation/Turn";
+import type { Ref } from "react";
 import { languageName } from "../side/SideResolver";
 
 /** Two separate speech samples establish the fixed language pair. */
 export function BootstrapPrompt({
   transcript, side, recording, languageA, languageB,
-  onRecord, onAccept, onBegin, actionsDisabled = false,
+  onRecord, onAccept, onBegin, actionsDisabled = false, primaryActionRef, repeatActionRef,
 }: {
   transcript: string;
   side: Side;
@@ -15,6 +16,8 @@ export function BootstrapPrompt({
   onAccept: () => void;
   onBegin: () => void;
   actionsDisabled?: boolean;
+  primaryActionRef?: Ref<HTMLButtonElement>;
+  repeatActionRef?: Ref<HTMLButtonElement>;
 }) {
   const ready = languageA !== undefined && languageB !== undefined;
   return (
@@ -42,13 +45,13 @@ export function BootstrapPrompt({
         </div>
       ) : !ready && recording ? <div className="bootstrap-waiting">Жду вашу фразу…</div> : null}
       <div className="bootstrap-actions">
-        <button className="setup-primary-action" type="button"
+        <button ref={primaryActionRef} className="setup-primary-action" type="button"
           disabled={actionsDisabled || (!ready && recording && transcript.trim().length === 0)}
           onClick={ready ? onBegin : recording ? onAccept : onRecord}>
           {ready ? "Начать разговор" : recording ? "Сохранить образец" : `Записать образец ${side}`}
         </button>
         {!ready && recording ? (
-          <button className="setup-secondary-action" type="button" disabled={actionsDisabled} onClick={onRecord}>
+          <button ref={repeatActionRef} className="setup-secondary-action" type="button" disabled={actionsDisabled} onClick={onRecord}>
             Записать заново
           </button>
         ) : null}

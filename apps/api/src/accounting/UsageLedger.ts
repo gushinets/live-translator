@@ -85,16 +85,16 @@ export class UsageLedger {
   private progressing(id: string, except = ""): boolean {
     return Boolean(this.db.prepare("SELECT 1 FROM live_sessions WHERE conversation_id=? AND state IN ('creating','active','closing') AND id<>? LIMIT 1").get(id, except));
   }
-  private insertAttempt(c: ConversationRow, id: string, mode: InitialMode, reason: AttemptInput["startReason"], resume?: { version: number; expires: number }): SessionRow {
+  private insertAttempt(c: ConversationRow, id: string, mode: InitialMode, reason: AttemptInput["startReason"], usageIdentityVersion?: 1, resume?: { version: number; expires: number }): SessionRow {
     const fence = this.db.prepare("SELECT conversation_id FROM live_session_recovery_fences WHERE id=?").get(id) as { conversation_id: string } | undefined;
     if (fence) {
       if (fence.conversation_id !== c.id) throw new LedgerError("attempt_conflict");
       throw new LedgerError("attempt_retired", 410);
     }
     const generation = Number(this.db.prepare("SELECT COALESCE(MAX(generation),0)+1 AS n FROM live_sessions WHERE conversation_id=?").get(c.id)!.n);
-    this.db.prepare(`INSERT INTO live_sessions(id,conversation_id,generation,state,initial_mode,start_reason,model,transport,prompt_version,app_version,creation_requested_at,resume_claimed_at,resume_claim_expires_at,resume_claim_version,resume_outcome)
-      VALUES(?,?,?,'creating',?,?,'gpt-live-1','webrtc','silent-pre-interpreter-v1',?,?,?,?,?,?)`)
-      .run(id, c.id, generation, mode, reason, c.app_version, this.now(), resume ? this.now() : null, resume?.expires ?? null, resume?.version ?? null, resume ? "pending" : null);
+    this.db.prepare(`INSERT INTO live_sessions(id,conversation_id,generation,state,initial_mode,start_reason,model,transport,prompt_version,app_version,creation_requested_at,resume_claimed_at,resume_claim_expires_at,resume_claim_version,resume_outcome,usage_identity_version)
+      VALUES(?,?,?,'creating',?,?,'gpt-live-1','webrtc','silent-pre-interpreter-v1',?,?,?,?,?,?,?)`)
+      .run(id, c.id, generation, mode, reason, c.app_version, this.now(), resume ? this.now() : null, resume?.expires ?? null, resume?.version ?? null, resume ? "pending" : null, usageIdentityVersion ?? null);
     return this.attempt(id);
   }
   registerAttempt(owner: string, input: AttemptInput): SessionRow {
@@ -112,12 +112,13 @@ export class UsageLedger {
           if (!this.validClaim(c, old, this.now()) || input.conversationVersion !== old.resume_claim_version) return new LedgerError("resume_not_activatable");
           this.updateAttempt(old.id, { request_fingerprint: input.fingerprint, request_conversation_version: input.conversationVersion });
         }
+        if (input.usageIdentityVersion === 1 && old.provider_request_dispatched_at === null) this.updateAttempt(old.id, { usage_identity_version: 1 });
         return this.attempt(old.id);
       }
       if (c.status === "ended") return new LedgerError("conversation_expired", 410);
       if (c.status !== "active" || c.version !== input.conversationVersion || input.startReason === "resume") return new LedgerError("conversation_version_conflict");
       if (this.progressing(c.id)) return new LedgerError("attempt_in_progress");
-      const row = this.insertAttempt(c, input.liveSessionId, input.initialMode, input.startReason);
+      const row = this.insertAttempt(c, input.liveSessionId, input.initialMode, input.startReason, input.usageIdentityVersion);
       this.updateAttempt(row.id, { request_fingerprint: input.fingerprint, request_conversation_version: input.conversationVersion });
       return this.attempt(row.id);
     });
@@ -261,9 +262,11 @@ export class UsageLedger {
     });
   }
   /** One commit for the whole report; close uses the same primitive as PR-2 observers. */
-  recordUsage(owner: string, id: string, report: UsageReport, source: ObservationSource = "browser") {
+  recordUsage(owner: string, id: string, conversationId: string | undefined, report: UsageReport, source: ObservationSource = "browser") {
     return this.atomic(() => {
       let row = this.ownedAttempt(owner, id);
+      if (conversationId === undefined && row.usage_identity_version === 1) throw new LedgerError("invalid_request", 400);
+      if (conversationId !== undefined && row.conversation_id !== conversationId) throw new LedgerError("not_found", 404);
       const now = this.now();
       if (row.provider_request_dispatched_at !== null && row.state !== "failed") {
         this.updateAttempt(id, mergeUsage(row, { checkpointSeconds: report.checkpointSeconds }, source, now));
@@ -365,20 +368,21 @@ export class UsageLedger {
       return this.conversation(id);
     });
   }
-  claimResume(owner: string, id: string, version: number, attemptId: string, mode: InitialMode): { conversation: ConversationRow; attempt: SessionRow } {
+  claimResume(owner: string, id: string, version: number, attemptId: string, mode: InitialMode, usageIdentityVersion?: 1): { conversation: ConversationRow; attempt: SessionRow } {
     return this.atomic(() => {
       this.owned(owner, id); this.expireConversationInternal(id, this.now()); const c = this.conversation(id);
       const old = this.db.prepare("SELECT * FROM live_sessions WHERE id=?").get(attemptId) as unknown as SessionRow | undefined;
       if (old) {
         this.ownedAttempt(owner, attemptId);
         if (old.conversation_id !== id || old.start_reason !== "resume" || old.resume_claim_version !== version + 1 || old.initial_mode !== mode) return new LedgerError("resume_claim_conflict");
-        return { conversation: c, attempt: old };
+        if (usageIdentityVersion === 1 && old.provider_request_dispatched_at === null) this.updateAttempt(attemptId, { usage_identity_version: 1 });
+        return { conversation: c, attempt: this.attempt(attemptId) };
       }
       if (c.status === "ended") return new LedgerError("conversation_expired", 410);
       if (c.status !== "paused" || c.version !== version) return new LedgerError("conversation_version_conflict");
       if (this.progressing(id)) return new LedgerError("attempt_in_progress");
       const expires = Math.min(c.resume_expires_at!, c.product_deadline_at ?? Infinity, this.now() + this.policyFor(c).resumeClaimTimeoutMs);
-      const s = this.insertAttempt(c, attemptId, mode, "resume", { version: version + 1, expires });
+      const s = this.insertAttempt(c, attemptId, mode, "resume", usageIdentityVersion, { version: version + 1, expires });
       this.updateConversation(id, { status: "resuming", version: version + 1, resume_attempt_id: attemptId }); return { conversation: this.conversation(id), attempt: s };
     });
   }

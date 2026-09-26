@@ -96,6 +96,10 @@ class FakeLive {
   }
 }
 
+function fakeRemoteStream(id: string): MediaStream {
+  return { id, getAudioTracks: () => [{ readyState: "live", addEventListener: vi.fn() }] } as unknown as MediaStream;
+}
+
 function createFakeAudio() {
   const captureTrack = {
     kind: "audio",
@@ -745,7 +749,7 @@ describe("SessionController", () => {
 
   it("plays the primed remote audio element when the stream attaches", async () => {
     const { controller, audio } = createController();
-    const remoteStream = { id: "remote" } as MediaStream;
+    const remoteStream = fakeRemoteStream("remote");
 
     controller.handleRemoteStream(remoteStream, controllerHarnesses.get(controller)!.live as unknown as LiveClient);
 
@@ -755,7 +759,7 @@ describe("SessionController", () => {
 
   it("logs a remote audio play failure without leaking an unhandled rejection", async () => {
     const { controller, audio } = createController();
-    const remoteStream = { id: "remote" } as MediaStream;
+    const remoteStream = fakeRemoteStream("remote");
     const playError = new Error("autoplay blocked");
     audio.audioElement.play = vi.fn(async () => {
       throw playError;
@@ -767,14 +771,14 @@ describe("SessionController", () => {
     });
 
     expect(unhandled).toEqual([]);
-    expect(consoleError).toHaveBeenCalledExactlyOnceWith("Remote audio play failed", {
+    expect(consoleError).toHaveBeenCalledExactlyOnceWith("Remote audio playback failed", {
       error: playError,
     });
   });
 
   it("ignores stale remote audio play failure after reset", async () => {
     const { controller, audio } = createController();
-    const remoteStream = { id: "remote" } as MediaStream;
+    const remoteStream = fakeRemoteStream("remote");
     const playError = new Error("late autoplay block");
     let rejectPlay: ((error: Error) => void) | undefined;
     audio.audioElement.play = vi.fn(
@@ -1539,7 +1543,7 @@ describe("SessionController turn engine", () => {
     vi.spyOn(console, "error").mockImplementation(() => {});
 
     await enterListening(controller);
-    controller.handleRemoteStream({ id: "remote" } as MediaStream, controllerHarnesses.get(controller)!.live as unknown as LiveClient);
+    controller.handleRemoteStream(fakeRemoteStream("remote"), controllerHarnesses.get(controller)!.live as unknown as LiveClient);
     await flushMicrotasks();
 
     emitVoice(audio, true);
@@ -1592,7 +1596,7 @@ describe("SessionController turn engine", () => {
     );
 
     await enterListening(controller);
-    controller.handleRemoteStream({ id: "remote" } as MediaStream, controllerHarnesses.get(controller)!.live as unknown as LiveClient);
+    controller.handleRemoteStream(fakeRemoteStream("remote"), controllerHarnesses.get(controller)!.live as unknown as LiveClient);
     emitVoice(audio, true);
     live.emit({ type: "session.input_transcript.delta", delta: "Hello, where is the nearest train station?" });
     live.emit({ type: "session.output_transcript.delta", delta: "Hola" });
@@ -4729,9 +4733,9 @@ describe("stage 4 product retirement safety", () => {
     const { controller, audio } = createController({ lives: [first, second] });
     await controller.startBootstrap(); await controller.startBootstrap();
     const attach = controller.handleRemoteStream.bind(controller) as (stream: MediaStream, source: LiveClient) => void;
-    attach({ id: "stale" } as MediaStream, first as unknown as LiveClient);
+    attach(fakeRemoteStream("stale"), first as unknown as LiveClient);
     expect(audio.attachRemoteStream).not.toHaveBeenCalled();
-    const stream = { id: "current" } as MediaStream;
+    const stream = fakeRemoteStream("current");
     attach(stream, second as unknown as LiveClient);
     expect(audio.attachRemoteStream).toHaveBeenCalledExactlyOnceWith(stream);
   });
@@ -4785,9 +4789,9 @@ describe("stage 4 product retirement safety", () => {
     const { controller, audio } = createController({ lives: [old, next] }); await controller.startBootstrap();
     let resolve!: () => void, reject!: (error: Error) => void;
     vi.mocked(audio.audioElement.play).mockReturnValueOnce(new Promise<void>((ok, fail) => { resolve = ok; reject = fail; }));
-    controller.handleRemoteStream({ id: "old" } as MediaStream, old as unknown as LiveClient);
+    controller.handleRemoteStream(fakeRemoteStream("old"), old as unknown as LiveClient);
     await controller.startBootstrap();
-    controller.handleRemoteStream({ id: "new" } as MediaStream, next as unknown as LiveClient);
+    controller.handleRemoteStream(fakeRemoteStream("new"), next as unknown as LiveClient);
     await flushMicrotasks();
     const readiness = () => (controller as unknown as { remotePlaybackState: string }).remotePlaybackState;
     expect(readiness()).toBe("ready");

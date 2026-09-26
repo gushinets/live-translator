@@ -27,6 +27,7 @@ test("ledger-enabled browser retains final metadata across an HTTP outage withou
     const id = match[1], action = match[2], row = attempts.get(id);
     if (!row) return json({ code: "not_found" }, 404);
     if (action === "usage") {
+      expect(body.conversationId).toBe(conversationId);
       if (blockUsage) return json({ code: "simulated_outage" }, 503);
       received.push({ id, body });
       const app = body.app as { activityReportSeq: number; appMetricsFinalized: boolean } | undefined;

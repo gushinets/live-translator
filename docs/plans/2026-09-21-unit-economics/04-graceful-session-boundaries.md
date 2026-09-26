@@ -1,6 +1,6 @@
 # PR 4 — безопасное закрытие и границы replacement
 
-**Статус:** `in-progress`, [PR #19](https://github.com/gushinets/live-translator/pull/19); baseline — merged #18, `be8d78f7cc02870d9d405e627db9305806d64eda`.\
+**Статус:** `completed`, merged [PR #19](https://github.com/gushinets/live-translator/pull/19) с follow-up [#20](https://github.com/gushinets/live-translator/pull/20); baseline — merged #18, `be8d78f7cc02870d9d405e627db9305806d64eda`.\
 **Зависимости:** Зависит от PR 3: до изменения lifecycle уже должен работать independent accounting sink.  
 **Спецификация:** [v1.1](../../specs/2026-09-21-unit-economics-and-session-lifecycle.md).\
 **Общие ограничения и проверки:** [README плана](README.md).

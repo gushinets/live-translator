@@ -233,7 +233,9 @@ test("calibration validates samples and is usable with the keyboard on a phone v
   await harness.inputDelta("OK");
   await save.click();
   await expect(page.getByRole("alert")).toContainText("полное предложение");
+  const firstPeer = await harness.peerCreateCount();
   await page.getByRole("button", { name: "Записать заново" }).click();
+  await expect.poll(() => harness.peerCreateCount()).toBeGreaterThan(firstPeer);
   await expect(page.getByText("Слушаю участника A")).toBeVisible();
   await harness.inputDelta("Я говорю по-русски и хочу узнать дорогу к вокзалу.");
   await expect(save).toBeEnabled();
@@ -247,7 +249,9 @@ test("calibration validates samples and is usable with the keyboard on a phone v
   await harness.inputDelta("Я снова говорю по-русски и хочу узнать дорогу к вокзалу.");
   await save.click();
   await expect(page.getByRole("alert")).toContainText("тот же язык");
+  const previousPeer = await harness.peerCreateCount();
   await page.getByRole("button", { name: "Записать заново" }).click();
+  await expect.poll(() => harness.peerCreateCount()).toBeGreaterThan(previousPeer);
   await expect(page.getByText("Слушаю участника B")).toBeVisible();
   await harness.inputDelta("I speak English and would like to find the nearest station.");
   await save.click();

@@ -9,9 +9,12 @@ export function createUsageRouter(runtime: LedgerRuntime, identity: AnonymousIde
   const router = Router();
   router.put("/:localId/usage", requireOrigin(webOrigin), (req, res) => {
     const owner = identity.require(req), id = uuidSchema.parse(req.params.localId);
-    const report = parseBody(usageReportSchema, req.body);
+    const body = req.body && typeof req.body === "object" && !Array.isArray(req.body) ? req.body as Record<string, unknown> : {};
+    const { conversationId: rawConversationId, ...metadata } = body;
+    const conversationId = rawConversationId === undefined ? undefined : parseBody(uuidSchema, rawConversationId);
+    const report = parseBody(usageReportSchema, metadata);
     // Provenance comes from this ingestion path, never from the request body.
-    const result = runtime.ledger.recordUsage(owner, id, report, "browser");
+    const result = runtime.ledger.recordUsage(owner, id, conversationId, report, "browser");
     runtime.syncAdmission(); runtime.wake(); identity.renew(res, owner);
     res.json({ ...publicAttempt(result.row), schemaVersion: 1, appAccepted: result.appAccepted,
       appRejection: result.appRejection, activityReportSeq: result.row.activity_report_seq,

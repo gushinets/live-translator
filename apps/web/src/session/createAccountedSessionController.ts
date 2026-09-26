@@ -4,8 +4,14 @@ import { BackendClient } from "../api/BackendClient";
 import { AudioController } from "../audio/AudioController";
 import { LiveClient, type LiveCloseResult, type LiveClientDeps } from "../live/LiveClient";
 import { SessionController, type SessionControllerDeps } from "./SessionController";
+import { AccountingRequestError, type ConversationMetadata, type ResumeAbortReason } from "../api/AccountingBackend";
 import { ConversationAccounting, type ProviderAccounting } from "./ConversationAccounting";
 import type { CleanupReason } from "./MetadataDeliveryBudget";
+import { ResumeSnapshotStore, type ResumeSnapshotInput } from "./ResumeSnapshotStore";
+
+const DEFINITIVE_PRECLAIM_CODES = new Set(["invalid_request", "unexpected_origin", "identity_required",
+  "not_found", "conversation_expired", "conversation_version_conflict", "attempt_in_progress",
+  "resume_claim_conflict", "attempt_retired"]);
 
 /** Materialize the attempt at connect, not when resetToIdle preallocates its next LiveClient. */
 class LazyAccounting implements NonNullable<LiveClientDeps["accounting"]> {
@@ -29,16 +35,678 @@ class LazyAccounting implements NonNullable<LiveClientDeps["accounting"]> {
   async abandon(reason: CleanupReason) { this.cancelled = true; await this.attempt?.abandon(reason); }
 }
 export class AccountedSessionController extends SessionController {
-  constructor(deps: SessionControllerDeps, private readonly accounting: ConversationAccounting) { super(deps); }
-  get conversationId() { return this.accounting.conversationId; }
-  protected override prepareConversationRetirement(reason: "user_end" | "setup_cancel"): Promise<void> {
-    return this.accounting.stageEnd(reason, this.accounting.revision);
+  private startWork: Promise<void> | null = null;
+  private startGeneration = 0;
+  private hiddenDuringStart = false;
+  private disposed = false;
+  private resumeWork: Promise<void> | null = null;
+  private recoveryProbe: Promise<void> | null = null;
+  private verificationWork: Promise<void> | null = null;
+  private recoveryChecking = false;
+  private started = false;
+  private resumeFailed = false;
+  private retainedActive = false;
+  private pendingEnd = false;
+  private noProviderEndPending = false;
+  private pendingClaim = false;
+  private hiddenPausePending = false;
+  private unresolvedCreate = false;
+  private recoveryBlocked = false;
+  private startUnavailable = false;
+  private storageUnavailable = false;
+  private ownershipUnavailable = false;
+  private retainedEndWork: Promise<void> | null = null;
+  constructor(deps: SessionControllerDeps, private readonly accounting: ConversationAccounting,
+    private readonly snapshotStore: Promise<ResumeSnapshotStore> = ResumeSnapshotStore.open()) {
+    super(deps);
+    this.accounting.setSnapshotStore(this.snapshotStore);
+    void this.snapshotStore.catch(() => undefined);
   }
-  protected override finishConversationRetirement(reason: "user_end" | "setup_cancel"): Promise<void> {
-    return this.accounting.end(reason, this.accounting.revision);
+  start(): void {
+    if (this.started) return;
+    this.started = true;
+    this.startEarlyVisibility();
+    this.recoveryChecking = true;
+    this.notify();
+    const probe = (async () => {
+      let knownRetained = false, hasDurableEnd: boolean | null = null;
+      try {
+        hasDurableEnd = (await this.accounting.budget.ends()).length > 0;
+        if (hasDurableEnd) {
+          const store = await this.snapshotStore;
+          if (!store.ownsDocument && store.noProviderEnd()) this.noProviderEndPending = true;
+          else if (!store.ownsDocument && store.hasRetainedIdentity()) this.ownershipUnavailable = true;
+          else this.pendingEnd = true;
+          return;
+        }
+        const store = await this.snapshotStore;
+        if (store.hasPendingCreate()) { this.unresolvedCreate = true; return; }
+        knownRetained = store.hasRetainedIdentity();
+        if (!knownRetained) return;
+        if (!store.ownsDocument && store.noProviderEnd()) { this.noProviderEndPending = true; return; }
+        if (!store.ownsDocument) { this.ownershipUnavailable = true; return; }
+        const result = await store.inspectReload(id => this.accounting.api.readConversation(id) as Promise<ConversationMetadata>);
+        if (result?.kind === "paused" || result?.kind === "pending") this.adoptRetainedPause();
+        if (result?.kind === "pending") this.pendingClaim = true;
+        if (result?.kind === "active") this.retainedActive = true;
+      } catch (error) {
+        if (hasDurableEnd !== false) { this.storageUnavailable = true; return; }
+        await this.accounting.loadPolicy();
+        if (!this.backgroundCloseEnabled && !knownRetained) return;
+        if (!knownRetained) { this.storageUnavailable = true; return; }
+        throw error;
+      }
+    })().catch(error => {
+      this.recoveryBlocked = true;
+      console.error("Retained conversation inspection failed", { error });
+    }).finally(() => {
+      this.recoveryChecking = false;
+      if (this.recoveryProbe === probe) this.recoveryProbe = null;
+      this.notify();
+    });
+    this.recoveryProbe = probe;
+  }
+  get retainedRecoveryState(): "checking" | "paused" | "resuming" | "ending" | "failed" | "active" | "pending_end" | "no_provider_end" | "pending_claim" | "blocked" | "unresolved_create" | "unavailable" | "storage_unavailable" | "ownership_unavailable" | undefined {
+    if (this.retainedEndWork || this.session.state === "ending") return "ending";
+    if (this.recoveryChecking || this.verificationWork) return "checking";
+    if (this.resumeWork) return "resuming";
+    if (this.storageUnavailable) return "storage_unavailable";
+    if (this.noProviderEndPending) return "no_provider_end";
+    if (this.ownershipUnavailable) return "ownership_unavailable";
+    if (this.pendingEnd) return "pending_end";
+    if (this.unresolvedCreate) return "unresolved_create";
+    if (this.retainedActive) return "active";
+    if (this.recoveryBlocked) return "blocked";
+    if (this.pendingClaim) return "pending_claim";
+    if (this.resumeFailed) return "failed";
+    if (this.startUnavailable) return "unavailable";
+    return this.retainedPaused ? "paused" : undefined;
+  }
+  verifyRetainedConversation(): Promise<void> {
+    if (this.verificationWork) return this.verificationWork;
+    const work = (async () => {
+      try { await this.runRecoveryVerification(); }
+      catch (error) { this.recoveryBlocked = true; throw error; }
+      finally {
+        this.verificationWork = null;
+        this.notify();
+      }
+    })();
+    this.verificationWork = work;
+    this.notify();
+    return work;
+  }
+  private async runRecoveryVerification(): Promise<void> {
+    await this.recoveryProbe;
+    if (this.unresolvedCreate) throw new Error("Retained conversation create remains unresolved");
+    const store = await this.snapshotStore;
+    if (!store.ownsDocument && store.noProviderEnd()) {
+      await this.verifyNoProviderEnd(store);
+      return;
+    }
+    if (!store.ownsDocument && store.hasRetainedIdentity()) throw new Error("Retained conversation ownership unavailable");
+    await this.accounting.outbox.flush();
+    this.pendingEnd = (await this.accounting.budget.ends()).length > 0;
+    if (this.pendingEnd) return;
+    if (!store.hasRetainedIdentity()) {
+      if (this.accounting.conversationId) throw new Error("Retained conversation identity is unavailable");
+      this.recoveryBlocked = false;
+      this.retainedActive = false;
+      this.pendingClaim = false;
+      this.resumeFailed = false;
+      if (this.retainedPaused) this.clearRetainedAfterEnd();
+      return;
+    }
+    const result = await store.inspectReload(id => this.accounting.api.readConversation(id) as Promise<ConversationMetadata>,
+      ended => this.accounting.confirmRecoveredEnd(ended));
+    this.accounting.reconcileRetained(result);
+    this.recoveryBlocked = false;
+    this.retainedActive = result?.kind === "active";
+    this.pendingClaim = result?.kind === "pending";
+    if (result?.kind === "paused" || result?.kind === "pending") this.adoptRetainedPause();
+    if (!result) {
+      this.resumeFailed = false;
+      if (this.retainedPaused) this.clearRetainedAfterEnd();
+    }
+  }
+  private async verifyNoProviderEnd(store: ResumeSnapshotStore): Promise<void> {
+    const proof = store.noProviderEnd();
+    if (!proof) throw new Error("No-provider End identity unavailable");
+    const ends = await this.accounting.budget.ends();
+    if (ends.some(intent => intent.conversationId !== proof.conversationId ||
+      intent.expectedVersion !== proof.expectedVersion || intent.reason !== proof.reason ||
+      (intent.cleanupLocalIds?.length ?? 0) !== 0))
+      throw new Error("No-provider End intent does not match retained identity");
+    if (ends.length) await this.accounting.outbox.flush();
+    const remaining = await this.accounting.budget.ends();
+    if (remaining.length) {
+      this.noProviderEndPending = true;
+      return;
+    }
+    const ended = await this.accounting.api.readConversation(proof.conversationId) as ConversationMetadata;
+    if (ended.conversationId !== proof.conversationId || ended.status !== "ended" ||
+      ended.version !== proof.expectedVersion + 1 || ended.policy.policyVersion !== proof.policyVersion ||
+      !ended.policy.backgroundSessionCloseEnabled || !Number.isSafeInteger(ended.serverTime) || ended.serverTime <= 0)
+      throw new Error("No-provider End was not confirmed");
+    this.accounting.confirmRecoveredEnd(ended);
+    await store.discard(proof.conversationId);
+    this.noProviderEndPending = false;
+    this.pendingEnd = false;
+    this.recoveryBlocked = false;
+    this.startUnavailable = true;
+  }
+  async dispose(): Promise<void> {
+    this.disposed = true;
+    this.invalidatePendingStart();
+    this.fenceRetainedResumeForDisposal();
+    this.stopEarlyVisibility();
+    try {
+      await this.resumeWork?.catch(() => undefined);
+      await this.awaitBackgroundPause();
+      this.accounting.beginBackgroundPause();
+      if (this.accounting.conversationId || this.accounting.isCreating) {
+        let store: ResumeSnapshotStore | undefined;
+        try {
+          store = await this.snapshotStore;
+          if (this.accounting.isCreating && !this.accounting.conversationId) store.retainPendingCreate();
+        } catch { console.error("Conversation identity storage unavailable during disposal"); }
+        const conversation = await this.accounting.pendingConversation();
+        if (!conversation) return;
+        const id = conversation.conversationId;
+        // ponytail: if both local stores reject writes and End fails, crash recovery needs an owner-scoped server lookup.
+        try { store?.retainIdentity(id, conversation.version); }
+        catch { console.error("Conversation identity storage unavailable during disposal"); }
+        if (conversation.status === "paused") return;
+        if (this.session.state === "idle" || this.session.state === "ended")
+          await this.accounting.end("setup_cancel", this.accounting.revision);
+        else await this.endConversation();
+        try { store?.retainIdentity(id, conversation.version); }
+        catch { console.error("Conversation identity storage unavailable during disposal"); }
+        await this.accounting.outbox.flush();
+        const ended = await this.accounting.api.readConversation(id);
+        if (typeof ended !== "object" || ended === null || !("status" in ended) || ended.status !== "ended")
+          throw new Error("Conversation End was not confirmed during disposal");
+        await store?.discard(id);
+        return;
+      }
+      for (const intent of await this.accounting.budget.ends()) {
+        let store: ResumeSnapshotStore | undefined;
+        try {
+          store = await this.snapshotStore;
+          store.retainIdentity(intent.conversationId, intent.expectedVersion);
+        } catch { console.error("Conversation identity storage unavailable during disposal"); }
+        await this.accounting.outbox.flush();
+        const ended = await this.accounting.api.readConversation(intent.conversationId);
+        if (typeof ended !== "object" || ended === null || !("status" in ended) || ended.status !== "ended")
+          throw new Error("Conversation End was not confirmed during disposal");
+        await store?.discard(intent.conversationId);
+      }
+    } finally {
+      this.accounting.outbox.stop();
+      this.accounting.usageOutbox?.stop();
+      await this.snapshotStore.then(store => store.dispose(), () => undefined);
+    }
+  }
+  get conversationId() { return this.accounting.conversationId; }
+  protected override get backgroundCloseEnabled() { return this.accounting.backgroundSessionCloseEnabled; }
+  protected override clearIdleBackgroundPause() { return this.accounting.clearIdleBackgroundPause(); }
+  protected override async resumeBackground(): Promise<void> {
+    if (this.resumeFailed) return;
+    try { await this.resumeRetainedConversation(false); }
+    catch (error) { console.error("Retained conversation resume failed", { error }); }
+  }
+  async resumeRetainedConversation(explicit = true): Promise<void> {
+    if (this.ownershipUnavailable) throw new Error("Retained conversation ownership unavailable");
+    if (this.pendingEnd || this.recoveryBlocked || this.unresolvedCreate) throw new Error("Retained conversation requires verification");
+    if (this.retainedEndWork) return this.retainedEndWork;
+    if (this.resumeWork) return this.resumeWork;
+    const primedOutput = explicit ? this.beginOutputPriming() : undefined;
+    if (explicit) { this.resumeFailed = false; this.pendingClaim = false; }
+    const ownsFence = explicit && this.beginRetainedResume();
+    const work = (async () => {
+      await this.recoveryProbe;
+      await this.runRetainedResume(explicit, primedOutput);
+    })();
+    this.resumeWork = work;
+    this.notify();
+    try { await work; }
+    catch (error) {
+      if (explicit || this.retainedPaused && document.visibilityState !== "hidden") this.resumeFailed = true;
+      throw error;
+    }
+    finally {
+      if (this.resumeWork === work) this.resumeWork = null;
+      if (ownsFence) this.finishRetainedResume();
+      this.notify();
+    }
+  }
+  override endConversation(): Promise<void> {
+    this.invalidatePendingStart();
+    if (this.ownershipUnavailable) return Promise.reject(new Error("Retained conversation ownership unavailable"));
+    if (this.unresolvedCreate) return Promise.reject(new Error("Retained conversation create remains unresolved"));
+    if (this.retainedEndWork) return this.retainedEndWork;
+    const unconfirmedPause = this.retainedPaused && !this.hiddenPausePending && this.accounting.conversationStatus === "active";
+    if (!this.resumeWork && !unconfirmedPause && ((this.accounting.conversationId &&
+      this.accounting.conversationStatus !== "resuming" && !this.resumeFailed &&
+      !this.recoveryBlocked && !this.pendingEnd) ||
+      !this.retainedPaused && !this.retainedActive && !this.resumeFailed && !this.recoveryChecking &&
+      !this.pendingEnd && !this.pendingClaim && !this.recoveryBlocked))
+      return super.endConversation();
+    const resume = this.resumeWork;
+    if (resume) this.fenceRetainedRecoveryForEnd();
+    const work = (async () => {
+      try {
+        await resume?.catch(() => undefined);
+        await this.runRetainedEnd();
+      } catch (error) {
+        this.recoveryBlocked = true;
+        this.retainedActive = false;
+        throw error;
+      } finally {
+        this.retainedEndWork = null;
+        this.notify();
+      }
+    })();
+    this.retainedEndWork = work;
+    if ((resume || this.retainedPaused) && !["idle", "ended", "ending"].includes(this.session.state)) this.dispatch({ type: "END" });
+    this.notify();
+    return work;
+  }
+  private async runRetainedEnd(): Promise<void> {
+    await this.recoveryProbe;
+    await this.awaitBackgroundPause();
+    const store = await this.snapshotStore;
+    if (this.pendingEnd) { await this.runRecoveryVerification(); if (this.pendingEnd) return; }
+    const retainedId = store.retainedConversationId();
+    if (retainedId) {
+      if (!store.ownsDocument) throw new Error("Retained conversation ownership unavailable");
+      // A server read can safely End an expired/corrupt snapshot without claiming or restoring it.
+      const conversation = await this.accounting.api.readConversation(retainedId) as ConversationMetadata;
+      if (conversation.conversationId !== retainedId || !Number.isSafeInteger(conversation.version) ||
+        conversation.version < store.retainedConversationVersion() || !["active", "paused", "resuming", "ended"].includes(conversation.status))
+        throw new Error("Retained conversation status unavailable");
+      if (conversation.status === "ended") {
+        this.accounting.confirmRecoveredEnd(conversation);
+        await store.discard(retainedId);
+      }
+      else {
+        const local = await this.accounting.pendingConversation();
+        if (local) {
+          if (local.status === "active" && conversation.status === "paused")
+            this.accounting.confirmRecoveredPause(conversation);
+          else if (local.status === "paused" && conversation.status === "resuming") {
+            if (store.retainedConversationVersion() !== local.version || local.conversationId !== retainedId ||
+              !conversation.resumeAttemptId) throw new Error("Retained End claim changed");
+            const receipt = await this.accounting.api.readAttempt(conversation.resumeAttemptId);
+            if (receipt.liveSessionId !== conversation.resumeAttemptId || receipt.startReason !== "resume" ||
+              receipt.conversation.conversationId !== retainedId ||
+              receipt.conversation.version !== conversation.version || receipt.conversation.status !== "resuming" ||
+              receipt.conversation.resumeAttemptId !== conversation.resumeAttemptId ||
+              receipt.conversation.policy.policyVersion !== conversation.policy.policyVersion ||
+              receipt.conversation.productDeadlineAt !== conversation.productDeadlineAt ||
+              receipt.conversation.resumeExpiresAt !== conversation.resumeExpiresAt ||
+              receipt.resumeClaimVersion !== conversation.version || receipt.resumeOutcome !== "pending" ||
+              receipt.resumeClaimExpiresAt == null || !Number.isSafeInteger(receipt.resumeClaimExpiresAt) ||
+              receipt.resumeClaimExpiresAt <= conversation.serverTime ||
+              receipt.resumeClaimExpiresAt > conversation.resumeExpiresAt! ||
+              (conversation.productDeadlineAt !== null && receipt.resumeClaimExpiresAt > conversation.productDeadlineAt))
+              throw new Error("Retained End claim changed");
+            this.accounting.confirmRecoveredClaimForEnd(conversation);
+          } else if (local.status === "paused" && conversation.status === "paused" &&
+            conversation.version === local.version + 2) {
+            let inspected;
+            try { inspected = await store.inspectReload(id => this.accounting.api.readConversation(id) as Promise<ConversationMetadata>); }
+            catch (error) {
+              // Expired private snapshot content is purged; the owner-scoped paused ledger row can still prove End's version.
+              if (!(error instanceof Error && ["Retained conversation snapshot unavailable",
+                "Retained conversation is not eligible for automatic resume"].includes(error.message))) throw error;
+            }
+            if (inspected) {
+              if (inspected.kind !== "pending" || inspected.conversation.status !== "paused" ||
+                inspected.conversation.version !== conversation.version ||
+                inspected.snapshot.conversationVersion !== local.version || !inspected.snapshot.resumeAttemptId)
+                throw new Error("Retained End claim changed");
+              const id = inspected.snapshot.resumeAttemptId;
+              const receipt = await this.accounting.api.readAttempt(id);
+              if (receipt.liveSessionId !== id || receipt.conversation.conversationId !== conversation.conversationId ||
+                receipt.conversation.version !== conversation.version || receipt.conversation.status !== "paused" ||
+                receipt.conversation.resumeAttemptId !== null || receipt.resumeClaimVersion !== local.version + 1 ||
+                !["aborted", "expired"].includes(receipt.resumeOutcome ?? "") ||
+                !["failed", "closed"].includes(receipt.state ?? "") || receipt.cleanupRequestedAt == null)
+                throw new Error("Recovered resume cleanup is still pending");
+            } else if (store.retainedConversationVersion() !== local.version || local.conversationId !== retainedId)
+              throw new Error("Retained End version changed");
+            this.accounting.confirmRecoveredSettledClaim(conversation);
+          }
+          if (local.status === "resuming" && conversation.status === "active")
+            await store.confirmResume(conversation, this.accounting.confirmRecoveredCompletion(conversation));
+          else if (local.status === "resuming" && conversation.status === "paused")
+            await this.accounting.reconcileRecoveredAbort(conversation);
+          else {
+            const reconciled = await this.accounting.pendingConversation();
+            if (reconciled?.conversationId !== conversation.conversationId || reconciled.version !== conversation.version ||
+              reconciled.status !== conversation.status) throw new Error("Retained End version changed");
+          }
+        } else this.accounting.adoptRetained(conversation);
+        await this.accounting.stageEnd("user_end", this.accounting.revision);
+        await this.accounting.end("user_end", this.accounting.revision);
+        await this.accounting.outbox.flush();
+        await store.inspectReload(id => this.accounting.api.readConversation(id) as Promise<ConversationMetadata>);
+      }
+    } else if (this.accounting.conversationId) {
+      const conversation = await this.accounting.api.readConversation(this.accounting.conversationId) as ConversationMetadata;
+      this.accounting.confirmRecoveredEnd(conversation);
+    }
+    this.pendingEnd = (await this.accounting.budget.ends()).length > 0;
+    if (this.pendingEnd || store.hasRetainedIdentity()) throw new Error("Conversation End is not confirmed");
+    this.retainedActive = false;
+    this.resumeFailed = false;
+    this.recoveryBlocked = false;
+    this.pendingClaim = false;
+    this.clearRetainedAfterEnd();
+  }
+  private pausedOrUnloaded(): boolean {
+    return this.accounting.conversationStatus === null || this.accounting.conversationStatus === "paused";
+  }
+  private async runRetainedResume(explicit: boolean, primedOutput?: Promise<void>): Promise<void> {
+    if (this.retainedActive) throw new Error("Active retained conversation must be ended before a new conversation");
+    if (explicit && this.session.state === "idle" && this.accounting.conversationStatus === null) {
+      const store = await this.snapshotStore;
+      const result = await store.inspectReload(id => this.accounting.api.readConversation(id) as Promise<ConversationMetadata>);
+      if (!result || result.kind === "active") throw new Error("Retained conversation requires explicit End");
+      this.adoptRetainedPause();
+    }
+    const generation = this.backgroundResumeGeneration;
+    await this.awaitBackgroundPause();
+    if (!this.backgroundResumeCurrent(generation)) return;
+    const store = await this.snapshotStore;
+    let inspected = await store.inspectReload(id => this.accounting.api.readConversation(id) as Promise<ConversationMetadata>);
+    this.accounting.reconcileRetained(inspected);
+    const reconciling = explicit && this.accounting.conversationStatus === "resuming";
+    if (!this.pausedOrUnloaded() && !reconciling) return;
+    if (reconciling && inspected?.kind !== "pending")
+      throw new Error("Retained resume claim requires explicit recovery");
+    if (inspected?.kind === "pending" && explicit) {
+      const { snapshot, conversation } = inspected;
+      const alreadySettled = conversation.status === "paused";
+      const attemptId = snapshot.resumeAttemptId!;
+      const claimVersion = snapshot.conversationVersion + 1;
+      const reason = "interrupted_by_restart";
+      let aborted: ConversationMetadata = conversation;
+      if (!alreadySettled) {
+        try { aborted = await this.accounting.api.abortResume(conversation.conversationId, claimVersion, attemptId, reason); }
+        catch (error) {
+          aborted = await this.accounting.api.abortResume(conversation.conversationId, claimVersion, attemptId, reason)
+            .catch(() => { throw error; });
+        }
+      }
+      if (aborted.conversationId !== conversation.conversationId || aborted.version < claimVersion + 1 ||
+        !["paused", "ended"].includes(aborted.status) || aborted.resumeAttemptId !== null)
+        throw new Error("Previous resume abort was not confirmed");
+      const receipt = await this.accounting.api.readAttempt(attemptId);
+      if (receipt.liveSessionId !== attemptId || receipt.conversation.conversationId !== conversation.conversationId ||
+        alreadySettled && (!["aborted", "expired"].includes(receipt.resumeOutcome ?? "") ||
+          receipt.resumeClaimVersion !== claimVersion) ||
+        !["failed", "closed"].includes(receipt.state ?? "") || receipt.cleanupRequestedAt == null)
+        throw new Error("Previous resume cleanup is still pending");
+      if (aborted.status === "paused") {
+        if (this.accounting.conversationStatus === "resuming") this.accounting.confirmRecoveredAbort(aborted, attemptId);
+        await store.confirmPause(aborted);
+        await store.clearResumeAttempt(conversation.conversationId, attemptId);
+      }
+      inspected = await store.inspectReload(id => this.accounting.api.readConversation(id) as Promise<ConversationMetadata>);
+    }
+    if (!inspected && !store.hasRetainedIdentity()) {
+      if (this.accounting.conversationId) {
+        this.recoveryBlocked = true;
+        throw new Error("Retained conversation identity is unavailable");
+      }
+      this.accounting.clearIdleBackgroundPause();
+      this.resumeFailed = false;
+      this.clearRetainedAfterEnd();
+      return;
+    }
+    if (!inspected || inspected.kind === "active" || inspected.kind === "pending") {
+      if (explicit && inspected) throw new Error("Retained conversation status requires explicit recovery");
+      return;
+    }
+    if (!this.backgroundResumeCurrent(generation)) return;
+    const { snapshot, conversation } = inspected;
+    if (snapshot.resumeAttemptId !== null && !explicit) return;
+    const id = snapshot.resumeAttemptId ?? crypto.randomUUID();
+    await store.rememberResumeAttempt(conversation.conversationId, id);
+    let claimed = false;
+    let claimRequested = false;
+    let preClaimRejected = false;
+    let settled = false;
+    try {
+      if (!this.backgroundResumeCurrent(generation)) return;
+      claimRequested = true;
+      const mode = snapshot.setupStage === "interpreter" ? "interpreter" : "setup";
+      let claim;
+      try { claim = await this.accounting.api.claimResume(conversation.conversationId, conversation.version, id, mode); }
+      catch (error) {
+        if (error instanceof AccountingRequestError) {
+          preClaimRejected = error.status >= 400 && error.status < 500 && DEFINITIVE_PRECLAIM_CODES.has(error.code) ||
+            error.status === 503 && error.code === "new_creations_paused";
+          throw error;
+        }
+        claim = await this.accounting.api.claimResume(conversation.conversationId, conversation.version, id, mode)
+          .catch(() => { throw error; });
+      }
+      claimed = true;
+      this.accounting.beginResume(claim);
+      if (!this.backgroundResumeCurrent(generation)) throw new Error("Resume cancelled");
+      await this.restoreRetained(snapshot, async startedAt => {
+        const completed = await this.accounting.completeResume(startedAt);
+        await store.confirmResume(completed, id);
+      }, primedOutput);
+      settled = true;
+      this.resumeFailed = false;
+    } catch (error) {
+      const cancelled = !this.backgroundResumeCurrent(generation);
+      this.resumeFailed = !cancelled;
+      this.notify();
+      if (claimed) {
+        const cleanup = this.abandonRetainedMedia(this.retainedResumeCaptureEnded ||
+          this.backgroundResumeCurrent(generation) ? "abandoned_connect" : "hidden");
+        const reason: ResumeAbortReason = this.retainedResumeCaptureEnded ? "media_not_ready" :
+          cancelled && document.visibilityState === "hidden" ? "hidden" :
+          this.retainedResumePhase === "media" || !this.accounting.resumeDispatched ||
+          error instanceof Error && /Microphone|audio|playback|media/i.test(error.message) ? "media_not_ready" :
+          this.retainedResumePhase === "create" ? "provider_creation_failed" : "restore_ack_failed";
+        if (this.retainedEndWork || this.disposed) {
+          try { await cleanup; }
+          catch { console.error("Retained transport cleanup incomplete"); }
+        } else if (this.accounting.conversationStatus === "active") {
+          void cleanup.catch(() => console.error("Retained transport cleanup incomplete"));
+          try { await this.accounting.end("setup_cancel", this.accounting.revision); settled = true; }
+          catch { console.error("Committed resume retirement pending"); }
+        } else {
+          try { await cleanup; }
+          catch { console.error("Retained transport cleanup incomplete"); }
+          try {
+            const aborted = await this.accounting.abortResume(reason);
+            if (aborted?.status === "paused") await store.confirmPause(aborted);
+            settled = aborted !== null;
+          } catch { console.error("Resume abort delivery pending"); }
+        }
+      }
+      throw error;
+    } finally {
+      if (!claimRequested || preClaimRejected || settled)
+        await store.clearResumeAttempt(conversation.conversationId, id).catch(() => undefined);
+    }
+  }
+  private async mayStart(generation: number): Promise<boolean> {
+    await this.accounting.loadPolicy();
+    await this.recoveryProbe;
+    await this.awaitBackgroundPause();
+    if ((await this.accounting.budget.ends()).length) {
+      this.pendingEnd = true; this.notify();
+      throw new Error("Previous conversation End is pending");
+    }
+    if (this.sampleInitialHidden()) return false;
+    if (this.accounting.conversationId !== null) return true;
+    let store: ResumeSnapshotStore | null;
+    let retained: boolean;
+    try {
+      store = await this.snapshotStore;
+      retained = store.hasRetainedIdentity();
+    } catch (error) {
+      if (!this.backgroundCloseEnabled) return true;
+      this.storageUnavailable = true;
+      this.notify();
+      throw error;
+    }
+    if (retained) {
+      const retained = await store.inspectReload(id => this.accounting.api.readConversation(id) as Promise<ConversationMetadata>);
+      if (retained || store.hasRetainedIdentity()) throw new Error("Retained conversation requires explicit recovery");
+    }
+    if (!this.backgroundCloseEnabled) return true;
+    if (generation !== this.startGeneration || this.disposed) return false;
+    if (!store.available) {
+      this.startUnavailable = true;
+      this.notify();
+      throw new Error("Retained conversation ownership unavailable");
+    }
+    return !this.sampleInitialHidden();
+  }
+  protected override onVisibilityHidden(): void { if (this.startWork) this.hiddenDuringStart = true; }
+  private invalidatePendingStart(): void { this.startGeneration++; this.startWork = null; }
+  private async retireUnavailableStart(id: string, version: number, policyVersion: string): Promise<void> {
+    try {
+      try {
+        const store = await this.snapshotStore;
+        store.retainIdentity(id, version);
+        store.retainNoProviderEnd(id, version, policyVersion);
+      } catch {
+        this.storageUnavailable = true;
+      }
+      await super.cancel();
+      const ended = await this.accounting.api.readConversation(id) as ConversationMetadata | null;
+      if (ended?.conversationId !== id || ended.status !== "ended" || !Number.isSafeInteger(ended.version) ||
+        ended.version !== version + 1 || ended.policy.policyVersion !== policyVersion ||
+        !ended.policy.backgroundSessionCloseEnabled || !Number.isSafeInteger(ended.serverTime) || ended.serverTime <= 0)
+        throw new Error("Conversation End was not confirmed after unavailable start");
+      await this.snapshotStore.then(store => store.discard(id), () => undefined);
+      this.recoveryBlocked = false;
+    } catch (error) {
+      this.recoveryBlocked = true;
+      this.noProviderEndPending = await this.snapshotStore.then(store => !store.ownsDocument && store.noProviderEnd() !== null, () => false);
+      throw error;
+    } finally { this.notify(); }
+  }
+  private startExplicit(action: (primedOutput: Promise<void>) => Promise<void>): Promise<void> {
+    if (this.disposed) return Promise.resolve();
+    if (this.startWork) return this.startWork;
+    const generation = this.startGeneration;
+    this.hiddenDuringStart = document.visibilityState === "hidden";
+    const primedOutput = this.beginOutputPriming();
+    const work = (async () => {
+      if (!await this.mayStart(generation)) return;
+      if (generation !== this.startGeneration || this.backgroundCloseEnabled && this.hiddenDuringStart) return;
+      try { await action(primedOutput); }
+      catch (error) {
+        const conversation = await this.accounting.pendingConversation();
+        if (!this.disposed && conversation?.policy.backgroundSessionCloseEnabled) {
+          const available = await this.snapshotStore.then(store => store.available, () => false);
+          if (this.hiddenDuringStart && document.visibilityState === "hidden" && available && !this.retainedPaused) {
+            this.accounting.adoptHiddenCreation(conversation);
+            await this.applyHiddenBackgroundClose();
+            this.notify();
+          } else if (!available) {
+            const retiring = this.retireUnavailableStart(conversation.conversationId, conversation.version,
+              conversation.policy.policyVersion);
+            this.retainedEndWork = retiring;
+            this.notify();
+            try {
+              await retiring;
+              this.startUnavailable = true;
+            } finally {
+              if (this.retainedEndWork === retiring) this.retainedEndWork = null;
+              this.notify();
+            }
+          }
+        }
+        throw error;
+      }
+    })();
+    this.startWork = work;
+    const clear = () => { if (this.startWork === work) this.startWork = null; };
+    void work.then(clear, clear);
+    return work;
+  }
+  override startContextCapture(): Promise<void> { return this.startExplicit(primed => super.startContextCapture(primed)); }
+  override startBootstrap(): Promise<void> { return this.startExplicit(primed => super.startBootstrap(primed)); }
+  override cancel(): Promise<void> { this.invalidatePendingStart(); return super.cancel(); }
+  protected override beginBackgroundPause(): void { this.hiddenPausePending = true; this.accounting.beginBackgroundPause(); }
+  protected override async pauseBackground(state: Omit<ResumeSnapshotInput,
+    "conversationId" | "conversationVersion" | "policyVersion" | "productDeadlineAt">,
+  hiddenAt: number, close: Promise<unknown>): Promise<void> {
+    try {
+      const conversation = await this.accounting.pendingConversation();
+      if (conversation) {
+        if (!conversation.policy.backgroundSessionCloseEnabled) {
+          await close.catch(() => undefined);
+          this.accounting.keepUnpausedConversation(conversation);
+          this.resetAfterUnpausedBackground();
+          return;
+        }
+        let retainedIdentity = false;
+        try {
+          const store = await this.snapshotStore;
+          store.retainIdentity(conversation.conversationId, conversation.version);
+          retainedIdentity = true;
+          await store.save({ ...state, conversationId: conversation.conversationId,
+            conversationVersion: conversation.version, policyVersion: conversation.policy.policyVersion,
+            productDeadlineAt: conversation.productDeadlineAt });
+          await store.markHidden(conversation.conversationId, hiddenAt, conversation.policy.conversationRetentionMs);
+        } catch (error) {
+          if (!retainedIdentity) {
+            await close.catch(() => undefined);
+            await this.accounting.end("setup_cancel", this.accounting.revision);
+            await this.accounting.outbox.flush();
+            const ended = await this.accounting.api.readConversation(conversation.conversationId);
+            if (typeof ended !== "object" || ended === null || !("status" in ended) || ended.status !== "ended")
+              throw new Error("Retained conversation could not be safely ended", { cause: error });
+            return;
+          }
+          console.error("Retained conversation snapshot unavailable", { error });
+        }
+      }
+      const paused = await this.accounting.pause(close);
+      if (paused) {
+        try { await (await this.snapshotStore).confirmPause(paused); }
+        catch { console.error("Retained conversation pause snapshot unavailable"); }
+      }
+    } finally { this.hiddenPausePending = false; }
+  }
+  protected override async prepareConversationRetirement(reason: "user_end" | "setup_cancel"): Promise<void> {
+    const conversation = await this.accounting.pendingConversation();
+    if (conversation) {
+      try { (await this.snapshotStore).retainIdentity(conversation.conversationId, conversation.version); }
+      catch { console.error("Conversation identity storage unavailable before End"); }
+    }
+    await this.accounting.stageEnd(reason, this.accounting.revision);
+  }
+  protected override async finishConversationRetirement(reason: "user_end" | "setup_cancel"): Promise<void> {
+    const conversation = await this.accounting.pendingConversation();
+    await this.accounting.end(reason, this.accounting.revision);
+    if (!conversation) return;
+    try {
+      await this.accounting.outbox.flush();
+      await (await this.snapshotStore).inspectReload(id => this.accounting.api.readConversation(id) as Promise<ConversationMetadata>);
+    } catch { /* Keep the pointer until a later server read confirms termination. */ }
+    try {
+      this.pendingEnd = (await this.accounting.budget.ends()).length > 0;
+      if (!this.pendingEnd && (await this.snapshotStore).hasRetainedIdentity()) this.recoveryBlocked = true;
+    } catch {
+      this.recoveryBlocked = true;
+    }
   }
 }
-export function createAccountedSessionController(): SessionController {
+export function createAccountedSessionController(): AccountedSessionController {
   const audio = new AudioController(), scope = new ConversationAccounting();
   const controller = new AccountedSessionController({
     createLive: () => new LiveClient({ backend: new BackendClient(), accounting: new LazyAccounting(scope),

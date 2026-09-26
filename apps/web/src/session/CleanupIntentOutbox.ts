@@ -1,4 +1,4 @@
-import { MetadataDeliveryBudget, METADATA_TTL_MS, type CleanupReason, type CloseMetadata, type EndIntent } from "./MetadataDeliveryBudget";
+import { MetadataDeliveryBudget, METADATA_TTL_MS, attemptKey, type CleanupReason, type CloseMetadata, type EndIntent, type MetadataEnvelope } from "./MetadataDeliveryBudget";
 export const producerLeaseKey = (id: string) => `live-metadata-producer:${id}`;
 export const MANAGED_SESSION_CREATE_TIMEOUT_MS = 120_000;
 // Without Web Locks, wait beyond the owner's managed create timeout before fencing a pre-registration 404.
@@ -29,21 +29,24 @@ export class CleanupIntentOutbox {
   constructor(private readonly budget: MetadataDeliveryBudget, private readonly transport: CleanupTransport,
     private readonly retryPendingFinalizations?: () => Promise<void>,
     private readonly anomaly: (code: string) => void = code => console.error("Metadata delivery anomaly", { code })) {}
-  async enqueue(localId: string, reason: CleanupReason): Promise<void> {
-    await this.budget.enqueueCleanup(localId, reason);
-    this.deferredCleanup.delete(localId);
-    try { await this.budget.finishProducer(localId, "lost"); }
+  async enqueue(localId: string, reason: CleanupReason, conversationId?: string): Promise<void> {
+    await this.budget.enqueueCleanup(localId, reason, conversationId);
+    if (conversationId) this.deferredCleanup.delete(attemptKey(conversationId, localId));
+    try { await this.budget.finishProducer(localId, "lost", conversationId); }
     catch (error) { this.revision++; this.schedule(); throw error; }
     this.revision++; this.schedule();
   }
-  async observeClosed(localId: string, observation: CloseMetadata): Promise<void> {
-    await this.budget.enqueueClose(localId, observation); this.deferredCleanup.delete(localId); this.revision++; this.schedule();
+  async observeClosed(localId: string, observation: CloseMetadata, conversationId?: string): Promise<void> {
+    await this.budget.enqueueClose(localId, observation, conversationId);
+    if (conversationId) this.deferredCleanup.delete(attemptKey(conversationId, localId));
+    this.revision++; this.schedule();
   }
-  async enqueueEnd(id: string, version: number, reason: EndIntent["reason"], cleanupLocalIds: readonly string[] = [], closeTimeoutMs = 0): Promise<void> {
-    await this.budget.enqueueEnd(id, version, reason, cleanupLocalIds, closeTimeoutMs); this.revision++; this.schedule();
+  async enqueueEnd(id: string, version: number, reason: EndIntent["reason"], cleanupLocalIds: readonly string[] = [], closeTimeoutMs = 0,
+    noProviderPolicyVersion?: string, noProviderPendingLocalIds?: readonly string[]): Promise<void> {
+    await this.budget.enqueueEnd(id, version, reason, cleanupLocalIds, closeTimeoutMs, noProviderPolicyVersion, noProviderPendingLocalIds); this.revision++; this.schedule();
   }
-  deferCleanup(localIds: readonly string[]): void { for (const id of localIds) this.deferredCleanup.add(id); }
-  confirmRetirement(localId: string): void { this.deferredCleanup.delete(localId); }
+  deferCleanup(conversationId: string, localIds: readonly string[]): void { for (const id of localIds) this.deferredCleanup.add(attemptKey(conversationId, id)); }
+  confirmRetirement(localId: string, conversationId: string): void { this.deferredCleanup.delete(attemptKey(conversationId, localId)); }
   wake(): void { this.revision++; this.onWake(); }
   start(): void {
     if (this.started) return; this.started = true;
@@ -58,11 +61,11 @@ export class CleanupIntentOutbox {
     if (!this.started || this.timer) return;
     this.timer = setTimeout(() => { this.timer = undefined; this.onWake(); }, Math.min(30000, 1000 * 2 ** Math.min(this.retries, 5)));
   }
-  private async finishForeignRetirement(localId: string, proof: AttemptProof): Promise<boolean> {
+  private async finishForeignRetirement(row: MetadataEnvelope, proof: AttemptProof): Promise<boolean> {
     if (!terminalRetirementProof(proof)) return false;
-    await this.budget.finishUsageProducer(localId);
+    await this.budget.finishUsageProducer(row.localId, row.conversationId);
     const outcome = proof.state === "failed" && !proof.openaiSessionId ? "no_provider" : proof.closeConfirmed === true ? "provider_closed" : "lost";
-    await this.budget.finishProducerAndRelease(localId, outcome);
+    await this.budget.finishProducerAndRelease(row.localId, outcome, row.conversationId);
     return true;
   }
   flush(): Promise<void> {
@@ -77,11 +80,11 @@ export class CleanupIntentOutbox {
     try { await this.retryPendingFinalizations?.(); } catch { pending = true; }
     for (const row of await this.budget.entries()) {
       if (!row.producerFinalized && (row.dispatchStartedAt === null || row.cleanupAcknowledged) && !row.cleanup && !row.closeObservation && Date.now() >= row.reservedAt + METADATA_TTL_MS) {
-        await this.budget.finishProducerAndRelease(row.localId, row.dispatchStartedAt === null ? "no_provider" : "lost");
+        await this.budget.finishProducerAndRelease(row.localId, row.dispatchStartedAt === null ? "no_provider" : "lost", row.conversationId);
         continue;
       }
       if (row.producerOutcome === "no_provider") {
-        await this.budget.finishProducerAndRelease(row.localId, "no_provider");
+        await this.budget.finishProducerAndRelease(row.localId, "no_provider", row.conversationId);
         continue;
       }
       if (!row.cleanup && !row.closeObservation) {
@@ -90,34 +93,34 @@ export class CleanupIntentOutbox {
             (row.cleanupAcknowledged || !globalThis.navigator?.locks)) {
           try {
             const proof = await this.transport.readAttempt?.(row.localId);
-            if (!proof || !(await this.finishForeignRetirement(row.localId, proof))) { pending = true; continue; }
+            if (!proof || !(await this.finishForeignRetirement(row, proof))) { pending = true; continue; }
           } catch (error) {
             if (statusOf(error) !== 404 || !this.transport.recover) { pending = true; continue; }
             if (Date.now() < dispatchStartedAt + ATTEMPT_REGISTRATION_GRACE_MS) { pending = true; continue; }
             try {
               const proof = await this.transport.recover(row.localId, row.conversationId, "response_not_received");
-              if (!(await this.finishForeignRetirement(row.localId, proof))) pending = true;
+              if (!(await this.finishForeignRetirement(row, proof))) pending = true;
             } catch { pending = true; }
           }
         }
         continue;
       }
-      if (!row.closeObservation && this.deferredCleanup.has(row.localId)) { pending = true; continue; }
+      if (!row.closeObservation && this.deferredCleanup.has(attemptKey(row.conversationId, row.localId))) { pending = true; continue; }
       const deliverRow = async () => {
         if (Date.now() >= (row.cleanup?.expiresAt ?? row.reservedAt + 7 * 86400000)) {
-          this.anomaly("metadata_delivery_expired"); await this.discard(row.localId); return;
+          this.anomaly("metadata_delivery_expired"); await this.discard(row.localId, row.conversationId); return;
         }
         try {
           const proof = row.closeObservation ? await this.transport.closed(row.localId, row.closeObservation) : await this.transport.cleanup(row.localId, row.cleanup!.reason);
           if (!cleanupProofReceived(proof)) { pending = true; return; }
-          if (row.closeObservation) await this.budget.acknowledgeCloseAndRelease(row.localId);
-          else await this.budget.acknowledgeCleanupAndRelease(row.localId);
+          if (row.closeObservation) await this.budget.acknowledgeCloseAndRelease(row.localId, row.conversationId);
+          else await this.budget.acknowledgeCleanupAndRelease(row.localId, row.conversationId);
         } catch (error) {
           // A registration race 404 is retried unless a separate owner/conversation read proves identity loss.
           if ([401, 403, 404].includes(Number(statusOf(error)))) {
             try { await this.transport.readConversation(row.conversationId); }
             catch (readError) {
-              if (statusOf(readError) === 401 || statusOf(readError) === 404) { this.anomaly("metadata_identity_lost"); await this.discard(row.localId); return; }
+              if (statusOf(readError) === 401 || statusOf(readError) === 404) { this.anomaly("metadata_identity_lost"); await this.discard(row.localId, row.conversationId); return; }
             }
           }
           pending = true;
@@ -127,21 +130,21 @@ export class CleanupIntentOutbox {
       // Web Locks only prove the old document is gone; the server fence orders recovery against a late create.
       if (row.cleanup && !row.closeObservation && row.producerId !== this.budget.ownerProducerId) {
         if (Date.now() >= row.cleanup.expiresAt) {
-          this.anomaly("metadata_delivery_expired"); await this.discard(row.localId); continue;
+          this.anomaly("metadata_delivery_expired"); await this.discard(row.localId, row.conversationId); continue;
         }
         const recoverForeignCleanup = async () => {
           if (!this.transport.recover) { pending = true; return; }
           try {
             const proof = await this.transport.recover(row.localId, row.conversationId, row.cleanup!.reason);
             if (!cleanupProofReceived(proof)) { pending = true; return; }
-            await this.budget.acknowledgeForeignCleanupFence(row.localId);
-            if (!(await this.finishForeignRetirement(row.localId, proof))) pending = true;
+            await this.budget.acknowledgeForeignCleanupFence(row.localId, row.conversationId);
+            if (!(await this.finishForeignRetirement(row, proof))) pending = true;
           } catch (error) {
             if ([401, 403, 404].includes(Number(statusOf(error)))) {
               try { await this.transport.readConversation(row.conversationId); }
               catch (readError) {
                 if (statusOf(readError) === 401 || statusOf(readError) === 404) {
-                  this.anomaly("metadata_identity_lost"); await this.discard(row.localId); return;
+                  this.anomaly("metadata_identity_lost"); await this.discard(row.localId, row.conversationId); return;
                 }
               }
             }
@@ -161,11 +164,40 @@ export class CleanupIntentOutbox {
       } else await deliverRow();
     }
     for (const intent of await this.budget.ends()) {
-      if (Date.now() >= intent.expiresAt) { this.anomaly("conversation_end_expired"); await this.budget.acknowledgeEnd(intent.conversationId, intent.expectedVersion); continue; }
+      if ((intent.noProviderPendingLocalIds?.length ?? 0) > 0)
+        await this.budget.applyNoProviderProofs(intent.conversationId, intent.expectedVersion);
+    }
+    for (const intent of await this.budget.ends()) {
       const cleanupLocalIds = intent.cleanupLocalIds ?? (await this.budget.entries())
         .filter(row => row.conversationId === intent.conversationId && (row.cleanup || row.closeObservation))
         .map(row => row.localId);
       if (cleanupLocalIds.length > 0) { pending = true; continue; }
+      if (Date.now() >= intent.expiresAt) {
+        this.anomaly("conversation_end_expired");
+        const exactNoProvider = intent.reason === "setup_cancel" && Array.isArray(intent.cleanupLocalIds) &&
+          intent.cleanupLocalIds.length === 0 && (intent.noProviderPendingLocalIds?.length ?? 0) === 0 &&
+          Number.isSafeInteger(intent.expectedVersion) && intent.expectedVersion > 0 &&
+          typeof intent.noProviderPolicyVersion === "string" && intent.noProviderPolicyVersion.length > 0;
+        try {
+          const c = await this.transport.readConversation(intent.conversationId) as {
+            conversationId?: string; version?: number; status?: string; productDeadlineAt?: number | null;
+            resumeAttemptId?: string | null; serverTime?: number;
+            policy?: { policyVersion?: string; backgroundSessionCloseEnabled?: boolean };
+          };
+          if (c.conversationId === intent.conversationId && c.status === "ended" &&
+            (!exactNoProvider || c.version === intent.expectedVersion + 1 &&
+              c.policy?.policyVersion === intent.noProviderPolicyVersion && c.policy?.backgroundSessionCloseEnabled === true)) {
+            await this.budget.acknowledgeEnd(intent.conversationId, intent.expectedVersion); continue;
+          }
+          if (!exactNoProvider || c.conversationId !== intent.conversationId || c.status !== "active" ||
+            c.version !== intent.expectedVersion || c.productDeadlineAt !== null || c.resumeAttemptId !== null ||
+            c.policy?.policyVersion !== intent.noProviderPolicyVersion || c.policy?.backgroundSessionCloseEnabled !== true ||
+            !Number.isSafeInteger(c.serverTime) || c.serverTime! <= 0) {
+            if (exactNoProvider) pending = true;
+            continue;
+          }
+        } catch { if (exactNoProvider) pending = true; continue; }
+      }
       try {
         if (!this.transport.end) { pending = true; continue; }
         const result = await this.transport.end(intent.conversationId, intent.expectedVersion, intent.reason);
@@ -173,13 +205,13 @@ export class CleanupIntentOutbox {
       } catch (error) {
         if ([401, 403, 404, 409].includes(Number(statusOf(error)))) {
           try {
-            const c = await this.transport.readConversation(intent.conversationId) as { status?: string; version?: number };
-            if (c.status === "ended" || (c.version !== undefined && c.version > intent.expectedVersion)) {
+            const c = await this.transport.readConversation(intent.conversationId) as { conversationId?: string; status?: string };
+            if (c.conversationId === intent.conversationId && c.status === "ended") {
               await this.budget.acknowledgeEnd(intent.conversationId, intent.expectedVersion); continue;
             }
           } catch (readError) {
-            if (statusOf(readError) === 401 || statusOf(readError) === 404) {
-              this.anomaly("conversation_end_identity_lost"); await this.budget.acknowledgeEnd(intent.conversationId, intent.expectedVersion); continue;
+            if ([401, 403, 404].includes(Number(statusOf(readError)))) {
+              this.anomaly("conversation_end_identity_lost"); continue;
             }
           }
         }
@@ -188,7 +220,7 @@ export class CleanupIntentOutbox {
     }
     this.retries = pending ? this.retries + 1 : 0; if (pending) this.schedule();
   }
-  private async discard(localId: string) {
-    await this.budget.discardDelivery(localId);
+  private async discard(localId: string, conversationId: string) {
+    await this.budget.discardDelivery(localId, conversationId);
   }
 }

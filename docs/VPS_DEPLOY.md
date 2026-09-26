@@ -417,7 +417,9 @@ This leaves all unrelated Nginx-hosted services untouched.
 
 Only roll back to a commit/tag that is already compatible with this host-Nginx
 topology (loopback-only application ports and no container ownership of
-80/443). After selecting that known-good compatible revision:
+80/443). The usage-identity column keeps `user_version=2`, so the previous v2
+API image can reopen the ledger after this release. After selecting that
+known-good compatible revision:
 
 ```bash
 docker compose --env-file .env -f infra/docker-compose.yml build
@@ -441,6 +443,10 @@ SameSite=Lax, Path=/, without Domain, with a sliding 90-day lifetime. A cleared
 cookie starts a new identity. Provider attempts are recorded before dispatch,
 and a browser must confirm handoff after applying the SDP answer. Old clients
 are rejected with `client_upgrade_required` when ledger creation is enabled.
+Already-open ledger clients may still submit usage without `conversationId`:
+the API accepts it only for attempts registered without `usageIdentityVersion: 1`.
+New browser attempts advertise version 1 and require an exact conversation ID
+for usage; the SQLite v3 migration leaves existing attempts in legacy mode.
 
 Creation results and usage do not imply a confirmed provider close. Cleanup is
 best-effort, bounded and metadata-only. A transient authenticated Sideband is
@@ -453,6 +459,22 @@ Operational defaults, all API-only: handoff ACK timeout 30000 ms, resume claim
 retry TTL is immutable seven days, independent of conversation retention.
 Resume endpoints prepare the later client feature; the background feature flag
 remains false. A logical conversation retains its policy version and deadlines.
+
+The stage-5 background/resume client is under review in
+[draft PR #21](https://github.com/gushinets/live-translator/pull/21) on
+`feat/background-close-and-resume`; it is not merged or enabled in production. Its API flag is
+`BACKGROUND_SESSION_CLOSE_ENABLED=false` by default and requires
+`USAGE_LEDGER_ENABLED=true`. When enabled after review and the E3/G2 device
+check, hidden closes the provider while retaining a five-minute logical
+conversation; explicit resume claims a fresh provider attempt. Reload recovery
+uses a tab-scoped snapshot and server-confirmed paused state. Do not treat a
+retained snapshot, browser close report, or local fake-provider test as proof of
+provider billing termination. For a stage-5 rollback, set only the background
+flag to `false` for new conversations; existing conversations keep their stored
+policy. Keep the ledger, cleanup worker, and recovery endpoints running, and
+let pending retained conversations finish or End through their safe UI path.
+Real-provider E1/E2 calibration, E3/G2 physical-device results, spend checks,
+and production flag rollout are still external gates.
 
 API shutdown closes the create-dispatch gate first, drains in-flight creation
 for up to `SERVER_SHUTDOWN_DRAIN_MS=18000`, then stops cleanup using the remaining
