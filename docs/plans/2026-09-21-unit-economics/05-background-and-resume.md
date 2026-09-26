@@ -1,6 +1,6 @@
 # PR 5 — immediate background close и retained conversation
 
-**Статус:** `in-progress` в `feat/background-close-and-resume`; [draft PR #21](https://github.com/gushinets/live-translator/pull/21) открыт, merge и Gate G2 не заявлены.
+**Статус:** реализация завершена в merged [PR #21](https://github.com/gushinets/live-translator/pull/21). Gate G2 и физические device checks остаются отдельными внешними gates; это не означает, что feature flag включён.
 **Зависимости:** Зависит от PR 4. Отдельный feature flag; не меняет fixed-language routing.  
 **Спецификация:** [v1.1](../../specs/2026-09-21-unit-economics-and-session-lifecycle.md).\
 **Общие ограничения и проверки:** [README плана](README.md).

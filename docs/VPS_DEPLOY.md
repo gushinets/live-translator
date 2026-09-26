@@ -460,9 +460,9 @@ retry TTL is immutable seven days, independent of conversation retention.
 Resume endpoints prepare the later client feature; the background feature flag
 remains false. A logical conversation retains its policy version and deadlines.
 
-The stage-5 background/resume client is under review in
-[draft PR #21](https://github.com/gushinets/live-translator/pull/21) on
-`feat/background-close-and-resume`; it is not merged or enabled in production. Its API flag is
+The stage-5 background/resume client is in merged
+[PR #21](https://github.com/gushinets/live-translator/pull/21) on
+`feat/background-close-and-resume`; its API flag is
 `BACKGROUND_SESSION_CLOSE_ENABLED=false` by default and requires
 `USAGE_LEDGER_ENABLED=true`. When enabled after review and the E3/G2 device
 check, hidden closes the provider while retaining a five-minute logical
@@ -487,4 +487,45 @@ network-in-flight creation is fenced and never automatically re-created.
 read/End/cleanup routes but pauses new creations. This avoids mixing an old
 untracked client with outstanding ledger responsibility. Coordinate API/web
 rollback; never delete the ledger or retry an unknown attempt using a new ID.
-Full aggregate reconciliation, backups and tariff calibration remain stage 6.
+
+## Stage 6 local reporting and SQLite maintenance
+
+The Stage 6 feature branch adds a local JSON report and SQLite maintenance CLI.
+These tools are included in the API package image after that code is reviewed
+and released. A report opens one explicitly selected database read-only; run
+product and experimental databases as separate commands:
+
+```bash
+docker compose --env-file .env -f infra/docker-compose.yml exec api \
+  node scripts/unit-economics-report.mjs --db /data/live-translator.sqlite \
+  --dataset product --from 2026-09-01T00:00:00Z --to 2026-10-01T00:00:00Z
+```
+
+`--from` is inclusive, `--to` is exclusive, and both values require an explicit
+timezone. The report’s `asOf` defaults to execution time and can be fixed with
+`--as-of`. It does not run server startup, migration, expiry, provider create,
+or cleanup work. Monetary policies remain uncalibrated until supported by
+verified source and external usage evidence; `invoiceTotal` is always null.
+
+An online backup is coherent with SQLite WAL and refuses an existing target:
+
+```bash
+docker compose --env-file .env -f infra/docker-compose.yml exec api \
+  node scripts/sqlite-maintenance.mjs backup \
+  --source /data/live-translator.sqlite --target /data/backups/live-translator-2026-09-26.sqlite
+docker compose --env-file .env -f infra/docker-compose.yml exec api \
+  node scripts/sqlite-maintenance.mjs verify --db /data/backups/live-translator-2026-09-26.sqlite
+```
+
+Restore copies only to a new path and verifies SQLite integrity and foreign-key
+consistency. A production restore requires stopping the writer, preserving a
+separate emergency copy, verifying the restored database, and an independently
+approved path switch. The CLI never overwrites or swaps the active database.
+Do not start provider creates from restored active records; existing recovery
+and cleanup obligations remain under the API lifecycle. No production backup or
+restore was performed for this change.
+
+Rolling back the reporting/maintenance release requires no schema rollback.
+Keep the API ledger and `CleanupWorker` running, continue accepting valid late
+usage, and preserve cleanup markers. Disabling the CLI does not authorize
+deleting rows or abandoning provider cleanup.

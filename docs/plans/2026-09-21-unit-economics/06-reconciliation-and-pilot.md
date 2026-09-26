@@ -1,6 +1,6 @@
 # PR 6 — сверка, эксплуатационная устойчивость и пилот
 
-**Статус:** `planned`, реализация не начата этим документом.  
+**Статус:** `in-progress` в `feat/unit-economics-reconciliation`; реализация и PR ещё не merged. E1/E2/E3 и production rollout остаются внешними gates.
 **Зависимости:** Зависит от PR 5. Не превращает клиентский учёт в trusted commercial billing.  
 **Спецификация:** [v1.1](../../specs/2026-09-21-unit-economics-and-session-lifecycle.md).\
 **Общие ограничения и проверки:** [README плана](README.md).
@@ -8,9 +8,9 @@
 ## Карта файлов и ответственности
 
 
-**Изменить:** `apps/api/src/server.ts`, `apps/api/src/accounting/UsageLedger.ts`, `apps/api/src/config.ts`, `docs/VPS_DEPLOY.md`; дополнить report API/CLI без публичного межпользовательского dashboard.  
-**Создать:** `apps/api/src/accounting/reconcileSessions.ts`, `apps/api/src/reports/unitEconomics.ts`, `apps/api/src/reports/pricingPolicy.ts`, `docs/experiments/` реальные результаты после выполнения и `docs/testing/unit-economics-acceptance.md` после согласования.  
-**Тесты:** `apps/api/test/reconcileSessions.test.ts`, `apps/api/test/unitEconomics.test.ts`, временная-DB backup/restore проверка; smoke сценарии для browser/device pilot.
+**Изменить:** `apps/api/src/accounting/UsageLedger.ts` только для записи policy version при durable dispatch; `docs/VPS_DEPLOY.md`; read-only report/maintenance CLI без публичного межпользовательского dashboard. Сверка переиспользует startup `LedgerRuntime`, `UsageLedger.recover()`/`watchdog()` и существующий `CleanupWorker`; второй worker не добавлен.
+**Создать:** `apps/api/src/reports/unitEconomics.ts`, `apps/api/src/reports/pricingPolicy.ts`, `apps/api/src/persistence/sqliteBackup.ts`, два CLI и acceptance/evidence документацию. Отдельный `reconcileSessions.ts` не нужен.
+**Тесты:** `apps/api/test/reconcileSessions.test.ts`, `apps/api/test/unitEconomics.test.ts`, `apps/api/test/databaseBackup.test.ts`; внешние browser/device gates не запускались.
 
 
 ## Входной и выходной контракт
@@ -45,13 +45,21 @@ Backup использует coherent SQLite procedure и проверяется 
 ## Последовательность работ
 
 
-- [ ] Добавить time-controlled reconciliation tests A6.1/A6.2 и mixed-data report fixtures A6.3/A6.4, не обнуляя неизвестные значения.
-- [ ] Реализовать maintenance hook для claim expiry/reporting **через PR-2 `expireResumeClaim()`**, не дублируя transition в PR 6. Проверить handoff-acknowledged active provider + browser gone → claim deadline → atomic cleanup fence/closing + paused/ended + Sideband due, а также crash/failure injection и отображение pending/exhausted outcome в A6.1/A6.8.
-- [ ] Выполнить backup/restore в отдельной временной среде; сохранить команды и результаты A6.5, а не только наличие backup файла.
-- [ ] Проверить failure injection A6.6 с fake provider; при настоящей API credential production эксперимент не запускать из CI.
+- [x] Добавить time-controlled reconciliation tests A6.1/A6.2 и mixed-data report fixtures A6.3/A6.4, не обнуляя неизвестные значения.
+- [x] Переиспользовать существующие `LedgerRuntime`/`UsageLedger` expiry и `CleanupWorker` для claim expiry/reporting; новые maintenance timers/workers не добавлялись. Проверить pending/exhausted outcome в A6.1/A6.8.
+- [x] Выполнить WAL backup/restore в отдельной временной среде; сохранить команды и результаты A6.5 в acceptance и E4 reports.
+- [x] Проверить controlled DB/write failure A6.6 с fake/local dependencies; full disk не заполнялся, реальные credentials не использовались.
 - [ ] Выполнить/получить первичные материалы E1–E4 в рамках отдельно разрешённых измерений; redaction до commit результатов.
-- [ ] Прогнать root checks и разрешённые device smoke tests; отметить G3 и остаточные ограничения на monetary выводы.
-- [ ] Обновить PR-план фактическими ссылками и статусами; принятые ADR не переписывать задним числом под код.
+- [x] Прогнать локальные root checks, CI E2E, Compose build и SQLite persistence; physical-device smoke не запускался, G3 и monetary gates остались open.
+- [x] Обновить план/evidence статусы и ссылки; решения ADR оставлены `proposed`.
+
+## Stage 6 implementation record
+
+Acceptance mapping, executed commands, and limitations are in
+[`docs/testing/unit-economics-acceptance.md`](../../testing/unit-economics-acceptance.md).
+The deterministic temporary-database run is recorded in
+[`docs/experiments/2026-09-26-stage6-deterministic-e4.md`](../../experiments/2026-09-26-stage6-deterministic-e4.md).
+Neither document treats E1/E2/E3, a real VPS restore, billing calibration, or Gate G3 as passed.
 
 
 Каждый criterion сначала закрепляется regression test, затем изменением кода, затем повторной проверкой. Ожидаемый RED в новом тесте — обнаружение конкретного отсутствующего контракта, не случайная ошибка окружения. Общие root-команды обязательны; реальные provider/device tests — только в разрешённой среде.

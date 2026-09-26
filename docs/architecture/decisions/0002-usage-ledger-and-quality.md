@@ -1,6 +1,6 @@
 # ADR-0002 — SQLite ledger и раздельное качество измерений
 
-**Статус:** proposed. **Дата:** 2026-09-21. **Реализация:** planned.  
+**Статус:** proposed. **Дата:** 2026-09-21. **Реализация:** этапы 2–3 merged (#15, #17, #18); этап 6 in-progress. Решение ADR остаётся proposed.
 **Основание:** [handoff](../../sources/2026-09-21-unit-economics-handoff.md), [code review](../../reviews/2026-09-21-lifecycle-code-review.md).  
 **Нормативный контракт:** [spec v1.1](../../specs/2026-09-21-unit-economics-and-session-lifecycle.md).
 

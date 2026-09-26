@@ -2,6 +2,14 @@
 
 Дата: 2026-09-21. Baseline code: `5a32ee2a1c3fe81e12b00be404214f0887c27e82`. Этот файл **не является** raw-log эксперимента 20 сентября и не восстанавливает отсутствующие события из пересказа.
 
+**Обновление 2026-09-26:** Stage 6 выполнил только локальные synthetic checks
+для части E4; см. [отчёт deterministic E4](2026-09-26-stage6-deterministic-e4.md).
+Он не меняет статусы E1/E2/E3, не закрывает Gate G3 и не является production
+restore или billing evidence.
+
+Итоговый regression run завершён 2026-09-27: 55 test files / 1120 tests.
+Протокол и область этих проверок не изменяют внешние gates.
+
 ## E1 — первичный background experiment
 
 **Статус:** reported, первичный report/raw-log не найден по указанному пути на baseline.
@@ -47,7 +55,9 @@
 
 ## E4 — эксплуатация и восстановление
 
-**Статус:** не выполнялось в этом ревью; deterministic часть входит в PR 2/6.
+**Статус на 2026-09-26:** выполнена deterministic часть в Stage 6 feature branch
+на временной SQLite-БД и disposable Docker volume; реальный VPS restart/restore
+и production database проверки не выполнялись. См. отчёт выше.
 
 Проверить: restart API при живом browser WebRTC, restart во время provider creation и pending resume claim, восстановление paused/ended без продления retention, SQLite unavailable/full disk, задержку final report, duplicate reports, coherent backup и restore в отдельный каталог. Разрешать reporter retry без создания новой OpenAI session.
 
