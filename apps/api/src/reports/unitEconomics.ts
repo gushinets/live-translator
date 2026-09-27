@@ -110,15 +110,15 @@ function ratioReason(info: ConversationInfo, metric: RatioMetric): string | null
   if (rows.some(row => row.provider_final_seconds === null)) {
     return rows.some(row => row.provider_checkpoint_seconds !== null) ? "partial_provider_usage" : "unknown_provider_usage";
   }
+  if (info.summary.durations.measurementVersions.length > 1) return "incompatible_measurement_versions";
   if (!info.summary.durations.completeApp) return "incomplete_app_measurement";
   if (new Set(rows.map(row => row.app_version)).size !== 1) return "incompatible_app_versions";
   if (new Set(rows.map(row => row.model)).size !== 1) return "incompatible_models";
   if (!info.policyVersion) return "missing_conversation_policy_version";
   if (info.backgroundPolicy === null) return "missing_background_policy_version";
-  if (info.summary.durations.measurementVersions.length !== 1) return "incompatible_measurement_versions";
   if (metric !== "active") {
+    if (info.summary.durations.speechMeasurementVersions.length > 1) return "incompatible_speech_versions";
     if (!info.summary.durations.completeSpeech) return "incomplete_speech_coverage";
-    if (info.summary.durations.speechMeasurementVersions.length !== 1) return "incompatible_speech_versions";
   }
   const duration = metric === "active" ? info.summary.durations.activeInterpreterMs
     : metric === "accepted" ? info.summary.durations.acceptedSourceSpeechMs : info.summary.durations.completedSourceSpeechMs;

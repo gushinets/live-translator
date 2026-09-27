@@ -75,9 +75,9 @@ CLI smoke used only a disposable initialized ledger: backup and restore each
 returned 23 pages, verify accepted the result, zero-byte verification failed
 closed with a schema error, and the report CLI rejected an impossible date.
 
-## Final GitHub Actions verification — 2026-09-27
+## Recorded GitHub Actions verification — 2026-09-27
 
-At head `932478f6fc30fb2501a011f1d21df2bba505ac9e`, [CI run #167](https://github.com/gushinets/live-translator/actions/runs/36306041591) passed all jobs: 56 test files / 1136 tests, lint, typecheck, build, production
+At commit `2ae4a070c1d569eb7c2c4230d7dff62605446c9d`, [CI run #169](https://github.com/gushinets/live-translator/actions/runs/36307888702) passed all jobs: 56 test files / 1136 tests, lint, typecheck, build, production
 API smoke, Compose validation and image build, disposable SQLite persistence,
 and Chromium/WebKit E2E. The updated process-interruption test helper passed in
 the full suite. Its prior stdin `readSync()` barrier was not reliable on Linux;
@@ -85,6 +85,8 @@ the full suite. Its prior stdin `readSync()` barrier was not reliable on Linux;
 production backup/restore code changed in this test-only correction. These CI
 checks use disposable data and do not establish power-loss durability or a
 production restore.
+
+For later commits, see the [PR checks](https://github.com/gushinets/live-translator/pull/22/checks) for current-head verification.
 
 ## PR #22 reviewer follow-up — 2026-09-27
 

@@ -130,6 +130,34 @@ describe("cross-conversation unit economics", () => {
     expect(f.db.prepare("SELECT status FROM conversations WHERE id=?").get(paused.id)!.status).toBe("paused");
   });
 
+  it("reports mixed measurement versions separately from incomplete coverage", () => {
+    const f = fixture();
+    const twoAttempts = () => {
+      const c = f.conversation(), first = f.dispatched(c);
+      f.report(first, c.id, { providerClosed: { seconds: 120 }, app: appMetrics });
+      const paused = f.ledger.pauseConversation(owner, c.id, c.version);
+      const second = randomUUID();
+      const claim = f.ledger.claimResume(owner, c.id, paused.version, second, "setup", 1);
+      f.ledger.registerAttempt(owner, { liveSessionId: second, conversationId: c.id, conversationVersion: claim.conversation.version,
+        initialMode: "setup", startReason: "resume", fingerprint: `synthetic-${second}` });
+      f.ledger.dispatchProviderAttempt(owner, second, claim.conversation.version, `lease-${second}`, f.now() + 900000);
+      f.ledger.recordProviderCreated(second, `provider-${second}`);
+      f.ledger.acknowledgeHandoff(owner, second);
+      f.report(second, c.id, { providerClosed: { seconds: 30 }, app: appMetrics });
+      return second;
+    };
+    const mixedApp = twoAttempts(), mixedSpeech = twoAttempts();
+    f.db.prepare("UPDATE live_sessions SET measurement_version=? WHERE id=?").run("active-time-v2", mixedApp);
+    f.db.prepare("UPDATE live_sessions SET speech_measurement_version=? WHERE id=?").run("vam-pre-tail-v2", mixedSpeech);
+
+    const result = buildUnitEconomicsReport(f.db, { from: Date.UTC(2026, 8, 24), to: Date.UTC(2026, 8, 26),
+      asOf: Date.UTC(2026, 8, 27), generatedAt: Date.UTC(2026, 8, 27), dataClass: "synthetic" });
+    expect(result.ratios.providerSecondsPerActiveMinute.excludedReasons).toMatchObject({ incompatible_measurement_versions: 1 });
+    expect(result.ratios.providerSecondsPerAcceptedSpeechMinute.excludedReasons).toMatchObject({
+      incompatible_measurement_versions: 1, incompatible_speech_versions: 1,
+    });
+  });
+
   it("converts each compatible accepted-speech segment to provider seconds per speech second", () => {
     const f = fixture();
     for (const appVersion of ["synthetic-app-v1", "synthetic-app-v2"]) {
@@ -189,6 +217,12 @@ describe("versioned pricing policy", () => {
     expect(estimateHistoricalCost(120, "gpt-live-1", 1500, null, policies)).toMatchObject({
       billableSeconds: 120, amountMinorUnits: "60", evidenceKind: "synthetic",
     });
+  });
+
+  it("rejects two versions activated for the same model at the same time", () => {
+    const ambiguous = [policies[0]!, { ...policies[1]!, effectiveFrom: policies[0]!.effectiveFrom }];
+    expect(() => estimateCurrentPriceScenario(120, "gpt-live-1", 2500, ambiguous))
+      .toThrow("duplicate_pricing_policy_activation");
   });
   it("keeps the dispatch-time policy for a late final and reports current price separately", () => {
     const policyChangesAt = Date.UTC(2026, 8, 26);

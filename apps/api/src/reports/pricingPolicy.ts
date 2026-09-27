@@ -32,6 +32,7 @@ export const PRICING_POLICIES: readonly PricingPolicy[] = Object.freeze([]);
 
 function validatePolicies(policies: readonly PricingPolicy[]): void {
   const seen = new Set<string>();
+  const activations = new Set<string>();
   for (const policy of policies) {
     if (!policy.version || !policy.model || !/^[A-Z]{3}$/.test(policy.currency) ||
         !Number.isSafeInteger(policy.minorUnitDigits) || policy.minorUnitDigits < 0 || policy.minorUnitDigits > 6 ||
@@ -47,6 +48,9 @@ function validatePolicies(policies: readonly PricingPolicy[]): void {
     const key = `${policy.model}\0${policy.version}`;
     if (seen.has(key)) throw new Error("duplicate_pricing_policy_version");
     seen.add(key);
+    const activation = `${policy.model}\0${policy.effectiveFrom}`;
+    if (activations.has(activation)) throw new Error("duplicate_pricing_policy_activation");
+    activations.add(activation);
   }
 }
 
@@ -54,7 +58,7 @@ function historicalPolicy(model: string, at: number, savedVersion: string | null
   validatePolicies(policies);
   const matches = policies.filter(policy => policy.model === model && policy.effectiveFrom <= at);
   if (savedVersion !== null) return matches.find(policy => policy.version === savedVersion) ?? null;
-  return matches.sort((a, b) => b.effectiveFrom - a.effectiveFrom || b.version.localeCompare(a.version))[0] ?? null;
+  return matches.sort((a, b) => b.effectiveFrom - a.effectiveFrom)[0] ?? null;
 }
 
 function currentPolicy(model: string, asOf: number, policies: readonly PricingPolicy[]): PricingPolicy | null {
