@@ -95,7 +95,7 @@ export function assignPricingPolicyVersion(model: string, dispatchedAt: number, 
 
 export function estimateHistoricalCost(seconds: number | null, model: string, dispatchedAt: number,
   savedPolicyVersion: string | null, policies: readonly PricingPolicy[] = PRICING_POLICIES): CostEstimate {
-  return cost(seconds, historicalPolicy(model, dispatchedAt, savedPolicyVersion, policies));
+  return cost(seconds, savedPolicyVersion === null ? null : historicalPolicy(model, dispatchedAt, savedPolicyVersion, policies));
 }
 
 export function estimateCurrentPriceScenario(seconds: number | null, model: string, asOf: number,

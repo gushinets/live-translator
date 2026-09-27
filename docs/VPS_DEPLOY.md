@@ -518,7 +518,7 @@ docker compose --env-file .env -f infra/docker-compose.yml exec api \
 ```
 
 Restore copies only to a new path and verifies SQLite integrity, foreign keys,
-and the required ledger tables/columns for schema versions 1 through 3. Verify
+and the migration DDL (tables, constraints, and indexes) for schema versions 1 through 3. Extra non-internal schema objects also fail verification. Verify
 is read-only: it does not start the server, migrate, reconcile, or repair data.
 It proves structural/integrity compatibility, not that the operator selected
 the right database, date range, or backup contents.

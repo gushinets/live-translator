@@ -1,4 +1,4 @@
-import { chmodSync, linkSync, mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { chmodSync, linkSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { backup, DatabaseSync } from "node:sqlite";
 
@@ -20,19 +20,25 @@ function samePath(left: string, right: string): boolean {
   return process.platform === "win32" ? a.toLowerCase() === b.toLowerCase() : a === b;
 }
 
-const requiredColumns = {
-  conversations: "id anonymous_user_id create_request_id version status end_reason resume_attempt_id created_at first_provider_dispatch_at first_interpreter_observed_at last_product_activity_received_at paused_at resume_expires_at ended_at product_deadline_at app_version conversation_policy_version policy_json".split(" "),
-  live_sessions: "id conversation_id generation openai_session_id state initial_mode start_reason request_fingerprint request_conversation_version resume_claimed_at resume_claim_expires_at resume_claim_version resume_outcome model transport prompt_version app_version creation_requested_at provider_request_dispatched_at creation_completed_at handoff_ack_deadline_at handoff_acknowledged_at cleanup_requested_at cleanup_reason cleanup_attempt_count cleanup_last_attempt_at cleanup_next_attempt_at cleanup_retry_expires_at cleanup_retry_exhausted_at cleanup_last_result cleanup_last_error_code cleanup_blocked_at provider_started_observed_at interpreter_ready_observed_at provider_expires_at lease_id lease_expires_at lease_released_at close_requested_at closed_observed_at last_report_received_at close_confirmed close_confirmation_source provider_close_reason provider_close_reason_source app_end_reason provider_checkpoint_seconds provider_final_seconds provider_checkpoint_source provider_final_source usage_conflict usage_conflict_details observed_wall_ms setup_ms active_interpreter_ms visible_paused_ms last_checkpoint_at_interpreter_ready last_checkpoint_received_at estimated_total_seconds estimate_method_version estimate_as_of measurement_version activity_report_seq accepted_source_speech_ms completed_source_speech_ms speech_measurement_version speech_measurement_status app_metrics_finalized metrics_json usage_quality pricing_policy_version".split(" "),
-  live_session_recovery_fences: "id conversation_id cleanup_reason created_at".split(" "),
-} as const;
-
-function hasColumns(db: DatabaseSync, table: keyof typeof requiredColumns, version?: number): boolean {
-  const columns = new Set((db.prepare("PRAGMA table_info(" + table + ")").all() as { name: string }[]).map(column => column.name));
-  return requiredColumns[table].every(column => columns.has(column)) &&
-    (table !== "live_sessions" || version !== 3 || columns.has("usage_identity_version"));
+function schemaFingerprint(db: DatabaseSync): string {
+  const rows = db.prepare("SELECT type,name,sql FROM sqlite_schema WHERE name NOT GLOB 'sqlite_*' ORDER BY name")
+    .all() as { type: string; name: string; sql: string | null }[];
+  return JSON.stringify(rows.map(row => [row.type, row.name, row.sql?.replace(/\s+/g, " ").trim()]));
 }
 
-/** Checks one SQLite file without opening the ledger adapter, migrations, workers, or server. */
+function matchesLedgerSchema(db: DatabaseSync, version: number): boolean {
+  const expected = new DatabaseSync(":memory:");
+  try {
+    expected.exec(readFileSync(new URL("./migrations/001-usage-ledger.sql", import.meta.url), "utf8"));
+    if (version >= 2) expected.exec(readFileSync(new URL("./migrations/002-live-session-recovery-fences.sql", import.meta.url), "utf8"));
+    if (version === 3 || db.prepare("SELECT 1 FROM pragma_table_info('live_sessions') WHERE name='usage_identity_version'").get()) {
+      expected.exec(readFileSync(new URL("./migrations/003-usage-identity.sql", import.meta.url), "utf8"));
+    }
+    return schemaFingerprint(db) === schemaFingerprint(expected);
+  } finally { expected.close(); }
+}
+
+/** Checks one SQLite file read-only against the shipped migrations without starting the server. */
 export function verifyUsageDatabase(path: string): VerificationResult {
   let db: DatabaseSync;
   try { db = new DatabaseSync(path, { readOnly: true, timeout: 1000 }); }
@@ -44,8 +50,7 @@ export function verifyUsageDatabase(path: string): VerificationResult {
     const version = Number(db.prepare("PRAGMA user_version").get()!.user_version);
     if (version < 1) throw new SqliteMaintenanceError("ledger_schema_invalid");
     if (version > 3) throw new SqliteMaintenanceError("ledger_schema_unsupported");
-    if (!hasColumns(db, "conversations") || !hasColumns(db, "live_sessions", version) ||
-        (version >= 2 && !hasColumns(db, "live_session_recovery_fences"))) {
+    if (!matchesLedgerSchema(db, version)) {
       throw new SqliteMaintenanceError("ledger_schema_invalid");
     }
     return { integrity: "ok", foreignKeyViolations: 0, ledgerSchema: "compatible" };

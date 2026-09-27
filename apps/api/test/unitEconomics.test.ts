@@ -5,7 +5,7 @@ import { DEFAULT_LEDGER_POLICY } from "../src/accounting/types.js";
 import { usageReportSchema } from "../src/accounting/mergeUsage.js";
 import { openUsageDatabase } from "../src/persistence/database.js";
 import { buildUnitEconomicsReport } from "../src/reports/unitEconomics.js";
-import { estimateCurrentPriceScenario, estimateHistoricalCost, type PricingPolicy } from "../src/reports/pricingPolicy.js";
+import { assignPricingPolicyVersion, estimateCurrentPriceScenario, estimateHistoricalCost, type PricingPolicy } from "../src/reports/pricingPolicy.js";
 
 const databases: ReturnType<typeof openUsageDatabase>[] = [];
 afterEach(() => { for (const db of databases.splice(0)) if (db.isOpen) db.close(); });
@@ -213,21 +213,22 @@ describe("versioned pricing policy", () => {
 
   it("uses the effective historical version and keeps an explicit current-price scenario separate", () => {
     const source = { providerFinalSeconds: 120 };
-    const historical = estimateHistoricalCost(source.providerFinalSeconds, "gpt-live-1", 1500, null, policies);
+    const savedVersion = assignPricingPolicyVersion("gpt-live-1", 1500, policies);
+    const historical = estimateHistoricalCost(source.providerFinalSeconds, "gpt-live-1", 1500, savedVersion, policies);
     const current = estimateCurrentPriceScenario(source.providerFinalSeconds, "gpt-live-1", 2500, policies);
 
     expect(historical).toMatchObject({ status: "estimated", policyVersion: "synthetic-gpt-live-v1", currency: "USD", amountMinorUnits: "60" });
-    expect(estimateHistoricalCost(1, "gpt-live-1", 1500, null, policies)).toMatchObject({ amountMinorUnits: "1" });
+    expect(estimateHistoricalCost(1, "gpt-live-1", 1500, savedVersion, policies)).toMatchObject({ amountMinorUnits: "1" });
     expect(current).toMatchObject({ status: "estimated", policyVersion: "synthetic-gpt-live-v2", currency: "USD", amountMinorUnits: "180" });
     expect(source.providerFinalSeconds).toBe(120);
   });
 
   it("applies an explicit minimum billable duration and exposes synthetic evidence", () => {
     const policy = { ...policies[0]!, minimumBillableSeconds: 15 };
-    expect(estimateHistoricalCost(1, "gpt-live-1", 1500, null, [policy])).toMatchObject({
+    expect(estimateHistoricalCost(1, "gpt-live-1", 1500, policy.version, [policy])).toMatchObject({
       status: "estimated", usageSeconds: 1, billableSeconds: 15, amountMinorUnits: "8", minorUnitDigits: 2, evidenceKind: "synthetic", evidence: { kind: "synthetic" },
     });
-    expect(estimateHistoricalCost(120, "gpt-live-1", 1500, null, policies)).toMatchObject({
+    expect(estimateHistoricalCost(120, "gpt-live-1", 1500, policies[0]!.version, policies)).toMatchObject({
       billableSeconds: 120, amountMinorUnits: "60", evidenceKind: "synthetic",
     });
   });
@@ -259,6 +260,17 @@ describe("versioned pricing policy", () => {
       ] },
     });
     expect(f.ledger.getAttemptInternal(id).provider_final_seconds).toBe(120);
+  });
+
+  it("does not backdate a historical price for an attempt dispatched without a policy", () => {
+    const f = fixture(), c = f.conversation(), id = f.dispatched(c);
+    expect(f.ledger.getAttemptInternal(id).pricing_policy_version).toBeNull();
+    f.report(id, c.id, { providerClosed: { seconds: 120 } });
+    const backdated = { ...policies[0]!, effectiveFrom: f.now() - 1000 };
+    const report = buildUnitEconomicsReport(f.db, { from: f.now() - 1000, to: f.now() + 1000,
+      asOf: f.now(), generatedAt: f.now(), dataClass: "synthetic", pricingPolicies: [backdated] });
+    expect(report.pricing.historicalFinal).toMatchObject({ estimatedCount: 0, unavailableReasons: { missing_policy: 1 }, byPolicy: [] });
+    expect(report.pricing.currentPriceScenario).toMatchObject({ estimatedCount: 1, byPolicy: [{ policyVersion: backdated.version, amountMinorUnits: "60" }] });
   });
 
   it("does not fall forward when a saved historical policy is missing and never treats unknown usage as free", () => {

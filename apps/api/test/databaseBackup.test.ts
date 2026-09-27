@@ -173,7 +173,7 @@ describe("SQLite backup and restore", () => {
       .rejects.toBeInstanceOf(SqliteMaintenanceError);
     expect(verifyUsageDatabase(sourcePath)).toEqual({ integrity: "ok", foreignKeyViolations: 0, ledgerSchema: "compatible" });
   });
-  it("accepts supported ledger schemas and rejects empty, unrelated, incomplete and future databases", () => {
+  it("accepts supported ledger schemas and rejects empty, unrelated, incomplete and future databases", async () => {
     const directory = temporaryDirectory();
     const migrations = ["001-usage-ledger.sql", "002-live-session-recovery-fences.sql"];
     const createLedger = (name: string, version: number) => {
@@ -220,6 +220,23 @@ describe("SQLite backup and restore", () => {
 
     const legacyV2 = createLedger("legacy-v2.sqlite", 2);
     expect(verifyUsageDatabase(legacyV2)).toMatchObject({ integrity: "ok", foreignKeyViolations: 0 });
+
+    const originalDdl = readFileSync(new URL("../src/persistence/migrations/001-usage-ledger.sql", import.meta.url), "utf8");
+    for (const [name, constraint] of [["missing-check", " CHECK(version>=1)"],
+      ["missing-foreign-key", " REFERENCES conversations(id)"], ["missing-strict", " STRICT;"]] as const) {
+      const malformed = join(directory, name + ".sqlite");
+      db = new DatabaseSync(malformed);
+      db.exec(originalDdl.replace(constraint, constraint === " STRICT;" ? ";" : ""));
+      db.exec(readFileSync(new URL("../src/persistence/migrations/002-live-session-recovery-fences.sql", import.meta.url), "utf8"));
+      db.exec("PRAGMA user_version=2");
+      db.close();
+      expectError(malformed, "ledger_schema_invalid");
+      if (name === "missing-foreign-key") {
+        const target = join(directory, "malformed-backup.sqlite");
+        await expect(backupUsageDatabase(malformed, target)).rejects.toMatchObject({ code: "ledger_schema_invalid" });
+        expect(existsSync(target)).toBe(false);
+      }
+    }
 
     const incompleteV3 = createLedger("incomplete-v3.sqlite", 2);
     db = new DatabaseSync(incompleteV3);
