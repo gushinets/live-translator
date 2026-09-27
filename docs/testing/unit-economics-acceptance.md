@@ -63,4 +63,16 @@ Fresh local results from the isolated PR worktree:
 - Built maintenance CLI smoke — backup and restore each returned 23 pages; verify returned integrity ok, zero foreign-key violations, and compatible ledger schema. The zero-byte fixture failed with ledger_schema_invalid. The report CLI rejected 2026-02-31 with invalid_arguments and emitted valid JSON for a normal range. Inputs were disposable temporary files.
 - No provider endpoint, production database, VPS, paid call, deployment, or feature flag was used.
 
-Platform/browser category segmentation is explicitly deferred pending a privacy-reviewed allowlist; A6.3 remains incomplete for that dimension. The process tests do not establish power-loss durability. Fresh GitHub Actions CI evidence for the pushed PR head is recorded in the next follow-up once it completes.
+Platform/browser category segmentation is explicitly deferred pending a privacy-reviewed allowlist; A6.3 remains incomplete for that dimension. The process tests do not establish power-loss durability.
+
+The 56-file / 1136-test local run above was on `2a64ec8`, before the test-harness-only interruption-barrier correction. After that correction, the focused backup suite passed 12/12 locally. The local full-suite command then failed before test discovery because Vite could not write its generated config file (`EPERM`); the latest-source full suite passed in CI below.
+
+## Final GitHub Actions verification — PR #22 head `932478f6`
+
+[CI run #167](https://github.com/gushinets/live-translator/actions/runs/36306041591) passed on `932478f6fc30fb2501a011f1d21df2bba505ac9e`:
+
+- Quality job: frozen install, lint, typecheck, all 56 test files / 1136 tests, build, and production API smoke passed.
+- Deployment job: Compose validation, admission environment interpolation, image build, and disposable SQLite persistence passed.
+- Chromium and WebKit E2E jobs passed.
+
+The earlier run exposed a Linux-only test-harness race: `readSync()` on the child's stdin was not a reliable blocking barrier and could let cleanup remove the staged file. The harness now waits with `Atomics.wait()` and terminates the owned process with `SIGKILL`. The SQLite backup/restore implementation did not change in this correction.
