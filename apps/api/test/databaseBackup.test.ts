@@ -70,6 +70,7 @@ function childExit(child: ReturnType<typeof spawn>): Promise<[number | null, Nod
 }
 function terminateOwnedChild(child: ReturnType<typeof spawn>): Promise<[number | null, NodeJS.Signals | null]> {
   return new Promise((resolve, reject) => {
+    if (child.exitCode !== null || child.signalCode !== null) { resolve([child.exitCode, child.signalCode]); return; }
     const timer = setTimeout(() => reject(new Error("owned maintenance child did not exit")), 5000);
     child.once("exit", (code, signal) => { clearTimeout(timer); resolve([code, signal]); });
     if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
@@ -220,6 +221,12 @@ describe("SQLite backup and restore", () => {
     const legacyV2 = createLedger("legacy-v2.sqlite", 2);
     expect(verifyUsageDatabase(legacyV2)).toMatchObject({ integrity: "ok", foreignKeyViolations: 0 });
 
+    const incompleteV3 = createLedger("incomplete-v3.sqlite", 2);
+    db = new DatabaseSync(incompleteV3);
+    db.exec("PRAGMA user_version=3");
+    db.close();
+    expectError(incompleteV3, "ledger_schema_invalid");
+
     const legacyV3 = createLedger("legacy-v3.sqlite", 2);
     db = new DatabaseSync(legacyV3);
     db.exec(readFileSync(new URL("../src/persistence/migrations/003-usage-identity.sql", import.meta.url), "utf8"));
@@ -247,7 +254,7 @@ describe("SQLite backup and restore", () => {
     const directory = temporaryDirectory(), source = join(directory, "source.sqlite"), target = join(directory, "backup.sqlite");
     const db = openUsageDatabase(source);
     db.close();
-    const child = maintenanceChild(source, target, "before_copy", operation);
+    const child = maintenanceChild(source, target, "during_copy", operation);
     let boundary: Record<string, unknown> | undefined;
     try {
       boundary = await nextJsonLine(child);
@@ -257,9 +264,10 @@ describe("SQLite backup and restore", () => {
       await terminateOwnedChild(child);
     }
     expect(existsSync(target)).toBe(false);
-    expect(boundary?.boundary).toBe("staging_created");
-    expect(typeof boundary?.path).toBe("string");
-    expect(basename(String(boundary?.path)).startsWith(".live-translator-sqlite-maintenance-")).toBe(true);
+    expect(boundary?.boundary).toBe("copy_in_progress");
+    expect(Number(boundary?.pagesCopied)).toBeGreaterThan(0);
+    expect(Number(boundary?.remainingPages)).toBeGreaterThan(0);
+    expect(basename(dirname(String(boundary?.path))).startsWith(".live-translator-sqlite-maintenance-")).toBe(true);
     expect(existsSync(String(boundary?.path))).toBe(true);
   });
 

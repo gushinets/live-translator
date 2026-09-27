@@ -11,22 +11,6 @@ const marker = (boundary, path, extra = {}) => {
   Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0);
 };
 
-const originalMkdtempSync = fs.mkdtempSync;
-fs.mkdtempSync = function (prefix, ...args) {
-  const path = Reflect.apply(originalMkdtempSync, this, [prefix, ...args]);
-  if (mode === "before_copy" && String(prefix).includes(stagePrefix)) marker("staging_created", path);
-  return path;
-};
-
-const originalOpenSync = fs.openSync;
-fs.openSync = function (path, flags, ...args) {
-  const fd = Reflect.apply(originalOpenSync, this, [path, flags, ...args]);
-  if (mode === "before_copy" && flags === "wx" && resolve(String(path)) === target) {
-    marker("final_target_created", String(path));
-  }
-  return fd;
-};
-
 const originalLinkSync = fs.linkSync;
 fs.linkSync = function (existingPath, newPath, ...args) {
   if (mode === "unsupported_publish") {

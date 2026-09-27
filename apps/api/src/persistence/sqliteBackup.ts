@@ -26,9 +26,10 @@ const requiredColumns = {
   live_session_recovery_fences: "id conversation_id cleanup_reason created_at".split(" "),
 } as const;
 
-function hasColumns(db: DatabaseSync, table: keyof typeof requiredColumns): boolean {
+function hasColumns(db: DatabaseSync, table: keyof typeof requiredColumns, version?: number): boolean {
   const columns = new Set((db.prepare("PRAGMA table_info(" + table + ")").all() as { name: string }[]).map(column => column.name));
-  return requiredColumns[table].every(column => columns.has(column));
+  return requiredColumns[table].every(column => columns.has(column)) &&
+    (table !== "live_sessions" || version !== 3 || columns.has("usage_identity_version"));
 }
 
 /** Checks one SQLite file without opening the ledger adapter, migrations, workers, or server. */
@@ -43,7 +44,7 @@ export function verifyUsageDatabase(path: string): VerificationResult {
     const version = Number(db.prepare("PRAGMA user_version").get()!.user_version);
     if (version < 1) throw new SqliteMaintenanceError("ledger_schema_invalid");
     if (version > 3) throw new SqliteMaintenanceError("ledger_schema_unsupported");
-    if (!hasColumns(db, "conversations") || !hasColumns(db, "live_sessions") ||
+    if (!hasColumns(db, "conversations") || !hasColumns(db, "live_sessions", version) ||
         (version >= 2 && !hasColumns(db, "live_session_recovery_fences"))) {
       throw new SqliteMaintenanceError("ledger_schema_invalid");
     }
@@ -65,7 +66,7 @@ function publicationError(error: unknown, failureCode: FailureCode): SqliteMaint
 }
 
 /** Stages privately beside the target, verifies, then publishes atomically without replacing a path. */
-async function copyUsageDatabase(source: string, target: string, failureCode: FailureCode): Promise<MaintenanceResult> {
+async function copyUsageDatabase(source: string, target: string, failureCode: FailureCode, copy: typeof backup): Promise<MaintenanceResult> {
   if (samePath(source, target)) throw new SqliteMaintenanceError("same_path");
   let sourceDb: DatabaseSync;
   try { sourceDb = new DatabaseSync(source, { readOnly: true, timeout: 1000 }); }
@@ -78,7 +79,7 @@ async function copyUsageDatabase(source: string, target: string, failureCode: Fa
     mkdirSync(targetDirectory, { recursive: true, mode: 0o700 });
     stagingDirectory = mkdtempSync(join(targetDirectory, ".live-translator-sqlite-maintenance-"));
     const stagingPath = join(stagingDirectory, "snapshot.sqlite");
-    const pages = await backup(sourceDb, stagingPath);
+    const pages = await copy(sourceDb, stagingPath);
     chmodSync(stagingPath, 0o600);
     const verified = verifyUsageDatabase(stagingPath);
     try { linkSync(stagingPath, targetPath); }
@@ -102,11 +103,11 @@ async function copyUsageDatabase(source: string, target: string, failureCode: Fa
 }
 
 /** Uses SQLite's online backup API so committed WAL pages are included in one coherent snapshot. */
-export function backupUsageDatabase(source: string, target: string): Promise<MaintenanceResult> {
-  return copyUsageDatabase(source, target, "backup_failed");
+export function backupUsageDatabase(source: string, target: string, copy: typeof backup = backup): Promise<MaintenanceResult> {
+  return copyUsageDatabase(source, target, "backup_failed", copy);
 }
 
 /** Restores a coherent SQLite snapshot to a new path; existing targets are never replaced. */
-export function restoreUsageDatabase(source: string, target: string): Promise<MaintenanceResult> {
-  return copyUsageDatabase(source, target, "restore_failed");
+export function restoreUsageDatabase(source: string, target: string, copy: typeof backup = backup): Promise<MaintenanceResult> {
+  return copyUsageDatabase(source, target, "restore_failed", copy);
 }

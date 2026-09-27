@@ -76,3 +76,7 @@ The 56-file / 1136-test local run above was on `2a64ec8`, before the test-harnes
 - Chromium and WebKit E2E jobs passed.
 
 The earlier run exposed a Linux-only test-harness race: `readSync()` on the child's stdin was not a reliable blocking barrier and could let cleanup remove the staged file. The harness now waits with `Atomics.wait()` and terminates the owned process with `SIGKILL`. The SQLite backup/restore implementation did not change in this correction.
+
+## PR #22 review follow-up — 2026-09-27
+
+The schema verifier now rejects a v2 ledger relabeled as v3 without `live_sessions.usage_identity_version`. The process-stop test now uses SQLite backup progress with one page per step and stops both backup and restore only after at least one page was copied and while pages remain; the private staged file exists and the final target does not. The focused backup suite passed 12/12 locally, along with API typecheck and lint. These checks use disposable databases and do not establish power-loss durability.

@@ -85,3 +85,12 @@ the full suite. Its prior stdin `readSync()` barrier was not reliable on Linux;
 production backup/restore code changed in this test-only correction. These CI
 checks use disposable data and do not establish power-loss durability or a
 production restore.
+
+## PR #22 reviewer follow-up — 2026-09-27
+
+The verifier rejects a synthetic v2 ledger whose `user_version` is changed to
+3 without the v3 `usage_identity_version` column. Backup and restore process
+tests now stop after SQLite reports copied pages with pages still remaining;
+the staged file exists while the final target is absent. The focused backup
+suite passed 12/12 locally, and API typecheck and lint passed. No production
+file or provider was used.
