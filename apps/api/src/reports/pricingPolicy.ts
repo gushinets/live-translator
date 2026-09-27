@@ -17,6 +17,8 @@ export type CostEstimate = Readonly<{
   model: string;
   currency: string;
   unit: "provider_minute";
+  rateMinorUnitsPerMinute: number;
+  effectiveFrom: number;
   amountMinorUnits: string;
   minorUnitDigits: number;
   usageSeconds: number;
@@ -85,6 +87,7 @@ function cost(seconds: number | null, policy: PricingPolicy | null): CostEstimat
   const divisor = denominator * 60n;
   const amountMinorUnits = (numerator * BigInt(policy.rateMinorUnitsPerMinute) + divisor / 2n) / divisor;
   return { status: "estimated", policyVersion: policy.version, model: policy.model, currency: policy.currency, unit: policy.unit,
+    rateMinorUnitsPerMinute: policy.rateMinorUnitsPerMinute, effectiveFrom: policy.effectiveFrom,
     amountMinorUnits: amountMinorUnits.toString(), minorUnitDigits: policy.minorUnitDigits, usageSeconds: seconds, billableSeconds, evidenceKind: policy.evidence.kind, evidence: policy.evidence,
     minimumBillableSeconds: policy.minimumBillableSeconds, rounding: policy.rounding };
 }

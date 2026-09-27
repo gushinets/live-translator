@@ -207,11 +207,20 @@ function pricingSummary(rows: readonly SessionRow[], asOf: number, policies: rea
         : estimateCurrentPriceScenario(seconds, row.model, asOf, policies);
     });
     const unavailable: string[] = [];
-    const byPolicy = new Map<string, { policyVersion: string; model: string; currency: string; minorUnitDigits: number; evidenceKind: "synthetic" | "verified"; evidence: PricingPolicy["evidence"]; minimumBillableSeconds: number; amountMinorUnits: bigint; count: number }>();
+    const byPolicy = new Map<string, { policyVersion: string; model: string; currency: string; unit: "provider_minute";
+      rateMinorUnitsPerMinute: number; effectiveFrom: number; rounding: "half_up_minor_unit"; roundingScope: "per_attempt";
+      minorUnitDigits: number; evidenceKind: "synthetic" | "verified"; evidence: PricingPolicy["evidence"];
+      minimumBillableSeconds: number; usageSeconds: number; billableSeconds: number; amountMinorUnits: bigint; count: number }>();
     for (const result of results) {
       if (result.status === "unavailable") { unavailable.push(result.reason); continue; }
       const key = `${result.policyVersion}\0${result.currency}\0${result.model}`;
-      const group = byPolicy.get(key) ?? { policyVersion: result.policyVersion, model: result.model, currency: result.currency, minorUnitDigits: result.minorUnitDigits, evidenceKind: result.evidenceKind, evidence: result.evidence, minimumBillableSeconds: result.minimumBillableSeconds, amountMinorUnits: 0n, count: 0 };
+      const group = byPolicy.get(key) ?? { policyVersion: result.policyVersion, model: result.model, currency: result.currency,
+        unit: result.unit, rateMinorUnitsPerMinute: result.rateMinorUnitsPerMinute, effectiveFrom: result.effectiveFrom,
+        rounding: result.rounding, roundingScope: "per_attempt" as const, minorUnitDigits: result.minorUnitDigits,
+        evidenceKind: result.evidenceKind, evidence: result.evidence, minimumBillableSeconds: result.minimumBillableSeconds,
+        usageSeconds: 0, billableSeconds: 0, amountMinorUnits: 0n, count: 0 };
+      group.usageSeconds += result.usageSeconds;
+      group.billableSeconds += result.billableSeconds;
       group.amountMinorUnits += BigInt(result.amountMinorUnits);
       group.count++;
       byPolicy.set(key, group);

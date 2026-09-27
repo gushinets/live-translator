@@ -233,6 +233,22 @@ describe("versioned pricing policy", () => {
     });
   });
 
+  it("keeps the billing basis and per-attempt rounding in policy aggregates", () => {
+    const policy = { ...policies[0]!, minimumBillableSeconds: 15 };
+    const f = fixture([policy]);
+    for (let index = 0; index < 2; index++) {
+      const c = f.conversation(), id = f.dispatched(c);
+      f.report(id, c.id, { providerClosed: { seconds: 1 } });
+    }
+    const report = buildUnitEconomicsReport(f.db, { from: f.now() - 1000, to: f.now() + 1000,
+      asOf: f.now(), generatedAt: f.now(), dataClass: "synthetic", pricingPolicies: [policy] });
+    for (const basis of [report.pricing.historicalFinal, report.pricing.currentPriceScenario]) {
+      expect(basis.byPolicy).toMatchObject([{ policyVersion: policy.version, count: 2, usageSeconds: 2,
+        billableSeconds: 30, amountMinorUnits: "16", unit: "provider_minute", rounding: "half_up_minor_unit",
+        roundingScope: "per_attempt", rateMinorUnitsPerMinute: 30, effectiveFrom: policy.effectiveFrom }]);
+    }
+  });
+
   it("rejects two versions activated for the same model at the same time", () => {
     const ambiguous = [policies[0]!, { ...policies[1]!, effectiveFrom: policies[0]!.effectiveFrom }];
     expect(() => estimateCurrentPriceScenario(120, "gpt-live-1", 2500, ambiguous))
