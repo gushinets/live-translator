@@ -5,6 +5,7 @@ export type PricingPolicy = Readonly<{
   minorUnitDigits: number;
   unit: "provider_minute";
   rateMinorUnitsPerMinute: number;
+  minimumBillableSeconds: number;
   effectiveFrom: number;
   rounding: "half_up_minor_unit";
   evidence: Readonly<{ kind: "synthetic" } | { kind: "verified"; sourceUrl: string; checkedAt: number }>;
@@ -17,7 +18,12 @@ export type CostEstimate = Readonly<{
   currency: string;
   unit: "provider_minute";
   amountMinorUnits: string;
+  minorUnitDigits: number;
   usageSeconds: number;
+  billableSeconds: number;
+  evidenceKind: "synthetic" | "verified";
+  evidence: PricingPolicy["evidence"];
+  minimumBillableSeconds: number;
   rounding: "half_up_minor_unit";
 }> | Readonly<{ status: "unavailable"; reason: "unknown_usage" | "missing_policy" }>;
 
@@ -30,6 +36,7 @@ function validatePolicies(policies: readonly PricingPolicy[]): void {
     if (!policy.version || !policy.model || !/^[A-Z]{3}$/.test(policy.currency) ||
         !Number.isSafeInteger(policy.minorUnitDigits) || policy.minorUnitDigits < 0 || policy.minorUnitDigits > 6 ||
         !Number.isSafeInteger(policy.rateMinorUnitsPerMinute) || policy.rateMinorUnitsPerMinute < 0 ||
+        !Number.isSafeInteger(policy.minimumBillableSeconds) || policy.minimumBillableSeconds < 0 ||
         !Number.isSafeInteger(policy.effectiveFrom) || policy.effectiveFrom < 0 ||
         policy.unit !== "provider_minute" || policy.rounding !== "half_up_minor_unit") {
       throw new Error("invalid_pricing_policy");
@@ -69,11 +76,13 @@ function cost(seconds: number | null, policy: PricingPolicy | null): CostEstimat
   if (seconds === null) return { status: "unavailable", reason: "unknown_usage" };
   if (!Number.isFinite(seconds) || seconds < 0) throw new Error("invalid_provider_seconds");
   if (!policy) return { status: "unavailable", reason: "missing_policy" };
-  const { numerator, denominator } = decimalFraction(seconds);
+  const billableSeconds = Math.max(seconds, policy.minimumBillableSeconds);
+  const { numerator, denominator } = decimalFraction(billableSeconds);
   const divisor = denominator * 60n;
   const amountMinorUnits = (numerator * BigInt(policy.rateMinorUnitsPerMinute) + divisor / 2n) / divisor;
   return { status: "estimated", policyVersion: policy.version, model: policy.model, currency: policy.currency, unit: policy.unit,
-    amountMinorUnits: amountMinorUnits.toString(), usageSeconds: seconds, rounding: policy.rounding };
+    amountMinorUnits: amountMinorUnits.toString(), minorUnitDigits: policy.minorUnitDigits, usageSeconds: seconds, billableSeconds, evidenceKind: policy.evidence.kind, evidence: policy.evidence,
+    minimumBillableSeconds: policy.minimumBillableSeconds, rounding: policy.rounding };
 }
 
 export function assignPricingPolicyVersion(model: string, dispatchedAt: number, policies: readonly PricingPolicy[] = PRICING_POLICIES): string | null {

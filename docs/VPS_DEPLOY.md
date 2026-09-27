@@ -507,7 +507,7 @@ timezone. The report’s `asOf` defaults to execution time and can be fixed with
 or cleanup work. Monetary policies remain uncalibrated until supported by
 verified source and external usage evidence; `invoiceTotal` is always null.
 
-An online backup is coherent with SQLite WAL and refuses an existing target:
+An online backup includes committed SQLite WAL pages. The maintenance CLI writes into a private staging directory beside the requested target, verifies the staged copy, then publishes it with an atomic hard link that never replaces an existing path. The target name appears only after verification. The JSON result includes stagingCleanup=complete or stagingCleanup=pending:
 
 ```bash
 docker compose --env-file .env -f infra/docker-compose.yml exec api \
@@ -517,12 +517,33 @@ docker compose --env-file .env -f infra/docker-compose.yml exec api \
   node scripts/sqlite-maintenance.mjs verify --db /data/backups/live-translator-2026-09-26.sqlite
 ```
 
-Restore copies only to a new path and verifies SQLite integrity and foreign-key
-consistency. A production restore requires stopping the writer, preserving a
-separate emergency copy, verifying the restored database, and an independently
-approved path switch. The CLI never overwrites or swaps the active database.
-Do not start provider creates from restored active records; existing recovery
-and cleanup obligations remain under the API lifecycle. No production backup or
+Restore copies only to a new path and verifies SQLite integrity, foreign keys,
+and the required ledger tables/columns for schema versions 1 through 3. Verify
+is read-only: it does not start the server, migrate, reconcile, or repair data.
+It proves structural/integrity compatibility, not that the operator selected
+the right database, date range, or backup contents.
+
+An interrupted operation can leave a directory whose name starts with
+.live-translator-sqlite-maintenance-. Treat it as incomplete staging, never as
+a backup. Before publication the requested target is absent; retrying the same
+target creates a fresh private stage and does not remove earlier stages. Do not
+glob-delete these directories. Inspect and remove only a confirmed inactive
+staging directory.
+
+Publication requires hard-link support in the filesystem containing the
+target. The stage is created beside the target to keep both paths on one
+filesystem. If the filesystem rejects hard-link publication as unsupported, the command
+fails with publication_unsupported and does not fall back to copy or rename.
+On POSIX, the staging directory and file use restrictive 0700/0600 modes.
+Windows access control comes from inherited ACLs; Node chmod is not an ACL
+editor. Process-stop tests cover interruption boundaries, but this code does
+not promise power-loss durability or claim explicit file-and-directory fsync.
+
+A production restore requires stopping the writer, preserving a separate
+emergency copy, verifying the restored database, and an independently approved
+path switch. The CLI never overwrites or swaps the active database. Do not
+start provider creates from restored active records; existing recovery and
+cleanup obligations remain under the API lifecycle. No production backup or
 restore was performed for this change.
 
 Rolling back the reporting/maintenance release requires no schema rollback.

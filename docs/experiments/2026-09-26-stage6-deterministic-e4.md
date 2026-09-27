@@ -36,7 +36,6 @@ called.
   dispatched case kept its durable cleanup fence and did not invent close data.
 - CLI smoke on a separate empty temporary database produced
   `unit-economics-v1` JSON. Online backup and restore each returned 23 pages;
-  verify then reported
   verify reported `integrity: ok` and `foreignKeyViolations: 0`. A separate
   controlled destination-path failure left the source readable and an existing
   target unchanged. No disk was filled.
@@ -56,3 +55,24 @@ price and short-session calibration and E3 physical-device checks remain
 `NOT_RUN` / `EXTERNAL_GATE`. Gate G3 and production rollout remain open. The
 monetary catalog is intentionally empty until current primary-source pricing
 and E2 evidence can be attached. `BACKGROUND_SESSION_CLOSE_ENABLED=false`.
+
+## PR #22 backup/restore interruption follow-up — 2026-09-27
+
+On the Windows isolated worktree, Node 24.18.0 process tests stopped the
+backup and restore child after private staging creation, before publication,
+and after publication. Before publication, the target path stayed absent and
+the interrupted directory remained clearly named staging; retry created a
+valid target without touching the old stage. After publication, the target
+passed read-only ledger verification and retained the synthetic conversation
+row when the child was stopped during cleanup. A target created at the publish
+boundary was preserved, cleanup failure returned an explicit pending status,
+and invalid schema verification removed only the operation-owned stage. These
+tests cover process termination, not power loss or production files.
+
+The final local PR #22 regression run on 2026-09-27 passed 56 files / 1136
+tests, repository typecheck, lint and build, and the G1 synthetic report. The
+CLI smoke used only a disposable initialized ledger: backup and restore each
+returned 23 pages, verify accepted the result, zero-byte verification failed
+closed with a schema error, and the report CLI rejected an impossible date.
+Compose, API production smoke, SQLite persistence, Chromium and WebKit results
+are recorded against the pushed commit after fresh CI completes.

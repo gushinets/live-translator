@@ -84,6 +84,34 @@ describe("cross-conversation unit economics", () => {
     expect(JSON.stringify(result)).not.toMatch(/anonymous_user_id|request_fingerprint|provider-[a-f0-9-]+/);
   });
 
+  it("includes every attempt linked to the selected conversation and reports sessions per conversation", () => {
+    const f = fixture();
+    const to = Date.UTC(2026, 8, 26);
+    f.setNow(to - 1000);
+    f.conversation();
+    const c = f.conversation(), firstId = f.dispatched(c);
+    f.report(firstId, c.id, { providerClosed: { seconds: 120 }, app: appMetrics });
+    const paused = f.ledger.pauseConversation(owner, c.id, c.version);
+
+    f.setNow(to + 1000);
+    const resumeId = randomUUID();
+    const claim = f.ledger.claimResume(owner, c.id, paused.version, resumeId, "setup", 1);
+    f.ledger.registerAttempt(owner, { liveSessionId: resumeId, conversationId: c.id, conversationVersion: claim.conversation.version,
+      initialMode: "setup", startReason: "resume", fingerprint: "synthetic-resume" });
+    f.ledger.dispatchProviderAttempt(owner, resumeId, claim.conversation.version, "resume-lease", f.now() + 900000);
+    f.ledger.recordProviderCreated(resumeId, "resume-provider");
+    f.ledger.acknowledgeHandoff(owner, resumeId);
+    f.report(resumeId, c.id, { providerClosed: { seconds: 30 }, app: appMetrics });
+
+    const result = buildUnitEconomicsReport(f.db, { from: to - 60000, to, asOf: to + 1000, generatedAt: to + 1000, dataClass: "synthetic" });
+    expect(result.selection.attempts).toBe("all attempts linked to selected conversations");
+    expect(result.sample).toMatchObject({ conversations: 2, attempts: 2, dispatchedAttempts: 2 });
+    expect(result.usage.finalSeconds).toBe(150);
+    expect(result.ratios.providerSecondsPerActiveMinute.value).toBe(75);
+    expect(result.ratios.providerSecondsPerAcceptedSpeechMinute.value).toBe(150);
+    expect(result.distributions.providerSecondsPerConversation).toMatchObject({ mean: 150, sampleSize: 1 });
+    expect(result.distributions.sessionsPerConversation).toMatchObject({ mean: 1, median: 1, p95: 2, sampleSize: 2 });
+  });
   it("keeps missing, zero and incomplete measurements distinct and does not reconcile during reads", () => {
     const f = fixture();
     const c = f.conversation(), id = f.dispatched(c);
@@ -137,9 +165,9 @@ describe("cross-conversation unit economics", () => {
 describe("versioned pricing policy", () => {
   const policies: readonly PricingPolicy[] = [
     { version: "synthetic-gpt-live-v1", model: "gpt-live-1", currency: "USD", minorUnitDigits: 2, unit: "provider_minute",
-      rateMinorUnitsPerMinute: 30, effectiveFrom: 1000, rounding: "half_up_minor_unit", evidence: { kind: "synthetic" } },
+      rateMinorUnitsPerMinute: 30, minimumBillableSeconds: 0, effectiveFrom: 1000, rounding: "half_up_minor_unit", evidence: { kind: "synthetic" } },
     { version: "synthetic-gpt-live-v2", model: "gpt-live-1", currency: "USD", minorUnitDigits: 2, unit: "provider_minute",
-      rateMinorUnitsPerMinute: 90, effectiveFrom: 2000, rounding: "half_up_minor_unit", evidence: { kind: "synthetic" } },
+      rateMinorUnitsPerMinute: 90, minimumBillableSeconds: 0, effectiveFrom: 2000, rounding: "half_up_minor_unit", evidence: { kind: "synthetic" } },
   ];
 
   it("uses the effective historical version and keeps an explicit current-price scenario separate", () => {
@@ -153,6 +181,15 @@ describe("versioned pricing policy", () => {
     expect(source.providerFinalSeconds).toBe(120);
   });
 
+  it("applies an explicit minimum billable duration and exposes synthetic evidence", () => {
+    const policy = { ...policies[0]!, minimumBillableSeconds: 15 };
+    expect(estimateHistoricalCost(1, "gpt-live-1", 1500, null, [policy])).toMatchObject({
+      status: "estimated", usageSeconds: 1, billableSeconds: 15, amountMinorUnits: "8", minorUnitDigits: 2, evidenceKind: "synthetic", evidence: { kind: "synthetic" },
+    });
+    expect(estimateHistoricalCost(120, "gpt-live-1", 1500, null, policies)).toMatchObject({
+      billableSeconds: 120, amountMinorUnits: "60", evidenceKind: "synthetic",
+    });
+  });
   it("keeps the dispatch-time policy for a late final and reports current price separately", () => {
     const policyChangesAt = Date.UTC(2026, 8, 26);
     const datedPolicies: readonly PricingPolicy[] = [
@@ -168,10 +205,10 @@ describe("versioned pricing policy", () => {
       asOf: f.now(), generatedAt: f.now(), dataClass: "synthetic", pricingPolicies: datedPolicies });
     expect(report.pricing).toMatchObject({ invoiceTotal: null, rawUsageUnchanged: true,
       historicalFinal: { basis: "provider_final_seconds_only", byPolicy: [
-        { policyVersion: policies[0]!.version, amountMinorUnits: "60" },
+        { policyVersion: policies[0]!.version, amountMinorUnits: "60", minorUnitDigits: 2, evidenceKind: "synthetic", evidence: { kind: "synthetic" }, minimumBillableSeconds: 0 },
       ] },
       currentPriceScenario: { basis: "provider_final_seconds_only", byPolicy: [
-        { policyVersion: policies[1]!.version, amountMinorUnits: "180" },
+        { policyVersion: policies[1]!.version, amountMinorUnits: "180", minorUnitDigits: 2, evidenceKind: "synthetic", evidence: { kind: "synthetic" }, minimumBillableSeconds: 0 },
       ] },
     });
     expect(f.ledger.getAttemptInternal(id).provider_final_seconds).toBe(120);

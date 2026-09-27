@@ -88,8 +88,17 @@ function distribution(conversations: readonly { summary: ReturnType<typeof conve
   const middle = Math.floor(values.length / 2);
   const median = values.length === 0 ? null : values.length % 2 ? values[middle]! : (values[middle - 1]! + values[middle]!) / 2;
   const p95 = values.length === 0 ? null : values[Math.ceil(0.95 * values.length) - 1]!;
-  return { mean: values.length ? sum(values) / values.length : null, median, p95, sampleSize: values.length,
-    percentileMethod: "nearest_rank_ceil_0.95n", excludedReasons: count(excluded) };
+  const sessions = conversations.map(({ rows }) => rows.length).sort((a, b) => a - b);
+  const sessionMiddle = Math.floor(sessions.length / 2);
+  const sessionMedian = sessions.length === 0 ? null : sessions.length % 2
+    ? sessions[sessionMiddle]! : (sessions[sessionMiddle - 1]! + sessions[sessionMiddle]!) / 2;
+  const sessionP95 = sessions.length === 0 ? null : sessions[Math.ceil(0.95 * sessions.length) - 1]!;
+  return {
+    providerSecondsPerConversation: { mean: values.length ? sum(values) / values.length : null, median, p95, sampleSize: values.length,
+      percentileMethod: "nearest_rank_ceil_0.95n", excludedReasons: count(excluded) },
+    sessionsPerConversation: { mean: sessions.length ? sum(sessions) / sessions.length : null, median: sessionMedian,
+      p95: sessionP95, sampleSize: sessions.length, percentileMethod: "nearest_rank_ceil_0.95n" },
+  };
 }
 
 type RatioMetric = "active" | "accepted" | "completed";
@@ -198,11 +207,11 @@ function pricingSummary(rows: readonly SessionRow[], asOf: number, policies: rea
         : estimateCurrentPriceScenario(seconds, row.model, asOf, policies);
     });
     const unavailable: string[] = [];
-    const byPolicy = new Map<string, { policyVersion: string; model: string; currency: string; amountMinorUnits: bigint; count: number }>();
+    const byPolicy = new Map<string, { policyVersion: string; model: string; currency: string; minorUnitDigits: number; evidenceKind: "synthetic" | "verified"; evidence: PricingPolicy["evidence"]; minimumBillableSeconds: number; amountMinorUnits: bigint; count: number }>();
     for (const result of results) {
       if (result.status === "unavailable") { unavailable.push(result.reason); continue; }
       const key = `${result.policyVersion}\0${result.currency}\0${result.model}`;
-      const group = byPolicy.get(key) ?? { policyVersion: result.policyVersion, model: result.model, currency: result.currency, amountMinorUnits: 0n, count: 0 };
+      const group = byPolicy.get(key) ?? { policyVersion: result.policyVersion, model: result.model, currency: result.currency, minorUnitDigits: result.minorUnitDigits, evidenceKind: result.evidenceKind, evidence: result.evidence, minimumBillableSeconds: result.minimumBillableSeconds, amountMinorUnits: 0n, count: 0 };
       group.amountMinorUnits += BigInt(result.amountMinorUnits);
       group.count++;
       byPolicy.set(key, group);
@@ -221,9 +230,8 @@ function readReport(db: DatabaseSync, options: UnitEconomicsOptions) {
   }
   const conversations = db.prepare("SELECT * FROM conversations WHERE created_at>=? AND created_at<? ORDER BY created_at,id")
     .all(options.from, options.to) as unknown as ConversationRow[];
-  const allAttempts = db.prepare(`SELECT s.* FROM live_sessions AS s JOIN conversations AS c ON c.id=s.conversation_id
-    WHERE c.created_at>=? AND c.created_at<? AND s.creation_requested_at>=? AND s.creation_requested_at<?
-    ORDER BY s.conversation_id,s.generation`).all(options.from, options.to, options.from, options.to) as unknown as SessionRow[];
+  const allAttempts = db.prepare("SELECT s.* FROM live_sessions AS s JOIN conversations AS c ON c.id=s.conversation_id WHERE c.created_at>=? AND c.created_at<? ORDER BY s.conversation_id,s.generation")
+    .all(options.from, options.to) as unknown as SessionRow[];
   const policyMetadata = validateMetadata(conversations, allAttempts);
   const byConversation = new Map<string, SessionRow[]>();
   for (const row of allAttempts) {
@@ -265,7 +273,7 @@ function readReport(db: DatabaseSync, options: UnitEconomicsOptions) {
   return {
     reportVersion: "unit-economics-v1", generatedAt: iso(options.generatedAt), asOf: iso(options.asOf), dataClass: options.dataClass,
     selection: { timezone: "UTC", interval: { from: iso(options.from), to: iso(options.to) }, lowerInclusive: true, upperExclusive: true,
-      conversations: "created_at in [from,to)", attempts: "creation_requested_at in [from,to) for selected conversations",
+      conversations: "created_at in [from,to)", attempts: "all attempts linked to selected conversations",
       databaseScope: "one explicitly supplied SQLite database; product and experimental databases are reported separately" },
     sample: { conversations: conversations.length, attempts: allAttempts.length, dispatchedAttempts: dispatchedRows.length,
       notDispatchedAttempts: allAttempts.length - dispatchedRows.length },
@@ -302,7 +310,7 @@ function readReport(db: DatabaseSync, options: UnitEconomicsOptions) {
           unit: "provider_seconds_per_accepted_speech_second" };
       })(),
     },
-    distributions: { providerSecondsPerConversation: distribution(infos) },
+    distributions: distribution(infos),
     cleanup,
     versions: { app: count(allAttempts.map(row => row.app_version)), model: count(allAttempts.map(row => row.model)),
       conversationPolicy: count(conversations.map(row => row.conversation_policy_version)),

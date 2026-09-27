@@ -42,6 +42,20 @@ Backup использует coherent SQLite procedure и проверяется 
 | A6.8 | Pending resuming без клиентских сообщений, claim expiry, maintenance и restart | Пока handoff/claim deadlines valid, PR-2 restart classifier сохраняет result-committed provisional/handed-off pending resume. По claim/retention/product deadline `expireResumeClaim()` atomically: no-dispatch→failed; dispatched non-terminal→cleanup marker/closing (`resume_claim_expired` first reason, next=now if known ID), затем paused/ended с исходным retention. Reconciliation показывает cleanup pending/unknown без fake close/final; lease release не считается provider termination. Late final обогащает record, late handoff/complete продукт не активируют. |
 | A6.9 | Synthetic final=120 s, active=60000 ms, accepted=30000 ms, completed=20000 ms; затем missing/zero/partial samples | Ratios 120/240/360 provider seconds на соответствующую минуту; provider seconds/accepted seconds=4. Missing/zero дают NULL, partial показывается отдельно; denominator method/version, app-finalization и cohort coverage видны. Completed-source proxy не назван доказанной semantic quality. |
 
+## PR #22 review follow-up — acceptance scope
+
+A6.3 is implemented for app/policy/model/measurement dimensions, but its
+platform/browser category dimension is deferred. There is no privacy-reviewed
+allowlist in the current API data model. Do not add raw user-agent strings or
+fingerprints to satisfy the report. A6.3 remains incomplete for this segment
+until a separate allowlisted collection contract is approved and implemented;
+the current Stage 6 report documents this limitation.
+
+A6.5 now requires private same-filesystem staging, integrity/foreign-key/schema
+verification before atomic no-overwrite publication, and tests for interruption
+before copy completion, before publication, after publication, target races,
+cleanup failure, invalid schema, retry, and concurrent target creation. A6.6
+includes strict calendar-date parsing for report CLI ranges.
 ## Последовательность работ
 
 

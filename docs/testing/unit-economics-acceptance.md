@@ -49,3 +49,18 @@ valid late usage, and retain pending cleanup/recovery records. Restore never
 replaces an active DB path and does not dispatch provider creates. The background
 close flag remains false; no merge, deployment, production flag change, or
 production data operation was performed.
+
+## PR #22 follow-up verification — 2026-09-27 (Asia/Novosibirsk, UTC+07:00)
+
+Fresh local results from the isolated PR worktree:
+
+- pnpm install --frozen-lockfile — PASS; lockfile unchanged.
+- pnpm test — PASS, 56 files / 1136 tests.
+- pnpm typecheck and pnpm lint — PASS.
+- pnpm build — PASS; the existing web chunk-size advisory remains.
+- node apps/api/scripts/g1-mock-report.mjs — PASS, synthetic 120/240/360 ratios and accepted-second ratio 4.
+- Focused backup/report/CLI regressions — PASS, 24 tests. They cover process stop during backup and restore, private staging before publication, preserved target after publication, no-overwrite race, unavailable hard links, cleanup failure, failed schema verification/retry, v1/v2/v3 read-only verification, linked late attempts, empty-conversation session distribution, explicit minimum billable duration/evidence, and impossible calendar dates.
+- Built maintenance CLI smoke — backup and restore each returned 23 pages; verify returned integrity ok, zero foreign-key violations, and compatible ledger schema. The zero-byte fixture failed with ledger_schema_invalid. The report CLI rejected 2026-02-31 with invalid_arguments and emitted valid JSON for a normal range. Inputs were disposable temporary files.
+- No provider endpoint, production database, VPS, paid call, deployment, or feature flag was used.
+
+Platform/browser category segmentation is explicitly deferred pending a privacy-reviewed allowlist; A6.3 remains incomplete for that dimension. The process tests do not establish power-loss durability. Fresh GitHub Actions CI evidence for the pushed PR head is recorded in the next follow-up once it completes.

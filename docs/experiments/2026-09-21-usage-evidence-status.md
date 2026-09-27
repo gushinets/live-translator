@@ -9,6 +9,7 @@ restore или billing evidence.
 
 Итоговый regression run завершён 2026-09-27 (Asia/Novosibirsk, UTC+07:00): 56 test files / 1123 tests.
 Протокол и область этих проверок не изменяют внешние gates.
+Дополнение 2026-09-27: после backup/restore regression fixes итоговый локальный запуск дал 56 файлов / 1136 тестов. Новые проверки и ограничения записаны в acceptance и deterministic E4 follow-up; E1/E2/E3/G3 остались без изменений.
 
 ## E1 — первичный background experiment
 

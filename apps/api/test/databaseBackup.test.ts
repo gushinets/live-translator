@@ -1,6 +1,9 @@
 import { randomUUID } from "node:crypto";
-import { mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { spawn } from "node:child_process";
+import { DatabaseSync } from "node:sqlite";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { basename, dirname, join } from "node:path";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { tmpdir } from "node:os";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { UsageLedger } from "../src/accounting/UsageLedger.js";
@@ -22,6 +25,56 @@ const temporaryDirectory = () => {
   directories.push(directory);
   return directory;
 };
+
+function maintenanceChild(source: string, target: string, mode: string, operation = "backup", extra: Record<string, string> = {}) {
+  const root = fileURLToPath(new URL("../../..", import.meta.url));
+  const loader = fileURLToPath(new URL("../node_modules/tsx/dist/loader.mjs", import.meta.url));
+  const hook = fileURLToPath(new URL("./helpers/sqliteMaintenanceProcessHook.mjs", import.meta.url));
+  const entry = fileURLToPath(new URL("./helpers/sqliteMaintenanceProcessChild.mjs", import.meta.url));
+  const env = Object.fromEntries(Object.entries(process.env).filter(([name]) =>
+    ["PATH", "Path", "SystemRoot", "WINDIR", "TEMP", "TMP"].includes(name)));
+  return spawn(process.execPath, ["--import", pathToFileURL(loader).href, "--import", pathToFileURL(hook).href, entry], {
+    cwd: root, stdio: ["pipe", "pipe", "pipe"],
+    env: { ...env, ...extra, LT_SQLITE_TEST_BOUNDARY: mode, LT_SQLITE_TEST_OPERATION: operation, LT_SQLITE_TEST_SOURCE: source, LT_SQLITE_TEST_TARGET: target },
+  });
+}
+
+function nextJsonLine(child: ReturnType<typeof spawn>): Promise<Record<string, unknown>> {
+  return new Promise((resolve, reject) => {
+    let output = "";
+    const timer = setTimeout(() => { cleanup(); reject(new Error("maintenance child boundary timeout")); }, 10000);
+    const onData = (chunk: Buffer) => {
+      output += chunk.toString("utf8");
+      const newline = output.indexOf("\n");
+      if (newline < 0) return;
+      cleanup();
+      try { resolve(JSON.parse(output.slice(0, newline)) as Record<string, unknown>); }
+      catch { reject(new Error("maintenance child emitted an invalid boundary")); }
+    };
+    const onExit = (code: number | null, signal: NodeJS.Signals | null) => {
+      cleanup();
+      reject(new Error("maintenance child exited before boundary: " + code + "/" + signal));
+    };
+    const cleanup = () => {
+      clearTimeout(timer);
+      child.stdout!.off("data", onData);
+      child.off("exit", onExit);
+    };
+    child.stdout!.on("data", onData);
+    child.once("exit", onExit);
+  });
+}
+
+function childExit(child: ReturnType<typeof spawn>): Promise<[number | null, NodeJS.Signals | null]> {
+  return new Promise(resolve => child.once("exit", (code, signal) => resolve([code, signal])));
+}
+function terminateOwnedChild(child: ReturnType<typeof spawn>): Promise<[number | null, NodeJS.Signals | null]> {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error("owned maintenance child did not exit")), 5000);
+    child.once("exit", (code, signal) => { clearTimeout(timer); resolve([code, signal]); });
+    if (child.exitCode === null && child.signalCode === null) child.kill("SIGTERM");
+  });
+}
 
 describe("SQLite backup and restore", () => {
   it("backs up WAL data and restores identities, usage, cleanup, resume, and report state", async () => {
@@ -66,8 +119,8 @@ describe("SQLite backup and restore", () => {
     const restoredReadDb = openUsageDatabase(restoredPath); databases.push(restoredReadDb);
     expect(buildUnitEconomicsReport(backupDb, options)).toEqual(before);
     expect(buildUnitEconomicsReport(restoredReadDb, options)).toEqual(before);
-    expect(verifyUsageDatabase(backupPath)).toEqual({ integrity: "ok", foreignKeyViolations: 0 });
-    expect(verifyUsageDatabase(restoredPath)).toEqual({ integrity: "ok", foreignKeyViolations: 0 });
+    expect(verifyUsageDatabase(backupPath)).toEqual({ integrity: "ok", foreignKeyViolations: 0, ledgerSchema: "compatible" });
+    expect(verifyUsageDatabase(restoredPath)).toEqual({ integrity: "ok", foreignKeyViolations: 0, ledgerSchema: "compatible" });
     const identity = (db: typeof sourceDb) => db.prepare(`SELECT usage_identity_version,provider_checkpoint_seconds,provider_final_seconds,
       usage_conflict,cleanup_requested_at,resume_outcome FROM live_sessions ORDER BY id`).all();
     expect(identity(backupDb)).toEqual(identity(sourceDb));
@@ -117,6 +170,200 @@ describe("SQLite backup and restore", () => {
       .rejects.toBeInstanceOf(SqliteMaintenanceError);
     await expect(restoreUsageDatabase(sourcePath, join(blockedParent, "restored.sqlite")))
       .rejects.toBeInstanceOf(SqliteMaintenanceError);
-    expect(verifyUsageDatabase(sourcePath)).toEqual({ integrity: "ok", foreignKeyViolations: 0 });
+    expect(verifyUsageDatabase(sourcePath)).toEqual({ integrity: "ok", foreignKeyViolations: 0, ledgerSchema: "compatible" });
+  });
+  it("accepts supported ledger schemas and rejects empty, unrelated, incomplete and future databases", () => {
+    const directory = temporaryDirectory();
+    const migrations = ["001-usage-ledger.sql", "002-live-session-recovery-fences.sql"];
+    const createLedger = (name: string, version: number) => {
+      const path = join(directory, name), db = new DatabaseSync(path);
+      for (const migration of migrations.slice(0, version)) {
+        db.exec(readFileSync(new URL("../src/persistence/migrations/" + migration, import.meta.url), "utf8"));
+      }
+      db.exec("PRAGMA user_version=" + version);
+      db.close();
+      return path;
+    };
+    const expectError = (path: string, code: string) => {
+      try { verifyUsageDatabase(path); throw new Error("expected verification to fail"); }
+      catch (error) { expect(error).toMatchObject({ code }); }
+    };
+
+    const zero = join(directory, "zero.sqlite");
+    writeFileSync(zero, "");
+    expectError(zero, "ledger_schema_invalid");
+
+    const uninitialized = join(directory, "uninitialized.sqlite");
+    let db = new DatabaseSync(uninitialized);
+    db.exec("CREATE TABLE placeholder(id INTEGER)");
+    db.close();
+    expectError(uninitialized, "ledger_schema_invalid");
+
+    const unrelated = join(directory, "unrelated.sqlite");
+    db = new DatabaseSync(unrelated);
+    db.exec("CREATE TABLE unrelated(id INTEGER PRIMARY KEY, payload TEXT)");
+    db.close();
+    expectError(unrelated, "ledger_schema_invalid");
+
+    const missingField = join(directory, "missing-field.sqlite");
+    db = new DatabaseSync(missingField);
+    db.exec("CREATE TABLE conversations(id TEXT, created_at INTEGER); CREATE TABLE live_sessions(id TEXT); CREATE TABLE live_session_recovery_fences(id TEXT); PRAGMA user_version=2");
+    db.close();
+    expectError(missingField, "ledger_schema_invalid");
+
+    const legacyV1 = createLedger("legacy-v1.sqlite", 1);
+    expect(verifyUsageDatabase(legacyV1)).toMatchObject({ integrity: "ok", foreignKeyViolations: 0 });
+    db = new DatabaseSync(legacyV1);
+    expect(db.prepare("PRAGMA user_version").get()!.user_version).toBe(1);
+    db.close();
+
+    const legacyV2 = createLedger("legacy-v2.sqlite", 2);
+    expect(verifyUsageDatabase(legacyV2)).toMatchObject({ integrity: "ok", foreignKeyViolations: 0 });
+
+    const legacyV3 = createLedger("legacy-v3.sqlite", 2);
+    db = new DatabaseSync(legacyV3);
+    db.exec(readFileSync(new URL("../src/persistence/migrations/003-usage-identity.sql", import.meta.url), "utf8"));
+    db.exec("PRAGMA user_version=3");
+    db.close();
+    expect(verifyUsageDatabase(legacyV3)).toMatchObject({ integrity: "ok", foreignKeyViolations: 0, ledgerSchema: "compatible" });
+    db = new DatabaseSync(legacyV3);
+    expect(db.prepare("PRAGMA user_version").get()!.user_version).toBe(3);
+    db.close();
+
+    const future = createLedger("future.sqlite", 2);
+    db = new DatabaseSync(future);
+    db.exec("PRAGMA user_version=4");
+    db.close();
+    expectError(future, "ledger_schema_unsupported");
+
+    const emptyLedger = join(directory, "empty-ledger.sqlite");
+    db = openUsageDatabase(emptyLedger);
+    expect(db.prepare("SELECT count(*) AS count FROM conversations").get()!.count).toBe(0);
+    db.close();
+    expect(verifyUsageDatabase(emptyLedger)).toMatchObject({ integrity: "ok", foreignKeyViolations: 0 });
+  });
+
+  it.each(["backup", "restore"])("does not expose a partial target when the process is stopped during %s", async operation => {
+    const directory = temporaryDirectory(), source = join(directory, "source.sqlite"), target = join(directory, "backup.sqlite");
+    const db = openUsageDatabase(source);
+    db.close();
+    const child = maintenanceChild(source, target, "before_copy", operation);
+    let boundary: Record<string, unknown> | undefined;
+    try {
+      boundary = await nextJsonLine(child);
+      expect(boundary.pid).toBe(child.pid);
+      expect(existsSync(target)).toBe(false);
+    } finally {
+      await terminateOwnedChild(child);
+    }
+    expect(existsSync(target)).toBe(false);
+    expect(boundary?.boundary).toBe("staging_created");
+    expect(typeof boundary?.path).toBe("string");
+    expect(basename(String(boundary?.path)).startsWith(".live-translator-sqlite-maintenance-")).toBe(true);
+    expect(existsSync(String(boundary?.path))).toBe(true);
+  });
+
+  it("keeps an interrupted verified staging copy private and permits a safe retry", async () => {
+    const directory = temporaryDirectory(), source = join(directory, "source.sqlite"), target = join(directory, "backup.sqlite");
+    openUsageDatabase(source).close();
+    const child = maintenanceChild(source, target, "before_publish");
+    let boundary: Record<string, unknown> | undefined;
+    try {
+      boundary = await nextJsonLine(child);
+      expect(boundary.boundary).toBe("before_publish");
+      expect(existsSync(target)).toBe(false);
+      expect(String(boundary.path).endsWith(".sqlite")).toBe(true);
+      expect(verifyUsageDatabase(String(boundary.path))).toMatchObject({ integrity: "ok", ledgerSchema: "compatible" });
+    } finally {
+      await terminateOwnedChild(child);
+    }
+    expect(existsSync(target)).toBe(false);
+    const interruptedStage = dirname(String(boundary?.path));
+    await expect(backupUsageDatabase(source, target)).resolves.toMatchObject({ integrity: "ok", stagingCleanup: "complete" });
+    expect(verifyUsageDatabase(target)).toMatchObject({ integrity: "ok", ledgerSchema: "compatible" });
+    expect(existsSync(interruptedStage)).toBe(true);
+  });
+
+  it("leaves a valid published target when stopped during staging cleanup", async () => {
+    const directory = temporaryDirectory(), source = join(directory, "source.sqlite"), target = join(directory, "backup.sqlite");
+    const sourceDb = openUsageDatabase(source), conversationId = new UsageLedger(sourceDb).createConversation(randomUUID(), randomUUID(), "synthetic").id;
+    sourceDb.close();
+    const child = maintenanceChild(source, target, "after_publish");
+    try {
+      const boundary = await nextJsonLine(child);
+      expect(boundary.boundary).toBe("after_publish");
+      expect(existsSync(target)).toBe(true);
+      expect(verifyUsageDatabase(target)).toMatchObject({ integrity: "ok", ledgerSchema: "compatible" });
+    } finally {
+      await terminateOwnedChild(child);
+    }
+    expect(verifyUsageDatabase(target)).toMatchObject({ integrity: "ok", ledgerSchema: "compatible" });
+    const restored = new DatabaseSync(target, { readOnly: true });
+    expect(restored.prepare("SELECT id FROM conversations").get()!.id).toBe(conversationId);
+    restored.close();
+  });
+
+  it("does not overwrite a target created at the atomic publication boundary", async () => {
+    const directory = temporaryDirectory(), source = join(directory, "source.sqlite"), target = join(directory, "backup.sqlite");
+    openUsageDatabase(source).close();
+    const child = maintenanceChild(source, target, "race_before_publish", "backup",
+      { LT_SQLITE_TEST_SENTINEL: "pre-existing target" });
+    const exited = childExit(child);
+    const output = await nextJsonLine(child);
+    const [code] = await exited;
+    expect(output).toEqual({ error: "target_exists" });
+    expect(code).toBe(2);
+    expect(readFileSync(target, "utf8")).toBe("pre-existing target");
+  });
+
+  it("fails explicitly when atomic hard-link publication is unavailable", async () => {
+    const directory = temporaryDirectory(), source = join(directory, "source.sqlite"), target = join(directory, "backup.sqlite");
+    openUsageDatabase(source).close();
+    const child = maintenanceChild(source, target, "unsupported_publish");
+    const exited = childExit(child);
+    const output = await nextJsonLine(child);
+    const [code] = await exited;
+    expect(output).toEqual({ error: "publication_unsupported" });
+    expect(code).toBe(2);
+    expect(existsSync(target)).toBe(false);
+    expect(readdirSync(directory).some(name => name.startsWith(".live-translator-sqlite-maintenance-"))).toBe(false);
+  });
+  it("returns success with pending cleanup when its private staging directory cannot be removed", async () => {
+    const directory = temporaryDirectory(), source = join(directory, "source.sqlite"), target = join(directory, "backup.sqlite");
+    openUsageDatabase(source).close();
+    const child = maintenanceChild(source, target, "cleanup_error");
+    const exited = childExit(child);
+    const output = await nextJsonLine(child);
+    const [code] = await exited;
+    expect(code).toBe(0);
+    expect(output.result).toMatchObject({ integrity: "ok", stagingCleanup: "pending" });
+    expect(verifyUsageDatabase(target)).toMatchObject({ integrity: "ok", ledgerSchema: "compatible" });
+    expect(readdirSync(directory).some(name => name.startsWith(".live-translator-sqlite-maintenance-"))).toBe(true);
+  });
+
+  it("cleans only its own failed verification stage and allows a valid retry", async () => {
+    const directory = temporaryDirectory(), invalid = join(directory, "unrelated.sqlite"), source = join(directory, "source.sqlite"), target = join(directory, "backup.sqlite");
+    const db = new DatabaseSync(invalid);
+    db.exec("CREATE TABLE unrelated(id INTEGER PRIMARY KEY)");
+    db.close();
+    const unrelatedStage = join(directory, ".live-translator-sqlite-maintenance-foreign");
+    mkdirSync(unrelatedStage);
+    writeFileSync(join(unrelatedStage, "keep.txt"), "keep");
+    await expect(backupUsageDatabase(invalid, target)).rejects.toMatchObject({ code: "ledger_schema_invalid" });
+    expect(existsSync(target)).toBe(false);
+    expect(readFileSync(join(unrelatedStage, "keep.txt"), "utf8")).toBe("keep");
+    openUsageDatabase(source).close();
+    await expect(backupUsageDatabase(source, target)).resolves.toMatchObject({ integrity: "ok" });
+    expect(verifyUsageDatabase(target)).toMatchObject({ integrity: "ok", ledgerSchema: "compatible" });
+  });
+
+  it("allows only one concurrent operation to publish the same target", async () => {
+    const directory = temporaryDirectory(), source = join(directory, "source.sqlite"), target = join(directory, "backup.sqlite");
+    openUsageDatabase(source).close();
+    const results = await Promise.allSettled([backupUsageDatabase(source, target), restoreUsageDatabase(source, target)]);
+    expect(results.filter(result => result.status === "fulfilled")).toHaveLength(1);
+    expect(results.filter(result => result.status === "rejected")).toHaveLength(1);
+    expect(results.find(result => result.status === "rejected")).toMatchObject({ reason: { code: "target_exists" } });
+    expect(verifyUsageDatabase(target)).toMatchObject({ integrity: "ok", ledgerSchema: "compatible" });
   });
 });
