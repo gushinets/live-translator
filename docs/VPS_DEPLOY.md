@@ -460,9 +460,9 @@ retry TTL is immutable seven days, independent of conversation retention.
 Resume endpoints prepare the later client feature; the background feature flag
 remains false. A logical conversation retains its policy version and deadlines.
 
-The stage-5 background/resume client is under review in
-[draft PR #21](https://github.com/gushinets/live-translator/pull/21) on
-`feat/background-close-and-resume`; it is not merged or enabled in production. Its API flag is
+The stage-5 background/resume client is in merged
+[PR #21](https://github.com/gushinets/live-translator/pull/21) on
+`feat/background-close-and-resume`; its API flag is
 `BACKGROUND_SESSION_CLOSE_ENABLED=false` by default and requires
 `USAGE_LEDGER_ENABLED=true`. When enabled after review and the E3/G2 device
 check, hidden closes the provider while retaining a five-minute logical
@@ -487,4 +487,66 @@ network-in-flight creation is fenced and never automatically re-created.
 read/End/cleanup routes but pauses new creations. This avoids mixing an old
 untracked client with outstanding ledger responsibility. Coordinate API/web
 rollback; never delete the ledger or retry an unknown attempt using a new ID.
-Full aggregate reconciliation, backups and tariff calibration remain stage 6.
+
+## Stage 6 local reporting and SQLite maintenance
+
+The Stage 6 feature branch adds a local JSON report and SQLite maintenance CLI.
+These tools are included in the API package image after that code is reviewed
+and released. A report opens one explicitly selected database read-only; run
+product and experimental databases as separate commands:
+
+```bash
+docker compose --env-file .env -f infra/docker-compose.yml exec api \
+  node scripts/unit-economics-report.mjs --db /data/live-translator.sqlite \
+  --dataset product --from 2026-09-01T00:00:00Z --to 2026-10-01T00:00:00Z
+```
+
+`--from` is inclusive, `--to` is exclusive, and both values require an explicit
+timezone. The report’s `asOf` defaults to execution time and can be fixed with
+`--as-of`. It does not run server startup, migration, expiry, provider create,
+or cleanup work. Monetary policies remain uncalibrated until supported by
+verified source and external usage evidence; `invoiceTotal` is always null.
+
+An online backup includes committed SQLite WAL pages. The maintenance CLI writes into a private staging directory beside the requested target, verifies the staged copy, then publishes it with an atomic hard link that never replaces an existing path. The target name appears only after verification. The JSON result includes stagingCleanup=complete or stagingCleanup=pending:
+
+```bash
+docker compose --env-file .env -f infra/docker-compose.yml exec api \
+  node scripts/sqlite-maintenance.mjs backup \
+  --source /data/live-translator.sqlite --target /data/backups/live-translator-2026-09-26.sqlite
+docker compose --env-file .env -f infra/docker-compose.yml exec api \
+  node scripts/sqlite-maintenance.mjs verify --db /data/backups/live-translator-2026-09-26.sqlite
+```
+
+Restore copies only to a new path and verifies SQLite integrity, foreign keys,
+and the migration DDL (tables, constraints, and indexes) for schema versions 1 through 3. Extra non-internal schema objects also fail verification. Verify
+is read-only: it does not start the server, migrate, reconcile, or repair data.
+It proves structural/integrity compatibility, not that the operator selected
+the right database, date range, or backup contents.
+
+An interrupted operation can leave a directory whose name starts with
+.live-translator-sqlite-maintenance-. Treat it as incomplete staging, never as
+a backup. Before publication the requested target is absent; retrying the same
+target creates a fresh private stage and does not remove earlier stages. Do not
+glob-delete these directories. Inspect and remove only a confirmed inactive
+staging directory.
+
+Publication requires hard-link support in the filesystem containing the
+target. The stage is created beside the target to keep both paths on one
+filesystem. If the filesystem rejects hard-link publication as unsupported, the command
+fails with publication_unsupported and does not fall back to copy or rename.
+On POSIX, the staging directory and file use restrictive 0700/0600 modes.
+Windows access control comes from inherited ACLs; Node chmod is not an ACL
+editor. Process-stop tests cover interruption boundaries, but this code does
+not promise power-loss durability or claim explicit file-and-directory fsync.
+
+A production restore requires stopping the writer, preserving a separate
+emergency copy, verifying the restored database, and an independently approved
+path switch. The CLI never overwrites or swaps the active database. Do not
+start provider creates from restored active records; existing recovery and
+cleanup obligations remain under the API lifecycle. No production backup or
+restore was performed for this change.
+
+Rolling back the reporting/maintenance release requires no schema rollback.
+Keep the API ledger and `CleanupWorker` running, continue accepting valid late
+usage, and preserve cleanup markers. Disabling the CLI does not authorize
+deleting rows or abandoning provider cleanup.

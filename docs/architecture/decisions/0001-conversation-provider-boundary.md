@@ -1,6 +1,6 @@
 # ADR-0001 — Conversation и provider session — разные сущности
 
-**Статус:** proposed. **Дата:** 2026-09-21. **Реализация:** planned.  
+**Статус:** proposed. **Дата:** 2026-09-21. **Реализация:** этап 5 merged (#21); этап 6 in-progress. Решение ADR остаётся proposed.
 **Основание:** [handoff](../../sources/2026-09-21-unit-economics-handoff.md), [code review](../../reviews/2026-09-21-lifecycle-code-review.md).  
 **Нормативный контракт:** [spec v1.1](../../specs/2026-09-21-unit-economics-and-session-lifecycle.md).
 
