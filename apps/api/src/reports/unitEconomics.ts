@@ -15,7 +15,7 @@ export type UnitEconomicsOptions = Readonly<{
 }>;
 
 export class UnitEconomicsReportError extends Error {
-  constructor(readonly code: "invalid_range" | "invalid_metadata") {
+  constructor(readonly code: "invalid_range" | "invalid_metadata" | "numeric_overflow") {
     super(code);
     this.name = "UnitEconomicsReportError";
   }
@@ -327,6 +327,13 @@ export function buildUnitEconomicsReport(db: DatabaseSync, options: UnitEconomic
     db.exec("BEGIN DEFERRED");
     open = true;
     const report = readReport(db, options);
+    // JSON would silently turn non-finite report numbers into null.
+    JSON.stringify(report, (_key, value: unknown) => {
+      if (typeof value === "number" && (!Number.isFinite(value) || Math.abs(value) > Number.MAX_SAFE_INTEGER)) {
+        throw new UnitEconomicsReportError("numeric_overflow");
+      }
+      return value;
+    });
     db.exec("COMMIT");
     open = false;
     return report;

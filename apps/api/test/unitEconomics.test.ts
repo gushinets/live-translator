@@ -41,6 +41,19 @@ function fixture(pricingPolicies: readonly PricingPolicy[] = []) {
 }
 
 describe("cross-conversation unit economics", () => {
+  it("rejects unsafe and non-finite aggregates before JSON can turn them into null", () => {
+    for (const seconds of [Number.MAX_SAFE_INTEGER, Number.MAX_VALUE]) {
+      const f = fixture();
+      for (let index = 0; index < 2; index++) {
+        const c = f.conversation(), id = f.dispatched(c);
+        f.report(id, c.id, { providerClosed: { seconds } });
+      }
+      expect(() => buildUnitEconomicsReport(f.db, { from: Date.UTC(2026, 8, 24), to: Date.UTC(2026, 8, 26),
+        asOf: Date.UTC(2026, 8, 27), generatedAt: Date.UTC(2026, 8, 27), dataClass: "synthetic" }))
+        .toThrowError(expect.objectContaining({ code: "numeric_overflow" }));
+    }
+  });
+
   it("reports a mixed cohort without hiding partial, unknown, conflict or no-dispatch records", () => {
     const f = fixture();
     const final = f.conversation(), finalId = f.dispatched(final);
