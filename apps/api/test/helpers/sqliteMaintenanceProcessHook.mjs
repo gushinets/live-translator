@@ -1,6 +1,5 @@
 import fs from "node:fs";
 import process from "node:process";
-import { Buffer } from "node:buffer";
 import { syncBuiltinESMExports } from "node:module";
 import { resolve } from "node:path";
 
@@ -9,7 +8,7 @@ const target = resolve(process.env.LT_SQLITE_TEST_TARGET ?? "");
 const stagePrefix = ".live-translator-sqlite-maintenance-";
 const marker = (boundary, path, extra = {}) => {
   fs.writeSync(1, JSON.stringify({ boundary, path, pid: process.pid, ...extra }) + "\n");
-  fs.readSync(0, Buffer.alloc(1), 0, 1, null);
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0);
 };
 
 const originalMkdtempSync = fs.mkdtempSync;

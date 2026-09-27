@@ -72,7 +72,7 @@ function terminateOwnedChild(child: ReturnType<typeof spawn>): Promise<[number |
   return new Promise((resolve, reject) => {
     const timer = setTimeout(() => reject(new Error("owned maintenance child did not exit")), 5000);
     child.once("exit", (code, signal) => { clearTimeout(timer); resolve([code, signal]); });
-    if (child.exitCode === null && child.signalCode === null) child.kill("SIGTERM");
+    if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
   });
 }
 
