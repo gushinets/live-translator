@@ -430,9 +430,10 @@ Do not roll back or restart unrelated Nginx-hosted services.
 
 ## Stage 2: anonymous conversation ledger (PR #15)
 
-Rollout remains disabled by default: `USAGE_LEDGER_ENABLED=false`. Enable it only
-with the matching API and web image after review and the ledger smoke tests.
-It does not enable the new background/resume UX or the stage-3 usage reporter.
+The API defaults to `USAGE_LEDGER_ENABLED=false` when the variable is absent.
+`.env.example` opts into call statistics for the internal unit-economics pilot;
+deploy the matching API and web images and run the ledger smoke tests.
+The flag enables the metadata ledger and usage reporter, but not background/resume UX.
 The persistent volume `usage-data` is mounted at `/data`; the Node user owns the
 initial directory. The API uses `/data/live-translator.sqlite`, WAL, foreign keys,
 and synchronous FULL. Do not delete the volume during an image update.
