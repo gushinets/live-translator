@@ -1,29 +1,25 @@
-# Example host-Nginx virtual host for Live Translator.
-# Reuse the server's existing TLS include/certificate convention instead of
-# installing a second TLS stack or letting the application container bind 80/443.
+# Host-Nginx virtual host for the current public test deployment.
 
 server {
     listen 80;
     listen [::]:80;
-    server_name livetranslator.agent-studio.ru;
+    server_name livetranslator.anytoolai.store;
 
-    return 301 https://$host$request_uri;
+    include /etc/nginx/conf.d/certbot;
+    location / { return 301 https://$host$request_uri; }
 }
 
 server {
-    listen 443 ssl http2;
-    listen [::]:443 ssl http2;
-    server_name livetranslator.agent-studio.ru;
+    listen 443 ssl;
+    server_name livetranslator.anytoolai.store;
 
-    # Reuse the existing server TLS template/certificate setup here.
-    # Example only:
-    # include /etc/nginx/snippets/trioncalls-ssl.conf;
-    #
-    # Do not copy guessed certificate paths into production.
+    ssl_certificate /etc/letsencrypt/live/livetranslator.anytoolai.store/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/livetranslator.anytoolai.store/privkey.pem;
+    ssl_protocols TLSv1.2 TLSv1.3;
+    ssl_session_tickets off;
 
-    # Required for the internal prototype. This protects both the PWA and the
-    # paid /api/live/session endpoint before requests reach the containers.
-    auth_basic "Live Translator";
+    # Change to "Live Translator" to restore password protection.
+    auth_basic off;
     auth_basic_user_file /etc/nginx/.htpasswd-livetranslator;
 
     location /api/ {

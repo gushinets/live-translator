@@ -1,4 +1,4 @@
-# VPS deployment: livetranslator.agent-studio.ru
+# VPS deployment: livetranslator.anytoolai.store
 
 This runbook is for the existing Ubuntu VPS where host Nginx already owns
 ports 80 and 443. Live Translator must not replace that Nginx instance, bind
@@ -9,9 +9,9 @@ those public ports, or change the existing Fail2ban policy.
 ```text
 Internet
   |
-  | https://livetranslator.agent-studio.ru
+  | https://livetranslator.anytoolai.store
   v
-host Nginx :80/:443 + required Basic Auth
+host Nginx :80/:443 (Basic Auth currently disabled for testing)
   |-- /      -> 127.0.0.1:18081 -> web container (Caddy static server :8080)
   `-- /api/ -> 127.0.0.1:13001 -> API container (Express :3001)
 
@@ -20,6 +20,7 @@ Browser <---------------- WebRTC ----------------> OpenAI Live
 
 The VPS does not relay OpenAI WebRTC audio. Only the PWA and the small session
 creation API are hosted on the VPS.
+The former `livetranslator.agent-studio.ru` hostname redirects to the new one.
 
 ## Safety rules
 
@@ -27,10 +28,10 @@ creation API are hosted on the VPS.
 - Do not bind Docker services to host ports 80, 443, or 8000.
 - Do not expose the API or web container on a public interface.
 - Do not open 13001 or 18081 in the firewall.
-- Keep host-Nginx Basic Auth enabled for this internal MVP. The API creates paid
-  OpenAI Live sessions; the Origin check is not authentication.
-- Do not install Certbot until the existing TLS/certificate setup has been
-  inspected.
+- Basic Auth is currently disabled for testing. Re-enable it before protected
+  use: the API creates paid OpenAI Live sessions, and the Origin check is not
+  authentication.
+- Reuse the installed Certbot webroot at `/var/www`; keep unrelated certificates.
 - Do not change Fail2ban settings for this deployment.
 - Validate Nginx with `nginx -t` before every reload.
 - Use `systemctl reload nginx`, not restart, after a successful config test.
@@ -68,11 +69,10 @@ upstreams in sync.
 
 ## 2. Verify DNS and TLS coverage
 
-The DNS record for `livetranslator.agent-studio.ru` must point to the VPS.
-
-Before adding a new certificate mechanism, inspect the certificate already
-used by the server. If the existing certificate covers
-`*.agent-studio.ru`, it also covers `livetranslator.agent-studio.ru`.
+The DNS record for `livetranslator.anytoolai.store` points to the VPS. Its
+dedicated Let's Encrypt certificate is at
+`/etc/letsencrypt/live/livetranslator.anytoolai.store/`; Certbot renews it
+using the HTTP webroot `/var/www`.
 
 Example certificate inspection after finding its real path from `nginx -T`:
 
@@ -81,8 +81,8 @@ openssl x509 -in /actual/path/to/certificate.pem -noout -text \
   | grep -A2 "Subject Alternative Name"
 ```
 
-Reuse the server's existing TLS include/template. Do not invent certificate
-paths from this repository example.
+Keep the ACME challenge include on port 80 and the dedicated certificate paths
+shown in the Nginx example. Do not change other sites' TLS settings.
 
 ## 3. Clone/update the application
 
@@ -118,7 +118,7 @@ Required values:
 
 ```dotenv
 OPENAI_API_KEY=...
-WEB_ORIGIN=https://livetranslator.agent-studio.ru
+WEB_ORIGIN=https://livetranslator.anytoolai.store
 API_BIND_PORT=13001
 WEB_BIND_PORT=18081
 ```
@@ -229,10 +229,11 @@ sudo ss -ltnp | grep -E ':13001 |:18081 '
 
 Expected bind addresses begin with `127.0.0.1`, not `0.0.0.0`.
 
-## 6. Create the required Basic Auth credential
+## 6. Prepare Basic Auth before re-enabling it
 
-The internal MVP must not expose `/api/live/session` anonymously because that
-endpoint can create paid OpenAI Live sessions with the server API key.
+The current test deployment allows anonymous access. For protected use,
+enable Basic Auth because `/api/live/session` can create paid OpenAI Live
+sessions with the server API key.
 
 First determine the actual Nginx worker identity on this VPS instead of assuming
 the Ubuntu default. Nginx supports both `user <user>;` and
@@ -309,20 +310,21 @@ Do not repeatedly enter an incorrect Basic Auth password during setup.
 Use:
 
 ```text
-infra/nginx/livetranslator.agent-studio.ru.conf.example
+infra/nginx/livetranslator.anytoolai.store.conf.example
 ```
 
 as a starting point.
 
 Create a separate site file rather than editing existing application server
-blocks. Adapt only the TLS include/certificate lines to the convention already
-present on the VPS. Keep the two `auth_basic` directives enabled.
+blocks. The example matches the current certificate and public test deployment.
+Change `auth_basic off` to `auth_basic "Live Translator"` to restore password
+protection; keep its `auth_basic_user_file` directive.
 
 Example layout:
 
 ```text
-/etc/nginx/sites-available/livetranslator.agent-studio.ru
-/etc/nginx/sites-enabled/livetranslator.agent-studio.ru
+/etc/nginx/sites-available/livetranslator.anytoolai.store
+/etc/nginx/sites-enabled/livetranslator.anytoolai.store
 ```
 
 Before continuing, verify again that the Nginx worker can read the password
@@ -353,18 +355,18 @@ Do not use `restart` for a normal configuration rollout.
 
 ## 9. Verify through the public hostname
 
-First verify that unauthenticated access is rejected:
+First verify that the current public test deployment responds:
 
 ```bash
-curl -I https://livetranslator.agent-studio.ru/
+curl -I https://livetranslator.anytoolai.store/
 ```
 
-Expected result: `401 Unauthorized`.
+Expected result: `200 OK`. Once Basic Auth is re-enabled, expect `401 Unauthorized`.
 
-Then verify authenticated HTTPS with the configured username:
+When Basic Auth is enabled, verify authenticated HTTPS with the configured username:
 
 ```bash
-curl -I -u livetranslator https://livetranslator.agent-studio.ru/
+curl -I -u livetranslator https://livetranslator.anytoolai.store/
 ```
 
 Enter the password interactively when prompted. Do not place it directly in the
@@ -375,8 +377,8 @@ use the application's normal browser flow for the real OpenAI Live test.
 
 On a phone:
 
-1. Open `https://livetranslator.agent-studio.ru`.
-2. Authenticate with the dedicated Live Translator Basic Auth credentials.
+1. Open `https://livetranslator.anytoolai.store`.
+2. If Basic Auth has been re-enabled, authenticate with its credentials.
 3. Confirm the page is served over HTTPS without a certificate warning.
 4. Grant microphone access.
 5. Start the setup flow.
