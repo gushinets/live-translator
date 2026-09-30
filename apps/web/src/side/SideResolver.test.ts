@@ -1,5 +1,20 @@
-import { describe, expect, it } from "vitest";
-import { resolveSide } from "./SideResolver";
+import { describe, expect, it, vi } from "vitest";
+import { languageName, preferredLanguage, resolveSide, supportedLanguageCodes } from "./SideResolver";
+
+it("provides Russian names even when the browser only returns language codes", () => {
+  const names = vi.spyOn(Intl.DisplayNames.prototype, "of").mockImplementation(code => String(code));
+  try {
+    expect(["be", "ku", "or", "yo"].map(code => languageName(code)))
+      .toEqual(["белорусский", "курдский", "ория", "йоруба"]);
+    for (const code of supportedLanguageCodes()) expect(languageName(code)).not.toBe(code);
+  } finally { names.mockRestore(); }
+});
+
+it("uses the first supported browser language and exposes the detector's language set", () => {
+  expect(preferredLanguage(["xx-ZZ", "ru-RU", "en-US"])).toBe("ru");
+  expect(preferredLanguage(["xx-ZZ"])).toBeUndefined();
+  expect(supportedLanguageCodes()).toEqual(expect.arrayContaining(["es", "en", "de", "ru"]));
+});
 
 describe("language-based side resolution", () => {
   const languages = { A: "ru", B: "en" };

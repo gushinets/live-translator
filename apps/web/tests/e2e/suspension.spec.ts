@@ -247,14 +247,7 @@ async function installLiveStubs(page: Page): Promise<void> {
 
 async function startListeningConversation(page: Page): Promise<void> {
   await page.goto("/");
-  await page.getByRole("button", { name: "Начать перевод" }).click();
-  await completeLanguageSetup(page, async delta => {
-      await page.evaluate(text => {
-        window.__testLiveChannel?.dispatchEvent(new MessageEvent("message", {
-          data: JSON.stringify({ type: "session.input_transcript.delta", delta: text }),
-        }));
-      }, delta);
-    });
+  await completeLanguageSetup(page);
   await expect(page.getByRole("button", { name: "Завершить" })).toBeVisible();
   await expect(page.getByTestId("participant-status-A")).toHaveText("ГОВОРИТЕ");
 }

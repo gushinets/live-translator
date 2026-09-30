@@ -17,7 +17,7 @@ Interruption policy: Stop speaking when a human interrupts and listen.
 Do not infer a speaker change from silence, your own translated speech, or a completed translation. Ignore playback echo.
 For mixed speech use the dominant source language; if the source language is unclear, wait for more speech rather than guess or change the language pair.
 Manual speaker corrections from the application apply only to that utterance; translate it into the other participant's fixed language.
-Setup samples were only for language identification. Do not translate or replay them; begin with new human speech.`;
+Begin with the next human utterance.`;
 }
 
 export function buildAuthoritativeContext(editedText: string): string {

@@ -1,4 +1,5 @@
 import { expect, test, type Locator } from "@playwright/test";
+import { MockLiveHarness } from "./mockLiveHarness";
 
 async function contrastRatio(locator: Locator): Promise<number> {
   return locator.evaluate((element) => {
@@ -37,8 +38,9 @@ test.describe("mobile setup layout", () => {
 
     const setup = page.getByRole("region", { name: "Настройка переводчика" });
     await expect(setup).toBeVisible();
-    await expect(page.getByRole("heading", { level: 1, name: "Переводчик" })).toBeVisible();
-    await expect(page.getByRole("textbox", { name: "Контекст" })).toBeVisible();
+    await expect(page.getByText("Live Translator")).toBeVisible();
+    await expect(page.getByRole("heading", { name: "Язык собеседника" })).toBeVisible();
+    await expect(page.getByRole("textbox", { name: "Контекст" })).toHaveCount(0);
 
     const start = page.getByRole("button", { name: "Начать перевод" });
     await expect(start).toBeVisible();
@@ -53,20 +55,83 @@ test.describe("mobile setup layout", () => {
     expect(startBox?.height ?? 0).toBeGreaterThanOrEqual(44);
     expect(startBox?.width ?? 0).toBeGreaterThanOrEqual(44);
 
-    const contextAction = page.getByRole("button", {
-      name: "Продиктовать контекст",
-    });
-    const contextActionBox = await contextAction.boundingBox();
-    expect(contextActionBox).not.toBeNull();
-    expect(contextActionBox?.height ?? 0).toBeGreaterThanOrEqual(44);
+    const choices = page.locator(".language-picker-option");
+    for (let index = 0; index < 4; index++) {
+      const box = await choices.nth(index).boundingBox();
+      expect(box?.height ?? 0).toBeGreaterThanOrEqual(70);
+      expect(box?.y ?? 0).toBeGreaterThanOrEqual(0);
+      expect((box?.y ?? 0) + (box?.height ?? 0)).toBeLessThan(startBox?.y ?? 0);
+    }
+    expect(await page.locator(".language-picker-options").evaluate(element =>
+      element.scrollHeight > element.clientHeight)).toBe(true);
+    const listBox = await page.locator(".language-picker-options").boundingBox();
+    expect((startBox!.y) - (listBox!.y + listBox!.height)).toBeLessThanOrEqual(16);
+    expect(await choices.evaluateAll(elements => {
+      const edge = elements[0].parentElement!.getBoundingClientRect().bottom;
+      return elements.some(element => {
+        const box = element.getBoundingClientRect();
+        return box.top < edge && box.bottom > edge;
+      });
+    })).toBe(true);
   });
 
   test("keeps secondary setup copy at readable contrast", async ({ page }) => {
     await page.goto("/");
 
-    const fieldFooter = page.locator(".setup-field-footer > span");
-    await expect(fieldFooter).toBeVisible();
-    expect(await contrastRatio(fieldFooter)).toBeGreaterThanOrEqual(4.5);
+    const owner = page.locator(".language-picker-owner");
+    await expect(owner).toBeVisible();
+    expect(await contrastRatio(owner)).toBeGreaterThanOrEqual(4.5);
+  });
+
+  test("centers the repeat-start action and reopens the saved choice from settings", async ({ page }) => {
+    await page.addInitScript(() => localStorage.setItem("live-translator-interlocutor-language", "es"));
+    await page.goto("/");
+
+    const start = page.getByRole("button", { name: "Начать перевод" });
+    const brand = page.getByText("Live Translator");
+    const settings = page.getByRole("button", { name: "Настройки" });
+    await expect(brand).toBeVisible();
+    await expect(settings).toBeVisible();
+    const brandBox = await brand.boundingBox();
+    const settingsBox = await settings.boundingBox();
+    expect(Math.abs((brandBox?.y ?? 0) + (brandBox?.height ?? 0) / 2 -
+      (settingsBox?.y ?? 0) - (settingsBox?.height ?? 0) / 2)).toBeLessThan(3);
+    const box = await start.boundingBox();
+    expect(Math.abs((box?.y ?? 0) + (box?.height ?? 0) / 2 - 844 / 2)).toBeLessThan(70);
+    await expect(page.getByRole("radio", { name: "испанский" })).toHaveCount(0);
+
+    await page.getByRole("button", { name: "Настройки" }).click();
+    await expect(page.getByRole("radio", { name: "испанский" })).toBeChecked();
+    await page.getByRole("button", { name: "Закрыть настройки" }).click();
+    await expect(page.getByRole("radio", { name: "испанский" })).toHaveCount(0);
+  });
+
+  test("keeps the repeat-start button in place until translation is ready", async ({ page }) => {
+    await MockLiveHarness.attach(page);
+    await page.addInitScript(() => localStorage.setItem("live-translator-interlocutor-language", "es"));
+    let releaseSession!: () => void;
+    const sessionGate = new Promise<void>(resolve => { releaseSession = resolve; });
+    await page.route("**/api/live/session", async route => {
+      await sessionGate;
+      await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({
+        session: { id: "sess_e2e" }, transport: { type: "webrtc", sdp: "v=0 fake-answer" },
+      }) });
+    });
+    await page.goto("/");
+
+    const start = page.getByRole("button", { name: "Начать перевод" });
+    const before = await start.boundingBox();
+    await start.click();
+    const pending = page.getByRole("button", { name: "Устанавливаю связь…" });
+    await expect(pending).toBeDisabled();
+    await expect(page.getByRole("button", { name: "Настройки" })).toBeDisabled();
+    const during = await pending.boundingBox();
+    expect(Math.abs((during?.y ?? 0) - (before?.y ?? 0))).toBeLessThan(2);
+    expect(during?.height).toBe(before?.height);
+    expect(await page.locator(".setup-card--start").count()).toBe(1);
+
+    releaseSession();
+    await expect(page.getByRole("button", { name: "Завершить" })).toBeVisible();
   });
 
   test("uses a Russian PWA description", async ({ request }) => {

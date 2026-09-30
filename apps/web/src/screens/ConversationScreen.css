@@ -20,6 +20,24 @@ body,
   font-family: "Iowan Old Style", "Palatino Linotype", Palatino, serif;
 }
 
+.conversation-language-action {
+  position: absolute;
+  z-index: 3;
+  top: calc(env(safe-area-inset-top) + 0.5rem);
+  right: calc(env(safe-area-inset-right) + 0.5rem);
+  min-height: 44px;
+  border: 1px solid #8f8374;
+  border-radius: 0.7rem;
+  padding: 0.5rem 0.75rem;
+  background: #2a2218;
+  color: #f4ead5;
+  font: 600 0.85rem Bahnschrift, "Segoe UI", sans-serif;
+  cursor: pointer;
+}
+
+.conversation-language-action:focus-visible { outline: 2px solid #f4ead5; }
+.conversation-language-action:disabled { opacity: 0.5; }
+
 .conversation-center {
   display: flex;
   flex-shrink: 0;
@@ -45,6 +63,15 @@ body,
 .conversation-center button:hover:not(:disabled) { background: #e7d9be; }
 .conversation-center button:active:not(:disabled) { transform: translateY(1px); }
 .conversation-center button:disabled { cursor: wait; opacity: 0.46; }
+
+.conversation-end-action {
+  display: inline-grid;
+  align-items: center;
+  min-height: 44px;
+}
+
+.conversation-end-action > span { grid-area: 1 / 1; }
+.conversation-end-size { visibility: hidden; }
 
 .conversation-center button:focus-visible,
 .participant-correction-target:focus-visible {

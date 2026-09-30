@@ -13,6 +13,7 @@ import { AccountedSessionController } from "./createAccountedSessionController";
 import type { SessionControllerDeps } from "./SessionController";
 import { VisibilityController } from "../platform/VisibilityController";
 import { ContextScreen, type ContextScreenController } from "../screens/ContextScreen";
+import { ConversationScreen } from "../screens/ConversationScreen";
 import type { OrientationController } from "../platform/OrientationController";
 import type { WakeLockController } from "../platform/WakeLockController";
 import { DatabaseSync } from "node:sqlite";
@@ -448,7 +449,7 @@ describe("stage 5 hidden boundary", () => {
     expect(f.track.enabled).toBe(false);
     render(jsx(ContextScreen, { controller: f.controller satisfies ContextScreenController }));
     expect(screen.queryByText("Слушаю контекст")).not.toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Продиктовать контекст" })).toBeEnabled();
+    expect(screen.queryByRole("button", { name: "Продиктовать контекст" })).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Начать перевод" })).toBeEnabled();
     expect(f.clients[1]!.peer.channel.events.filter(event => event.type === "session.thinking.append")).toEqual([]);
 
@@ -2308,6 +2309,19 @@ describe("stage 5 hidden boundary", () => {
     release();
     await first;
     await reloaded.controller.dispose(); await f.budget.close();
+  });
+  it("keeps normal live End in the conversation toolbar until closure", async () => {
+    const f = fixture(2000, true); configureResume(f);
+    await enterInterpreter(f);
+    const view = render(jsx(ConversationScreen, { controller: f.controller }));
+    const end = screen.getByRole("button", { name: "Завершить" });
+    const ending = f.controller.endConversation();
+    view.rerender(jsx(ConversationScreen, { controller: f.controller }));
+    const closingButton = screen.queryByRole("button", { name: "Завершаю…" });
+    f.clients.at(-1)!.peer.channel.emit({ type: "session.closed" });
+    await ending;
+    await f.controller.dispose(); await f.budget.close();
+    expect(closingButton).toBe(end);
   });
   it("reports same-tab paused End as ending until accounting confirms it", async () => {
     const f = fixture(40, true); configureResume(f);

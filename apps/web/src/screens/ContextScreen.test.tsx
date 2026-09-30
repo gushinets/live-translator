@@ -1,4 +1,4 @@
-import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { Profiler } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createInitialSession, type TranslationSession } from "../session/SessionState";
@@ -62,6 +62,18 @@ class FakeOwnerController implements ContextScreenController {
     this.bootstrapText = "";
     this.notify();
   }
+
+  startWithLanguages = vi.fn(async ({ A, B }: { A: string; B: string }) => {
+    this.session = { ...this.session, state: "listening",
+      participantA: { ...this.session.participantA, language: A },
+      participantB: { ...this.session.participantB, language: B } };
+    this.notify();
+  });
+  changeInterlocutorLanguage = vi.fn(async (language: string) => {
+    this.session = { ...this.session,
+      participantB: { ...this.session.participantB, language } };
+    this.notify();
+  });
 
   acceptBootstrap = vi.fn(async (text: string) => {
     void text;
@@ -221,86 +233,146 @@ describe("ContextScreen", () => {
     view.rerender(<ContextScreen controller={controller} />);
     expect(screen.getByRole("button", { name: "Начать перевод" })).toHaveFocus();
   });
-  it("treats context as optional without extra footer copy", () => {
+  it("shows large language choices immediately on the first screen", () => {
     render(<ContextScreen controller={new FakeOwnerController()} />);
-
-    expect(
-      screen.getByRole("button", { name: "Продиктовать контекст" }),
-    ).toBeInTheDocument();
-    expect(screen.queryByText(/Речь обрабатывает OpenAI/i)).not.toBeInTheDocument();
-    expect(
-      screen.getByRole("button", { name: "Начать перевод" }),
-    ).toBeEnabled();
+    expect(screen.getByRole("heading", { name: "Язык собеседника" })).toBeInTheDocument();
+    expect(screen.getByRole("radio", { name: "испанский" })).toBeChecked();
+    expect(screen.getByRole("button", { name: "Начать перевод" })).toBeEnabled();
+    expect(screen.queryByLabelText("Контекст")).not.toBeInTheDocument();
   });
 
-  it("lets the user edit and clear recognized context", () => {
-    const controller = new FakeOwnerController();
-    controller.contextText = "I'm Russian and a courier is at my door.";
-    controller.session = { ...controller.session, state: "context" };
-
-    render(<ContextScreen controller={controller} />);
-
-    const editor = screen.getByRole("textbox", { name: "Контекст" });
-    expect(editor).toHaveValue("I'm Russian and a courier is at my door.");
-
-    fireEvent.change(editor, { target: { value: "Hotel check-in in Madrid." } });
-    expect(controller.contextText).toBe("Hotel check-in in Madrid.");
-
-    fireEvent.click(screen.getByRole("button", { name: "Очистить" }));
-    expect(controller.contextText).toBe("");
-    expect(screen.getByRole("textbox", { name: "Контекст" })).toHaveValue("");
-  });
-
-  it("enters bootstrap from Start even when context is empty", async () => {
-    const controller = new FakeOwnerController();
-    render(<ContextScreen controller={controller} />);
-
-    fireEvent.click(screen.getByRole("button", { name: "Начать перевод" }));
-
-    expect(controller.session.state).toBe("bootstrap");
-    expect(
-      await screen.findByText("Образец речи A · 1 из 2"),
-    ).toBeInTheDocument();
-    expect(
-      screen.getByText("Произнесите полное предложение на своём языке. Не называйте язык — просто расскажите что-нибудь."),
-    ).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Записать заново" })).toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: "microphone" })).not.toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: "Say the language" })).not.toBeInTheDocument();
-    expect(screen.queryByRole("combobox")).not.toBeInTheDocument();
-    expect(screen.queryByRole("listbox")).not.toBeInTheDocument();
-    expect(document.querySelector("select")).toBeNull();
-  });
-
-  it("does not offer a way to skip language calibration", async () => {
-    const controller = new FakeOwnerController();
-    render(<ContextScreen controller={controller} />);
-    fireEvent.click(screen.getByRole("button", { name: "Начать перевод" }));
-    expect(await screen.findByRole("button", { name: "Сохранить образец" })).toBeDisabled();
-    expect(screen.queryByRole("button", { name: "Пропустить" })).not.toBeInTheDocument();
-    expect(controller.beginInterpreter).not.toHaveBeenCalled();
-  });
-
-  it("enables saving a sample after transcript arrives without starting the interpreter", async () => {
-    const controller = new FakeOwnerController();
-    render(<ContextScreen controller={controller} />);
-
-    fireEvent.click(screen.getByRole("button", { name: "Начать перевод" }));
-    await screen.findByRole("button", { name: "Записать заново" });
-
-    expect(screen.getByRole("button", { name: "Сохранить образец" })).toBeDisabled();
-    expect(controller.acceptBootstrap).not.toHaveBeenCalled();
-    expect(controller.beginInterpreter).not.toHaveBeenCalled();
-
-    act(() => {
-      controller.setBootstrapText("Spanish");
+  it("prefers the device formatting locale when Chrome language order differs", () => {
+    const original = Intl.DateTimeFormat.prototype.resolvedOptions;
+    vi.spyOn(Intl.DateTimeFormat.prototype, "resolvedOptions").mockImplementation(function (this: Intl.DateTimeFormat) {
+      return { ...original.call(this), locale: "ru-RU" };
     });
-    expect(screen.getByText("Распознано")).toBeInTheDocument();
-    expect(screen.getByText("Spanish")).toBeInTheDocument();
-    fireEvent.click(await screen.findByRole("button", { name: "Сохранить образец" }));
+    const controller = new FakeOwnerController();
+    render(<ContextScreen controller={controller} />);
+    fireEvent.click(screen.getByRole("button", { name: "Начать перевод" }));
+    expect(controller.startWithLanguages).toHaveBeenCalledWith({ A: "ru", B: "es" });
+  });
 
-    expect(controller.acceptBootstrap).toHaveBeenCalledExactlyOnceWith("Spanish");
-    expect(controller.beginInterpreter).not.toHaveBeenCalled();
+  it("puts six priority languages first and sorts the rest by Russian name without duplicates", () => {
+    render(<ContextScreen controller={new FakeOwnerController()} />);
+    const radios = screen.getAllByRole("radio", { name: /.+/ }) as HTMLInputElement[];
+    expect(radios.slice(0, 6).map(radio => radio.value)).toEqual(["es", "en", "fr", "de", "it", "pt"]);
+    expect(new Set(radios.map(radio => radio.value)).size).toBe(radios.length);
+    const names = radios.slice(6).map(radio => radio.closest("label")!.textContent!);
+    expect(names).toEqual([...names].sort((a, b) => a.localeCompare(b, "ru")));
+    expect(radios.length).toBeGreaterThan(20);
+  });
+
+  it("starts on first tap without recording samples", () => {
+    const controller = new FakeOwnerController();
+    const startBootstrap = vi.spyOn(controller, "startBootstrap");
+    render(<ContextScreen controller={controller} />);
+    fireEvent.click(screen.getByRole("button", { name: "Начать перевод" }));
+    expect(startBootstrap).not.toHaveBeenCalled();
+    expect(controller.startWithLanguages).toHaveBeenCalledOnce();
+  });
+
+  it("requires a different interlocutor language from the owner language", () => {
+    const controller = new FakeOwnerController();
+    localStorage.setItem("live-translator-owner-language", "es");
+    render(<ContextScreen controller={controller} />);
+    expect(screen.getByRole("button", { name: "Начать перевод" })).toBeDisabled();
+    expect(controller.startWithLanguages).not.toHaveBeenCalled();
+  });
+
+  it("saves the choice and starts subsequent conversations in one click", async () => {
+    const controller = new FakeOwnerController();
+    const first = render(<ContextScreen controller={controller} />);
+    fireEvent.click(screen.getByRole("button", { name: "Начать перевод" }));
+    expect(await screen.findByRole("button", { name: "Завершить" })).toBeInTheDocument();
+    expect(localStorage.getItem("live-translator-interlocutor-language")).toBe("es");
+    first.unmount();
+    const next = new FakeOwnerController();
+    render(<ContextScreen controller={next} />);
+    fireEvent.click(screen.getByRole("button", { name: "Начать перевод" }));
+    expect(next.startWithLanguages).toHaveBeenCalledOnce();
+    expect(screen.queryByRole("radio", { name: "испанский" })).not.toBeInTheDocument();
+  });
+
+  it("keeps the large Start button in place while connecting and preparing translation", async () => {
+    localStorage.setItem("live-translator-interlocutor-language", "es");
+    const controller = new FakeOwnerController();
+    let finishStart!: () => void;
+    controller.startWithLanguages.mockImplementationOnce(() => new Promise<void>(resolve => {
+      finishStart = resolve;
+    }));
+    const view = render(<ContextScreen controller={controller} />);
+    const start = screen.getByRole("button", { name: "Начать перевод" });
+    fireEvent.click(start);
+
+    const pending = screen.getByRole("button", { name: "Устанавливаю связь…" });
+    expect(pending).toBe(start);
+    expect(pending).toBeDisabled();
+    expect(view.container.querySelector(".setup-card--start")).toContainElement(pending);
+    fireEvent.click(pending);
+    expect(controller.startWithLanguages).toHaveBeenCalledOnce();
+
+    for (const state of ["connecting", "bootstrap"] as const) {
+      controller.session = { ...controller.session, state };
+      view.rerender(<ContextScreen controller={controller} />);
+      expect(screen.getByRole("button", { name: "Устанавливаю связь…" })).toBe(start);
+      expect(view.container.querySelector(".setup-card--start")).toContainElement(start);
+      expect(screen.queryByText("Запускаю перевод…")).not.toBeInTheDocument();
+    }
+
+    await act(async () => {
+      controller.session = { ...controller.session, state: "listening" };
+      finishStart();
+    });
+    expect(screen.getByRole("button", { name: "Завершить" })).toBeInTheDocument();
+  });
+
+  it("keeps the selected language when the first connection fails", async () => {
+    const controller = new FakeOwnerController();
+    controller.startWithLanguages.mockRejectedValueOnce(new Error("offline"));
+    const error = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    const first = render(<ContextScreen controller={controller} />);
+    fireEvent.click(screen.getByRole("button", { name: "Начать перевод" }));
+    await waitFor(() => expect(error).toHaveBeenCalled());
+    expect(localStorage.getItem("live-translator-interlocutor-language")).toBe("es");
+    first.unmount();
+
+    const retry = new FakeOwnerController();
+    render(<ContextScreen controller={retry} />);
+    fireEvent.click(screen.getByRole("button", { name: "Начать перевод" }));
+    expect(retry.startWithLanguages).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ B: "es" }));
+  });
+
+  it("reopens the saved language from the start-screen settings", () => {
+    localStorage.setItem("live-translator-interlocutor-language", "es");
+    const controller = new FakeOwnerController();
+    render(<ContextScreen controller={controller} />);
+    expect(screen.queryByRole("radio", { name: "испанский" })).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Настройки" }));
+    expect(screen.getByRole("radio", { name: "испанский" })).toBeChecked();
+    fireEvent.click(screen.getByRole("button", { name: "Закрыть настройки" }));
+    expect(screen.queryByRole("radio", { name: "испанский" })).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Настройки" }));
+    fireEvent.click(screen.getByRole("radio", { name: "французский" }));
+    fireEvent.click(screen.getByRole("button", { name: "Начать перевод" }));
+    expect(controller.startWithLanguages).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ B: "fr" }));
+    expect(localStorage.getItem("live-translator-interlocutor-language")).toBe("fr");
+  });
+
+  it("opens the same language choice from the conversation toolbar", async () => {
+    const controller = new FakeOwnerController();
+    controller.session = { ...controller.session, state: "listening",
+      participantA: { ...controller.session.participantA, language: "ru" },
+      participantB: { ...controller.session.participantB, language: "es" } };
+    render(<ContextScreen controller={controller} />);
+
+    fireEvent.click(screen.getByRole("button", { name: "Язык собеседника" }));
+    expect(screen.getByText("Live Translator")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("radio", { name: "немецкий" }));
+    fireEvent.click(screen.getByRole("button", { name: "Подтвердить" }));
+
+    expect(await screen.findByText("B · немецкий")).toBeInTheDocument();
+    expect(controller.changeInterlocutorLanguage).toHaveBeenCalledExactlyOnceWith("de");
+    expect(localStorage.getItem("live-translator-interlocutor-language")).toBe("de");
   });
 
   it("starts only from the screen showing both fixed languages and does not trace speech", async () => {
@@ -424,11 +496,11 @@ describe("ContextScreen", () => {
     expect(output).toContain('"rendered_screen":"conversation"');
   });
 
-  it("shows the translator title on the owner start screen", () => {
+  it("shows the language heading on the first start screen", () => {
     render(<ContextScreen controller={new FakeOwnerController()} />);
 
     expect(
-      screen.getByRole("heading", { level: 1, name: "Переводчик" }),
+      screen.getByRole("heading", { level: 1, name: "Язык собеседника" }),
     ).toBeInTheDocument();
   });
 
@@ -439,6 +511,7 @@ describe("ContextScreen", () => {
     render(<ContextScreen controller={controller} />);
 
     expect(screen.queryByRole("heading", { level: 1 })).not.toBeInTheDocument();
+    expect(screen.queryByText("Live Translator")).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Завершить" })).toBeInTheDocument();
   });
 });

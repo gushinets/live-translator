@@ -42,7 +42,8 @@ export class MockLiveHarness {
   static async attach(page: Page): Promise<MockLiveHarness> {
     const harness = new MockLiveHarness(page);
     const start = new Date("2026-09-14T00:00:00.000Z");
-    await page.clock.install({ time: start });
+    // pauseAt must remain ahead of the running clock while parallel workers attach.
+    await page.clock.install({ time: new Date(start.getTime() - 60_000) });
     await page.clock.pauseAt(start);
     await harness.installInitScript();
     await harness.installBackendStub();
@@ -122,8 +123,7 @@ export class MockLiveHarness {
 
   async startListeningConversation(): Promise<void> {
     await this.page.goto("/");
-    await this.page.getByRole("button", { name: "Начать перевод" }).click();
-    await completeLanguageSetup(this.page, text => this.inputDelta(text));
+    await completeLanguageSetup(this.page);
     await expect(this.page.getByRole("button", { name: "Завершить" })).toBeVisible();
     await expect(this.page.getByTestId("participant-status-A")).toHaveText("ГОВОРИТЕ");
     await this.page.waitForFunction(
@@ -502,13 +502,7 @@ export class MockLiveHarness {
   }
 }
 
-export async function completeLanguageSetup(page: Page, input: (text: string) => Promise<void>): Promise<void> {
-  await expect(page.getByRole("heading", { name: "Образец речи A · 1 из 2" })).toBeVisible();
-  await input("I speak English and would like to find the nearest station.");
-  await page.getByRole("button", { name: "Сохранить образец" }).click();
-  await page.getByRole("button", { name: "Записать образец B" }).click();
-  await expect(page.getByText("Слушаю участника B")).toBeVisible();
-  await input("Hablo español y quisiera encontrar la estación de tren.");
-  await page.getByRole("button", { name: "Сохранить образец" }).click();
-  await page.getByRole("button", { name: "Начать разговор" }).click();
+export async function completeLanguageSetup(page: Page): Promise<void> {
+  await expect(page.getByRole("radio", { name: "испанский" })).toBeChecked();
+  await page.getByRole("button", { name: "Начать перевод" }).click();
 }
