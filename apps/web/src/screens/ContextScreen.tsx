@@ -321,10 +321,11 @@ export function ContextScreen({
     sessionState === "error" ||
     controller.isConnectInFlight === true || controller.retainedRecoveryState !== undefined;
   const recovery = controller.retainedRecoveryState;
-  const showStartPicker = !startingWithLanguages && sessionState === "idle" && (pickerMode === "start" || !interlocutorLanguage);
+  const invalidLanguagePair = !ownerLanguage || !interlocutorLanguage || ownerLanguage === interlocutorLanguage;
+  const showStartPicker = !startingWithLanguages && sessionState === "idle" && (pickerMode === "start" || invalidLanguagePair);
   const showStartLayout = !showStartPicker && (sessionState === "idle" || startingWithLanguages);
   const showSettings = (sessionState === "idle" || startingWithLanguages) &&
-    interlocutorLanguage !== undefined && recovery === undefined;
+    !invalidLanguagePair && recovery === undefined;
   const showCancel =
     recovery === undefined && (controller.session.state !== "idle" ||
     controller.ownerError !== undefined ||

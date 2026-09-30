@@ -600,12 +600,14 @@ export class SessionController {
     const interrupted = () => new Error("Смена языка прервана изменением состояния разговора.");
     this.speechInputReady = false;
     this.audio.setCaptureEnabled(false);
+    this.notify();
     try {
       if (!(await this.muteGateB(generation)) || !current()) throw interrupted();
       this.currentSession = {
         ...this.currentSession,
         participantB: { ...this.currentSession.participantB, language },
       };
+      if (this.pendingInterlocutorLanguage === language) this.pendingInterlocutorLanguage = undefined;
       this.notify();
       await this.live.appendInstructions(buildSteering(this.languages), {
         kind: "later_steering", sessionState: this.currentSession.state,
@@ -1622,8 +1624,7 @@ export class SessionController {
         if (this.pendingInterlocutorLanguage && !this.currentSession.activeTurn &&
           this.currentSession.state === "listening") {
           const language = this.pendingInterlocutorLanguage;
-          this.pendingInterlocutorLanguage = undefined;
-          void this.changeInterlocutorLanguage(language).catch(error =>
+          await this.changeInterlocutorLanguage(language).catch(error =>
             console.error("Language change after turn failed", { error }));
         }
       }
@@ -1718,7 +1719,7 @@ export class SessionController {
         audioOutputStarted,
       });
     }
-    this.speechInputReady = true;
+    this.speechInputReady = this.pendingInterlocutorLanguage === undefined;
     this.notify();
   }
 
@@ -1731,6 +1732,8 @@ export class SessionController {
     this.dispatch({ type: "TURN_FAILED" });
     this.beginLeftoverOutputDrain();
     this.recoveryPromptKind = "repeat";
+    // Apply the queued pair in turn completion before reopening input for the retry.
+    if (this.pendingInterlocutorLanguage) return;
     const generation = this.sessionGeneration;
     try {
       if (!(await this.unmuteGateB(generation))) {
@@ -1751,7 +1754,7 @@ export class SessionController {
     if (this.sessionGeneration !== generation) {
       return;
     }
-    this.speechInputReady = true;
+    this.speechInputReady = this.pendingInterlocutorLanguage === undefined;
     this.notify();
   }
 

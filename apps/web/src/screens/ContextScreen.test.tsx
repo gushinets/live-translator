@@ -252,6 +252,22 @@ describe("ContextScreen", () => {
     expect(controller.startWithLanguages).toHaveBeenCalledWith({ A: "ru", B: "es" });
   });
 
+  it.each(["xx-ZZ", "es-ES"])("requires correction of a saved pair when owner locale becomes %s", locale => {
+    localStorage.setItem("live-translator-interlocutor-language", "es");
+    const original = Intl.DateTimeFormat.prototype.resolvedOptions;
+    vi.spyOn(Intl.DateTimeFormat.prototype, "resolvedOptions").mockImplementation(function (this: Intl.DateTimeFormat) {
+      return { ...original.call(this), locale };
+    });
+    Object.defineProperty(navigator, "languages", { configurable: true, value: [locale] });
+    try {
+      render(<ContextScreen controller={new FakeOwnerController()} />);
+      expect(screen.getByRole("heading", { name: "Язык собеседника" })).toBeInTheDocument();
+      expect(screen.getByRole("button", { name: "Начать перевод" })).toBeDisabled();
+      expect(screen.queryByRole("button", { name: "Закрыть настройки" })).not.toBeInTheDocument();
+      expect(document.querySelector(".setup-shell--start")).toBeNull();
+    } finally { Reflect.deleteProperty(navigator, "languages"); }
+  });
+
   it("puts six priority languages first and sorts the rest by Russian name without duplicates", () => {
     render(<ContextScreen controller={new FakeOwnerController()} />);
     const radios = screen.getAllByRole("radio", { name: /.+/ }) as HTMLInputElement[];

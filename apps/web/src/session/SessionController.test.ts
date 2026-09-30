@@ -1592,6 +1592,34 @@ describe("SessionController turn engine", () => {
     );
   });
 
+  it("keeps the queued language and input closed until failed-turn steering is applied", async () => {
+    const { controller, live, audio } = createController();
+    await controller.startWithLanguages({ A: "en", B: "es" });
+    emitVoice(audio, true);
+    live.emit({ type: "session.input_transcript.delta", delta: "Where is the nearest train station?" });
+    await controller.changeInterlocutorLanguage("de");
+    emitVoice(audio, false);
+    await flushMicrotasks();
+    const readiness: boolean[] = [];
+    const unsubscribe = controller.subscribe(() => readiness.push(controller.inputReady));
+    let release!: () => void;
+    live.appendInstructions.mockImplementationOnce(async () => {
+      await new Promise<void>(resolve => { release = resolve; });
+      return { eventId: "changed-language" };
+    });
+    await vi.advanceTimersByTimeAsync(runtime.noOutputTimeoutMs + runtime.captionIdleMs);
+    expect(controller.session.participantB.language).toBe("de");
+    expect(controller.selectedInterlocutorLanguage).toBe("de");
+    expect(readiness).not.toContain(true);
+    expect(controller.inputReady).toBe(false);
+    release();
+    await waitUntil(() => controller.inputReady);
+    expect(controller.session.participantB.language).toBe("de");
+    expect(controller.selectedInterlocutorLanguage).toBe("de");
+    expect(controller.inputReady).toBe(true);
+    unsubscribe();
+  });
+
   it("does not start a new turn while changing the language between utterances", async () => {
     const { controller, live, audio } = createController();
     await controller.startWithLanguages({ A: "en", B: "es" });
