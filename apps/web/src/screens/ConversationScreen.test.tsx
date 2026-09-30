@@ -128,6 +128,26 @@ describe("ConversationScreen orientation and status", () => {
     expect(screen.getByRole("button", { name: "Завершить сохранённый разговор" })).toBeDisabled();
     expect(screen.queryByRole("button", { name: "Продолжить разговор" })).not.toBeInTheDocument();
   });
+  it("keeps the active conversation End button while closing and offers recovery if End stays pending", () => {
+    const controller = new FakeConversationController(session({
+      activeTurn: turn({ id: "closing-turn", speaker: "A", originalText: "Hello" }),
+    }));
+    const view = render(<ConversationScreen controller={controller} />);
+    const end = screen.getByRole("button", { name: "Завершить" });
+    fireEvent.click(end);
+    controller.session = { ...controller.session, state: "ending" };
+    view.rerender(<ConversationScreen controller={controller} />);
+    expect(screen.getByRole("button", { name: "Завершаю…" })).toBe(end);
+    expect(end).toBeDisabled();
+    expect(end).toHaveAttribute("aria-busy", "true");
+    expect(document.querySelector(".retained-recovery")).toBeNull();
+    expect(screen.getByTestId("participant-pane-A")).toHaveTextContent("Hello");
+
+    controller.retainedRecoveryState = "pending_end";
+    view.rerender(<ConversationScreen controller={controller} />);
+    expect(screen.getByRole("alert")).toHaveTextContent("Завершение не подтверждено");
+    expect(screen.getByRole("button", { name: "Повторить проверку" })).toBeEnabled();
+  });
   it("shows the same pending End recovery without claiming the interpreter is ready", () => {
     const controller = new FakeConversationController(session({ state: "suspended" }));
     controller.retainedRecoveryState = "pending_end";

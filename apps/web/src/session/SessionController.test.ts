@@ -330,6 +330,64 @@ describe("SessionController", () => {
     setDeviceLanguage("ru-RU");
   });
 
+  it("starts directly with the chosen language pair without recording samples", async () => {
+    const { controller, live, audio } = createController();
+
+    await controller.startWithLanguages({ A: "ru", B: "es" });
+
+    expect(controller.session.state).toBe("listening");
+    expect(controller.session.participantA.language).toBe("ru");
+    expect(controller.session.participantB.language).toBe("es");
+    expect(live.connect).toHaveBeenCalledOnce();
+    expect(live.appendInstructions).toHaveBeenCalledWith(
+      buildInterpreterInstructions({ A: "ru", B: "es" }), expect.anything(),
+    );
+    expect(audio.setCaptureEnabled).toHaveBeenLastCalledWith(true);
+  });
+
+  it("rejects a same-language pair before connecting", async () => {
+    const { controller, live } = createController();
+    await expect(controller.startWithLanguages({ A: "ru", B: "ru" })).rejects.toThrow();
+    expect(live.connect).not.toHaveBeenCalled();
+  });
+
+  it("applies a changed interlocutor language to the live steering", async () => {
+    const { controller, live } = createController();
+    await controller.startWithLanguages({ A: "ru", B: "es" });
+
+    await controller.changeInterlocutorLanguage("de");
+
+    expect(controller.session.participantB.language).toBe("de");
+    expect(live.appendInstructions).toHaveBeenLastCalledWith(
+      buildSteering({ A: "ru", B: "de" }), expect.anything(),
+    );
+  });
+
+  it.each(["mute", "steering", "unmute"])("does not reopen input when suspended during language-change %s", async phase => {
+    const { controller, live, audio, orientation } = createController();
+    await controller.startWithLanguages({ A: "ru", B: "es" });
+    let release!: () => void;
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    if (phase === "steering") live.appendInstructions.mockImplementationOnce(async () => {
+      await gate; return { eventId: "language-ack" };
+    });
+    else live.setInputMuted.mockImplementationOnce(async () => {
+      if (phase === "mute") await gate;
+    }).mockImplementationOnce(async () => { if (phase === "unmute") await gate; });
+    const changing = controller.changeInterlocutorLanguage("de").catch(error => error);
+    await flushMicrotasks();
+    orientation.emit("landscape");
+    await flushMicrotasks();
+    release();
+    await changing;
+    expect(controller.session.state).toBe("suspended");
+    expect(controller.inputReady).toBe(false);
+    expect(audio.captureTrack.enabled).toBe(false);
+    if (phase === "mute") expect(controller.session.participantB.language).toBe("es");
+    expect(live.setInputMuted).toHaveBeenLastCalledWith(true);
+    await controller.cancel();
+  });
+
   it("does not assign either language from the device locale", () => {
     const { controller } = createController();
 
@@ -1496,6 +1554,107 @@ describe("SessionController turn engine", () => {
     vi.setSystemTime(new Date("2026-01-01T00:00:00.000Z"));
   });
 
+  it("applies a language change after the current utterance closes", async () => {
+    const { controller, live, audio } = createController();
+    await controller.startWithLanguages({ A: "en", B: "es" });
+    emitVoice(audio, true);
+    live.emit({ type: "session.input_transcript.delta", delta: "Hello, where is the nearest train station?" });
+    live.emit({ type: "session.output_transcript.delta", delta: "Hola" });
+
+    await controller.changeInterlocutorLanguage("de");
+    expect(controller.session.participantB.language).toBe("es");
+
+    emitVoice(audio, false);
+    await flushMicrotasks();
+    await vi.advanceTimersByTimeAsync(runtime.audioStartGraceMs);
+    expect(controller.session.participantB.language).toBe("de");
+    expect(live.appendInstructions).toHaveBeenLastCalledWith(
+      buildSteering({ A: "en", B: "de" }), expect.anything(),
+    );
+  });
+
+  it("can cancel a queued language change before the utterance closes", async () => {
+    const { controller, live, audio } = createController();
+    await controller.startWithLanguages({ A: "en", B: "es" });
+    emitVoice(audio, true);
+    live.emit({ type: "session.input_transcript.delta", delta: "Hello, where is the nearest train station?" });
+    live.emit({ type: "session.output_transcript.delta", delta: "Hola" });
+
+    await controller.changeInterlocutorLanguage("de");
+    await controller.changeInterlocutorLanguage("es");
+    emitVoice(audio, false);
+    await flushMicrotasks();
+    await vi.advanceTimersByTimeAsync(runtime.audioStartGraceMs);
+
+    expect(controller.session.participantB.language).toBe("es");
+    expect(live.appendInstructions).toHaveBeenLastCalledWith(
+      buildSteering({ A: "en", B: "es" }), expect.anything(),
+    );
+  });
+
+  it("keeps the queued language and input closed until failed-turn steering is applied", async () => {
+    const { controller, live, audio } = createController();
+    await controller.startWithLanguages({ A: "en", B: "es" });
+    emitVoice(audio, true);
+    live.emit({ type: "session.input_transcript.delta", delta: "Where is the nearest train station?" });
+    await controller.changeInterlocutorLanguage("de");
+    emitVoice(audio, false);
+    await flushMicrotasks();
+    const readiness: boolean[] = [];
+    const unsubscribe = controller.subscribe(() => readiness.push(controller.inputReady));
+    let release!: () => void;
+    live.appendInstructions.mockImplementationOnce(async () => {
+      await new Promise<void>(resolve => { release = resolve; });
+      return { eventId: "changed-language" };
+    });
+    await vi.advanceTimersByTimeAsync(runtime.noOutputTimeoutMs + runtime.captionIdleMs);
+    expect(controller.session.participantB.language).toBe("de");
+    expect(controller.selectedInterlocutorLanguage).toBe("de");
+    expect(readiness).not.toContain(true);
+    expect(controller.inputReady).toBe(false);
+    release();
+    await waitUntil(() => controller.inputReady);
+    expect(controller.session.participantB.language).toBe("de");
+    expect(controller.selectedInterlocutorLanguage).toBe("de");
+    expect(controller.inputReady).toBe(true);
+    unsubscribe();
+  });
+
+  it("does not start a new turn while changing the language between utterances", async () => {
+    const { controller, live, audio } = createController();
+    await controller.startWithLanguages({ A: "en", B: "es" });
+    let releaseMute: (() => void) | undefined;
+    live.setInputMuted.mockImplementation(async (muted: boolean) => {
+      if (muted) await new Promise<void>(resolve => { releaseMute = resolve; });
+    });
+
+    const changing = controller.changeInterlocutorLanguage("de");
+    await waitUntil(() => releaseMute !== undefined);
+    emitVoice(audio, true);
+    live.emit({ type: "session.input_transcript.delta", delta: "Hello, where is the station?" });
+    expect(controller.session.activeTurn).toBeUndefined();
+    releaseMute?.();
+    await changing;
+    expect(controller.session.participantB.language).toBe("de");
+  });
+
+  it("does not reopen input when a correction supersedes a language change", async () => {
+    const { controller, live, audio } = createController();
+    await controller.startWithLanguages({ A: "en", B: "es" });
+    await completeTextOnlyTurn(controller, live, audio);
+    let release!: () => void;
+    live.setInputMuted.mockImplementationOnce(() => new Promise<void>(resolve => { release = resolve; }));
+    const changing = controller.changeInterlocutorLanguage("de").catch(error => error);
+    await flushMicrotasks();
+    await controller.correctLastTurn("B");
+    release();
+    await changing;
+    expect(controller.inputReady).toBe(false);
+    expect(audio.captureTrack.enabled).toBe(false);
+    expect(controller.session.participantB.language).toBe("es");
+    expect(live.setInputMuted).toHaveBeenLastCalledWith(true);
+  });
+
   it("creates an active turn from the first listening input fragment using detected language", async () => {
     const { controller, live } = createController();
     await enterListening(controller);
@@ -1995,6 +2154,24 @@ describe("SessionController turn engine", () => {
     expect(controller.session).not.toHaveProperty("expectedSpeaker");
     expect(controller.inputReady).toBe(true);
     expect(controller.recoveryPrompt).toBeUndefined();
+  });
+
+  it("applies a queued language change before repeating a timed-out source turn", async () => {
+    const { controller, live, audio } = createController();
+    await controller.startWithLanguages({ A: "en", B: "es" });
+    emitVoice(audio, true);
+    await controller.changeInterlocutorLanguage("de");
+    await vi.advanceTimersByTimeAsync(runtime.maxSourceMs);
+    await flushMicrotasks();
+    expect(controller.session.state).toBe("suspended");
+
+    await controller.resumeFromSourceTimeout();
+
+    expect(controller.session.participantB.language).toBe("de");
+    expect(live.appendInstructions).toHaveBeenLastCalledWith(
+      buildSteering({ A: "en", B: "de" }), expect.anything(),
+    );
+    expect(controller.inputReady).toBe(true);
   });
 
   it("manual MAX_SOURCE resume waits for Gate B unmute before reopening output", async () => {

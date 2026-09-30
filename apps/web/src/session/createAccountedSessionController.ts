@@ -107,7 +107,7 @@ export class AccountedSessionController extends SessionController {
     this.recoveryProbe = probe;
   }
   get retainedRecoveryState(): "checking" | "paused" | "resuming" | "ending" | "failed" | "active" | "pending_end" | "no_provider_end" | "pending_claim" | "blocked" | "unresolved_create" | "unavailable" | "storage_unavailable" | "ownership_unavailable" | undefined {
-    if (this.retainedEndWork || this.session.state === "ending") return "ending";
+    if (this.retainedEndWork || this.session.state === "ending" && (this.retainedPaused || this.retainedActive)) return "ending";
     if (this.recoveryChecking || this.verificationWork) return "checking";
     if (this.resumeWork) return "resuming";
     if (this.storageUnavailable) return "storage_unavailable";
@@ -639,6 +639,9 @@ export class AccountedSessionController extends SessionController {
   }
   override startContextCapture(): Promise<void> { return this.startExplicit(primed => super.startContextCapture(primed)); }
   override startBootstrap(): Promise<void> { return this.startExplicit(primed => super.startBootstrap(primed)); }
+  override startWithLanguages(languages: { A: string; B: string }): Promise<void> {
+    return this.startExplicit(primed => super.startWithLanguages(languages, primed));
+  }
   override cancel(): Promise<void> { this.invalidatePendingStart(); return super.cancel(); }
   protected override beginBackgroundPause(): void { this.hiddenPausePending = true; this.accounting.beginBackgroundPause(); }
   protected override async pauseBackground(state: Omit<ResumeSnapshotInput,

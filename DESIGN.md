@@ -48,6 +48,8 @@ Interface labels use the compact Bahnschrift stack with Russian-capable fallback
 
 Setup is a single narrow column respecting phone safe areas. Conversation mode fills the phone and gives both participants equal space; Participant B remains rotated 180 degrees. Current speech always dominates history.
 
+Every setup, loading, and recovery screen keeps the small “Live Translator” name at the top. When settings are available, their control shares that row. The active conversation has no app header.
+
 ## Elevation & Depth
 
 Use tonal surfaces and borders. Setup may use one shallow card shadow; conversation panes stay flat so text remains dominant.
@@ -60,6 +62,10 @@ Controls use compact rounded rectangles, not pills. The setup card may use the l
 
 Primary actions are full-width, at least 44px high, and stable while disabled. Secondary actions remain visibly subordinate. Focus is always visible. Motion communicates pressing or state only and is removed for reduced-motion users.
 
+Ending an active conversation keeps its toolbar button and both dialogue panes in place. The button becomes disabled and reads “Завершаю…” without changing dimensions; only after closure does setup return. Retained-session recovery remains available for unconfirmed closure.
+
+Interlocutor languages use full-width radio rows sized for a thumb. At least four priority languages fit in the initial scroll area; the list fills the available space and reveals part of the next row to signal scrolling while the main action stays at the bottom. The less frequent owner-language correction keeps its native `<select>`.
+
 ## Do's and Don'ts
 
 - **Do:** keep Russian control copy short and literal.
@@ -69,8 +75,12 @@ Primary actions are full-width, at least 44px high, and stable while disabled. S
 
 ## Language setup and conversation behavior
 
-`BootstrapPrompt` owns the two-sample setup flow: A records a full sentence, saves it, then B explicitly starts their own sample. Both detected languages are shown before starting the conversation and remain fixed until the session ends. Setup cannot be skipped; ambiguous or identical languages require another sample. Cancellation remains available during setup and startup.
+At first launch the language list is already open: A comes from the device/browser locale and can be corrected; Spanish is preselected for B. Spanish, English, French, German, Italian and Portuguese lead the list; the remaining languages are sorted by stable Russian names stored in the app. The large bottom action saves B and starts translation. Later starts show one centered action, with a top-right settings control reopening the language list. No speech sample or context is required. The conversation toolbar reopens the same list for B; a change during a turn applies after the turn closes. A and B must differ. The priority is fixed until the separate location-suggestion feature is built.
 
 `SideResolver` classifies incoming transcript text locally; model playback is never an identity signal. Neither participant has an expected turn. Both panes show ГОВОРИТЕ when input is ready, and display their fixed languages. Unknown source speech is presented without assigning it to a side, with a manual correction hint. Manual assignment only affects that utterance.
 
 Runtime verification: `SessionController.test.ts` covers B-first and repeated turns, fixed languages after suspension, unknown speech and cancellation; `tests/e2e/mocked-conversation.spec.ts` checks the same routing in a browser. Existing warm surfaces, typography, focus behavior and rotated B pane are retained.
+
+The existing language set comes from the text detector; it is not a verified exhaustive GPT-Live 1 language catalog. Auditing model language coverage is deferred.
+
+The conversation language picker reflects a queued choice before it takes effect. A rejected change leaves the picker open with a retry message; the saved preference remains available for the next conversation. Changes never reopen capture after lifecycle suspension or a concurrent correction. A queued choice is included in the retained snapshot when backgrounding discards the unfinished turn.

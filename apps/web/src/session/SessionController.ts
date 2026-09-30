@@ -102,6 +102,7 @@ export class SessionController {
   private connectWork: Promise<void> | null = null;
   private interpreterInFlight = false;
   private interpreterWork: Promise<void> | null = null;
+  private pendingInterlocutorLanguage: string | undefined;
   private cancelWork: Promise<void> | null = null;
   private sessionGeneration = 0;
   private liveProductGeneration = 0;
@@ -289,6 +290,7 @@ export class SessionController {
     this.currentSession = { state: snapshot.setupStage === "interpreter" ? "listening" : snapshot.setupStage === "bootstrap" ? "bootstrap" : "connecting",
       contextText: snapshot.contextText, recentTurns: [],
       participantA: { side: "A", ...snapshot.participantA }, participantB: { side: "B", ...snapshot.participantB } };
+    this.pendingInterlocutorLanguage = undefined;
     this.enteredInterpreter = snapshot.enteredInterpreter;
     this.freshBootstrapReady = snapshot.setupStage === "bootstrap";
     this.hasConnected = true;
@@ -536,6 +538,100 @@ export class SessionController {
     }
   }
 
+  async startWithLanguages(languages: ConversationLanguages, primedOutput?: Promise<void>): Promise<void> {
+    if (!languages.A || !languages.B || languages.A === languages.B) {
+      throw new Error("Выберите два разных языка.");
+    }
+    if (this.endWork !== null) await this.endWork;
+    if (this.cancelWork !== null) await this.cancelWork;
+    if (this.connectWork !== null) return this.connectWork;
+    const work = (async () => {
+      const generation = this.sessionGeneration;
+      this.connectInFlight = true;
+      this.notify();
+      try {
+        await this.ensureConnected(primedOutput);
+        if (generation !== this.sessionGeneration || this.currentSession.state !== "connecting") return;
+        this.audio.setCaptureEnabled(false);
+        if (!(await this.muteGateB(generation))) return;
+        if (generation !== this.sessionGeneration) return;
+        this.currentSession = {
+          ...this.currentSession,
+          participantA: { ...this.currentSession.participantA, language: languages.A },
+          participantB: { ...this.currentSession.participantB, language: languages.B },
+        };
+        this.dispatch({ type: "SKIP_CONTEXT" });
+        await this.beginInterpreter();
+      } finally {
+        if (generation === this.sessionGeneration) {
+          this.connectInFlight = false;
+          this.notify();
+        }
+      }
+    })();
+    this.connectWork = work;
+    try { await work; }
+    finally { if (this.connectWork === work) this.connectWork = null; }
+  }
+
+  async changeInterlocutorLanguage(language: string): Promise<void> {
+    if (this.currentSession.state !== "listening" && this.currentSession.state !== "outputting") {
+      throw new Error("Сменить язык можно во время разговора.");
+    }
+    if (!language || language === this.currentSession.participantA.language) {
+      throw new Error("Выберите язык, отличный от вашего.");
+    }
+    if (language === this.currentSession.participantB.language) {
+      this.pendingInterlocutorLanguage = undefined;
+      this.notify();
+      return;
+    }
+    if (this.currentSession.activeTurn || this.turnClosing) {
+      this.pendingInterlocutorLanguage = language;
+      this.notify();
+      return;
+    }
+    const generation = this.sessionGeneration;
+    const lifecycleEpoch = this.lifecycleEpoch;
+    const correctionEpoch = this.correctionEpoch;
+    const current = () => generation === this.sessionGeneration && lifecycleEpoch === this.lifecycleEpoch &&
+      correctionEpoch === this.correctionEpoch && this.correctionWork === null &&
+      (this.currentSession.state === "listening" || this.currentSession.state === "outputting");
+    const interrupted = () => new Error("Смена языка прервана изменением состояния разговора.");
+    this.speechInputReady = false;
+    this.audio.setCaptureEnabled(false);
+    this.notify();
+    try {
+      if (!(await this.muteGateB(generation)) || !current()) throw interrupted();
+      this.currentSession = {
+        ...this.currentSession,
+        participantB: { ...this.currentSession.participantB, language },
+      };
+      if (this.pendingInterlocutorLanguage === language) this.pendingInterlocutorLanguage = undefined;
+      this.notify();
+      await this.live.appendInstructions(buildSteering(this.languages), {
+        kind: "later_steering", sessionState: this.currentSession.state,
+      });
+      if (!current()) throw interrupted();
+      if (!(await this.unmuteGateB(generation)) || !current()) {
+        if (generation === this.sessionGeneration) await this.muteGateB(generation);
+        throw interrupted();
+      }
+      this.audio.setCaptureEnabled(true);
+      this.speechInputReady = true;
+      this.notify();
+    } catch (error) {
+      if (!current()) throw error;
+      this.ownerErrorMessage = CONNECTION_ERROR_MESSAGE;
+      this.dispatch({ type: "SESSION_ERROR", message: this.ownerErrorMessage });
+      throw error;
+    }
+  }
+
+  get selectedInterlocutorLanguage(): string | undefined {
+    return this.pendingInterlocutorLanguage ?? this.currentSession.participantB.language;
+  }
+
   handleRemoteStream(stream: MediaStream, source: LiveClient): void {
     // Validate origin BEFORE attaching. A generation captured after a stale callback is too late.
     if (source !== this.live || this.liveProductGeneration !== this.sessionGeneration) return;
@@ -693,6 +789,18 @@ export class SessionController {
         await ensureMuted();
         return;
       }
+    }
+    if (this.applyPendingInterlocutorLanguage()) {
+      try {
+        await this.live.appendInstructions(buildSteering(this.languages), {
+          kind: "later_steering", sessionState: this.currentSession.state,
+        });
+      } catch (error) {
+        if (!resumeStillCurrent()) return;
+        this.failLifecycleResume(error);
+        throw error;
+      }
+      if (!resumeStillCurrent()) return;
     }
     try {
       if (!(await this.unmuteGateB(generation))) {
@@ -1285,6 +1393,7 @@ export class SessionController {
       return;
     }
     if (this.currentSession.activeTurn === undefined) {
+      if (!this.speechInputReady) return;
       if (this.currentSession.state !== "listening") {
         throw new Error(
           `Cannot start a source turn from transcript while session state is "${this.currentSession.state}"`,
@@ -1350,6 +1459,7 @@ export class SessionController {
       const activeTurn = this.currentSession.activeTurn;
       const wasIdle = activeTurn?.sourceIdleAtMs !== undefined;
       if (activeTurn === undefined) {
+        if (!this.speechInputReady) return;
         this.speechInputReady = false;
         this.dispatch({
           type: "SOURCE_ACTIVE",
@@ -1511,6 +1621,12 @@ export class SessionController {
     } finally {
       if (this.sessionGeneration === generation) {
         this.turnClosing = false;
+        if (this.pendingInterlocutorLanguage && !this.currentSession.activeTurn &&
+          this.currentSession.state === "listening") {
+          const language = this.pendingInterlocutorLanguage;
+          await this.changeInterlocutorLanguage(language).catch(error =>
+            console.error("Language change after turn failed", { error }));
+        }
       }
     }
   }
@@ -1531,6 +1647,7 @@ export class SessionController {
     const audioOutputStarted = turn.audioOutputStarted;
     this.speechInputReady = false;
     this.dispatch({ type: "TURN_CLOSED", speaker });
+    this.applyPendingInterlocutorLanguage();
     const turnCompletedAtMs = this.currentSession.recentTurns.at(-1)?.turnCompletedAtMs;
     this.beginLeftoverOutputDrain();
     const session = this.currentSession;
@@ -1602,7 +1719,7 @@ export class SessionController {
         audioOutputStarted,
       });
     }
-    this.speechInputReady = true;
+    this.speechInputReady = this.pendingInterlocutorLanguage === undefined;
     this.notify();
   }
 
@@ -1615,6 +1732,8 @@ export class SessionController {
     this.dispatch({ type: "TURN_FAILED" });
     this.beginLeftoverOutputDrain();
     this.recoveryPromptKind = "repeat";
+    // Apply the queued pair in turn completion before reopening input for the retry.
+    if (this.pendingInterlocutorLanguage) return;
     const generation = this.sessionGeneration;
     try {
       if (!(await this.unmuteGateB(generation))) {
@@ -1635,8 +1754,20 @@ export class SessionController {
     if (this.sessionGeneration !== generation) {
       return;
     }
-    this.speechInputReady = true;
+    this.speechInputReady = this.pendingInterlocutorLanguage === undefined;
     this.notify();
+  }
+
+  private applyPendingInterlocutorLanguage(): boolean {
+    const language = this.pendingInterlocutorLanguage;
+    if (language === undefined) return false;
+    this.pendingInterlocutorLanguage = undefined;
+    this.currentSession = {
+      ...this.currentSession,
+      participantB: { ...this.currentSession.participantB, language },
+    };
+    this.notify();
+    return true;
   }
 
   private async handleMaxSourceTimeout(): Promise<void> {
@@ -2092,6 +2223,7 @@ export class SessionController {
     if (this.currentSession.state !== "idle") {
       return;
     }
+    this.audio.setCaptureEnabled(false);
     this.dispatch({ type: "CONNECT" });
     this.liveConnectStarted = true;
     try {
@@ -2465,7 +2597,7 @@ export class SessionController {
       const counters: MetricCounters = {};
       const retained = {
         participantA: { language: state.participantA.language, hasAcceptedConversationSpeech: state.participantA.hasAcceptedConversationSpeech },
-        participantB: { language: state.participantB.language, hasAcceptedConversationSpeech: state.participantB.hasAcceptedConversationSpeech },
+        participantB: { language: this.selectedInterlocutorLanguage, hasAcceptedConversationSpeech: state.participantB.hasAcceptedConversationSpeech },
         contextText: this.capturingContext ? "" : this.contextBuffer,
         setupStage: (this.enteredInterpreter ? "interpreter" : state.state === "bootstrap" ? "bootstrap" : "context") as ResumeSnapshotInput["setupStage"],
         enteredInterpreter: this.enteredInterpreter,
@@ -2720,6 +2852,7 @@ export class SessionController {
       return;
     }
 
+    this.applyPendingInterlocutorLanguage();
     const session = this.currentSession;
     const generation = this.sessionGeneration;
     try {
@@ -2875,6 +3008,7 @@ export class SessionController {
     this.gateCHeldForCorrectionEpoch = null;
     this.correctionWork = null;
     this.enteredInterpreter = false;
+    this.pendingInterlocutorLanguage = undefined;
     this.conversationMetrics = new ConversationMetrics();
     this.finishPlaybackIdleWait();
     this.clearTurnEngineTimers();
