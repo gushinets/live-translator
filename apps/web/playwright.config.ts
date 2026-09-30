@@ -1,7 +1,8 @@
 import { defineConfig, devices } from "@playwright/test";
 
 export default defineConfig({
-  testDir: "./tests/e2e",
+  testDir: "./tests",
+  testMatch: ["**/e2e/**/*.spec.ts", "**/real/orientation-harness.spec.ts"],
   fullyParallel: true,
   forbidOnly: !!process.env.CI,
   retries: process.env.CI ? 2 : 0,
@@ -28,6 +29,8 @@ export default defineConfig({
     },
     {
       name: "webkit",
+      // The portrait harness uses CDP, which is only available in Chromium.
+      testIgnore: "**/real/orientation-harness.spec.ts",
       use: { ...devices["iPhone 13"] },
     },
   ],
