@@ -2,7 +2,7 @@ import { IDBFactory } from "fake-indexeddb";
 import { cleanup, render, screen } from "@testing-library/react";
 import { jsx } from "react/jsx-runtime";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type { BackendClient } from "../api/BackendClient";
+import { BackendClient } from "../api/BackendClient";
 import { AccountingRequestError, type ConversationMetadata, type LedgerApi, type ProviderCreateBody } from "../api/AccountingBackend";
 import type { UsageReport } from "../metrics/UsageTypes";
 import { LiveClient } from "../live/LiveClient";
@@ -3045,6 +3045,46 @@ describe("stage 5 hidden boundary", () => {
     await ending;
     expect(f.api.end).toHaveBeenCalledTimes(1);
     unsubscribe();
+    await f.budget.close();
+  });
+
+  it("keeps direct-start capture disabled until interpreter readiness with the usage ledger disabled", async () => {
+    const f = fixture(40);
+    f.api.policy.mockResolvedValue({ usageLedgerEnabled: false, backgroundSessionCloseEnabled: false });
+    vi.spyOn(BackendClient.prototype, "releaseLiveSession").mockResolvedValue();
+    f.track.enabled = true; // getUserMedia returns enabled tracks.
+    let releaseConnection!: () => void;
+    const connectionGate = new Promise<void>(resolve => { releaseConnection = resolve; });
+    const create = vi.spyOn(BackendClient.prototype, "createLiveSession").mockImplementation(async () => {
+      await connectionGate;
+      return { session: { id: "provider" }, transport: { type: "webrtc", sdp: "answer" } };
+    });
+    const starting = f.controller.startWithLanguages({ A: "ru", B: "es" });
+    await vi.waitFor(() => expect(create).toHaveBeenCalledOnce());
+    expect(f.clients[0]!.peer.addTrack).toHaveBeenCalledWith(f.track, f.stream);
+    expect(f.track.enabled).toBe(false);
+
+    let releaseSteering!: () => void;
+    const steeringGate = new Promise<void>(resolve => { releaseSteering = resolve; });
+    const client = f.clients[0]!.client;
+    const append = client.appendInstructions.bind(client);
+    const instructions = vi.spyOn(client, "appendInstructions").mockImplementation(async (...args) => {
+      await steeringGate;
+      return append(...args);
+    });
+    releaseConnection();
+    await vi.waitFor(() => expect(instructions).toHaveBeenCalled());
+    expect(f.track.enabled).toBe(false);
+    releaseSteering();
+    await starting;
+    expect(f.controller.session.state).toBe("listening");
+    expect(f.track.enabled).toBe(true);
+    expect(f.api.createSession).not.toHaveBeenCalled();
+    const ending = f.controller.cancel();
+    await vi.waitFor(() => expect(f.clients[0]!.peer.channel.sent).toContain("session.close"));
+    f.clients[0]!.peer.channel.emit({ type: "session.closed" });
+    await ending;
+    await f.controller.dispose();
     await f.budget.close();
   });
 

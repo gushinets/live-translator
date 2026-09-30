@@ -2223,6 +2223,7 @@ export class SessionController {
     if (this.currentSession.state !== "idle") {
       return;
     }
+    this.audio.setCaptureEnabled(false);
     this.dispatch({ type: "CONNECT" });
     this.liveConnectStarted = true;
     try {
