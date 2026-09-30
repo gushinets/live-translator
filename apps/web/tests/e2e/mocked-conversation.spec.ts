@@ -17,6 +17,48 @@ const COURIER_TURNS: ReadonlyArray<{ original: string; translation: string }> = 
 ];
 
 test.describe("mocked conversation runtime", () => {
+  test("reopening languages reflects the queued choice before the turn ends", async ({ page }) => {
+    const harness = await MockLiveHarness.attach(page);
+    await harness.startListeningConversation();
+    await harness.sourceActive();
+    await harness.inputDelta("Could you tell me where the train station is?");
+    await page.getByRole("button", { name: "Язык собеседника" }).click();
+    await page.getByRole("radio", { name: "немецкий" }).check();
+    await page.getByRole("button", { name: "Подтвердить" }).click();
+    await page.getByRole("button", { name: "Язык собеседника" }).click();
+    await expect(page.getByRole("radio", { name: "немецкий" })).toBeChecked();
+    await page.getByRole("button", { name: "Подтвердить" }).click();
+    await harness.outputDelta("Wo ist der Bahnhof?");
+    await harness.sourceQuiet();
+    await harness.advance(runtime.audioStartGraceMs);
+    await expect(page.getByText("B · немецкий")).toBeVisible();
+  });
+  test("End keeps the toolbar geometry until the provider confirms closure", async ({ page }) => {
+    const harness = await MockLiveHarness.attach(page);
+    await harness.startListeningConversation();
+    await page.evaluate(() => {
+      const channel = window.__liveTranslatorTestLive!.channel as EventTarget & { send(data: string): void };
+      const send = channel.send.bind(channel);
+      channel.send = data => {
+        if (JSON.parse(data).type !== "session.close") send(data);
+      };
+    });
+    const end = page.getByRole("button", { name: "Завершить", exact: true });
+    const buttonBefore = await end.boundingBox();
+    const toolbarBefore = await page.locator(".conversation-center").boundingBox();
+    await end.click();
+    const closing = page.getByRole("button", { name: "Завершаю…", exact: true });
+    await expect(closing).toBeDisabled();
+    await expect(closing).toHaveAttribute("aria-busy", "true");
+    expect(await closing.boundingBox()).toEqual(buttonBefore);
+    expect(await page.locator(".conversation-center").boundingBox()).toEqual(toolbarBefore);
+    await expect(page.locator(".retained-recovery")).toHaveCount(0);
+    await expect(page.getByTestId("participant-pane-A")).toBeVisible();
+    await expect(page.getByTestId("participant-pane-B")).toBeVisible();
+    await harness.sessionClosed("user_requested", 1);
+    await expect(page.getByRole("button", { name: "Начать перевод", exact: true })).toBeEnabled();
+    await expect(page.locator(".conversation-screen")).toHaveCount(0);
+  });
   test("courier flow alternates A/B, keeps B rotated, and caps recent turns", async ({
     page,
   }) => {
@@ -28,8 +70,8 @@ test.describe("mocked conversation runtime", () => {
     );
     const liveSessionCreatesAfterSetup = harness.liveSessionCreateCount();
     const peerCreatesAfterSetup = await harness.peerCreateCount();
-    expect(liveSessionCreatesAfterSetup).toBe(2);
-    expect(peerCreatesAfterSetup).toBe(2);
+    expect(liveSessionCreatesAfterSetup).toBe(1);
+    expect(peerCreatesAfterSetup).toBe(1);
 
     for (const [index, turn] of COURIER_TURNS.entries()) {
       const speaker = index % 2 === 0 ? "A" : "B";
@@ -224,48 +266,25 @@ async function completeTextOnlyTurn(
   await harness.advance(runtime.captionIdleMs);
 }
 
-test("calibration validates samples and is usable with the keyboard on a phone viewport", async ({ page }, testInfo) => {
+test("first language choice is usable with the keyboard on a phone viewport", async ({ page }, testInfo) => {
   const harness = await MockLiveHarness.attach(page);
   await page.goto("/");
-  await page.getByRole("button", { name: "Начать перевод" }).click();
-  const save = page.getByRole("button", { name: "Сохранить образец" });
-  await expect(save).toBeDisabled();
-  await harness.inputDelta("OK");
-  await save.click();
-  await expect(page.getByRole("alert")).toContainText("полное предложение");
-  const firstPeer = await harness.peerCreateCount();
-  await page.getByRole("button", { name: "Записать заново" }).click();
-  await expect.poll(() => harness.peerCreateCount()).toBeGreaterThan(firstPeer);
-  await expect(page.getByText("Слушаю участника A")).toBeVisible();
-  await harness.inputDelta("Я говорю по-русски и хочу узнать дорогу к вокзалу.");
-  await expect(save).toBeEnabled();
-  await save.focus();
-  await expect(save).toBeFocused();
-  await page.keyboard.press("Enter");
-  await harness.advance(50);
-  await expect(page.getByText("Участник A — русский")).toBeVisible();
-  await page.getByRole("button", { name: "Записать образец B" }).click();
-  await expect(page.getByText("Слушаю участника B")).toBeVisible();
-  await harness.inputDelta("Я снова говорю по-русски и хочу узнать дорогу к вокзалу.");
-  await save.click();
-  await expect(page.getByRole("alert")).toContainText("тот же язык");
-  const previousPeer = await harness.peerCreateCount();
-  await page.getByRole("button", { name: "Записать заново" }).click();
-  await expect.poll(() => harness.peerCreateCount()).toBeGreaterThan(previousPeer);
-  await expect(page.getByText("Слушаю участника B")).toBeVisible();
-  await harness.inputDelta("I speak English and would like to find the nearest station.");
-  await save.click();
-  await expect(page.getByText("Участник B — английский")).toBeVisible();
-  await expect(page.getByRole("alert")).toHaveCount(0);
+  const german = page.getByRole("radio", { name: "немецкий" });
+  await german.focus();
+  await page.keyboard.press("Space");
+  await expect(german).toBeChecked();
+  await page.getByRole("radio", { name: "испанский" }).check();
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
-  await page.screenshot({ path: testInfo.outputPath("languages-ready.png") });
-  await page.getByRole("button", { name: "Начать разговор" }).focus();
+  await page.screenshot({ path: testInfo.outputPath("language-choice.png") });
+  await page.getByRole("button", { name: "Начать перевод" }).focus();
   await page.keyboard.press("Enter");
-  await harness.advance(50);
   await expect(page.getByRole("button", { name: "Завершить" })).toBeVisible();
+  await page.getByRole("button", { name: "Язык собеседника" }).click();
+  await expect(page.getByText("Live Translator")).toBeVisible();
+  await page.getByRole("button", { name: "Назад" }).click();
   await harness.sourceActive();
-  await harness.inputDelta("Could you tell me where the train station is?");
-  await harness.outputDelta("Подскажите, пожалуйста, где находится вокзал?");
+  await harness.inputDelta("¿Dónde está la estación de tren, por favor?");
+  await harness.outputDelta("Where is the train station, please?");
   await expect(page.getByTestId("participant-status-B")).toHaveText("СЛУШАЮ");
   await page.screenshot({ path: testInfo.outputPath("conversation-b-first.png") });
 });

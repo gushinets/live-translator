@@ -44,11 +44,9 @@ describe("App", () => {
     render(<App isDevelopment={false} />);
 
     expect(
-      screen.getByRole("heading", { name: "Переводчик" }),
-    ).toBeInTheDocument();
-    expect(
       await screen.findByRole("button", { name: "Начать перевод" }),
     ).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Язык собеседника" })).toBeInTheDocument();
     expect(screen.queryByText(/Речь обрабатывает OpenAI/i)).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Connect" })).not.toBeInTheDocument();
     expect(

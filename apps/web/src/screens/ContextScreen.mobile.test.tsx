@@ -43,6 +43,8 @@ class MobileUiController implements ContextScreenController {
     this.contextText = "";
   }
   async startBootstrap(): Promise<void> {}
+  async startWithLanguages(): Promise<void> {}
+  async changeInterlocutorLanguage(): Promise<void> {}
   async acceptBootstrap(): Promise<void> {}
   async beginInterpreter(): Promise<void> {}
   async cancel(): Promise<void> {}
@@ -55,9 +57,10 @@ describe("ContextScreen mobile setup UI", () => {
   it("renders a concise Russian owner screen without promotional copy", () => {
     render(<ContextScreen controller={new MobileUiController()} />);
 
-    expect(screen.getByRole("heading", { name: "Переводчик" })).toBeInTheDocument();
+    expect(screen.getByText("Live Translator")).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Язык собеседника" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Начать перевод" })).toBeInTheDocument();
-    expect(screen.getByLabelText("Контекст")).toBeInTheDocument();
+    expect(screen.queryByLabelText("Контекст")).not.toBeInTheDocument();
     expect(screen.queryByText(/One phone, two people/i)).not.toBeInTheDocument();
     expect(screen.queryByText(/Ready when you are/i)).not.toBeInTheDocument();
   });
@@ -81,6 +84,7 @@ describe("ContextScreen mobile setup UI", () => {
 
     render(<ContextScreen controller={controller} />);
 
+    expect(screen.getByText("Live Translator")).toBeInTheDocument();
     expect(screen.getByRole("status")).toHaveTextContent("Слушаю участника A");
     expect(screen.getByText("Образец речи A · 1 из 2")).toHaveClass(
       "bootstrap-title",

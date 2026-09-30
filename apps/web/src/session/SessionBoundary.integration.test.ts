@@ -2,7 +2,7 @@ import { IDBFactory } from "fake-indexeddb";
 import { cleanup, render, screen } from "@testing-library/react";
 import { jsx } from "react/jsx-runtime";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type { BackendClient } from "../api/BackendClient";
+import { BackendClient } from "../api/BackendClient";
 import { AccountingRequestError, type ConversationMetadata, type LedgerApi, type ProviderCreateBody } from "../api/AccountingBackend";
 import type { UsageReport } from "../metrics/UsageTypes";
 import { LiveClient } from "../live/LiveClient";
@@ -13,6 +13,7 @@ import { AccountedSessionController } from "./createAccountedSessionController";
 import type { SessionControllerDeps } from "./SessionController";
 import { VisibilityController } from "../platform/VisibilityController";
 import { ContextScreen, type ContextScreenController } from "../screens/ContextScreen";
+import { ConversationScreen } from "../screens/ConversationScreen";
 import type { OrientationController } from "../platform/OrientationController";
 import type { WakeLockController } from "../platform/WakeLockController";
 import { DatabaseSync } from "node:sqlite";
@@ -448,7 +449,7 @@ describe("stage 5 hidden boundary", () => {
     expect(f.track.enabled).toBe(false);
     render(jsx(ContextScreen, { controller: f.controller satisfies ContextScreenController }));
     expect(screen.queryByText("Слушаю контекст")).not.toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Продиктовать контекст" })).toBeEnabled();
+    expect(screen.queryByRole("button", { name: "Продиктовать контекст" })).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Начать перевод" })).toBeEnabled();
     expect(f.clients[1]!.peer.channel.events.filter(event => event.type === "session.thinking.append")).toEqual([]);
 
@@ -683,6 +684,39 @@ describe("stage 5 hidden boundary", () => {
     expect(f.controller.session.state).toBe("ending");
     await vi.advanceTimersByTimeAsync(40);
     await f.controller.dispose(); await f.budget.close();
+  });
+  it.each([false, true])("retains a queued language change across background recovery (reload=%s)", async reload => {
+    const f = fixture(40, true); configureResume(f);
+    await f.controller.startWithLanguages({ A: "en", B: "es" });
+    f.clients.at(-1)!.peer.channel.emit({ type: "session.input_transcript.delta", delta: "Could you tell me where the train station is?" });
+    await f.controller.changeInterlocutorLanguage("de");
+    expect(f.controller.session.participantB.language).toBe("es");
+    f.setVisible(false);
+    await vi.waitFor(() => expect(f.clients.at(-1)!.peer.channel.sent).toContain("session.close"));
+    f.clients.at(-1)!.peer.channel.emit({ type: "session.closed" });
+    await vi.waitFor(() => expect(f.c.status).toBe("paused"));
+    let controller = f.controller;
+    let clients: Array<{ peer: Peer }> = f.clients;
+    if (reload) {
+      await f.controller.dispose();
+      const restored = await reloadedController(f);
+      controller = restored.controller;
+      clients = restored.clients;
+    }
+    f.setVisible(true);
+    if (reload) {
+      await vi.waitFor(() => expect(controller.retainedRecoveryState).toBe("paused"));
+      await controller.resumeRetainedConversation();
+    }
+    await vi.waitFor(() => expect(controller.session.state).toBe("listening"));
+    const language = controller.session.participantB.language;
+    const selected = controller.selectedInterlocutorLanguage;
+    const ending = controller.endConversation();
+    clients.at(-1)!.peer.channel.emit({ type: "session.closed" });
+    await ending;
+    await controller.dispose(); await f.budget.close();
+    expect(language).toBe("de");
+    expect(selected).toBe("de");
   });
   it("A5.4/A5.7 restores confirmed context, A/B routing, and counters without replaying stale turns", async () => {
     const f = fixture(40, true); configureResume(f);
@@ -2309,6 +2343,19 @@ describe("stage 5 hidden boundary", () => {
     await first;
     await reloaded.controller.dispose(); await f.budget.close();
   });
+  it("keeps normal live End in the conversation toolbar until closure", async () => {
+    const f = fixture(2000, true); configureResume(f);
+    await enterInterpreter(f);
+    const view = render(jsx(ConversationScreen, { controller: f.controller }));
+    const end = screen.getByRole("button", { name: "Завершить" });
+    const ending = f.controller.endConversation();
+    view.rerender(jsx(ConversationScreen, { controller: f.controller }));
+    const closingButton = screen.queryByRole("button", { name: "Завершаю…" });
+    f.clients.at(-1)!.peer.channel.emit({ type: "session.closed" });
+    await ending;
+    await f.controller.dispose(); await f.budget.close();
+    expect(closingButton).toBe(end);
+  });
   it("reports same-tab paused End as ending until accounting confirms it", async () => {
     const f = fixture(40, true); configureResume(f);
     await f.controller.startBootstrap();
@@ -2998,6 +3045,46 @@ describe("stage 5 hidden boundary", () => {
     await ending;
     expect(f.api.end).toHaveBeenCalledTimes(1);
     unsubscribe();
+    await f.budget.close();
+  });
+
+  it("keeps direct-start capture disabled until interpreter readiness with the usage ledger disabled", async () => {
+    const f = fixture(40);
+    f.api.policy.mockResolvedValue({ usageLedgerEnabled: false, backgroundSessionCloseEnabled: false });
+    vi.spyOn(BackendClient.prototype, "releaseLiveSession").mockResolvedValue();
+    f.track.enabled = true; // getUserMedia returns enabled tracks.
+    let releaseConnection!: () => void;
+    const connectionGate = new Promise<void>(resolve => { releaseConnection = resolve; });
+    const create = vi.spyOn(BackendClient.prototype, "createLiveSession").mockImplementation(async () => {
+      await connectionGate;
+      return { session: { id: "provider" }, transport: { type: "webrtc", sdp: "answer" } };
+    });
+    const starting = f.controller.startWithLanguages({ A: "ru", B: "es" });
+    await vi.waitFor(() => expect(create).toHaveBeenCalledOnce());
+    expect(f.clients[0]!.peer.addTrack).toHaveBeenCalledWith(f.track, f.stream);
+    expect(f.track.enabled).toBe(false);
+
+    let releaseSteering!: () => void;
+    const steeringGate = new Promise<void>(resolve => { releaseSteering = resolve; });
+    const client = f.clients[0]!.client;
+    const append = client.appendInstructions.bind(client);
+    const instructions = vi.spyOn(client, "appendInstructions").mockImplementation(async (...args) => {
+      await steeringGate;
+      return append(...args);
+    });
+    releaseConnection();
+    await vi.waitFor(() => expect(instructions).toHaveBeenCalled());
+    expect(f.track.enabled).toBe(false);
+    releaseSteering();
+    await starting;
+    expect(f.controller.session.state).toBe("listening");
+    expect(f.track.enabled).toBe(true);
+    expect(f.api.createSession).not.toHaveBeenCalled();
+    const ending = f.controller.cancel();
+    await vi.waitFor(() => expect(f.clients[0]!.peer.channel.sent).toContain("session.close"));
+    f.clients[0]!.peer.channel.emit({ type: "session.closed" });
+    await ending;
+    await f.controller.dispose();
     await f.budget.close();
   });
 
