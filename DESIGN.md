@@ -82,3 +82,5 @@ At first launch the language list is already open: A comes from the device/brows
 Runtime verification: `SessionController.test.ts` covers B-first and repeated turns, fixed languages after suspension, unknown speech and cancellation; `tests/e2e/mocked-conversation.spec.ts` checks the same routing in a browser. Existing warm surfaces, typography, focus behavior and rotated B pane are retained.
 
 The existing language set comes from the text detector; it is not a verified exhaustive GPT-Live 1 language catalog. Auditing model language coverage is deferred.
+
+The conversation language picker reflects a queued choice before it takes effect. A rejected change leaves the picker open with a retry message; the saved preference remains available for the next conversation. Changes never reopen capture after lifecycle suspension or a concurrent correction. A queued choice is included in the retained snapshot when backgrounding discards the unfinished turn.

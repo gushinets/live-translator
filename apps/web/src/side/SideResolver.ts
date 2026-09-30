@@ -15,7 +15,8 @@ export function preferredLanguage(locales: readonly string[]): string | undefine
   for (const locale of locales) {
     try {
       const language = new Intl.Locale(locale).language;
-      if (supported.has(language)) return language;
+      const detectorLanguage = language === "nb" ? "no" : language === "fil" ? "tl" : language;
+      if (supported.has(detectorLanguage)) return detectorLanguage;
     } catch { /* Ignore an invalid browser locale. */ }
   }
   return undefined;

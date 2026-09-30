@@ -37,6 +37,7 @@ export interface ContextScreenController {
   readonly recoveryPrompt?: RecoveryPrompt;
   readonly suspendReason?: LifecycleSuspendReason;
   readonly retainedRecoveryState?: RetainedRecoveryState;
+  readonly selectedInterlocutorLanguage?: string;
   subscribe(listener: () => void): () => void;
   startContextCapture(): Promise<void>;
   finishContextCapture(): void;
@@ -62,7 +63,7 @@ function uiSnapshot(controller: ContextScreenController): unknown[] {
     controller.bootstrapSide, controller.bootstrapRecording, controller.ownerError,
     controller.hasEnteredInterpreter, controller.isConnectInFlight, controller.isInterpreterStarting,
     controller.recoveryPrompt, controller.suspendReason, controller.retainedRecoveryState,
-    controller.audioElement];
+    controller.audioElement, controller.selectedInterlocutorLanguage];
 }
 
 let documentController: AccountedSessionController | null = null;
@@ -133,6 +134,7 @@ export function ContextScreen({
   const [interlocutorLanguage, setInterlocutorLanguage] = useState(savedInterlocutorLanguage);
   const [pickerMode, setPickerMode] = useState<"start" | "change" | null>(null);
   const [pickerBusy, setPickerBusy] = useState(false);
+  const [languageChangeError, setLanguageChangeError] = useState<string>();
   const [startingWithLanguages, setStartingWithLanguages] = useState(false);
   useEffect(() => {
     if (injectedController !== undefined) return;
@@ -253,6 +255,7 @@ export function ContextScreen({
 
   async function handleLanguageConfirm(owner: string, interlocutor: string): Promise<void> {
     setPickerBusy(true);
+    setLanguageChangeError(undefined);
     setOwnerLanguage(owner);
     setInterlocutorLanguage(interlocutor);
     try {
@@ -262,12 +265,16 @@ export function ContextScreen({
       } else localStorage.removeItem(OWNER_LANGUAGE_KEY);
     } catch { /* This tab still remembers the choice when storage is unavailable. */ }
     const changing = pickerMode === "change";
-    if (!changing) setStartingWithLanguages(true);
-    setPickerMode(null);
+    if (!changing) {
+      setStartingWithLanguages(true);
+      setPickerMode(null);
+    }
     try {
       if (changing) await activeController.changeInterlocutorLanguage(interlocutor);
       else await activeController.startWithLanguages({ A: owner, B: interlocutor });
+      if (changing) setPickerMode(null);
     } catch (error) {
+      if (changing) setLanguageChangeError("Не удалось сменить язык. Дождитесь возобновления разговора и повторите попытку.");
       console.error("Failed to apply language choice", { error });
     } finally {
       setPickerBusy(false);
@@ -339,7 +346,10 @@ export function ContextScreen({
       <div ref={audioHostRef} hidden />
       {!isOwnerSetup ? (
         <>
-          <ConversationScreen controller={controller} onChangeLanguage={() => setPickerMode("change")} />
+          <ConversationScreen controller={controller} onChangeLanguage={() => {
+            setLanguageChangeError(undefined);
+            setPickerMode("change");
+          }} />
           {pickerMode === "change" ? <dialog ref={languageDialogRef} className="language-picker-overlay"
             aria-label="Сменить язык собеседника" onCancel={event => {
               event.preventDefault();
@@ -348,11 +358,12 @@ export function ContextScreen({
             <div className="language-picker-overlay-content">
               <header className="setup-header"><p className="setup-brand">Live Translator</p></header>
               <LanguagePicker ownerLanguage={controller.session.participantA.language}
-                interlocutorLanguage={controller.session.participantB.language}
+                interlocutorLanguage={controller.selectedInterlocutorLanguage ?? controller.session.participantB.language}
                 allowOwnerChange={false}
                 busy={pickerBusy}
                 onConfirm={(owner, interlocutor) => { void handleLanguageConfirm(owner, interlocutor); }}
                 onCancel={() => setPickerMode(null)} />
+              {languageChangeError ? <p role="alert">{languageChangeError}</p> : null}
             </div>
           </dialog> : null}
         </>

@@ -16,6 +16,10 @@ it("uses the first supported browser language and exposes the detector's languag
   expect(supportedLanguageCodes()).toEqual(expect.arrayContaining(["es", "en", "de", "ru"]));
 });
 
+it.each([["nb-NO", "no"], ["fil-PH", "tl"]])("maps device locale %s to detector code %s", (locale, language) => {
+  expect(preferredLanguage([locale, "en-US"])).toBe(language);
+});
+
 describe("language-based side resolution", () => {
   const languages = { A: "ru", B: "en" };
   it("allows A-A-A-B-B-A and B to speak first", () => {

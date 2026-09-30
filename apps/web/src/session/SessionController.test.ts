@@ -363,6 +363,31 @@ describe("SessionController", () => {
     );
   });
 
+  it.each(["mute", "steering", "unmute"])("does not reopen input when suspended during language-change %s", async phase => {
+    const { controller, live, audio, orientation } = createController();
+    await controller.startWithLanguages({ A: "ru", B: "es" });
+    let release!: () => void;
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    if (phase === "steering") live.appendInstructions.mockImplementationOnce(async () => {
+      await gate; return { eventId: "language-ack" };
+    });
+    else live.setInputMuted.mockImplementationOnce(async () => {
+      if (phase === "mute") await gate;
+    }).mockImplementationOnce(async () => { if (phase === "unmute") await gate; });
+    const changing = controller.changeInterlocutorLanguage("de").catch(error => error);
+    await flushMicrotasks();
+    orientation.emit("landscape");
+    await flushMicrotasks();
+    release();
+    await changing;
+    expect(controller.session.state).toBe("suspended");
+    expect(controller.inputReady).toBe(false);
+    expect(audio.captureTrack.enabled).toBe(false);
+    if (phase === "mute") expect(controller.session.participantB.language).toBe("es");
+    expect(live.setInputMuted).toHaveBeenLastCalledWith(true);
+    await controller.cancel();
+  });
+
   it("does not assign either language from the device locale", () => {
     const { controller } = createController();
 
@@ -1583,6 +1608,23 @@ describe("SessionController turn engine", () => {
     releaseMute?.();
     await changing;
     expect(controller.session.participantB.language).toBe("de");
+  });
+
+  it("does not reopen input when a correction supersedes a language change", async () => {
+    const { controller, live, audio } = createController();
+    await controller.startWithLanguages({ A: "en", B: "es" });
+    await completeTextOnlyTurn(controller, live, audio);
+    let release!: () => void;
+    live.setInputMuted.mockImplementationOnce(() => new Promise<void>(resolve => { release = resolve; }));
+    const changing = controller.changeInterlocutorLanguage("de").catch(error => error);
+    await flushMicrotasks();
+    await controller.correctLastTurn("B");
+    release();
+    await changing;
+    expect(controller.inputReady).toBe(false);
+    expect(audio.captureTrack.enabled).toBe(false);
+    expect(controller.session.participantB.language).toBe("es");
+    expect(live.setInputMuted).toHaveBeenLastCalledWith(true);
   });
 
   it("creates an active turn from the first listening input fragment using detected language", async () => {

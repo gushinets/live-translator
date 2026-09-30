@@ -17,6 +17,22 @@ const COURIER_TURNS: ReadonlyArray<{ original: string; translation: string }> = 
 ];
 
 test.describe("mocked conversation runtime", () => {
+  test("reopening languages reflects the queued choice before the turn ends", async ({ page }) => {
+    const harness = await MockLiveHarness.attach(page);
+    await harness.startListeningConversation();
+    await harness.sourceActive();
+    await harness.inputDelta("Could you tell me where the train station is?");
+    await page.getByRole("button", { name: "Язык собеседника" }).click();
+    await page.getByRole("radio", { name: "немецкий" }).check();
+    await page.getByRole("button", { name: "Подтвердить" }).click();
+    await page.getByRole("button", { name: "Язык собеседника" }).click();
+    await expect(page.getByRole("radio", { name: "немецкий" })).toBeChecked();
+    await page.getByRole("button", { name: "Подтвердить" }).click();
+    await harness.outputDelta("Wo ist der Bahnhof?");
+    await harness.sourceQuiet();
+    await harness.advance(runtime.audioStartGraceMs);
+    await expect(page.getByText("B · немецкий")).toBeVisible();
+  });
   test("End keeps the toolbar geometry until the provider confirms closure", async ({ page }) => {
     const harness = await MockLiveHarness.attach(page);
     await harness.startListeningConversation();

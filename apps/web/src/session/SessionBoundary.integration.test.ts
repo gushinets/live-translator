@@ -685,6 +685,39 @@ describe("stage 5 hidden boundary", () => {
     await vi.advanceTimersByTimeAsync(40);
     await f.controller.dispose(); await f.budget.close();
   });
+  it.each([false, true])("retains a queued language change across background recovery (reload=%s)", async reload => {
+    const f = fixture(40, true); configureResume(f);
+    await f.controller.startWithLanguages({ A: "en", B: "es" });
+    f.clients.at(-1)!.peer.channel.emit({ type: "session.input_transcript.delta", delta: "Could you tell me where the train station is?" });
+    await f.controller.changeInterlocutorLanguage("de");
+    expect(f.controller.session.participantB.language).toBe("es");
+    f.setVisible(false);
+    await vi.waitFor(() => expect(f.clients.at(-1)!.peer.channel.sent).toContain("session.close"));
+    f.clients.at(-1)!.peer.channel.emit({ type: "session.closed" });
+    await vi.waitFor(() => expect(f.c.status).toBe("paused"));
+    let controller = f.controller;
+    let clients: Array<{ peer: Peer }> = f.clients;
+    if (reload) {
+      await f.controller.dispose();
+      const restored = await reloadedController(f);
+      controller = restored.controller;
+      clients = restored.clients;
+    }
+    f.setVisible(true);
+    if (reload) {
+      await vi.waitFor(() => expect(controller.retainedRecoveryState).toBe("paused"));
+      await controller.resumeRetainedConversation();
+    }
+    await vi.waitFor(() => expect(controller.session.state).toBe("listening"));
+    const language = controller.session.participantB.language;
+    const selected = controller.selectedInterlocutorLanguage;
+    const ending = controller.endConversation();
+    clients.at(-1)!.peer.channel.emit({ type: "session.closed" });
+    await ending;
+    await controller.dispose(); await f.budget.close();
+    expect(language).toBe("de");
+    expect(selected).toBe("de");
+  });
   it("A5.4/A5.7 restores confirmed context, A/B routing, and counters without replaying stale turns", async () => {
     const f = fixture(40, true); configureResume(f);
     f.controller.setContextText("Edited itinerary: station at noon.");

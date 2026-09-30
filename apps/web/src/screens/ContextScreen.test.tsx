@@ -375,6 +375,26 @@ describe("ContextScreen", () => {
     expect(localStorage.getItem("live-translator-interlocutor-language")).toBe("de");
   });
 
+  it("keeps a rejected language change open with feedback and the saved preference", async () => {
+    const controller = new FakeOwnerController();
+    controller.session = { ...controller.session, state: "listening",
+      participantA: { ...controller.session.participantA, language: "ru" },
+      participantB: { ...controller.session.participantB, language: "es" } };
+    controller.changeInterlocutorLanguage.mockRejectedValueOnce(new Error("session suspended"));
+    vi.spyOn(console, "error").mockImplementation(() => undefined);
+    render(<ContextScreen controller={controller} />);
+    fireEvent.click(screen.getByRole("button", { name: "Язык собеседника" }));
+    fireEvent.click(screen.getByRole("radio", { name: "немецкий" }));
+    fireEvent.click(screen.getByRole("button", { name: "Подтвердить" }));
+    await waitFor(() => expect(screen.getByRole("button", { name: "Подтвердить" })).toBeEnabled());
+    expect(screen.getByRole("alert")).toHaveTextContent("Не удалось сменить язык");
+    expect(screen.getByRole("radio", { name: "немецкий" })).toBeChecked();
+    expect(localStorage.getItem("live-translator-interlocutor-language")).toBe("de");
+    fireEvent.click(screen.getByRole("button", { name: "Подтвердить" }));
+    await waitFor(() => expect(screen.queryByRole("button", { name: "Подтвердить" })).not.toBeInTheDocument());
+    expect(screen.getByText("B · немецкий")).toBeInTheDocument();
+  });
+
   it("starts only from the screen showing both fixed languages and does not trace speech", async () => {
     const info = vi.spyOn(console, "info").mockImplementation(() => undefined);
     localStorage.setItem(STARTUP_TRACE_STORAGE_KEY, "1");
