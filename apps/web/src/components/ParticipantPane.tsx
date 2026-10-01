@@ -75,26 +75,26 @@ export function ParticipantPane({
           const text = paneTextForTurn(entry, side);
           return (
             <li key={entry.id} className="recent-turn">
-              {text.length > 0 ? <>
-                <span className="turn-author">{author(entry)}:</span>
-                <span className="recent-turn-primary">{text}</span>
-              </> : <span className="turn-waiting">{t("ОЖИДАНИЕ")}</span>}
+              {entry.speaker !== undefined ? <span className="turn-author">{author(entry)}:</span> : null}
+              {text.length > 0
+                ? <span className="recent-turn-primary" lang={entry.languages?.[side] ?? language}>{text}</span>
+                : <span className="turn-waiting">{t("ОЖИДАНИЕ")}</span>}
             </li>
           );
         })}
       </ol>
-      {primaryText.length > 0 && activeTurn ? (
+      {activeTurn ? (
         <div className="current-turn">
-          <span className="turn-author" data-testid={`current-author-${side}`}>{author(activeTurn)}:</span>
-          <p
+          {activeTurn.speaker !== undefined ? <span className="turn-author" data-testid={`current-author-${side}`}>{author(activeTurn)}:</span> : null}
+          {primaryText.length > 0 ? <p
             className={`current-message ${currentMessageSizeClass(primaryText.length)}`}
-            lang={language}
+            lang={activeTurn.languages?.[side] ?? language}
             data-testid={`current-primary-${side}`}
           >
             {primaryText}
-          </p>
+          </p> : <p className="turn-waiting" role="status">{t("ОЖИДАНИЕ")}</p>}
         </div>
-      ) : activeTurn ? <p className="turn-waiting" role="status">{t("ОЖИДАНИЕ")}</p> : null}
+      ) : null}
     </section>
   );
 }

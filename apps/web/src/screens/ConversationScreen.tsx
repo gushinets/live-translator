@@ -67,6 +67,8 @@ export function ConversationScreen({
   const unassigned = active ?? recentTurns.at(-1);
   const canChooseSide = (session.state === "listening" || session.state === "outputting") &&
     unassigned?.speaker === undefined && (unassigned?.originalText.trim().length ?? 0) > 0 &&
+    (unassigned?.languages === undefined || (unassigned.languages.A === session.participantA.language &&
+      unassigned.languages.B === session.participantB.language)) &&
     unassigned?.status !== "discarded";
   const terminalAlert =
     session.state === "error" || session.state === "ending"

@@ -169,14 +169,17 @@ function handleSourceActive(
     sideSource: action.sideSource,
     nowMs: Date.now(),
   });
+  const A = session.participantA.language;
+  const B = session.participantB.language;
+  if (A !== undefined && B !== undefined) created.languages = { A, B };
   const withFragment = action.fragment ? appendSourceFragmentToTurn(created, action.fragment) : created;
   return { ...session, activeTurn: assignLanguageSide(session, withFragment) };
 }
 
 function assignLanguageSide(session: TranslationSession, turn: Turn): Turn {
   if (turn.sideSource === "manual") return turn;
-  const A = session.participantA.language;
-  const B = session.participantB.language;
+  const A = turn.languages?.A ?? session.participantA.language;
+  const B = turn.languages?.B ?? session.participantB.language;
   if (A === undefined || B === undefined) return turn;
   const speaker = resolveSide(turn.originalText, { A, B });
   return { ...turn, speaker, sideSource: speaker === undefined ? "unresolved" : "language" };

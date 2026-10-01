@@ -1,4 +1,5 @@
 import type { TranscriptFragment } from "./TranscriptFragment";
+import type { ConversationLanguages } from "../side/SideResolver";
 
 /** Physical side, bound to its setup language for this session. */
 export type Side = "A" | "B";
@@ -25,6 +26,8 @@ export interface Turn {
   id: string;
   speaker: Side | undefined;
   sideSource: "unresolved" | "language" | "manual";
+  /** Fixed display languages for this utterance, retained after setup changes. */
+  languages?: ConversationLanguages;
   sourceFragments: TranscriptFragment[];
   originalText: string;
   translatedText?: string;
