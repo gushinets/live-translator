@@ -132,6 +132,7 @@ export function ContextScreen({
   const [ownedController, setOwnedController] = useState<SessionController | null>(null);
   const [ownerFailed, setOwnerFailed] = useState(false);
   const [ownerLanguage, setOwnerLanguage] = useState(initialOwnerLanguage);
+  const [draftOwnerLanguage, setDraftOwnerLanguage] = useState<string>();
   const [interlocutorLanguage, setInterlocutorLanguage] = useState(savedInterlocutorLanguage);
   const [pickerMode, setPickerMode] = useState<"start" | "change" | null>(null);
   const [pickerBusy, setPickerBusy] = useState(false);
@@ -155,7 +156,10 @@ export function ContextScreen({
   }, [injectedController]);
   const resolvedController = injectedController ?? ownedController;
   const controller: ContextScreenController | null = resolvedController;
-  const ownerLocale = uiLocale(controller?.session.participantA.language ?? ownerLanguage);
+  const invalidLanguagePair = !ownerLanguage || !interlocutorLanguage || ownerLanguage === interlocutorLanguage;
+  const showStartPicker = !startingWithLanguages && controller?.session.state === "idle" && (pickerMode === "start" || invalidLanguagePair);
+  const ownerLocale = uiLocale(showStartPicker && controller?.retainedRecoveryState === undefined
+    ? draftOwnerLanguage || ownerLanguage : controller?.session.participantA.language ?? ownerLanguage);
   const t = (text: string) => translate(text, ownerLocale);
 
   const [, rerender] = useReducer((count: number) => count + 1, 0);
@@ -260,6 +264,7 @@ export function ContextScreen({
     setPickerBusy(true);
     setLanguageChangeError(undefined);
     setOwnerLanguage(owner);
+    setDraftOwnerLanguage(undefined);
     setInterlocutorLanguage(interlocutor);
     try {
       localStorage.setItem(INTERLOCUTOR_LANGUAGE_KEY, interlocutor);
@@ -324,8 +329,6 @@ export function ContextScreen({
     sessionState === "error" ||
     controller.isConnectInFlight === true || controller.retainedRecoveryState !== undefined;
   const recovery = controller.retainedRecoveryState;
-  const invalidLanguagePair = !ownerLanguage || !interlocutorLanguage || ownerLanguage === interlocutorLanguage;
-  const showStartPicker = !startingWithLanguages && sessionState === "idle" && (pickerMode === "start" || invalidLanguagePair);
   const showStartLayout = !showStartPicker && (sessionState === "idle" || startingWithLanguages);
   const showSettings = (sessionState === "idle" || startingWithLanguages) &&
     !invalidLanguagePair && recovery === undefined;
@@ -380,7 +383,10 @@ export function ContextScreen({
               aria-label={t(showStartPicker ? "Закрыть настройки" : "Настройки")}
               aria-expanded={showStartPicker}
               disabled={startingWithLanguages}
-              onClick={() => setPickerMode(showStartPicker ? null : "start")}>
+              onClick={() => {
+                setDraftOwnerLanguage(undefined);
+                setPickerMode(showStartPicker ? null : "start");
+              }}>
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8"
                 strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
                 <path d="M10.4 2.8h3.2l.5 2.1c.5.2 1 .4 1.5.7l1.9-1.1 2.3 2.3-1.1 1.9c.3.5.5 1 .7 1.5l2.1.5v3.2l-2.1.5c-.2.5-.4 1-.7 1.5l1.1 1.9-2.3 2.3-1.9-1.1c-.5.3-1 .5-1.5.7l-.5 2.1h-3.2l-.5-2.1c-.5-.2-1-.4-1.5-.7l-1.9 1.1-2.3-2.3 1.1-1.9c-.3-.5-.5-1-.7-1.5l-2.1-.5v-3.2l2.1-.5c.2-.5.4-1 .7-1.5L4.2 6.8l2.3-2.3 1.9 1.1c.5-.3 1-.5 1.5-.7z" />
@@ -419,6 +425,7 @@ export function ContextScreen({
               />
             ) : showStartPicker ? (
               <LanguagePicker ownerLanguage={ownerLanguage} interlocutorLanguage={interlocutorLanguage}
+                onOwnerChange={setDraftOwnerLanguage}
                 busy={pickerBusy || isBusy} startAction primaryActionRef={startRef}
                 onConfirm={(owner, interlocutor) => { void handleLanguageConfirm(owner, interlocutor); }} />
             ) : (

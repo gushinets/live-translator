@@ -109,7 +109,9 @@ class FakeOwnerController implements ContextScreenController {
 describe("ContextScreen", () => {
   it("uses the selected owner language in setup and language choices", () => {
     localStorage.setItem("live-translator-owner-language", "en");
+    localStorage.setItem("live-translator-interlocutor-language", "es");
     render(<ContextScreen controller={new FakeOwnerController()} />);
+    fireEvent.click(screen.getByRole("button", { name: "Settings" }));
     expect(screen.getByRole("heading", { name: "Partner's language" })).toBeInTheDocument();
     expect(screen.getByRole("radio", { name: "Spanish" })).toBeChecked();
     expect(screen.getByRole("button", { name: "Start translation" })).toBeInTheDocument();
@@ -117,6 +119,16 @@ describe("ContextScreen", () => {
     fireEvent.change(screen.getByRole("combobox", { name: "Your language" }), { target: { value: "de" } });
     expect(screen.getByRole("heading", { name: "Sprache des Partners" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Übersetzung starten" })).toBeInTheDocument();
+    expect(screen.getByRole("region", { name: "Übersetzer einrichten" })).toHaveAttribute("lang", "de");
+    fireEvent.change(screen.getByRole("combobox", { name: "Ihre Sprache" }), { target: { value: "" } });
+    expect(screen.getByRole("region", { name: "Translator setup" })).toHaveAttribute("lang", "en");
+    expect(screen.getByRole("button", { name: "Start translation" })).toBeDisabled();
+    fireEvent.change(screen.getByRole("combobox", { name: "Your language" }), { target: { value: "de" } });
+    fireEvent.click(screen.getByRole("button", { name: "Einstellungen schließen" }));
+    expect(screen.getByRole("region", { name: "Translator setup" })).toHaveAttribute("lang", "en");
+    expect(localStorage.getItem("live-translator-owner-language")).toBe("en");
+    fireEvent.click(screen.getByRole("button", { name: "Settings" }));
+    expect(screen.getByRole("heading", { name: "Partner's language" })).toBeInTheDocument();
   });
 
   it("uses the retained session's owner language rather than the device preference", () => {

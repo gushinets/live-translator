@@ -3,10 +3,11 @@ import { languageName, supportedLanguageCodes } from "../side/SideResolver";
 import { translate, uiLocale } from "../i18n/messages";
 
 const preferred = ["es", "en", "fr", "de", "it", "pt"];
-export function LanguagePicker({ ownerLanguage, interlocutorLanguage, onConfirm, onCancel, busy = false,
+export function LanguagePicker({ ownerLanguage, interlocutorLanguage, onOwnerChange, onConfirm, onCancel, busy = false,
   allowOwnerChange = true, startAction = false, primaryActionRef }: {
   ownerLanguage?: string;
   interlocutorLanguage?: string;
+  onOwnerChange?: (language: string) => void;
   onConfirm: (owner: string, interlocutor: string) => void;
   onCancel?: () => void;
   busy?: boolean;
@@ -35,7 +36,10 @@ export function LanguagePicker({ ownerLanguage, interlocutorLanguage, onConfirm,
       </p>
       {editOwner ? <label className="setup-field">
         <span className="setup-field-label">{t("Ваш язык")}</span>
-        <select aria-label={t("Ваш язык")} value={owner} onChange={event => setOwner(event.target.value)}>
+        <select aria-label={t("Ваш язык")} value={owner} onChange={event => {
+          setOwner(event.target.value);
+          onOwnerChange?.(event.target.value);
+        }}>
           <option value="">{t("Выберите язык")}</option>
           {choices.map(code => <option key={code} value={code}>{name(code)}</option>)}
         </select>
