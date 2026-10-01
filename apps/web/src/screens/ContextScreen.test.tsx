@@ -107,6 +107,27 @@ class FakeOwnerController implements ContextScreenController {
 }
 
 describe("ContextScreen", () => {
+  it("uses the selected owner language in setup and language choices", () => {
+    localStorage.setItem("live-translator-owner-language", "en");
+    render(<ContextScreen controller={new FakeOwnerController()} />);
+    expect(screen.getByRole("heading", { name: "Partner's language" })).toBeInTheDocument();
+    expect(screen.getByRole("radio", { name: "Spanish" })).toBeChecked();
+    expect(screen.getByRole("button", { name: "Start translation" })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Change" }));
+    fireEvent.change(screen.getByRole("combobox", { name: "Your language" }), { target: { value: "de" } });
+    expect(screen.getByRole("heading", { name: "Sprache des Partners" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Übersetzung starten" })).toBeInTheDocument();
+  });
+
+  it("uses the retained session's owner language rather than the device preference", () => {
+    localStorage.setItem("live-translator-owner-language", "ru");
+    const controller = new FakeOwnerController();
+    controller.session.participantA.language = "pt";
+    controller.retainedRecoveryState = "paused";
+    render(<ContextScreen controller={controller} />);
+    expect(screen.getByRole("button", { name: "Continuar conversa" })).toBeInTheDocument();
+  });
+
   it("does not render again when subscribing to an unchanged controller", () => {
     let renders = 0;
     render(<Profiler id="setup" onRender={() => { renders++; }}><ContextScreen controller={new FakeOwnerController()} /></Profiler>);
@@ -261,9 +282,10 @@ describe("ContextScreen", () => {
     Object.defineProperty(navigator, "languages", { configurable: true, value: [locale] });
     try {
       render(<ContextScreen controller={new FakeOwnerController()} />);
-      expect(screen.getByRole("heading", { name: "Язык собеседника" })).toBeInTheDocument();
-      expect(screen.getByRole("button", { name: "Начать перевод" })).toBeDisabled();
-      expect(screen.queryByRole("button", { name: "Закрыть настройки" })).not.toBeInTheDocument();
+      const spanish = locale === "es-ES";
+      expect(screen.getByRole("heading", { name: spanish ? "Idioma del interlocutor" : "Язык собеседника" })).toBeInTheDocument();
+      expect(screen.getByRole("button", { name: spanish ? "Iniciar traducción" : "Начать перевод" })).toBeDisabled();
+      expect(screen.queryByRole("button", { name: spanish ? "Cerrar ajustes" : "Закрыть настройки" })).not.toBeInTheDocument();
       expect(document.querySelector(".setup-shell--start")).toBeNull();
     } finally { Reflect.deleteProperty(navigator, "languages"); }
   });
@@ -291,7 +313,7 @@ describe("ContextScreen", () => {
     const controller = new FakeOwnerController();
     localStorage.setItem("live-translator-owner-language", "es");
     render(<ContextScreen controller={controller} />);
-    expect(screen.getByRole("button", { name: "Начать перевод" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Iniciar traducción" })).toBeDisabled();
     expect(controller.startWithLanguages).not.toHaveBeenCalled();
   });
 
@@ -386,7 +408,7 @@ describe("ContextScreen", () => {
     fireEvent.click(screen.getByRole("radio", { name: "немецкий" }));
     fireEvent.click(screen.getByRole("button", { name: "Подтвердить" }));
 
-    expect(await screen.findByText("B · немецкий")).toBeInTheDocument();
+    expect(await screen.findByText("B · Deutsch")).toBeInTheDocument();
     expect(controller.changeInterlocutorLanguage).toHaveBeenCalledExactlyOnceWith("de");
     expect(localStorage.getItem("live-translator-interlocutor-language")).toBe("de");
   });
@@ -408,7 +430,7 @@ describe("ContextScreen", () => {
     expect(localStorage.getItem("live-translator-interlocutor-language")).toBe("de");
     fireEvent.click(screen.getByRole("button", { name: "Подтвердить" }));
     await waitFor(() => expect(screen.queryByRole("button", { name: "Подтвердить" })).not.toBeInTheDocument());
-    expect(screen.getByText("B · немецкий")).toBeInTheDocument();
+    expect(screen.getByText("B · Deutsch")).toBeInTheDocument();
   });
 
   it("starts only from the screen showing both fixed languages and does not trace speech", async () => {

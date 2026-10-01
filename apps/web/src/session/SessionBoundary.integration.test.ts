@@ -2347,10 +2347,10 @@ describe("stage 5 hidden boundary", () => {
     const f = fixture(2000, true); configureResume(f);
     await enterInterpreter(f);
     const view = render(jsx(ConversationScreen, { controller: f.controller }));
-    const end = screen.getByRole("button", { name: "Завершить" });
+    const end = screen.getByRole("button", { name: "End" });
     const ending = f.controller.endConversation();
     view.rerender(jsx(ConversationScreen, { controller: f.controller }));
-    const closingButton = screen.queryByRole("button", { name: "Завершаю…" });
+    const closingButton = screen.queryByRole("button", { name: "Ending…" });
     f.clients.at(-1)!.peer.channel.emit({ type: "session.closed" });
     await ending;
     await f.controller.dispose(); await f.budget.close();

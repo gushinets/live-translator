@@ -1,7 +1,9 @@
-export function ErrorOverlay({ message }: { message: string }) {
+import { translate } from "../i18n/messages";
+
+export function ErrorOverlay({ message, language }: { message: string; language?: string }) {
   return (
     <div className="error-overlay" role="alert">
-      {message}
+      {translate(message, language)}
     </div>
   );
 }

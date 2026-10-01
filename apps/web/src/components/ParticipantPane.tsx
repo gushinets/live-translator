@@ -1,6 +1,7 @@
 import { languageName } from "../side/SideResolver";
 import type { Side, Turn } from "../conversation/Turn";
 import { ParticipantStatus, type ParticipantStatusLabel } from "./ParticipantStatus";
+import { translate, uiLocale } from "../i18n/messages";
 
 const CURRENT_MESSAGE_SIZE_CLASSES = [
   { maxChars: 48, className: "current-message--xl" },
@@ -23,32 +24,33 @@ export function ParticipantPane({
   language,
   rotated,
   status,
-  isSourceSide,
-  originalText,
-  translatedText,
+  activeTurn,
   recentTurns,
   onTap,
   alertText,
+  alertLanguage,
 }: {
   side: Side;
   language?: string;
   rotated: boolean;
   status: ParticipantStatusLabel;
-  isSourceSide: boolean | undefined;
-  originalText: string;
-  translatedText: string;
+  activeTurn?: Turn;
   recentTurns: readonly Turn[];
   onTap: () => void;
   alertText?: string;
+  alertLanguage?: string;
 }) {
-  const primaryText = isSourceSide !== false ? originalText : translatedText;
-  const secondaryText = isSourceSide !== false ? translatedText : originalText;
+  const locale = uiLocale(language);
+  const t = (text: string) => translate(text, locale);
+  const primaryText = activeTurn ? paneTextForTurn(activeTurn, side) : "";
+  const author = (turn: Turn) => t(turn.speaker === side ? "Я" : "Он");
 
   return (
     <section
       className={`participant-pane${rotated ? " participant-pane--rotated" : ""}`}
       data-testid={`participant-pane-${side}`}
-      aria-label={`Участник ${side}`}
+      lang={locale}
+      aria-label={t("Участник {side}").replace("{side}", side)}
       style={
         rotated
           ? { transform: "rotate(180deg)", overflow: "hidden" }
@@ -58,50 +60,46 @@ export function ParticipantPane({
       <button
         className="participant-correction-target"
         type="button"
-        aria-label={`Исправить: говорил участник ${side}`}
+        aria-label={t("Исправить: говорил участник {side}").replace("{side}", side)}
         onClick={onTap}
       />
-      {language !== undefined ? <p className="participant-language">{side} · {languageName(language)}</p> : null}
-      <ParticipantStatus side={side} label={status} />
+      {language !== undefined ? <p className="participant-language">{side} · {languageName(language, locale)}</p> : null}
+      <ParticipantStatus side={side} label={status} language={locale} />
       {alertText !== undefined ? (
-        <p className="participant-alert" role="alert" data-testid={`participant-alert-${side}`}>
+        <p className="participant-alert" lang={alertLanguage} role="alert" data-testid={`participant-alert-${side}`}>
           {alertText}
         </p>
       ) : null}
       <ol className="participant-recent">
         {recentTurns.map((entry) => {
-          const texts = paneTextsForTurn(entry, side);
+          const text = paneTextForTurn(entry, side);
           return (
             <li key={entry.id} className="recent-turn">
-              <span className="recent-turn-primary">{texts.primary}</span>
-              {texts.secondary.length > 0 ? (
-                <span className="recent-turn-secondary">{texts.secondary}</span>
-              ) : null}
+              {text.length > 0 ? <>
+                <span className="turn-author">{author(entry)}:</span>
+                <span className="recent-turn-primary">{text}</span>
+              </> : <span className="turn-waiting">{t("ОЖИДАНИЕ")}</span>}
             </li>
           );
         })}
       </ol>
-      {primaryText.length > 0 ? (
-        <p
-          className={`current-message ${currentMessageSizeClass(primaryText.length)}`}
-          data-testid={`current-primary-${side}`}
-        >
-          {primaryText}
-        </p>
-      ) : null}
-      {secondaryText.length > 0 ? (
-        <p className="current-secondary" data-testid={`current-secondary-${side}`}>
-          {secondaryText}
-        </p>
-      ) : null}
+      {primaryText.length > 0 && activeTurn ? (
+        <div className="current-turn">
+          <span className="turn-author" data-testid={`current-author-${side}`}>{author(activeTurn)}:</span>
+          <p
+            className={`current-message ${currentMessageSizeClass(primaryText.length)}`}
+            lang={language}
+            data-testid={`current-primary-${side}`}
+          >
+            {primaryText}
+          </p>
+        </div>
+      ) : activeTurn ? <p className="turn-waiting" role="status">{t("ОЖИДАНИЕ")}</p> : null}
     </section>
   );
 }
 
-function paneTextsForTurn(entry: Turn, side: Side): { primary: string; secondary: string } {
-  const isSource = entry.speaker === undefined || entry.speaker === side;
-  return {
-    primary: isSource ? entry.originalText : (entry.translatedText ?? ""),
-    secondary: isSource ? (entry.translatedText ?? "") : entry.originalText,
-  };
+function paneTextForTurn(entry: Turn, side: Side): string {
+  if (entry.speaker === undefined) return "";
+  return entry.speaker === side ? entry.originalText : (entry.translatedText ?? "");
 }

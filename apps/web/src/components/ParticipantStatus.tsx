@@ -1,5 +1,6 @@
 import type { Side } from "../conversation/Turn";
 import type { SessionState } from "../session/SessionState";
+import { translate } from "../i18n/messages";
 
 /**
  * Participant-facing labels derived from authoritative session state.
@@ -69,9 +70,11 @@ export function deriveParticipantStatus(input: {
 export function ParticipantStatus({
   side,
   label,
+  language,
 }: {
   side: Side;
   label: ParticipantStatusLabel;
+  language?: string;
 }) {
   const visibleLabel: Record<ParticipantStatusLabel, string> = {
     DETECTING: "ОПРЕДЕЛЯЮ ЯЗЫК",
@@ -87,7 +90,7 @@ export function ParticipantStatus({
 
   return (
     <p className="participant-status" data-testid={`participant-status-${side}`}>
-      {visibleLabel[label]}
+      {translate(visibleLabel[label], language)}
     </p>
   );
 }

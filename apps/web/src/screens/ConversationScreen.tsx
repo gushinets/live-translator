@@ -8,6 +8,7 @@ import { MAX_RECENT_TURNS } from "../conversation/TurnBuffer";
 import type { Side } from "../conversation/Turn";
 import type { LifecycleSuspendReason, RecoveryPrompt } from "../session/SessionController";
 import type { TranslationSession } from "../session/SessionState";
+import { translate, uiLocale } from "../i18n/messages";
 
 export interface ConversationScreenController {
   readonly session: TranslationSession;
@@ -53,13 +54,13 @@ export function ConversationScreen({
   }, [controller.retainedRecoveryState]);
 
   const session = controller.session;
+  const ownerLocale = uiLocale(session.participantA.language);
+  const t = (text: string) => translate(text, ownerLocale);
   const ending = session.state === "ending";
   const recoveryState = controller.retainedRecoveryState;
   const active = session.activeTurn;
   const sourceSpeaker = active?.speaker;
   const sourceActive = active !== undefined && active.sourceIdleAtMs === undefined;
-  const originalText = active?.originalText ?? "";
-  const translatedText = active?.translatedText ?? "";
   const hasOutputText = (active?.translatedText ?? "").length > 0;
   const audioOutputStarted = active?.audioOutputStarted === true;
   const recentTurns = session.recentTurns.slice(-MAX_RECENT_TURNS);
@@ -69,7 +70,7 @@ export function ConversationScreen({
     unassigned?.status !== "discarded";
   const terminalAlert =
     session.state === "error" || session.state === "ending"
-      ? controller.ownerError
+      ? controller.ownerError === undefined ? undefined : t(controller.ownerError)
       : undefined;
   const statusA = deriveParticipantStatus({
     sessionState: session.state,
@@ -91,11 +92,11 @@ export function ConversationScreen({
   });
 
   return (
-    <section className="conversation-screen">
+    <section className="conversation-screen" lang={ownerLocale}>
       {onChangeLanguage ? <button className="conversation-language-action" type="button"
         disabled={session.state !== "listening" && session.state !== "outputting"}
         onClick={onChangeLanguage}>
-        Язык собеседника
+        {t("Язык собеседника")}
       </button> : null}
       {controller.suspendReason === "orientation" ? (
         <div
@@ -105,7 +106,7 @@ export function ConversationScreen({
           aria-modal="true"
           style={{ transform: "none" }}
         >
-          <p>Поверните телефон вертикально</p>
+          <p>{t("Поверните телефон вертикально")}</p>
         </div>
       ) : null}
       <ParticipantPane
@@ -113,11 +114,10 @@ export function ConversationScreen({
         language={session.participantB.language}
         rotated
         status={statusB}
-        isSourceSide={sourceSpeaker === undefined ? undefined : sourceSpeaker === "B"}
-        originalText={originalText}
-        translatedText={translatedText}
+        activeTurn={active}
         recentTurns={recentTurns}
         alertText={terminalAlert}
+        alertLanguage={ownerLocale}
         onTap={() => {
           void controller.correctLastTurn("B").catch((error: unknown) => {
             console.error("Correction failed", {
@@ -130,12 +130,12 @@ export function ConversationScreen({
       />
       <div className="conversation-center">
         {recoveryState !== undefined ? <RetainedRecovery
-          state={recoveryState} surface="conversation"
+          state={recoveryState} surface="conversation" language={ownerLocale}
           onResume={controller.resumeRetainedConversation?.bind(controller)}
           onVerify={controller.verifyRetainedConversation?.bind(controller)}
           onEnd={() => controller.endConversation()} /> : null}
         {canChooseSide ? (
-          <p role="status">Сторона не определена. Для исправления нажмите свою половину экрана.</p>
+          <p role="status">{t("Сторона не определена. Для исправления нажмите свою половину экрана.")}</p>
         ) : null}
         {recoveryState === undefined ? <button
           ref={endRef}
@@ -152,8 +152,8 @@ export function ConversationScreen({
             });
           }}
         >
-          <span aria-hidden="true" className="conversation-end-size">Завершаю…</span>
-          <span aria-live="polite">{ending ? "Завершаю…" : "Завершить"}</span>
+          <span aria-hidden="true" className="conversation-end-size">{t("Завершаю…")}</span>
+          <span aria-live="polite">{t(ending ? "Завершаю…" : "Завершить")}</span>
         </button> : null}
         {controller.recoveryPrompt === "resume-repeat" ? (
           <button
@@ -167,12 +167,12 @@ export function ConversationScreen({
               });
             }}
           >
-            Продолжить / повторить
+            {t("Продолжить / повторить")}
           </button>
         ) : null}
-        {controller.recoveryPrompt === "repeat" ? <p>Повторите</p> : null}
+        {controller.recoveryPrompt === "repeat" ? <p>{t("Повторите")}</p> : null}
         {controller.retainedRecoveryState === undefined && terminalAlert === undefined && controller.ownerError !== undefined ? (
-          <ErrorOverlay message={controller.ownerError} />
+          <ErrorOverlay message={controller.ownerError} language={ownerLocale} />
         ) : null}
       </div>
       <ParticipantPane
@@ -180,11 +180,10 @@ export function ConversationScreen({
         language={session.participantA.language}
         rotated={false}
         status={statusA}
-        isSourceSide={sourceSpeaker === undefined ? undefined : sourceSpeaker === "A"}
-        originalText={originalText}
-        translatedText={translatedText}
+        activeTurn={active}
         recentTurns={recentTurns}
         alertText={terminalAlert}
+        alertLanguage={ownerLocale}
         onTap={() => {
           void controller.correctLastTurn("A").catch((error: unknown) => {
             console.error("Correction failed", {

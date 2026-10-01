@@ -124,8 +124,8 @@ export class MockLiveHarness {
   async startListeningConversation(): Promise<void> {
     await this.page.goto("/");
     await completeLanguageSetup(this.page);
-    await expect(this.page.getByRole("button", { name: "Завершить" })).toBeVisible();
-    await expect(this.page.getByTestId("participant-status-A")).toHaveText("ГОВОРИТЕ");
+    await expect(this.page.getByRole("button", { name: "End" })).toBeVisible();
+    await expect(this.page.getByTestId("participant-status-A")).toHaveText("SPEAK");
     await this.page.waitForFunction(
       () =>
         window.__liveTranslatorTestAudio !== undefined &&
@@ -503,6 +503,6 @@ export class MockLiveHarness {
 }
 
 export async function completeLanguageSetup(page: Page): Promise<void> {
-  await expect(page.getByRole("radio", { name: "испанский" })).toBeChecked();
-  await page.getByRole("button", { name: "Начать перевод" }).click();
+  await expect(page.getByRole("radio", { name: "Spanish" })).toBeChecked();
+  await page.getByRole("button", { name: "Start translation" }).click();
 }

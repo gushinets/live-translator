@@ -1,5 +1,6 @@
 import { useRef, useState } from "react";
 import "./RetainedRecovery.css";
+import { translate } from "../i18n/messages";
 
 export type RetainedRecoveryState = "checking" | "paused" | "resuming" | "ending" | "failed" |
   "active" | "pending_end" | "no_provider_end" | "pending_claim" | "blocked" | "unresolved_create" | "unavailable" | "storage_unavailable" | "ownership_unavailable";
@@ -21,13 +22,15 @@ const messages: Record<RetainedRecoveryState, string> = {
   ownership_unavailable: "Этот браузер не может безопасно проверить сохранённый разговор без владения вкладкой. Новый разговор пока недоступен. Откройте переводчик в исходной вкладке или браузере с поддержкой Web Locks.",
 };
 
-export function RetainedRecovery({ state, surface, onResume, onVerify, onEnd }: {
+export function RetainedRecovery({ state, surface, onResume, onVerify, onEnd, language }: {
   state: RetainedRecoveryState;
   surface: "setup" | "conversation";
   onResume?: () => Promise<void>;
   onVerify?: () => Promise<void>;
   onEnd: () => Promise<void>;
+  language?: string;
 }) {
+  const t = (text: string) => translate(text, language);
   const flight = useRef(false);
   const lastPrimary = useRef<"resume" | "verify" | null>(null);
   const [busy, setBusy] = useState(false);
@@ -48,20 +51,20 @@ export function RetainedRecovery({ state, surface, onResume, onVerify, onEnd }: 
   const alert = state === "failed" || state === "pending_end" || state === "no_provider_end" || state === "pending_claim" || state === "blocked" || state === "unresolved_create" || state === "unavailable" || state === "storage_unavailable" || state === "ownership_unavailable";
 
   return <div className={`retained-recovery retained-recovery--${surface}`} aria-busy={processing}>
-    <p className="retained-recovery__message" role={alert ? "alert" : "status"}>{messages[state]}</p>
+    <p className="retained-recovery__message" role={alert ? "alert" : "status"}>{t(messages[state])}</p>
     <div className="retained-recovery__actions">
       {showResume && onResume ? <button className={`${surface === "setup" ? "setup-primary-action " : ""}retained-recovery__primary`}
         type="button" disabled={processing} onClick={() => run(onResume)}>
-        {state === "failed" ? "Повторить восстановление" : "Продолжить разговор"}
+        {t(state === "failed" ? "Повторить восстановление" : "Продолжить разговор")}
       </button> : null}
       {showVerify && onVerify ? <button className={`${surface === "setup" ? "setup-primary-action " : ""}retained-recovery__primary`}
-        type="button" disabled={processing} onClick={() => run(onVerify)}>Повторить проверку</button> : null}
+        type="button" disabled={processing} onClick={() => run(onVerify)}>{t("Повторить проверку")}</button> : null}
       {state === "unavailable" || state === "storage_unavailable" || state === "ownership_unavailable" ? <button className={`${surface === "setup" ? "setup-primary-action " : ""}retained-recovery__primary`}
-        type="button" autoFocus onClick={() => window.location.reload()}>Обновить страницу</button> : null}
+        type="button" autoFocus onClick={() => window.location.reload()}>{t("Обновить страницу")}</button> : null}
       {!showResume && !showVerify && state !== "unresolved_create" && state !== "unavailable" && state !== "storage_unavailable" && state !== "ownership_unavailable" ? <span className="retained-recovery__placeholder" aria-hidden="true" /> : null}
       {state !== "unresolved_create" && state !== "unavailable" && state !== "storage_unavailable" && state !== "ownership_unavailable" && state !== "no_provider_end" ? <button className={`${surface === "setup" ? "setup-secondary-action " : ""}retained-recovery__danger`}
         type="button" disabled={processing} onClick={() => run(onEnd)}>
-        Завершить сохранённый разговор
+        {t("Завершить сохранённый разговор")}
       </button> : null}
     </div>
   </div>;
