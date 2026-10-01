@@ -6,6 +6,7 @@ import { BackendClient } from "../api/BackendClient";
 import { AccountingRequestError, type ConversationMetadata, type LedgerApi, type ProviderCreateBody } from "../api/AccountingBackend";
 import type { UsageReport } from "../metrics/UsageTypes";
 import { LiveClient } from "../live/LiveClient";
+import { runtime } from "../config/runtime";
 import { ConversationAccounting } from "./ConversationAccounting";
 import { MetadataDeliveryBudget, METADATA_TTL_MS } from "./MetadataDeliveryBudget";
 import { ResumeSnapshotStore } from "./ResumeSnapshotStore";
@@ -301,6 +302,39 @@ afterEach(() => {
 });
 
 describe("stage 4 transport/accounting integration", () => {
+  it("preserves old speech languages and ignores correction across a real language switch", async () => {
+    const f = fixture(40);
+    await f.controller.startWithLanguages({ A: "en", B: "es" });
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
+    const channel = f.clients.at(-1)!.peer.channel;
+    channel.emit({ type: "session.input_transcript.delta", delta: "Could you tell me where the train station is?" });
+    channel.emit({ type: "session.output_transcript.delta", delta: "¿Dónde está la estación de tren?" });
+    f.audio.onVoiceActivity?.({ active: false, atMs: Date.now() });
+    await vi.advanceTimersByTimeAsync(runtime.audioStartGraceMs);
+    await vi.waitFor(() => expect(f.controller.session.recentTurns).toHaveLength(1), { timeout: 2500 });
+    await vi.waitFor(() => expect(f.controller.inputReady).toBe(true));
+    await f.controller.changeInterlocutorLanguage("de");
+    const old = f.controller.session.recentTurns[0]!;
+    const eventCount = channel.events.length;
+    await f.controller.correctLastTurn("B");
+    expect(f.controller.session.activeTurn).toBeUndefined();
+    expect(f.controller.session.recentTurns[0]).toBe(old);
+    expect(channel.events).toHaveLength(eventCount);
+    render(jsx(ConversationScreen, { controller: f.controller }));
+    expect(screen.getByText("¿Dónde está la estación de tren?")).toHaveAttribute("lang", "es");
+    await vi.advanceTimersByTimeAsync(runtime.captionIdleMs);
+    channel.emit({ type: "session.input_transcript.delta", delta: "Could you tell me where the nearest hotel is?" });
+    channel.emit({ type: "session.output_transcript.delta", delta: "Wo ist das nächste Hotel?" });
+    cleanup();
+    render(jsx(ConversationScreen, { controller: f.controller }));
+    expect(screen.getByTestId("current-primary-B")).toHaveAttribute("lang", "de");
+    expect(screen.getByText("¿Dónde está la estación de tren?")).toHaveAttribute("lang", "es");
+    const ending = f.controller.endConversation();
+    channel.emit({ type: "session.closed" });
+    await ending;
+    await f.controller.dispose(); await f.budget.close();
+  });
+
   it("A4.1/#18 replaces two real clients while retaining the old final during IDB and HTTP failure", async () => {
     const f = fixture(); await f.controller.startBootstrap(); const first = f.clients[0]!;
     first.peer.channel.emit({ type: "session.usage.updated", usage: { seconds: 43 } });
@@ -2347,10 +2381,10 @@ describe("stage 5 hidden boundary", () => {
     const f = fixture(2000, true); configureResume(f);
     await enterInterpreter(f);
     const view = render(jsx(ConversationScreen, { controller: f.controller }));
-    const end = screen.getByRole("button", { name: "Завершить" });
+    const end = screen.getByRole("button", { name: "End" });
     const ending = f.controller.endConversation();
     view.rerender(jsx(ConversationScreen, { controller: f.controller }));
-    const closingButton = screen.queryByRole("button", { name: "Завершаю…" });
+    const closingButton = screen.queryByRole("button", { name: "Ending…" });
     f.clients.at(-1)!.peer.channel.emit({ type: "session.closed" });
     await ending;
     await f.controller.dispose(); await f.budget.close();

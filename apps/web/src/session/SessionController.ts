@@ -1183,7 +1183,10 @@ export class SessionController {
 
   private async runCorrectLastTurn(side: Side): Promise<void> {
     const target = this.latestCorrectableTurn();
-    if (target === undefined || target.speaker === side) {
+    // Changing languages retires old correction targets; keep their history intact.
+    if (target === undefined || target.speaker === side ||
+      (target.languages !== undefined &&
+        (target.languages.A !== this.languages.A || target.languages.B !== this.languages.B))) {
       return;
     }
     this.conversationMetrics.recordWrongSideCorrection();

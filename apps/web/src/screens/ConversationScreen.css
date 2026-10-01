@@ -138,19 +138,29 @@ body,
 
 .recent-turn {
   overflow: hidden;
-  opacity: 0.4;
+  opacity: 0.6;
   font-size: 0.75rem;
   display: flex;
-  flex-direction: column;
-  gap: 0.15rem;
+  gap: 0.4rem;
 }
 
-.recent-turn-secondary {
-  font-size: 0.7rem;
-  opacity: 0.85;
+.current-turn {
+  display: flex;
+  align-items: baseline;
+  gap: 0.5rem;
+  min-height: 0;
+  overflow: hidden;
 }
+
+.turn-author, .turn-waiting {
+  font: 600 0.75rem Bahnschrift, "Segoe UI", sans-serif;
+}
+.turn-author { flex-shrink: 0; }
+.turn-waiting { margin: 0; }
+.recent-turn-primary { min-width: 0; overflow-wrap: anywhere; }
 
 .current-message {
+  min-width: 0;
   overflow: hidden;
   margin: 0;
   white-space: pre-wrap;
@@ -177,15 +187,6 @@ body,
 
 .current-message--xs {
   font-size: 0.9rem;
-}
-
-.current-secondary {
-  overflow: hidden;
-  margin: 0.35rem 0 0;
-  font-size: 0.85rem;
-  opacity: 0.78;
-  white-space: pre-wrap;
-  overflow-wrap: anywhere;
 }
 
 .error-overlay {

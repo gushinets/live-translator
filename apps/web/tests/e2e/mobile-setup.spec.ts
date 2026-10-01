@@ -36,13 +36,13 @@ test.describe("mobile setup layout", () => {
   test("fits a portrait viewport and keeps primary controls touch friendly", async ({ page }) => {
     await page.goto("/");
 
-    const setup = page.getByRole("region", { name: "Настройка переводчика" });
+    const setup = page.getByRole("region", { name: "Translator setup" });
     await expect(setup).toBeVisible();
     await expect(page.getByText("Live Translator")).toBeVisible();
-    await expect(page.getByRole("heading", { name: "Язык собеседника" })).toBeVisible();
+    await expect(page.getByRole("heading", { name: "Partner's language" })).toBeVisible();
     await expect(page.getByRole("textbox", { name: "Контекст" })).toHaveCount(0);
 
-    const start = page.getByRole("button", { name: "Начать перевод" });
+    const start = page.getByRole("button", { name: "Start translation" });
     await expect(start).toBeVisible();
 
     const fitsViewport = await page.evaluate(() =>
@@ -87,9 +87,9 @@ test.describe("mobile setup layout", () => {
     await page.addInitScript(() => localStorage.setItem("live-translator-interlocutor-language", "es"));
     await page.goto("/");
 
-    const start = page.getByRole("button", { name: "Начать перевод" });
+    const start = page.getByRole("button", { name: "Start translation" });
     const brand = page.getByText("Live Translator");
-    const settings = page.getByRole("button", { name: "Настройки" });
+    const settings = page.getByRole("button", { name: "Settings" });
     await expect(brand).toBeVisible();
     await expect(settings).toBeVisible();
     const brandBox = await brand.boundingBox();
@@ -98,12 +98,12 @@ test.describe("mobile setup layout", () => {
       (settingsBox?.y ?? 0) - (settingsBox?.height ?? 0) / 2)).toBeLessThan(3);
     const box = await start.boundingBox();
     expect(Math.abs((box?.y ?? 0) + (box?.height ?? 0) / 2 - 844 / 2)).toBeLessThan(70);
-    await expect(page.getByRole("radio", { name: "испанский" })).toHaveCount(0);
+    await expect(page.getByRole("radio", { name: "Spanish" })).toHaveCount(0);
 
-    await page.getByRole("button", { name: "Настройки" }).click();
-    await expect(page.getByRole("radio", { name: "испанский" })).toBeChecked();
-    await page.getByRole("button", { name: "Закрыть настройки" }).click();
-    await expect(page.getByRole("radio", { name: "испанский" })).toHaveCount(0);
+    await page.getByRole("button", { name: "Settings" }).click();
+    await expect(page.getByRole("radio", { name: "Spanish" })).toBeChecked();
+    await page.getByRole("button", { name: "Close settings" }).click();
+    await expect(page.getByRole("radio", { name: "Spanish" })).toHaveCount(0);
   });
 
   test("keeps the repeat-start button in place until translation is ready", async ({ page }) => {
@@ -119,19 +119,19 @@ test.describe("mobile setup layout", () => {
     });
     await page.goto("/");
 
-    const start = page.getByRole("button", { name: "Начать перевод" });
+    const start = page.getByRole("button", { name: "Start translation" });
     const before = await start.boundingBox();
     await start.click();
-    const pending = page.getByRole("button", { name: "Устанавливаю связь…" });
+    const pending = page.getByRole("button", { name: "Connecting…" });
     await expect(pending).toBeDisabled();
-    await expect(page.getByRole("button", { name: "Настройки" })).toBeDisabled();
+    await expect(page.getByRole("button", { name: "Settings" })).toBeDisabled();
     const during = await pending.boundingBox();
     expect(Math.abs((during?.y ?? 0) - (before?.y ?? 0))).toBeLessThan(2);
     expect(during?.height).toBe(before?.height);
     expect(await page.locator(".setup-card--start").count()).toBe(1);
 
     releaseSession();
-    await expect(page.getByRole("button", { name: "Завершить" })).toBeVisible();
+    await expect(page.getByRole("button", { name: "End" })).toBeVisible();
   });
 
   test("uses a Russian PWA description", async ({ request }) => {

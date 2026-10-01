@@ -19,6 +19,7 @@ import {
 } from "../live/StartupTrace";
 import { ConversationScreen } from "./ConversationScreen";
 import "./ContextScreen.css";
+import { translate, uiLocale } from "../i18n/messages";
 
 /**
  * Owner start-flow surface used by ContextScreen. SessionController implements
@@ -131,6 +132,7 @@ export function ContextScreen({
   const [ownedController, setOwnedController] = useState<SessionController | null>(null);
   const [ownerFailed, setOwnerFailed] = useState(false);
   const [ownerLanguage, setOwnerLanguage] = useState(initialOwnerLanguage);
+  const [draftOwnerLanguage, setDraftOwnerLanguage] = useState<string>();
   const [interlocutorLanguage, setInterlocutorLanguage] = useState(savedInterlocutorLanguage);
   const [pickerMode, setPickerMode] = useState<"start" | "change" | null>(null);
   const [pickerBusy, setPickerBusy] = useState(false);
@@ -154,6 +156,11 @@ export function ContextScreen({
   }, [injectedController]);
   const resolvedController = injectedController ?? ownedController;
   const controller: ContextScreenController | null = resolvedController;
+  const invalidLanguagePair = !ownerLanguage || !interlocutorLanguage || ownerLanguage === interlocutorLanguage;
+  const showStartPicker = !startingWithLanguages && controller?.session.state === "idle" && (pickerMode === "start" || invalidLanguagePair);
+  const ownerLocale = uiLocale(showStartPicker && controller?.retainedRecoveryState === undefined
+    ? draftOwnerLanguage || ownerLanguage : controller?.session.participantA.language ?? ownerLanguage);
+  const t = (text: string) => translate(text, ownerLocale);
 
   const [, rerender] = useReducer((count: number) => count + 1, 0);
   const audioHostRef = useRef<HTMLDivElement>(null);
@@ -210,16 +217,16 @@ export function ContextScreen({
     if (pickerMode === "change" && controller?.session.state === "idle") setPickerMode(null);
   }, [controller?.session.state, pickerMode]);
 
-  if (ownerFailed) return <main className="setup-screen" role="alert">
+  if (ownerFailed) return <main className="setup-screen" lang={ownerLocale} role="alert">
     <div className="setup-shell">
       <header className="setup-header"><p className="setup-brand">Live Translator</p></header>
-      <div className="setup-card">Не удалось завершить предыдущий разговор.</div>
+      <div className="setup-card">{t("Не удалось завершить предыдущий разговор.")}</div>
     </div>
   </main>;
-  if (controller === null) return <main className="setup-screen" aria-busy="true">
+  if (controller === null) return <main className="setup-screen" lang={ownerLocale} aria-busy="true">
     <div className="setup-shell">
       <header className="setup-header"><p className="setup-brand">Live Translator</p></header>
-      <div className="setup-card">Подготовка сеанса…</div>
+      <div className="setup-card">{t("Подготовка сеанса…")}</div>
     </div>
   </main>;
   const activeController = controller;
@@ -257,6 +264,7 @@ export function ContextScreen({
     setPickerBusy(true);
     setLanguageChangeError(undefined);
     setOwnerLanguage(owner);
+    setDraftOwnerLanguage(undefined);
     setInterlocutorLanguage(interlocutor);
     try {
       localStorage.setItem(INTERLOCUTOR_LANGUAGE_KEY, interlocutor);
@@ -321,8 +329,6 @@ export function ContextScreen({
     sessionState === "error" ||
     controller.isConnectInFlight === true || controller.retainedRecoveryState !== undefined;
   const recovery = controller.retainedRecoveryState;
-  const invalidLanguagePair = !ownerLanguage || !interlocutorLanguage || ownerLanguage === interlocutorLanguage;
-  const showStartPicker = !startingWithLanguages && sessionState === "idle" && (pickerMode === "start" || invalidLanguagePair);
   const showStartLayout = !showStartPicker && (sessionState === "idle" || startingWithLanguages);
   const showSettings = (sessionState === "idle" || startingWithLanguages) &&
     !invalidLanguagePair && recovery === undefined;
@@ -342,7 +348,8 @@ export function ContextScreen({
   return (
     <section
       className={isOwnerSetup ? "setup-screen" : undefined}
-      aria-label={isOwnerSetup ? "Настройка переводчика" : undefined}
+      lang={ownerLocale}
+      aria-label={isOwnerSetup ? t("Настройка переводчика") : undefined}
     >
       <div ref={audioHostRef} hidden />
       {!isOwnerSetup ? (
@@ -352,7 +359,7 @@ export function ContextScreen({
             setPickerMode("change");
           }} />
           {pickerMode === "change" ? <dialog ref={languageDialogRef} className="language-picker-overlay"
-            aria-label="Сменить язык собеседника" onCancel={event => {
+            aria-label={t("Сменить язык собеседника")} onCancel={event => {
               event.preventDefault();
               setPickerMode(null);
             }}>
@@ -364,7 +371,7 @@ export function ContextScreen({
                 busy={pickerBusy}
                 onConfirm={(owner, interlocutor) => { void handleLanguageConfirm(owner, interlocutor); }}
                 onCancel={() => setPickerMode(null)} />
-              {languageChangeError ? <p role="alert">{languageChangeError}</p> : null}
+              {languageChangeError ? <p role="alert">{t(languageChangeError)}</p> : null}
             </div>
           </dialog> : null}
         </>
@@ -373,10 +380,13 @@ export function ContextScreen({
           <header className="setup-header">
             <p className="setup-brand">Live Translator</p>
             {showSettings ? <button className="setup-settings-action" type="button"
-              aria-label={showStartPicker ? "Закрыть настройки" : "Настройки"}
+              aria-label={t(showStartPicker ? "Закрыть настройки" : "Настройки")}
               aria-expanded={showStartPicker}
               disabled={startingWithLanguages}
-              onClick={() => setPickerMode(showStartPicker ? null : "start")}>
+              onClick={() => {
+                setDraftOwnerLanguage(undefined);
+                setPickerMode(showStartPicker ? null : "start");
+              }}>
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8"
                 strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
                 <path d="M10.4 2.8h3.2l.5 2.1c.5.2 1 .4 1.5.7l1.9-1.1 2.3 2.3-1.1 1.9c.3.5.5 1 .7 1.5l2.1.5v3.2l-2.1.5c-.2.5-.4 1-.7 1.5l1.1 1.9-2.3 2.3-1.9-1.1c-.5.3-1 .5-1.5.7l-.5 2.1h-3.2l-.5-2.1c-.5-.2-1-.4-1.5-.7l-1.9 1.1-2.3-2.3 1.1-1.9c-.3-.5-.5-1-.7-1.5l-2.1-.5v-3.2l2.1-.5c.2-.5.4-1 .7-1.5L4.2 6.8l2.3-2.3 1.9 1.1c.5-.3 1-.5 1.5-.7z" />
@@ -387,15 +397,15 @@ export function ContextScreen({
 
           <div className={`setup-card${showStartPicker ? " setup-card--picker" : ""}${showStartLayout ? " setup-card--start" : ""}`}>
             {recovery === undefined && controller.ownerError !== undefined ? (
-              <ErrorOverlay message={controller.ownerError} />
+              <ErrorOverlay message={controller.ownerError} language={ownerLocale} />
             ) : null}
             {recovery !== undefined ? (
-              <RetainedRecovery state={recovery} surface="setup"
+              <RetainedRecovery state={recovery} surface="setup" language={ownerLocale}
                 onResume={controller.resumeRetainedConversation?.bind(controller)}
                 onVerify={controller.verifyRetainedConversation?.bind(controller)}
                 onEnd={() => controller.endConversation()} />
             ) : isBootstrap && controller.isConnectInFlight && !startingWithLanguages ? (
-              <p role="status" className="setup-inline-status">Запускаю перевод…</p>
+              <p role="status" className="setup-inline-status">{t("Запускаю перевод…")}</p>
             ) : isBootstrap && !startingWithLanguages ? (
               <BootstrapPrompt
                 transcript={controller.bootstrapText}
@@ -403,6 +413,7 @@ export function ContextScreen({
                 recording={controller.bootstrapRecording}
                 languageA={controller.session.participantA.language}
                 languageB={controller.session.participantB.language}
+                language={ownerLocale}
                 actionsDisabled={controller.isInterpreterStarting === true || isBusy}
                 primaryActionRef={bootstrapPrimaryRef}
                 repeatActionRef={bootstrapRepeatRef}
@@ -414,6 +425,7 @@ export function ContextScreen({
               />
             ) : showStartPicker ? (
               <LanguagePicker ownerLanguage={ownerLanguage} interlocutorLanguage={interlocutorLanguage}
+                onOwnerChange={setDraftOwnerLanguage}
                 busy={pickerBusy || isBusy} startAction primaryActionRef={startRef}
                 onConfirm={(owner, interlocutor) => { void handleLanguageConfirm(owner, interlocutor); }} />
             ) : (
@@ -427,7 +439,7 @@ export function ContextScreen({
                     void handleStart();
                   }}
                 >
-                  {startingWithLanguages ? <span className="setup-connecting-label" aria-live="polite">Устанавливаю связь…</span> : "Начать перевод"}
+                  {startingWithLanguages ? <span className="setup-connecting-label" aria-live="polite">{t("Устанавливаю связь…")}</span> : t("Начать перевод")}
                 </button>
               </>
             )}
@@ -442,7 +454,7 @@ export function ContextScreen({
                   void controller.cancel();
                 }}
               >
-                Отмена
+                {t("Отмена")}
               </button>
             ) : null}
           </footer>

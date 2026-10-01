@@ -8,14 +8,14 @@ test("an opener-cloned tab loses the owner's document-lifetime Web Lock and rota
     Object.defineProperty(window, "__inheritedClientId", { value: sessionStorage.getItem(key) });
   }, key);
   await page.goto("/");
-  await expect(page.getByRole("button", { name: "Начать перевод" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Start translation" })).toBeVisible();
   const ownerId = await page.evaluate(key => sessionStorage.getItem(key), key);
   expect(ownerId).not.toBeNull();
   expect(await page.evaluate(probe, ownerId!)).toBe(false);
   const popupEvent = page.waitForEvent("popup");
   await page.evaluate(() => window.open("/", "_blank"));
   const clone = await popupEvent;
-  await expect(clone.getByRole("button", { name: "Начать перевод" })).toBeVisible();
+  await expect(clone.getByRole("button", { name: "Start translation" })).toBeVisible();
   expect(await clone.evaluate(() => (window as Window & { __inheritedClientId?: string }).__inheritedClientId)).toBe(ownerId);
   expect(await clone.evaluate(probe, ownerId!)).toBe(false);
   const cloneId = await clone.evaluate(key => sessionStorage.getItem(key), key);
@@ -34,16 +34,16 @@ test("an opener-cloned tab loses the owner's document-lifetime Web Lock and rota
 
 test("unresolved create keeps admission blocked without retry or End offline", async ({ page }) => {
   await page.goto("/");
-  await expect(page.getByRole("button", { name: "Начать перевод" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Start translation" })).toBeVisible();
   await page.evaluate(() => sessionStorage.setItem("live-translator-retained-conversation-v1", "pending-create"));
   await page.route("**/api/**", route => route.abort());
   await page.setViewportSize({ width: 320, height: 700 });
   await page.emulateMedia({ reducedMotion: "reduce" });
   await page.reload();
-  await expect(page.getByRole("alert")).toContainText("Создание разговора не удалось подтвердить");
-  await expect(page.getByRole("button", { name: "Начать перевод" })).toHaveCount(0);
-  await expect(page.getByRole("button", { name: "Повторить проверку" })).toHaveCount(0);
-  await expect(page.getByRole("button", { name: "Завершить сохранённый разговор" })).toHaveCount(0);
+  await expect(page.getByRole("alert")).toContainText("Conversation creation could not be confirmed");
+  await expect(page.getByRole("button", { name: "Start translation" })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "Retry verification" })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "End saved conversation" })).toHaveCount(0);
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
 });
 
@@ -71,18 +71,18 @@ test("pending End stays blocked offline and releases Start only after server pro
   const offline = (route: import("@playwright/test").Route) => route.abort();
   await page.route("**/api/**", offline);
   await page.reload();
-  await expect(page.getByRole("alert")).toContainText("Завершение не подтверждено");
-  await expect(page.getByRole("button", { name: "Начать перевод" })).toHaveCount(0);
-  const retry = page.getByRole("button", { name: "Повторить проверку" });
+  await expect(page.getByRole("alert")).toContainText("Closure is not confirmed");
+  await expect(page.getByRole("button", { name: "Start translation" })).toHaveCount(0);
+  const retry = page.getByRole("button", { name: "Retry verification" });
   await page.setViewportSize({ width: 320, height: 700 });
   await page.emulateMedia({ reducedMotion: "reduce" });
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
   expect((await retry.boundingBox())?.height).toBeGreaterThanOrEqual(44);
   await retry.focus();
   await page.keyboard.press("Enter");
-  await expect(page.getByRole("alert")).toContainText("Завершение не подтверждено");
+  await expect(page.getByRole("alert")).toContainText("Closure is not confirmed");
   await page.unroute("**/api/**", offline);
-  const end = page.getByRole("button", { name: "Завершить сохранённый разговор" });
+  const end = page.getByRole("button", { name: "End saved conversation" });
   expect(await retry.evaluate(button => getComputedStyle(button).backgroundColor)).toBe("rgb(244, 234, 213)");
   expect(await end.evaluate(button => getComputedStyle(button).borderColor)).toBe("rgb(122, 46, 31)");
   const before = { retry: await retry.boundingBox(), end: await end.boundingBox() };
@@ -102,6 +102,6 @@ test("pending End stays blocked offline and releases Start only after server pro
   expect(await retry.boundingBox()).toEqual(before.retry);
   expect(await end.boundingBox()).toEqual(before.end);
   release();
-  await expect(page.getByRole("button", { name: "Начать перевод" })).toBeVisible();
-  await expect(page.getByRole("button", { name: "Начать перевод" })).toBeFocused();
+  await expect(page.getByRole("button", { name: "Start translation" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Start translation" })).toBeFocused();
 });

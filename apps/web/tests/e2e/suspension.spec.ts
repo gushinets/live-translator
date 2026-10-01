@@ -248,8 +248,8 @@ async function installLiveStubs(page: Page): Promise<void> {
 async function startListeningConversation(page: Page): Promise<void> {
   await page.goto("/");
   await completeLanguageSetup(page);
-  await expect(page.getByRole("button", { name: "Завершить" })).toBeVisible();
-  await expect(page.getByTestId("participant-status-A")).toHaveText("ГОВОРИТЕ");
+  await expect(page.getByRole("button", { name: "End" })).toBeVisible();
+  await expect(page.getByTestId("participant-status-A")).toHaveText("SPEAK");
 }
 
 async function emitSourceTranscript(page: Page, delta: string): Promise<void> {
@@ -303,14 +303,14 @@ test.describe("PWA suspension", () => {
     await page.evaluate(() => {
       window.__setVisibility?.("hidden");
     });
-    await expect(page.getByTestId("participant-status-A")).toHaveText("ПАУЗА");
-    await expect(page.getByTestId("participant-status-B")).toHaveText("ПАУЗА");
+    await expect(page.getByTestId("participant-status-A")).toHaveText("PAUSED");
+    await expect(page.getByTestId("participant-status-B")).toHaveText("EN PAUSA");
 
     await page.evaluate(() => {
       window.__setVisibility?.("visible");
     });
-    await expect(page.getByText("Повторите")).toBeVisible();
-    await expect(page.getByTestId("participant-status-A")).toHaveText("ГОВОРИТЕ");
+    await expect(page.getByText("Please repeat")).toBeVisible();
+    await expect(page.getByTestId("participant-status-A")).toHaveText("SPEAK");
   });
 
   test("landscape suspends an active source turn until portrait is restored", async ({ page }) => {
@@ -322,14 +322,14 @@ test.describe("PWA suspension", () => {
     await page.evaluate(() => {
       window.__setOrientation?.("landscape-primary");
     });
-    await expect(page.getByTestId("participant-status-A")).toHaveText("ПАУЗА");
+    await expect(page.getByTestId("participant-status-A")).toHaveText("PAUSED");
     await expect(page.getByTestId("rotate-overlay")).toBeVisible();
-    await expect(page.getByTestId("rotate-overlay")).toHaveText(/поверните/i);
+    await expect(page.getByTestId("rotate-overlay")).toHaveText(/turn your phone upright/i);
 
     await page.evaluate(() => {
       window.__setOrientation?.("portrait-primary");
     });
-    await expect(page.getByText("Повторите")).toBeVisible();
-    await expect(page.getByTestId("participant-status-A")).toHaveText("ГОВОРИТЕ");
+    await expect(page.getByText("Please repeat")).toBeVisible();
+    await expect(page.getByTestId("participant-status-A")).toHaveText("SPEAK");
   });
 });

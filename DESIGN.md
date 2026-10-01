@@ -32,7 +32,7 @@ components:
 
 ## Overview
 
-The product should feel like a dedicated interpreter device placed quietly between two people, not a marketing page or chat application. It is a Russian-owner mobile product for the current prototype. The memorable signature is the physically mirrored two-person conversation view; all setup UI stays restrained.
+The product should feel like a dedicated interpreter device placed quietly between two people, not a marketing page or chat application. The memorable signature is the physically mirrored two-person conversation view; all setup UI stays restrained. Each participant reads their pane in their selected language; shared controls and setup follow the owner's selected language.
 
 Runtime CSS is canonical. This file mirrors the shared values in `apps/web/src/screens/ContextScreen.css` and `ConversationScreen.css`; it does not generate them.
 
@@ -62,22 +62,26 @@ Controls use compact rounded rectangles, not pills. The setup card may use the l
 
 Primary actions are full-width, at least 44px high, and stable while disabled. Secondary actions remain visibly subordinate. Focus is always visible. Motion communicates pressing or state only and is removed for reduced-motion users.
 
-Ending an active conversation keeps its toolbar button and both dialogue panes in place. The button becomes disabled and reads “Завершаю…” without changing dimensions; only after closure does setup return. Retained-session recovery remains available for unconfirmed closure.
+Ending an active conversation keeps its toolbar button and both dialogue panes in place. The button becomes disabled and shows the localized ending label without changing dimensions; only after closure does setup return. Retained-session recovery remains available for unconfirmed closure.
 
 Interlocutor languages use full-width radio rows sized for a thumb. At least four priority languages fit in the initial scroll area; the list fills the available space and reveals part of the next row to signal scrolling while the main action stays at the bottom. The less frequent owner-language correction keeps its native `<select>`.
 
 ## Do's and Don'ts
 
-- **Do:** keep Russian control copy short and literal.
+- **Do:** keep localized control copy short and literal.
 - **Do:** preserve one obvious primary action per setup step.
 - **Don't:** add slogans, feature descriptions, or decorative badges to the setup flow.
 - **Don't:** let status labels compete with the live translation.
 
 ## Language setup and conversation behavior
 
-At first launch the language list is already open: A comes from the device/browser locale and can be corrected; Spanish is preselected for B. Spanish, English, French, German, Italian and Portuguese lead the list; the remaining languages are sorted by stable Russian names stored in the app. The large bottom action saves B and starts translation. Later starts show one centered action, with a top-right settings control reopening the language list. No speech sample or context is required. The conversation toolbar reopens the same list for B; a change during a turn applies after the turn closes. A and B must differ. The priority is fixed until the separate location-suggestion feature is built.
+At first launch the language list is already open: A comes from the device/browser locale and can be corrected; Spanish is preselected for B. Spanish, English, French, German, Italian and Portuguese lead the list; the remaining languages are sorted by their localized names. The large bottom action saves B and starts translation. Later starts show one centered action, with a top-right settings control reopening the language list. No speech sample or context is required. The conversation toolbar reopens the same list for B; a change during a turn applies after the turn closes. A and B must differ. The priority is fixed until the separate location-suggestion feature is built.
 
-`SideResolver` classifies incoming transcript text locally; model playback is never an identity signal. Neither participant has an expected turn. Both panes show ГОВОРИТЕ when input is ready, and display their fixed languages. Unknown source speech is presented without assigning it to a side, with a manual correction hint. Manual assignment only affects that utterance.
+`SideResolver` classifies incoming transcript text locally; model playback is never an identity signal. Neither participant has an expected turn. Both panes show their localized speak status when input is ready, and display their fixed languages. Unknown source speech is hidden behind a waiting status with a manual correction hint. Manual assignment only affects that utterance.
+
+ANY-558 / ANY-559: each pane shows one text per utterance: its owner's original speech or the other participant's translation. This applies to the active utterance and the capped history of three turns. Missing translations show a waiting status, never foreign source text; a known author stays visible during that wait. Every visible utterance has a compact localized “Я” / “Он” author prefix relative to the pane; translation keeps the source speaker's authorship and correction updates both panes. Changing B's language keeps old history text as-is and changes subsequent text and B's interface. Each utterance retains its language pair for speech-language metadata. Earlier utterances cannot be corrected under a different language pair, which would retranslate preserved history.
+
+The shared dictionary in `apps/web/src/i18n/messages.ts` owns English, French, Italian, German, Spanish, Russian and Portuguese interface copy. Other conversation languages use English UI while speech translation keeps the selected language. Pane statuses, author labels, language names and correction accessible names follow the pane's UI locale. Setup, common buttons, errors and retained-session recovery follow A's locale. Recovery messages preserve all blocking, retry and paid-attempt disclosures; localization does not change session/accounting behavior.
 
 Runtime verification: `SessionController.test.ts` covers B-first and repeated turns, fixed languages after suspension, unknown speech and cancellation; `tests/e2e/mocked-conversation.spec.ts` checks the same routing in a browser. Existing warm surfaces, typography, focus behavior and rotated B pane are retained.
 
