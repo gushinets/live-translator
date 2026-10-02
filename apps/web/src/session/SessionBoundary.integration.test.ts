@@ -1574,7 +1574,7 @@ describe("stage 5 hidden boundary", () => {
     await vi.waitFor(() => expect(f.controller.session.state).toBe("ending"));
     expect(f.controller.retainedRecoveryState).toBe("ending");
     render(jsx(ContextScreen, { controller: f.controller satisfies ContextScreenController }));
-    expect(screen.getByRole("status")).toHaveTextContent("Завершаем сохранённый разговор…");
+    expect(screen.getAllByRole("status")).toContain(screen.getByText("Завершаем сохранённый разговор…"));
     expect(screen.getByRole("button", { name: "Завершить сохранённый разговор" })).toBeDisabled();
     expect(screen.queryByRole("button", { name: "Продолжить разговор" })).not.toBeInTheDocument();
     expect(f.track.enabled).toBe(false);
@@ -2406,7 +2406,7 @@ describe("stage 5 hidden boundary", () => {
     await vi.waitFor(() => expect(f.controller.session.state).toBe("ending"));
     expect(f.controller.retainedRecoveryState).toBe("ending");
     render(jsx(ContextScreen, { controller: f.controller satisfies ContextScreenController }));
-    expect(screen.getByRole("status")).toHaveTextContent("Завершаем сохранённый разговор…");
+    expect(screen.getAllByRole("status")).toContain(screen.getByText("Завершаем сохранённый разговор…"));
     expect(screen.getByRole("button", { name: "Завершить сохранённый разговор" })).toBeDisabled();
     expect(screen.queryByRole("button", { name: "Продолжить разговор" })).not.toBeInTheDocument();
     release();

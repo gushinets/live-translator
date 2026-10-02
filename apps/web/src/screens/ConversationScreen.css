@@ -89,17 +89,22 @@ html { scrollbar-color: #8f8374 #1c1713; scrollbar-width: auto; }
   padding: 0.625rem 0.75rem;
 }
 
-.participant-correction-target {
+.participant-header {
   display: flex;
   flex-wrap: wrap;
   align-items: baseline;
   gap: 0.25rem 0.75rem;
   flex-shrink: 0;
   width: 100%;
+  border-bottom: 1px solid #3a3025;
+}
+
+.participant-correction-target {
+  min-width: 44px;
+  max-width: 100%;
   min-height: 44px;
   padding: 0.25rem 0;
   border: 0;
-  border-bottom: 1px solid #3a3025;
   background: transparent;
   color: inherit;
   font: inherit;

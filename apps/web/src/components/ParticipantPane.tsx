@@ -27,6 +27,8 @@ export function ParticipantPane({
 }) {
   const locale = uiLocale(language);
   const t = (text: string) => translate(text, locale);
+  const languageLabel = language === undefined ? undefined : `${side} · ${languageName(language, locale)}`;
+  const correctionLabel = t("Исправить: говорил участник {side}").replace("{side}", side);
   const primaryText = activeTurn ? paneTextForTurn(activeTurn, side) : "";
   const author = (turn: Turn) => t(turn.speaker === side ? "Я" : "Он");
   const latest = primaryText.length > 0 ? undefined : [...recentTurns].reverse().find(entry =>
@@ -54,8 +56,11 @@ export function ParticipantPane({
       onPointerDown={event => {
         const scroll = scrollRef.current;
         const bounds = scroll?.getBoundingClientRect();
+        const gutter = scroll ? scroll.offsetWidth - scroll.clientWidth : 0;
+        const x = bounds ? event.clientX - bounds.left : 0;
+        // Native scrollbar placement varies with rotation, direction and browser.
         const scrollbar = scroll !== null && event.target === scroll && bounds !== undefined &&
-          (rotated ? bounds.right - event.clientX : event.clientX - bounds.left) >= scroll.clientWidth;
+          gutter > 0 && (x < gutter || x >= bounds.width - gutter);
         pointerMoved.current = scrollbar;
         pointerStart.current = event.isPrimary && event.button === 0 && !scrollbar ? { x: event.clientX, y: event.clientY } : undefined;
       }}
@@ -75,17 +80,19 @@ export function ParticipantPane({
           window.getSelection()?.isCollapsed !== false) onTap();
       }}
     >
-      <button
-        className="participant-correction-target"
-        type="button"
-        aria-label={t("Исправить: говорил участник {side}").replace("{side}", side)}
-        onClick={event => {
-          if (event.detail === 0 || (!pointerMoved.current && window.getSelection()?.isCollapsed !== false)) onTap();
-        }}
-      >
-        {language !== undefined ? <span className="participant-language">{side} · {languageName(language, locale)}</span> : null}
+      <div className="participant-header">
+        <button
+          className="participant-correction-target"
+          type="button"
+          aria-label={languageLabel ? `${languageLabel}. ${correctionLabel}` : correctionLabel}
+          onClick={event => {
+            if (event.detail === 0 || (!pointerMoved.current && window.getSelection()?.isCollapsed !== false)) onTap();
+          }}
+        >
+          {languageLabel !== undefined ? <span className="participant-language">{languageLabel}</span> : null}
+        </button>
         <ParticipantStatus side={side} label={status} language={locale} />
-      </button>
+      </div>
       <div className="participant-scroll" ref={scrollRef} tabIndex={0} role="region"
         aria-label={t("Реплики участника {side}").replace("{side}", side)}
         data-testid={`participant-scroll-${side}`}

@@ -89,7 +89,7 @@ export function ParticipantStatus({
   };
 
   return (
-    <span className="participant-status" data-testid={`participant-status-${side}`}>
+    <span className="participant-status" role="status" data-testid={`participant-status-${side}`}>
       {translate(visibleLabel[label], language)}
     </span>
   );

@@ -14,6 +14,11 @@ test("long captions stay readable, retain their size in pauses, and respect manu
     const message = page.getByTestId(`current-primary-${side}`);
     const scroll = page.getByTestId(`participant-scroll-${side}`);
     await expect(message).toHaveCSS("font-size", "28px");
+    const pane = page.getByTestId(`participant-pane-${side}`);
+    for (const label of [pane.locator(".participant-language"), pane.getByTestId(`participant-status-${side}`)]) {
+      await expect(label).toHaveCSS("font-family", "system-ui, sans-serif");
+      await expect(label).toHaveCSS("font-size", "18px");
+    }
     expect(await message.evaluate(el => {
       const author = el.previousElementSibling!.getBoundingClientRect();
       const firstLetter = document.createRange();
@@ -27,7 +32,11 @@ test("long captions stay readable, retain their size in pauses, and respect manu
     expect(await scroll.evaluate(el => el.scrollHeight - el.scrollTop - el.clientHeight)).toBeLessThan(2);
     const box = (await scroll.boundingBox())!;
     const gutter = await scroll.evaluate(el => (el as HTMLElement).offsetWidth - el.clientWidth);
-    if (gutter > 0) await page.mouse.click(side === "B" ? box.x + gutter / 2 : box.x + box.width - gutter / 2, box.y + box.height / 2);
+    if (gutter > 0) {
+      await page.mouse.click(side === "B" ? box.x + gutter / 2 : box.x + box.width - gutter / 2, box.y + box.height / 2);
+      await expect(page.getByTestId("current-author-A")).toHaveText("Me:");
+      await expect(page.getByTestId("current-author-B")).toHaveText("Él:");
+    }
     await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
     await page.mouse.down();
     await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2 + 35, { steps: 5 });
