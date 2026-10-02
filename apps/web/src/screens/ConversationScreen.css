@@ -163,6 +163,9 @@ body,
   text-align: center;
 }
 .rotate-overlay p { margin: 0; padding: 1rem; }
+@media (max-height: 46rem) {
+  .recent-turn { margin-bottom: 0.375rem; padding-bottom: 0.375rem; }
+}
 @media (prefers-reduced-motion: reduce) {
   .conversation-center button:active:not(:disabled) { transform: none; }
 }

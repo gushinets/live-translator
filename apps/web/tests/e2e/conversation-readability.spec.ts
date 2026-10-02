@@ -27,6 +27,7 @@ test("compact participant headers leave room for four readable exchanges on each
     await harness.waitForGateBUnmuted();
     await harness.advance(runtime.captionIdleMs);
   }
+  await page.screenshot({ path: testInfo.outputPath("variant-four-dialogue.png") });
   for (const side of ["A", "B"] as const) {
     const pane = page.getByTestId(`participant-pane-${side}`);
     expect((await pane.locator(".participant-header").boundingBox())!.height).toBeLessThanOrEqual(32);
@@ -39,7 +40,6 @@ test("compact participant headers leave room for four readable exchanges on each
   }
   await expect(page.getByTestId("participant-pane-A")).toHaveCSS("background-color", "rgb(23, 35, 38)");
   await expect(page.getByTestId("participant-pane-B")).toHaveCSS("background-color", "rgb(241, 232, 215)");
-  await page.screenshot({ path: testInfo.outputPath("variant-four-dialogue.png") });
   await page.setViewportSize({ width: 320, height: 640 });
   await expect(page.getByRole("button", { name: "Завершить" })).toBeInViewport();
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
