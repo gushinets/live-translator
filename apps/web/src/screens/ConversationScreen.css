@@ -5,17 +5,14 @@ body,
   height: 100%;
 }
 
-html { scrollbar-color: #8f8374 #1c1713; scrollbar-width: auto; }
-::-webkit-scrollbar { width: 10px; height: 10px; }
-::-webkit-scrollbar-track { background: #1c1713; }
-::-webkit-scrollbar-thumb { background: #8f8374; border: 2px solid #1c1713; border-radius: 6px; }
-::-webkit-scrollbar-thumb:hover { background: #c4b6a1; }
-::-webkit-scrollbar-thumb:active { background: #f4ead5; }
+.participant-pane ::-webkit-scrollbar { width: 8px; }
+.participant-pane ::-webkit-scrollbar-track { background: transparent; }
+.participant-pane ::-webkit-scrollbar-thumb { background: var(--participant-accent); border: 2px solid transparent; border-radius: 6px; background-clip: padding-box; }
 
 .conversation-screen {
-  --conversation-text-size: 1.75rem;
+  --conversation-text-size: 1.375rem;
   --conversation-history-size: 1.375rem;
-  --conversation-label-size: 1.125rem;
+  --conversation-label-size: 0.9375rem;
   position: relative;
   box-sizing: border-box;
   display: flex;
@@ -25,11 +22,11 @@ html { scrollbar-color: #8f8374 #1c1713; scrollbar-width: auto; }
   overflow: hidden;
   padding: env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom)
     env(safe-area-inset-left);
-  background: #14110e;
-  color: #f4ead5;
+  background: #172326;
+  color: #f1f6f3;
   font-family: system-ui, sans-serif;
   font-size: var(--conversation-label-size);
-  line-height: 1.35;
+  line-height: 1.3;
 }
 
 .conversation-center {
@@ -39,11 +36,11 @@ html { scrollbar-color: #8f8374 #1c1713; scrollbar-width: auto; }
   align-items: center;
   justify-content: center;
   gap: 0.5rem;
-  padding: 0.5rem 0.75rem;
+  padding: 0.375rem 0.75rem;
   max-height: 50%;
   box-sizing: border-box;
   overflow: auto;
-  background: #2a2218;
+  background: #26312e;
 }
 
 .conversation-center button {
@@ -51,30 +48,37 @@ html { scrollbar-color: #8f8374 #1c1713; scrollbar-width: auto; }
   min-width: 44px;
   min-height: 44px;
   box-sizing: border-box;
-  border: 1px solid #8f8374;
+  border: 1px solid #526866;
   border-radius: 0.7rem;
-  padding: 0.45rem 0.75rem;
+  padding: 0.5rem 0.65rem;
   font: inherit;
   font-weight: 600;
   overflow-wrap: anywhere;
-  background: #17130f;
-  color: #f4ead5;
+  background: #263b3c;
+  color: #f1f6f3;
   cursor: pointer;
 }
 
-.conversation-center button:hover:not(:disabled) { background: #3a3025; }
+.conversation-center .conversation-language-action { display: flex; flex: 1 1 11rem; min-width: min(11rem, 100%); align-items: center; justify-content: center; gap: 0.5rem; }
+.conversation-language-action span { min-width: 0; }
+.conversation-language-action svg { flex: 0 0 auto; width: 1.35rem; height: 1.35rem; color: #ace2c9; }
+.conversation-center button:hover:not(:disabled) { background: #354d4c; }
 .conversation-center button:active:not(:disabled) { transform: translateY(1px); }
 .conversation-center button:disabled { cursor: wait; opacity: 0.46; }
-.conversation-center .conversation-end-action { border-color: #9e5849; background: #3a211b; color: #ffe8df; }
-.conversation-center .conversation-end-action:hover:not(:disabled) { background: #51291f; }
+.conversation-center .conversation-end-action { border-color: #a8564a; background: #934c43; color: #fff8f5; }
+.conversation-center .conversation-end-action:hover:not(:disabled) { background: #a8564a; }
 .conversation-end-action { display: inline-grid; align-items: center; }
 .conversation-end-action > span { grid-area: 1 / 1; }
-.conversation-end-size { visibility: hidden; }
+.conversation-end-size { visibility: hidden; padding-left: 1.15rem; }
+.conversation-end-label { display: inline-flex; align-items: center; justify-content: center; gap: 0.5rem; }
+.conversation-end-label i { flex: 0 0 auto; width: 0.65rem; height: 0.65rem; border-radius: 2px; background: #f5b2a4; }
 
-.conversation-center button:focus-visible,
-.participant-scroll:focus-visible { outline: 2px solid #f4ead5; outline-offset: -3px; }
+.conversation-center button:focus-visible { outline: 2px solid #ace2c9; outline-offset: -3px; }
+.participant-scroll:focus-visible { outline: 2px solid var(--participant-accent); outline-offset: -3px; }
 
 .participant-pane {
+  --participant-accent: #ace2c9;
+  --participant-rule: #405553;
   position: relative;
   box-sizing: border-box;
   flex: 1 1 0;
@@ -85,21 +89,36 @@ html { scrollbar-color: #8f8374 #1c1713; scrollbar-width: auto; }
   overflow: hidden;
   width: 100%;
   margin: 0;
-  padding: 0.625rem 0.75rem;
+  padding: 0.5rem 1rem;
+  background: #172326;
+  color: #f1f6f3;
+  scrollbar-color: #73968b #172326;
+}
+
+.participant-pane--rotated {
+  --participant-accent: #816333;
+  --participant-rule: #d1c5b0;
+  background: #f1e8d7;
+  color: #25231f;
+  scrollbar-color: #a48348 #f1e8d7;
 }
 
 .participant-header {
   display: flex;
   flex-wrap: wrap;
   align-items: baseline;
-  gap: 0.25rem 0.75rem;
+  justify-content: space-between;
+  gap: 0.15rem 0.75rem;
   flex-shrink: 0;
   width: 100%;
-  border-bottom: 1px solid #3a3025;
+  min-height: 1.5rem;
+  color: var(--participant-accent);
+  font-size: var(--conversation-label-size);
 }
 
-.participant-language { color: #c4b6a1; }
-.participant-status { font-weight: 600; }
+.participant-language { text-transform: capitalize; }
+.participant-status { display: inline-flex; align-items: center; gap: 0.45rem; margin-left: auto; font-weight: 500; }
+.participant-status::before { content: ""; flex: 0 0 auto; width: 0.45rem; height: 0.45rem; border-radius: 50%; background: currentColor; }
 
 .participant-scroll {
   flex: 1 1 0;
@@ -109,21 +128,21 @@ html { scrollbar-color: #8f8374 #1c1713; scrollbar-width: auto; }
   overflow-y: auto;
   overscroll-behavior-y: contain;
   scrollbar-gutter: stable;
-  padding-top: 0.5rem;
+  padding-top: 0.375rem;
   touch-action: pan-y pinch-zoom;
 }
 
 .participant-recent { list-style: none; margin: 0; padding: 0; }
-.recent-turn { margin-bottom: 0.75rem; color: #c4b6a1; font-size: var(--conversation-history-size); }
-.recent-turn--latest { color: #f4ead5; }
-.turn-author { font-size: var(--conversation-label-size); font-weight: 600; white-space: nowrap; }
+.recent-turn { margin: 0 0 0.625rem; padding: 0 0 0.625rem; border-bottom: 1px solid var(--participant-rule); font-size: var(--conversation-history-size); }
+.recent-turn--latest { color: inherit; }
+.turn-author { color: var(--participant-accent); font-size: inherit; font-weight: 650; white-space: nowrap; }
 .turn-waiting { margin: 0; font-size: var(--conversation-label-size); }
 .recent-turn-primary { white-space: pre-wrap; overflow-wrap: anywhere; }
-.current-turn { min-width: 0; }
-.current-message { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; font-size: var(--conversation-text-size); line-height: 1.35; }
+.current-turn { min-width: 0; font-size: var(--conversation-text-size); }
+.current-message { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; font-size: var(--conversation-text-size); line-height: 1.3; }
 
 .participant-alert,
-.error-overlay { margin: 0 0 0.5rem; padding: 0.5rem 0.6rem; background: #7a2e1f; color: #f4ead5; overflow-wrap: anywhere; }
+.conversation-screen .error-overlay { margin: 0 0 0.5rem; padding: 0.5rem 0.6rem; background: #7a2e1f; color: #fff8f5; overflow-wrap: anywhere; }
 .conversation-center > p,
 .conversation-center > .error-overlay { flex: 1 1 100%; margin: 0; text-align: center; }
 .conversation-center .retained-recovery { font-family: inherit; }
@@ -137,8 +156,8 @@ html { scrollbar-color: #8f8374 #1c1713; scrollbar-width: auto; }
   align-items: center;
   justify-content: center;
   margin: 0;
-  background: #14110e;
-  color: #f4ead5;
+  background: #172326;
+  color: #f1f6f3;
   transform: none;
   writing-mode: horizontal-tb;
   text-align: center;
@@ -148,7 +167,6 @@ html { scrollbar-color: #8f8374 #1c1713; scrollbar-width: auto; }
   .conversation-center button:active:not(:disabled) { transform: none; }
 }
 @media (forced-colors: active) {
-  html { scrollbar-color: auto; }
-  ::-webkit-scrollbar-track { background: Canvas; }
-  ::-webkit-scrollbar-thumb { background: ButtonText; border-color: Canvas; }
+  .participant-pane { scrollbar-color: auto; }
+  .participant-pane ::-webkit-scrollbar-thumb { background: ButtonText; }
 }

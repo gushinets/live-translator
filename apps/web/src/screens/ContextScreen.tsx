@@ -12,7 +12,7 @@ import {
 } from "../session/SessionController";
 import type { TranslationSession } from "../session/SessionState";
 import type { Side } from "../conversation/Turn";
-import { preferredLanguage, supportedLanguageCodes } from "../side/SideResolver";
+import { languageName, preferredLanguage, supportedLanguageCodes } from "../side/SideResolver";
 import {
   traceBootstrapAction,
   traceConversationRenderPredicate,
@@ -133,7 +133,7 @@ export function ContextScreen({
   const [ownerLanguage, setOwnerLanguage] = useState(initialOwnerLanguage);
   const [draftOwnerLanguage, setDraftOwnerLanguage] = useState<string>();
   const [interlocutorLanguage, setInterlocutorLanguage] = useState(savedInterlocutorLanguage);
-  const [pickerMode, setPickerMode] = useState<"start" | "change" | null>(null);
+  const [pickerMode, setPickerMode] = useState<"start" | "owner" | "change" | null>(null);
   const [pickerBusy, setPickerBusy] = useState(false);
   const [languageChangeError, setLanguageChangeError] = useState<string>();
   const [startingWithLanguages, setStartingWithLanguages] = useState(false);
@@ -156,7 +156,7 @@ export function ContextScreen({
   const resolvedController = injectedController ?? ownedController;
   const controller: ContextScreenController | null = resolvedController;
   const invalidLanguagePair = !ownerLanguage || !interlocutorLanguage || ownerLanguage === interlocutorLanguage;
-  const showStartPicker = !startingWithLanguages && controller?.session.state === "idle" && (pickerMode === "start" || invalidLanguagePair);
+  const showStartPicker = !startingWithLanguages && controller?.session.state === "idle" && (pickerMode === "start" || pickerMode === "owner" || invalidLanguagePair);
   const ownerLocale = uiLocale(showStartPicker && controller?.retainedRecoveryState === undefined
     ? draftOwnerLanguage || ownerLanguage : controller?.session.participantA.language ?? ownerLanguage);
   const t = (text: string) => translate(text, ownerLocale);
@@ -423,11 +423,35 @@ export function ContextScreen({
               />
             ) : showStartPicker ? (
               <LanguagePicker ownerLanguage={ownerLanguage} interlocutorLanguage={interlocutorLanguage}
+                editOwnerInitially={pickerMode === "owner"}
                 onOwnerChange={setDraftOwnerLanguage}
                 busy={pickerBusy || isBusy} startAction primaryActionRef={startRef}
                 onConfirm={(owner, interlocutor) => { void handleLanguageConfirm(owner, interlocutor); }} />
             ) : (
               <>
+                {showStartLayout ? <>
+                  <div className="setup-intro">
+                    <svg className="setup-voice-mark" viewBox="0 0 160 64" fill="none" stroke="currentColor"
+                      strokeWidth="5" strokeLinecap="round" aria-hidden="true">
+                      <path d="M12 29v6m14-17v28m14-39v50m14-39v28m14-17v6" />
+                      <path className="setup-voice-mark__partner" d="M92 29v6m14-17v28m14-43v58m14-43v28m14-17v6" />
+                    </svg>
+                    <h1 className="setup-title">{t("Говорите друг с другом")}</h1>
+                    <p className="setup-description">{t("Перевод разговора в реальном времени.")}</p>
+                  </div>
+                  <div className="setup-languages">
+                    <button type="button" className="setup-language-card" disabled={isBusy || startingWithLanguages}
+                      onClick={() => { setDraftOwnerLanguage(undefined); setPickerMode("owner"); }}>
+                      <span className="setup-language-card__label">{t("Ваш язык")}</span>
+                      <span className="setup-language-card__value">{ownerLanguage ? languageName(ownerLanguage, ownerLocale) : t("не определён")}</span>
+                    </button>
+                    <button type="button" className="setup-language-card setup-language-card--partner" disabled={isBusy || startingWithLanguages}
+                      onClick={() => { setDraftOwnerLanguage(undefined); setPickerMode("start"); }}>
+                      <span className="setup-language-card__label">{t("Язык собеседника")}</span>
+                      <span className="setup-language-card__value">{interlocutorLanguage ? languageName(interlocutorLanguage, ownerLocale) : t("не определён")}</span>
+                    </button>
+                  </div>
+                </> : null}
                 <button
                   ref={startRef}
                   className={`setup-primary-action${startingWithLanguages ? " setup-primary-action--connecting" : ""}`}
@@ -437,8 +461,14 @@ export function ContextScreen({
                     void handleStart();
                   }}
                 >
+                  <svg className="setup-microphone" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                    strokeWidth="2" strokeLinecap="round" aria-hidden="true">
+                    <rect x="9" y="2" width="6" height="12" rx="3" fill="currentColor" />
+                    <path d="M5 10v2a7 7 0 0 0 14 0v-2M12 19v3m-4 0h8" />
+                  </svg>
                   {startingWithLanguages ? <span className="setup-connecting-label" aria-live="polite">{t("Устанавливаю связь…")}</span> : t("Начать перевод")}
                 </button>
+                {showStartLayout ? <p className="setup-placement-hint">{t("Положите телефон между вами.")}</p> : null}
               </>
             )}
           </div>

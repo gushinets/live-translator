@@ -111,7 +111,11 @@ export function ConversationScreen({
         {onChangeLanguage ? <button className="conversation-language-action" type="button"
           disabled={session.state !== "listening" && session.state !== "outputting"}
           onClick={onChangeLanguage}>
-          {t("Язык собеседника")}
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"
+            strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+            <path d="M4 7h16m-5-5 5 5-5 5M20 17H4m5-5-5 5 5 5" />
+          </svg>
+          <span>{t("Язык собеседника")}</span>
         </button> : null}
         {recoveryState !== undefined ? <RetainedRecovery
           state={recoveryState} surface="conversation" language={ownerLocale}
@@ -134,7 +138,7 @@ export function ConversationScreen({
           }}
         >
           <span aria-hidden="true" className="conversation-end-size">{t("Завершаю…")}</span>
-          <span aria-live="polite">{t(ending ? "Завершаю…" : "Завершить")}</span>
+          <span aria-live="polite" className="conversation-end-label"><i aria-hidden="true" />{t(ending ? "Завершаю…" : "Завершить")}</span>
         </button> : null}
         {controller.recoveryPrompt === "resume-repeat" ? (
           <button

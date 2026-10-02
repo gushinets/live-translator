@@ -2,6 +2,49 @@ import { expect, test } from "@playwright/test";
 import { runtime } from "../../src/config/runtime";
 import { MockLiveHarness } from "./mockLiveHarness";
 
+test("compact participant headers leave room for four readable exchanges on each side", async ({ page }, testInfo) => {
+  const harness = await MockLiveHarness.attach(page);
+  await page.addInitScript(() => {
+    localStorage.setItem("live-translator-owner-language", "ru");
+    localStorage.setItem("live-translator-interlocutor-language", "en");
+  });
+  await page.goto("/");
+  await page.screenshot({ path: testInfo.outputPath("variant-four-start-ru.png") });
+  await page.getByRole("button", { name: "Начать перевод" }).click();
+  await expect(page.getByRole("button", { name: "Завершить" })).toBeVisible();
+  const exchanges = [
+    ["Подскажите, как пройти к вокзалу?", "How do I get to the station?"],
+    ["Go straight, then turn left.", "Идите прямо, затем налево."],
+    ["Это далеко отсюда?", "Is it far from here?"],
+    ["No, just five minutes on foot.", "Нет, всего пять минут пешком."],
+  ];
+  for (const [source, translation] of exchanges) {
+    await harness.sourceActive();
+    await harness.inputDelta(source!);
+    await harness.outputDelta(translation!);
+    await harness.sourceQuiet();
+    await harness.advance(runtime.audioStartGraceMs + runtime.captionIdleMs);
+    await harness.waitForGateBUnmuted();
+    await harness.advance(runtime.captionIdleMs);
+  }
+  for (const side of ["A", "B"] as const) {
+    const pane = page.getByTestId(`participant-pane-${side}`);
+    expect((await pane.locator(".participant-header").boundingBox())!.height).toBeLessThanOrEqual(32);
+    const rows = pane.locator("li");
+    await expect(rows).toHaveCount(4);
+    for (const row of await rows.all()) {
+      await expect(row).toBeInViewport({ ratio: 0.99 });
+      await expect(row).toHaveCSS("font-size", "22px");
+    }
+  }
+  await expect(page.getByTestId("participant-pane-A")).toHaveCSS("background-color", "rgb(23, 35, 38)");
+  await expect(page.getByTestId("participant-pane-B")).toHaveCSS("background-color", "rgb(241, 232, 215)");
+  await page.screenshot({ path: testInfo.outputPath("variant-four-dialogue.png") });
+  await page.setViewportSize({ width: 320, height: 640 });
+  await expect(page.getByRole("button", { name: "Завершить" })).toBeInViewport();
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+});
+
 test("long captions stay readable, retain their size in pauses, and respect manual scrolling on both sides", async ({ page }, testInfo) => {
   const harness = await MockLiveHarness.attach(page);
   await harness.startListeningConversation();
@@ -13,11 +56,11 @@ test("long captions stay readable, retain their size in pauses, and respect manu
   for (const side of ["A", "B"] as const) {
     const message = page.getByTestId(`current-primary-${side}`);
     const scroll = page.getByTestId(`participant-scroll-${side}`);
-    await expect(message).toHaveCSS("font-size", "28px");
+    await expect(message).toHaveCSS("font-size", "22px");
     const pane = page.getByTestId(`participant-pane-${side}`);
     for (const label of [pane.locator(".participant-language"), pane.getByTestId(`participant-status-${side}`)]) {
       await expect(label).toHaveCSS("font-family", "system-ui, sans-serif");
-      await expect(label).toHaveCSS("font-size", "18px");
+      await expect(label).toHaveCSS("font-size", "15px");
     }
     expect(await message.evaluate(el => {
       const author = el.previousElementSibling!.getBoundingClientRect();
@@ -58,7 +101,7 @@ test("long captions stay readable, retain their size in pauses, and respect manu
   await harness.sourceQuiet();
   await harness.advance(runtime.audioStartGraceMs + runtime.captionIdleMs);
   for (const side of ["A", "B"] as const) {
-    await expect(page.getByTestId(`latest-primary-${side}`)).toHaveCSS("font-size", "28px");
+    await expect(page.getByTestId(`latest-primary-${side}`)).toHaveCSS("font-size", "22px");
     expect(await page.getByTestId(`latest-primary-${side}`).evaluate(el => {
       const author = el.previousElementSibling!.getBoundingClientRect();
       const firstLetter = document.createRange();
@@ -71,13 +114,13 @@ test("long captions stay readable, retain their size in pauses, and respect manu
     expect(await scroll.evaluate(el => el.scrollHeight - el.scrollTop - el.clientHeight)).toBeLessThan(2);
     expect(await scroll.evaluate(el => el.scrollWidth <= el.clientWidth)).toBe(true);
   }
-  await page.screenshot({ path: testInfo.outputPath("conversation-28px.png") });
+  await page.screenshot({ path: testInfo.outputPath("conversation-22px.png") });
   await page.setViewportSize({ width: 320, height: 640 });
   await expect(page.getByRole("button", { name: "End", exact: true })).toBeVisible();
   // Text-only enlargement exercises reflow without shrinking the CSS viewport.
   await page.addStyleTag({ content: "html { font-size: 200% !important; }" });
   for (const side of ["A", "B"] as const) {
-    await expect(page.getByTestId(`latest-primary-${side}`)).toHaveCSS("font-size", "56px");
+    await expect(page.getByTestId(`latest-primary-${side}`)).toHaveCSS("font-size", "44px");
     const scroll = page.getByTestId(`participant-scroll-${side}`);
     expect(await scroll.evaluate(el => el.clientHeight)).toBeGreaterThan(0);
     expect(await scroll.evaluate(el => el.scrollWidth <= el.clientWidth)).toBe(true);

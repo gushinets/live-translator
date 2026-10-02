@@ -4,7 +4,7 @@ import { translate, uiLocale } from "../i18n/messages";
 
 const preferred = ["es", "en", "fr", "de", "it", "pt"];
 export function LanguagePicker({ ownerLanguage, interlocutorLanguage, onOwnerChange, onConfirm, onCancel, busy = false,
-  allowOwnerChange = true, startAction = false, primaryActionRef }: {
+  allowOwnerChange = true, startAction = false, editOwnerInitially = false, primaryActionRef }: {
   ownerLanguage?: string;
   interlocutorLanguage?: string;
   onOwnerChange?: (language: string) => void;
@@ -13,11 +13,12 @@ export function LanguagePicker({ ownerLanguage, interlocutorLanguage, onOwnerCha
   busy?: boolean;
   allowOwnerChange?: boolean;
   startAction?: boolean;
+  editOwnerInitially?: boolean;
   primaryActionRef?: Ref<HTMLButtonElement>;
 }) {
   const [owner, setOwner] = useState(ownerLanguage ?? "");
   const [interlocutor, setInterlocutor] = useState(interlocutorLanguage ?? "es");
-  const [editOwner, setEditOwner] = useState(ownerLanguage === undefined);
+  const [editOwner, setEditOwner] = useState(editOwnerInitially || ownerLanguage === undefined);
   const locale = uiLocale(owner || ownerLanguage);
   const t = (text: string) => translate(text, locale);
   const name = (code: string) => languageName(code, locale);

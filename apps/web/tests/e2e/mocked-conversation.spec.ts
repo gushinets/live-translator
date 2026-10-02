@@ -60,7 +60,7 @@ test.describe("mocked conversation runtime", () => {
     await harness.outputDelta("Wo ist der Bahnhof?");
     await harness.sourceQuiet();
     await harness.advance(runtime.audioStartGraceMs);
-    await expect(page.getByText("B · Deutsch")).toBeVisible();
+    await expect(page.getByText("Deutsch")).toBeVisible();
   });
   test("End keeps the toolbar geometry until the provider confirms closure", async ({ page }) => {
     const harness = await MockLiveHarness.attach(page);

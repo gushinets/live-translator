@@ -106,6 +106,22 @@ class FakeOwnerController implements ContextScreenController {
 }
 
 describe("ContextScreen", () => {
+  it.each(["Ваш язык", "Язык собеседника"])("opens the saved language picker from the %s card", label => {
+    localStorage.setItem("live-translator-owner-language", "ru");
+    localStorage.setItem("live-translator-interlocutor-language", "en");
+    const controller = new FakeOwnerController();
+    render(<ContextScreen controller={controller} />);
+    const card = screen.getByRole("button", { name: new RegExp(`^${label}`) });
+    expect(card).toHaveTextContent(label === "Ваш язык" ? "русский" : "английский");
+    fireEvent.click(card);
+    expect(screen.getByRole("radio", { name: "английский" })).toBeChecked();
+    if (label === "Ваш язык") {
+      expect(screen.getByRole("combobox", { name: "Ваш язык" })).toHaveValue("ru");
+    }
+    expect(controller.startWithLanguages).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole("button", { name: "Начать перевод" }));
+    expect(controller.startWithLanguages).toHaveBeenCalledExactlyOnceWith({ A: "ru", B: "en" });
+  });
   it("uses the selected owner language in setup and language choices", () => {
     localStorage.setItem("live-translator-owner-language", "en");
     localStorage.setItem("live-translator-interlocutor-language", "es");
@@ -419,7 +435,7 @@ describe("ContextScreen", () => {
     fireEvent.click(screen.getByRole("radio", { name: "немецкий" }));
     fireEvent.click(screen.getByRole("button", { name: "Подтвердить" }));
 
-    expect(await screen.findByText("B · Deutsch")).toBeInTheDocument();
+    expect(await screen.findByText("Deutsch")).toBeInTheDocument();
     expect(controller.changeInterlocutorLanguage).toHaveBeenCalledExactlyOnceWith("de");
     expect(localStorage.getItem("live-translator-interlocutor-language")).toBe("de");
   });
@@ -441,7 +457,7 @@ describe("ContextScreen", () => {
     expect(localStorage.getItem("live-translator-interlocutor-language")).toBe("de");
     fireEvent.click(screen.getByRole("button", { name: "Подтвердить" }));
     await waitFor(() => expect(screen.queryByRole("button", { name: "Подтвердить" })).not.toBeInTheDocument());
-    expect(screen.getByText("B · Deutsch")).toBeInTheDocument();
+    expect(screen.getByText("Deutsch")).toBeInTheDocument();
   });
 
   it("starts only from the screen showing both fixed languages and does not trace speech", async () => {
