@@ -709,7 +709,8 @@ export class SessionController {
     this.pendingRemotePlaybackActivity = null;
     this.playbackActive = false;
     console.error("Remote audio playback failed", { error });
-    if (this.retainedPlaybackCommitted || (this.remotePlaybackStarted && (this.hasConnected || this.liveConnectStarted))) {
+    if (this.retainedPlaybackCommitted || (!this.retainedResumeInFlight && this.remotePlaybackStarted &&
+      (this.hasConnected || this.liveConnectStarted))) {
       try { this.stopLocalMedia(); }
       catch {
         this.closeGateAForSafety("Remote playback capture gate failed");
