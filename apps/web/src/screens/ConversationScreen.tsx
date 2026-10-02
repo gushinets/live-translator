@@ -95,11 +95,6 @@ export function ConversationScreen({
 
   return (
     <section className="conversation-screen" lang={ownerLocale}>
-      {onChangeLanguage ? <button className="conversation-language-action" type="button"
-        disabled={session.state !== "listening" && session.state !== "outputting"}
-        onClick={onChangeLanguage}>
-        {t("Язык собеседника")}
-      </button> : null}
       {controller.suspendReason === "orientation" ? (
         <div
           className="rotate-overlay"
@@ -131,6 +126,11 @@ export function ConversationScreen({
         }}
       />
       <div className="conversation-center">
+        {onChangeLanguage ? <button className="conversation-language-action" type="button"
+          disabled={session.state !== "listening" && session.state !== "outputting"}
+          onClick={onChangeLanguage}>
+          {t("Язык собеседника")}
+        </button> : null}
         {recoveryState !== undefined ? <RetainedRecovery
           state={recoveryState} surface="conversation" language={ownerLocale}
           onResume={controller.resumeRetainedConversation?.bind(controller)}

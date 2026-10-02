@@ -77,20 +77,20 @@ export function ParticipantStatus({
   language?: string;
 }) {
   const visibleLabel: Record<ParticipantStatusLabel, string> = {
-    DETECTING: "ОПРЕДЕЛЯЮ ЯЗЫК",
-    "YOUR TURN": "ГОВОРИТЕ",
-    LISTENING: "СЛУШАЮ",
-    WAITING: "ОЖИДАНИЕ",
-    TRANSLATING: "ПЕРЕВОЖУ",
-    SPEAKING: "ПЕРЕВОД",
-    CORRECTING: "ИСПРАВЛЯЮ",
-    PAUSED: "ПАУЗА",
-    ERROR: "ОШИБКА",
+    DETECTING: "Определяю язык",
+    "YOUR TURN": "Говорите",
+    LISTENING: "Слушаю",
+    WAITING: "Ожидание",
+    TRANSLATING: "Перевожу",
+    SPEAKING: "Перевод",
+    CORRECTING: "Исправляю",
+    PAUSED: "Пауза",
+    ERROR: "Ошибка",
   };
 
   return (
-    <p className="participant-status" data-testid={`participant-status-${side}`}>
+    <span className="participant-status" data-testid={`participant-status-${side}`}>
       {translate(visibleLabel[label], language)}
-    </p>
+    </span>
   );
 }

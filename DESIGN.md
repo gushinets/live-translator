@@ -14,7 +14,15 @@ typography:
   interface:
     fontFamily: "Bahnschrift, Segoe UI, system-ui, sans-serif"
   conversation:
-    fontFamily: "Iowan Old Style, Palatino Linotype, Palatino, serif"
+    fontFamily: "system-ui, sans-serif"
+    fontSize: "1.75rem"
+    lineHeight: "1.35"
+  conversationHistory:
+    fontFamily: "system-ui, sans-serif"
+    fontSize: "1.375rem"
+  conversationLabel:
+    fontFamily: "system-ui, sans-serif"
+    fontSize: "1.125rem"
 rounded:
   DEFAULT: "0.95rem"
   card: "1.4rem"
@@ -42,11 +50,13 @@ Use warm near-black surfaces to reduce glare and warm off-white text for contras
 
 ## Typography
 
-Interface labels use the compact Bahnschrift stack with Russian-capable fallbacks. Spoken and translated content uses the serif conversation stack. Avoid decorative headings, uppercase promotional kickers, and long explanatory paragraphs.
+Setup retains its existing Bahnschrift interface and serif content stacks. ANY-563: the conversation screen uses one system sans-serif family throughout, with normal and semibold weights. Its runtime tokens in `ConversationScreen.css` own the three text levels: `--conversation-text-size` (1.75rem / 28px), `--conversation-history-size` (1.375rem / 22px), and `--conversation-label-size` (1.125rem / 18px). Captions use a 1.35 line height. These are initial sizes pending two-person reading verification on a physical phone. Do not shrink captions as their character count grows. Status and control copy uses sentence case, without letter spacing.
 
 ## Layout
 
-Setup is a single narrow column respecting phone safe areas. Conversation mode fills the phone and gives both participants equal space; Participant B remains rotated 180 degrees. Current speech always dominates history.
+Setup is a single narrow column respecting phone safe areas. Conversation mode fills the phone and gives both participants equal space; Participant B remains rotated 180 degrees. Each pane has a language/status correction button and a keyboard-accessible caption scroller. The language picker and End share the compact central toolbar. Long messages wrap and scroll within their pane. New words follow the end only while the reader stays there; scrolling back preserves their reading position. A tap on a pane corrects the speaker, while dragging, text selection, or a cancelled touch does not. Keyboard users can activate the native correction button.
+
+Current speech always dominates history. Until new text reaches a pane, its last completed caption keeps the main size and contrast, including while the next translation is pending. Failed or discarded captions do not replace that completed caption as the highlighted message. The existing three-turn history cap is unchanged.
 
 Every setup, loading, and recovery screen keeps the small “Live Translator” name at the top. When settings are available, their control shares that row. The active conversation has no app header.
 
@@ -79,11 +89,11 @@ At first launch the language list is already open: A comes from the device/brows
 
 `SideResolver` classifies incoming transcript text locally; model playback is never an identity signal. Neither participant has an expected turn. Both panes show their localized speak status when input is ready, and display their fixed languages. Unknown source speech is hidden behind a waiting status with a manual correction hint. Manual assignment only affects that utterance.
 
-ANY-558 / ANY-559: each pane shows one text per utterance: its owner's original speech or the other participant's translation. This applies to the active utterance and the capped history of three turns. Missing translations show a waiting status, never foreign source text; a known author stays visible during that wait. Every visible utterance has a compact localized “Я” / “Он” author prefix relative to the pane; translation keeps the source speaker's authorship and correction updates both panes. Changing B's language keeps old history text as-is and changes subsequent text and B's interface. Each utterance retains its language pair for speech-language metadata. Earlier utterances cannot be corrected under a different language pair, which would retranslate preserved history.
+ANY-558 / ANY-559: each pane shows one text per utterance: its owner's original speech or the other participant's translation. This applies to the active utterance and the capped history of three turns. Missing translations show a waiting status, never foreign source text; a known author stays visible during that wait. Every visible utterance has a compact localized “Я” / “Он” (“Me” / “Him” in English) author prefix on the same line as the caption relative to the pane; translation keeps the source speaker's authorship and correction updates both panes. Changing B's language keeps old history text as-is and changes subsequent text and B's interface. Each utterance retains its language pair for speech-language metadata. Earlier utterances cannot be corrected under a different language pair, which would retranslate preserved history.
 
 The shared dictionary in `apps/web/src/i18n/messages.ts` owns English, French, Italian, German, Spanish, Russian and Portuguese interface copy. Other conversation languages use English UI while speech translation keeps the selected language. Pane statuses, author labels, language names and correction accessible names follow the pane's UI locale. Setup, common buttons, errors and retained-session recovery follow A's locale. Recovery messages preserve all blocking, retry and paid-attempt disclosures; localization does not change session/accounting behavior.
 
-Runtime verification: `SessionController.test.ts` covers B-first and repeated turns, fixed languages after suspension, unknown speech and cancellation; `tests/e2e/mocked-conversation.spec.ts` checks the same routing in a browser. Existing warm surfaces, typography, focus behavior and rotated B pane are retained.
+Runtime verification: `SessionController.test.ts` covers B-first and repeated turns, fixed languages after suspension, unknown speech and cancellation; `tests/e2e/mocked-conversation.spec.ts` checks the same routing in a browser. Warm surfaces, focus behavior and the rotated B pane are retained; ANY-563 replaces conversation typography and adds independent caption scrolling. Scrollbar styling is owned by the global baseline in ConversationScreen.css, including system colors in forced-colors mode.
 
 The existing language set comes from the text detector; it is not a verified exhaustive GPT-Live 1 language catalog. Auditing model language coverage is deferred.
 

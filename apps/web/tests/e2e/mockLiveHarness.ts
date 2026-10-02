@@ -125,7 +125,7 @@ export class MockLiveHarness {
     await this.page.goto("/");
     await completeLanguageSetup(this.page);
     await expect(this.page.getByRole("button", { name: "End" })).toBeVisible();
-    await expect(this.page.getByTestId("participant-status-A")).toHaveText("SPEAK");
+    await expect(this.page.getByTestId("participant-status-A")).toHaveText("Speak");
     await this.page.waitForFunction(
       () =>
         window.__liveTranslatorTestAudio !== undefined &&

@@ -29,8 +29,8 @@ test.describe("mocked conversation runtime", () => {
     await page.getByRole("button", { name: "Confirm" }).click();
     const b = page.getByTestId("participant-pane-B");
     await expect(b).toHaveAttribute("lang", "de");
-    await expect(b.locator(".recent-turn")).toHaveText("Er:¿Dónde está la estación de tren, por favor?");
-    await expect(page.getByTestId("participant-status-B")).toHaveText("SPRECHEN SIE");
+    await expect(b.locator(".recent-turn")).toHaveText("Er: ¿Dónde está la estación de tren, por favor?");
+    await expect(page.getByTestId("participant-status-B")).toHaveText("Sprechen Sie");
     await harness.sourceActive();
     await harness.inputDelta("Could you tell me how to get there?");
     await expect(page.getByTestId("current-primary-B")).toHaveCount(0);
@@ -38,7 +38,7 @@ test.describe("mocked conversation runtime", () => {
     await expect(page.getByTestId("current-author-A")).toHaveText("Me:");
     await expect(page.getByTestId("current-author-B")).toHaveText("Er:");
     await expect(page.getByTestId("current-primary-B")).toHaveText("Könnten Sie mir sagen, wie ich dorthin komme?");
-    await expect(page.getByTestId("participant-pane-A").locator(".recent-turn")).toHaveText("Me:Where is the train station, please?");
+    await expect(page.getByTestId("participant-pane-A").locator(".recent-turn")).toHaveText("Me: Where is the train station, please?");
     await expect(page.locator(".current-secondary, .recent-turn-secondary")).toHaveCount(0);
     await page.setViewportSize({ width: 320, height: 640 });
     await expect(page.getByTestId("current-author-A")).toBeVisible();
@@ -120,8 +120,8 @@ test.describe("mocked conversation runtime", () => {
       expect(await harness.peerCreateCount()).toBe(peerCreatesAfterSetup);
     }
 
-    await expect(page.getByTestId("participant-status-A")).toHaveText("SPEAK");
-    await expect(page.getByTestId("participant-status-B")).toHaveText("HABLA");
+    await expect(page.getByTestId("participant-status-A")).toHaveText("Speak");
+    await expect(page.getByTestId("participant-status-B")).toHaveText("Habla");
     await expect(page.getByTestId("participant-pane-A").locator(".recent-turn")).toHaveCount(
       MAX_RECENT_TURNS,
     );
@@ -147,8 +147,8 @@ test.describe("mocked conversation runtime", () => {
     await harness.sourceActive();
     await harness.inputDelta("OK");
     await expect(page.getByText("Speaker not identified. Tap your half of the screen to correct it.")).toBeVisible();
-    await expect(page.getByTestId("participant-status-A")).toHaveText("DETECTING LANGUAGE");
-    await expect(page.getByTestId("participant-status-B")).toHaveText("DETECTANDO IDIOMA");
+    await expect(page.getByTestId("participant-status-A")).toHaveText("Detecting language");
+    await expect(page.getByTestId("participant-status-B")).toHaveText("Detectando idioma");
     await expect(page.locator("[data-testid^='current-primary-'], [data-testid^='current-author-']")).toHaveCount(0);
     await harness.sourceQuiet();
     await page.getByRole("button", { name: "Corregir: hablaba el participante B" }).click();
@@ -157,7 +157,7 @@ test.describe("mocked conversation runtime", () => {
     await harness.outputDelta("All right");
     await expect(page.getByTestId("current-primary-A")).toHaveText("All right");
     await harness.advance(runtime.audioStartGraceMs);
-    await expect(page.getByTestId("participant-status-A")).toHaveText("SPEAK");
+    await expect(page.getByTestId("participant-status-A")).toHaveText("Speak");
   });
 
   test("early output keeps source LISTENING and does not mute or flip speaker", async ({
@@ -168,25 +168,25 @@ test.describe("mocked conversation runtime", () => {
     await harness.sourceActive();
     await harness.inputDelta("Where is apartment 12?", 100, 400);
     await expect(page.getByTestId("current-primary-A")).toHaveText("Where is apartment 12?");
-    await expect(page.getByTestId("participant-status-A")).toHaveText("LISTENING");
-    await expect(page.getByTestId("participant-status-B")).toHaveText("ESPERANDO");
+    await expect(page.getByTestId("participant-status-A")).toHaveText("Listening");
+    await expect(page.getByTestId("participant-status-B")).toHaveText("Esperando");
 
     await harness.outputDelta("¿Dónde está el apartamento 12?");
     await harness.playbackActive();
 
-    await expect(page.getByTestId("participant-status-A")).toHaveText("LISTENING");
-    await expect(page.getByTestId("participant-status-B")).toHaveText("TRADUCCIÓN");
+    await expect(page.getByTestId("participant-status-A")).toHaveText("Listening");
+    await expect(page.getByTestId("participant-status-B")).toHaveText("Traducción");
     await expect(page.getByTestId("current-primary-B")).toHaveText(
       "¿Dónde está el apartamento 12?",
     );
     expect(await harness.lastGateBCommand()).toBe("unmute");
-    await expect(page.getByTestId("participant-status-B")).not.toHaveText("HABLA");
-    await expect(page.getByTestId("participant-status-A")).not.toHaveText("WAITING");
+    await expect(page.getByTestId("participant-status-B")).not.toHaveText("Habla");
+    await expect(page.getByTestId("participant-status-A")).not.toHaveText("Waiting");
 
     await harness.sourceQuiet();
     await expect.poll(async () => harness.lastGateBCommand()).toBe("mute");
-    await expect(page.getByTestId("participant-status-A")).toHaveText("WAITING");
-    await expect(page.getByTestId("participant-status-B")).toHaveText("TRADUCCIÓN");
+    await expect(page.getByTestId("participant-status-A")).toHaveText("Waiting");
+    await expect(page.getByTestId("participant-status-B")).toHaveText("Traducción");
   });
 
   test("text-only captions close after audio grace without playback", async ({ page }) => {
@@ -198,8 +198,8 @@ test.describe("mocked conversation runtime", () => {
       original: "Hello from A",
       translation: "Hola desde A",
     });
-    await expect(page.getByTestId("participant-status-B")).toHaveText("HABLA");
-    await expect(page.getByTestId("participant-status-A")).toHaveText("SPEAK");
+    await expect(page.getByTestId("participant-status-B")).toHaveText("Habla");
+    await expect(page.getByTestId("participant-status-A")).toHaveText("Speak");
     await expect(page.getByText("Hello from A")).toHaveCount(1);
     await expect(page.getByText("Hola desde A")).toHaveCount(1);
   });
@@ -216,12 +216,12 @@ test.describe("mocked conversation runtime", () => {
     await harness.sourceQuiet();
     await expect.poll(async () => harness.lastGateBCommand()).toBe("mute");
     await expect(page.getByText("Please repeat")).toHaveCount(0);
-    await expect(page.getByTestId("participant-status-B")).toHaveText("ESPERANDO");
+    await expect(page.getByTestId("participant-status-B")).toHaveText("Esperando");
 
     await harness.advance(runtime.noOutputTimeoutMs);
     await expect(page.getByText("Please repeat")).toBeVisible();
-    await expect(page.getByTestId("participant-status-A")).toHaveText("SPEAK");
-    await expect(page.getByTestId("participant-status-B")).toHaveText("HABLA");
+    await expect(page.getByTestId("participant-status-A")).toHaveText("Speak");
+    await expect(page.getByTestId("participant-status-B")).toHaveText("Habla");
     expect(await harness.lastSteeringContent()).toBe(steeringBefore);
   });
 
@@ -234,13 +234,13 @@ test.describe("mocked conversation runtime", () => {
     await harness.inputDelta("Hello, where is the nearest train station?");
     await harness.outputDelta("Hola");
     await harness.playbackActive();
-    await expect(page.getByTestId("participant-status-A")).toHaveText("LISTENING");
-    await expect(page.getByTestId("participant-status-B")).toHaveText("TRADUCCIÓN");
+    await expect(page.getByTestId("participant-status-A")).toHaveText("Listening");
+    await expect(page.getByTestId("participant-status-B")).toHaveText("Traducción");
     await expect.poll(async () => harness.isOutputMuted()).toBe(false);
 
     await page.getByRole("button", { name: "Corregir: hablaba el participante B" }).click();
-    await expect(page.getByTestId("participant-status-A")).toHaveText("CORRECTING");
-    await expect(page.getByTestId("participant-status-B")).toHaveText("CORRIGIENDO");
+    await expect(page.getByTestId("participant-status-A")).toHaveText("Correcting");
+    await expect(page.getByTestId("participant-status-B")).toHaveText("Corrigiendo");
     await expect.poll(async () => harness.isOutputMuted()).toBe(true);
 
     await harness.outputDelta("stale-wrong-side");
@@ -248,7 +248,7 @@ test.describe("mocked conversation runtime", () => {
     await expect(page.getByTestId("current-primary-B")).toHaveText("Hola");
 
     await harness.playbackIdle();
-    await expect(page.getByTestId("participant-status-A")).not.toHaveText("CORRECTING");
+    await expect(page.getByTestId("participant-status-A")).not.toHaveText("Correcting");
     await expect(page.getByTestId("current-primary-B")).toHaveText("Hello, where is the nearest train station?");
     await expect(page.getByTestId("current-author-B")).toHaveText("Yo:");
     await expect(page.getByText("stale-wrong-side")).toHaveCount(0);
@@ -257,14 +257,14 @@ test.describe("mocked conversation runtime", () => {
     await harness.advance(runtime.captionIdleMs);
     await harness.outputDelta("Hello there");
     await expect(page.getByTestId("current-primary-A")).toHaveText("Hello there");
-    await expect(page.getByTestId("current-author-A")).toHaveText("He:");
+    await expect(page.getByTestId("current-author-A")).toHaveText("Him:");
     await expect(page.getByTestId("current-primary-B")).toHaveText("Hello, where is the nearest train station?");
     await expect.poll(async () => harness.isOutputMuted()).toBe(false);
 
     await harness.sourceQuiet();
     await harness.advance(runtime.audioStartGraceMs);
-    await expect(page.getByTestId("participant-status-A")).toHaveText("SPEAK");
-    await expect(page.getByTestId("participant-status-B")).toHaveText("HABLA");
+    await expect(page.getByTestId("participant-status-A")).toHaveText("Speak");
+    await expect(page.getByTestId("participant-status-B")).toHaveText("Habla");
     const steering = await harness.lastSteeringContent();
     expect(steering).toContain("Participant A speaks English (en)");
     expect(steering).toContain("never by turn order");
@@ -289,14 +289,14 @@ async function completeTextOnlyTurn(
   await expect(page.getByTestId(`current-primary-${turn.recipient}`)).toHaveText(
     turn.translation,
   );
-  await expect(page.getByTestId(`current-author-${turn.recipient}`)).toHaveText(turn.recipient === "A" ? "He:" : "Él:");
-  await expect(page.getByTestId(`participant-status-${turn.speaker}`)).toHaveText(turn.speaker === "A" ? "LISTENING" : "ESCUCHANDO");
+  await expect(page.getByTestId(`current-author-${turn.recipient}`)).toHaveText(turn.recipient === "A" ? "Him:" : "Él:");
+  await expect(page.getByTestId(`participant-status-${turn.speaker}`)).toHaveText(turn.speaker === "A" ? "Listening" : "Escuchando");
   expect(await harness.lastGateBCommand()).not.toBe("mute");
   await harness.sourceQuiet();
   await expect.poll(async () => harness.lastGateBCommand()).toBe("mute");
   await harness.advance(runtime.audioStartGraceMs);
-  await expect(page.getByTestId(`participant-status-${turn.recipient}`)).toHaveText(turn.recipient === "A" ? "SPEAK" : "HABLA");
-  await expect(page.getByTestId(`participant-status-${turn.speaker}`)).toHaveText(turn.speaker === "A" ? "SPEAK" : "HABLA");
+  await expect(page.getByTestId(`participant-status-${turn.recipient}`)).toHaveText(turn.recipient === "A" ? "Speak" : "Habla");
+  await expect(page.getByTestId(`participant-status-${turn.speaker}`)).toHaveText(turn.speaker === "A" ? "Speak" : "Habla");
   await harness.waitForGateBUnmuted();
   await harness.advance(runtime.captionIdleMs);
 }
@@ -320,6 +320,6 @@ test("first language choice is usable with the keyboard on a phone viewport", as
   await harness.sourceActive();
   await harness.inputDelta("¿Dónde está la estación de tren, por favor?");
   await harness.outputDelta("Where is the train station, please?");
-  await expect(page.getByTestId("participant-status-B")).toHaveText("ESCUCHANDO");
+  await expect(page.getByTestId("participant-status-B")).toHaveText("Escuchando");
   await page.screenshot({ path: testInfo.outputPath("conversation-b-first.png") });
 });
