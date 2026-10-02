@@ -127,6 +127,7 @@ export class SessionController {
   private remoteTrackArrived: (() => void) | null = null;
   private retainedProductDeadlineAt: number | null = null;
   private retainedPlaybackCommitted = false;
+  private remotePlaybackStarted = false;
   private pendingRemotePlaybackActivity: AudioActivityEvent | null = null;
   private turnClosing = false;
   private speechInputReady = false;
@@ -666,6 +667,7 @@ export class SessionController {
           return;
         }
         this.remotePlaybackState = "ready";
+        this.remotePlaybackStarted = true;
         const pending = this.pendingRemotePlaybackActivity;
         this.pendingRemotePlaybackActivity = null;
         if (pending !== null) {
@@ -707,7 +709,7 @@ export class SessionController {
     this.pendingRemotePlaybackActivity = null;
     this.playbackActive = false;
     console.error("Remote audio playback failed", { error });
-    if (this.retainedPlaybackCommitted) {
+    if (this.retainedPlaybackCommitted || (this.remotePlaybackStarted && (this.hasConnected || this.liveConnectStarted))) {
       try { this.stopLocalMedia(); }
       catch {
         this.closeGateAForSafety("Remote playback capture gate failed");
@@ -736,6 +738,7 @@ export class SessionController {
     this.remoteTrackArrived?.();
     this.remoteTrackArrived = null;
     this.retainedPlaybackCommitted = false;
+    this.remotePlaybackStarted = false;
     this.remotePlaybackGeneration += 1;
     this.remotePlaybackState = "ready";
     this.remotePlaybackWork = null;

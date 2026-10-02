@@ -1110,6 +1110,58 @@ describe("stage 5 hidden boundary", () => {
     await vi.waitFor(() => expect(f.api.completeResume).toHaveBeenCalledTimes(1));
     await f.controller.endConversation(); await f.budget.close();
   });
+  it.each(["second decoder error", "rejected recovery"])("retires ordinary playback after %s", async failure => {
+    const f = fixture(40, true); configureResume(f);
+    await enterInterpreter(f);
+    const connected = f.clients.at(-1)!;
+    const element = f.audio.audioElement;
+    let error: MediaError | null = { code: 3 } as MediaError;
+    Object.defineProperty(element, "error", { get: () => error, configurable: true });
+    element.load = vi.fn(() => { error = null; });
+    if (failure === "rejected recovery")
+      vi.mocked(element.play).mockRejectedValueOnce(new Error("recovery playback failed"));
+    element.dispatchEvent(new Event("error"));
+    await settle();
+    if (failure === "second decoder error") {
+      expect(f.track.enabled).toBe(true);
+      expect(connected.peer.close).not.toHaveBeenCalled();
+      error = { code: 3 } as MediaError;
+      element.dispatchEvent(new Event("error"));
+    }
+    await vi.waitFor(() => expect(f.api.end).toHaveBeenCalledTimes(1));
+    expect(f.track.enabled).toBe(false);
+    expect(element.srcObject).toBeNull();
+    expect(connected.peer.close).toHaveBeenCalled();
+    expect(f.controller.session.state).not.toBe("listening");
+    const reason = (await f.budget.get(connected.id))?.cleanup?.reason ??
+      f.api.cleanup.mock.calls.find(([id]) => id === connected.id)?.[1];
+    expect(reason).toBe("abandoned_connect");
+    await f.controller.dispose(); await f.budget.close();
+  });
+
+  it("retires failed decoder recovery while provider startup is still pending", async () => {
+    const f = fixture(40, true); configureResume(f);
+    const connecting = f.clients[0]!;
+    vi.spyOn(connecting.peer, "setRemoteDescription").mockImplementation(async () => {
+      connecting.peer.emitRemoteTrack(f.stream);
+    });
+    const starting = f.controller.startBootstrap().catch(() => undefined);
+    const element = f.audio.audioElement;
+    await vi.waitFor(() => expect(element.play).toHaveBeenCalledTimes(1));
+    let error: MediaError | null = { code: 3 } as MediaError;
+    Object.defineProperty(element, "error", { get: () => error, configurable: true });
+    element.load = vi.fn(() => { error = null; });
+    vi.mocked(element.play).mockRejectedValueOnce(new Error("recovery playback failed"));
+    element.dispatchEvent(new Event("error"));
+    await vi.waitFor(() => expect(f.api.end).toHaveBeenCalledTimes(1));
+    expect(f.track.enabled).toBe(false);
+    expect(element.srcObject).toBeNull();
+    expect(connecting.peer.close).toHaveBeenCalled();
+    await starting;
+    expect(f.controller.session.state).not.toBe("bootstrap");
+    await f.controller.dispose(); await f.budget.close();
+  });
+
   it("retires a committed remote track ending with a media cleanup reason", async () => {
     const f = fixture(40, true); configureResume(f);
     await f.controller.startBootstrap();
@@ -1275,7 +1327,7 @@ describe("stage 5 hidden boundary", () => {
       const client = f.clients.at(-1)!.client;
       const append = client.appendInstructions.bind(client);
       vi.spyOn(client, "appendInstructions").mockImplementationOnce(async (...args) => {
-        stageEntered = true; await stageGate; await append(...args);
+        stageEntered = true; await stageGate; return append(...args);
       });
     } else if (phase === "commit") {
       const complete = f.api.completeResume.getMockImplementation()!;
