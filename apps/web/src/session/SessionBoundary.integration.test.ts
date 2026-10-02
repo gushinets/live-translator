@@ -1162,6 +1162,65 @@ describe("stage 5 hidden boundary", () => {
     await f.controller.dispose(); await f.budget.close();
   });
 
+  it("allows ordinary text-only startup after initial play refusal", async () => {
+    const f = fixture(40, true); configureResume(f);
+    f.audio.audioElement.play = vi.fn().mockRejectedValueOnce(new Error("autoplay refused"));
+    await f.controller.startBootstrap(); await settle();
+    expect(f.controller.session.state).toBe("bootstrap");
+    expect(f.track.enabled).toBe(true);
+    expect(f.clients[0]!.peer.close).not.toHaveBeenCalled();
+    expect(f.api.end).not.toHaveBeenCalled();
+    await f.controller.dispose(); await f.budget.close();
+  });
+
+  it.each([false, true].flatMap(providerPending => ["rejected recovery", "second decoder error", "remote track ended"]
+    .map(failure => ({ providerPending, failure }))))("retires $failure while first playback is pending (provider pending: $providerPending)", async ({ providerPending, failure }) => {
+    const f = fixture(40, true); configureResume(f);
+    const connecting = f.clients[0]!;
+    if (providerPending) vi.spyOn(connecting.peer, "setRemoteDescription").mockImplementation(async () => {
+      connecting.peer.emitRemoteTrack(f.stream);
+    });
+    const element = f.audio.audioElement;
+    let finishFirst!: () => void;
+    element.play = vi.fn().mockImplementationOnce(() => new Promise<void>(resolve => { finishFirst = resolve; }))
+      .mockImplementation(() => new Promise<void>(() => {}));
+    let error: MediaError | null = null;
+    Object.defineProperty(element, "error", { get: () => error, configurable: true });
+    element.load = vi.fn(() => { error = null; });
+    const starting = f.controller.startBootstrap().catch(() => undefined);
+    await vi.waitFor(() => expect(finishFirst).toBeDefined());
+    if (!providerPending) {
+      await starting;
+      expect(f.track.enabled).toBe(true);
+    }
+    if (failure === "remote track ended") {
+      f.track.readyState = "ended";
+      const ended = f.track.addEventListener.mock.calls.at(-1)?.[1] as EventListener;
+      ended(new Event("ended"));
+    } else {
+      if (failure === "rejected recovery")
+        vi.mocked(element.play).mockRejectedValueOnce(new Error("decoder recovery failed before first play"));
+      error = { code: 3 } as MediaError;
+      element.dispatchEvent(new Event("error"));
+      if (failure === "second decoder error") {
+        error = { code: 3 } as MediaError;
+        element.dispatchEvent(new Event("error"));
+      }
+    }
+    await vi.waitFor(() => expect(f.api.end).toHaveBeenCalledTimes(1));
+    expect(f.track.enabled).toBe(false);
+    expect(element.srcObject).toBeNull();
+    expect(connecting.peer.close).toHaveBeenCalled();
+    finishFirst();
+    connecting.peer.channel.emit({ type: "session.started", session: { id: "late-provider" } });
+    await starting; await settle();
+    expect(f.controller.session.state).not.toBe("bootstrap");
+    expect(f.track.enabled).toBe(false);
+    expect(element.srcObject).toBeNull();
+    expect(f.api.end).toHaveBeenCalledTimes(1);
+    await f.controller.dispose(); await f.budget.close();
+  });
+
   it("retires a committed remote track ending with a media cleanup reason", async () => {
     const f = fixture(40, true); configureResume(f);
     await f.controller.startBootstrap();

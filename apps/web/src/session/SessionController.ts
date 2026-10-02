@@ -127,7 +127,6 @@ export class SessionController {
   private remoteTrackArrived: (() => void) | null = null;
   private retainedProductDeadlineAt: number | null = null;
   private retainedPlaybackCommitted = false;
-  private remotePlaybackStarted = false;
   private pendingRemotePlaybackActivity: AudioActivityEvent | null = null;
   private turnClosing = false;
   private speechInputReady = false;
@@ -649,6 +648,7 @@ export class SessionController {
         new Error("Remote audio track ended"));
     }, { once: true });
     this.audio.attachRemoteStream(stream);
+    let recovered = false;
     const startPlayback = () => {
       const playbackGeneration = ++this.remotePlaybackGeneration;
       this.remotePlaybackState = "pending";
@@ -667,7 +667,6 @@ export class SessionController {
           return;
         }
         this.remotePlaybackState = "ready";
-        this.remotePlaybackStarted = true;
         const pending = this.pendingRemotePlaybackActivity;
         this.pendingRemotePlaybackActivity = null;
         if (pending !== null) {
@@ -681,10 +680,10 @@ export class SessionController {
         ) {
           return;
         }
-        this.failRemotePlayback(source, sessionGeneration, playbackGeneration, error);
+        // Initial play refusal allows text-only startup; failed decoder recovery is terminal.
+        this.failRemotePlayback(source, sessionGeneration, playbackGeneration, error, recovered);
       });
     };
-    let recovered = false;
     this.audio.audioElement.onerror = () => {
       if (source !== this.live || this.sessionGeneration !== sessionGeneration || this.remotePlaybackTrack !== track ||
         (this.backgroundPaused && !this.retainedResumeInFlight) || this.remotePlaybackState === "failed") return;
@@ -702,14 +701,15 @@ export class SessionController {
     this.remoteTrackArrived?.();
   }
 
-  private failRemotePlayback(source: LiveClient, sessionGeneration: number, playbackGeneration: number, error: unknown): void {
+  private failRemotePlayback(source: LiveClient, sessionGeneration: number, playbackGeneration: number, error: unknown,
+    terminalFailure = true): void {
     if (source !== this.live || this.sessionGeneration !== sessionGeneration ||
       this.remotePlaybackGeneration !== playbackGeneration || this.remotePlaybackState === "failed") return;
     this.remotePlaybackState = "failed";
     this.pendingRemotePlaybackActivity = null;
     this.playbackActive = false;
     console.error("Remote audio playback failed", { error });
-    if (this.retainedPlaybackCommitted || (!this.retainedResumeInFlight && this.remotePlaybackStarted &&
+    if (this.retainedPlaybackCommitted || (!this.retainedResumeInFlight && terminalFailure &&
       (this.hasConnected || this.liveConnectStarted))) {
       try { this.stopLocalMedia(); }
       catch {
@@ -739,7 +739,6 @@ export class SessionController {
     this.remoteTrackArrived?.();
     this.remoteTrackArrived = null;
     this.retainedPlaybackCommitted = false;
-    this.remotePlaybackStarted = false;
     this.remotePlaybackGeneration += 1;
     this.remotePlaybackState = "ready";
     this.remotePlaybackWork = null;
