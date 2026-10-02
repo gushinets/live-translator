@@ -49,6 +49,49 @@ const SOURCE_APPEND_BLOCKED_STATES = ["ending", "ended", "error", "suspended"] a
 const TURN_CLOSE_BLOCKED_STATES = ["error", "ended", "suspended"] as const;
 const OUTPUT_EVENT_BLOCKED_STATES = ["error", "ended", "suspended"] as const;
 
+describe("sessionReducer: transcript routing", () => {
+  function unresolved(originalText = ""): TranslationSession {
+    return {
+      ...baseSession(), state: "listening",
+      participantA: { ...participant("A"), language: "ru" },
+      participantB: { ...participant("B"), language: "en" },
+      activeTurn: { ...createTurn({ id: "short", speaker: undefined, sideSource: "unresolved", nowMs: 1000 }), originalText },
+    };
+  }
+  it.each(["", "OK", "12345"])("routes an unresolved source %j using the translation language", (originalText) => {
+    const next = sessionReducer(unresolved(originalText), { type: "OUTPUT_DELTA", text: "Хорошо", nowMs: 1500 });
+    expect(next.activeTurn?.speaker).toBe("B");
+    expect(next.activeTurn?.translatedText).toBe("Хорошо");
+  });
+  it("routes a reliable English translation to B's pane", () => {
+    expect(sessionReducer(unresolved("Да"), { type: "OUTPUT_DELTA", text: "Thank you", nowMs: 1500 }).activeTurn?.speaker).toBe("A");
+  });
+  it("keeps a resolved side when a later source delta is still ambiguous", () => {
+    const output = sessionReducer(unresolved(), { type: "OUTPUT_DELTA", text: "Хорошо", nowMs: 1500 });
+    const next = sessionReducer(output, { type: "SOURCE_FRAGMENT", fragment: { id: "late", text: "OK", receivedAtMs: 1600 } });
+    expect(next.activeTurn?.speaker).toBe("B");
+  });
+  it("corrects a translation's language as streamed text grows", () => {
+    const state = unresolved("OK");
+    state.participantA.language = "en";
+    state.participantB.language = "es";
+    const prefix = sessionReducer(state, { type: "OUTPUT_DELTA", text: "Thank y", nowMs: 1500 });
+    const complete = sessionReducer(prefix, { type: "OUTPUT_DELTA", text: "ou", nowMs: 1600 });
+    expect(complete.activeTurn?.translatedText).toBe("Thank you");
+    expect(complete.activeTurn?.speaker).toBe("B");
+  });
+  it("lets a late reliable source override translation-based routing", () => {
+    const output = sessionReducer(unresolved(), { type: "OUTPUT_DELTA", text: "Хорошо", nowMs: 1500 });
+    const next = sessionReducer(output, { type: "SOURCE_FRAGMENT", fragment: { id: "late", text: "Подскажите, пожалуйста, где находится вокзал?", receivedAtMs: 1600 } });
+    expect(next.activeTurn?.speaker).toBe("A");
+    expect(next.activeTurn?.sideSource).toBe("language");
+  });
+  it("keeps ambiguous text unassigned and trusts source language over output language", () => {
+    expect(sessionReducer(unresolved("OK"), { type: "OUTPUT_DELTA", text: "OK", nowMs: 1500 }).activeTurn?.speaker).toBeUndefined();
+    expect(sessionReducer(unresolved("Подскажите, пожалуйста, где находится вокзал?"), { type: "OUTPUT_DELTA", text: "Хорошо", nowMs: 1500 }).activeTurn?.speaker).toBe("A");
+  });
+});
+
 function sessionWithActiveTurnIn(state: (typeof TURN_CLOSE_BLOCKED_STATES)[number]): TranslationSession {
   if (state === "error") {
     return sessionReducer(stateWithCompletedTurn("A"), { type: "SESSION_ERROR", message: "boom" });

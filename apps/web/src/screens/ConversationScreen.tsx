@@ -4,7 +4,6 @@ import { RetainedRecovery, type RetainedRecoveryState } from "../components/Reta
 import "./ConversationScreen.css";
 import { ParticipantPane } from "../components/ParticipantPane";
 import { deriveParticipantStatus } from "../components/ParticipantStatus";
-import { MAX_RECENT_TURNS } from "../conversation/TurnBuffer";
 import type { LifecycleSuspendReason, RecoveryPrompt } from "../session/SessionController";
 import type { TranslationSession } from "../session/SessionState";
 import { translate, uiLocale } from "../i18n/messages";
@@ -61,7 +60,7 @@ export function ConversationScreen({
   const sourceActive = active !== undefined && active.sourceIdleAtMs === undefined;
   const hasOutputText = (active?.translatedText ?? "").length > 0;
   const audioOutputStarted = active?.audioOutputStarted === true;
-  const recentTurns = session.recentTurns.slice(-MAX_RECENT_TURNS);
+  const recentTurns = session.recentTurns;
   const terminalAlert =
     session.state === "error" || session.state === "ending"
       ? controller.ownerError === undefined ? undefined : t(controller.ownerError)

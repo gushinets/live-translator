@@ -1250,6 +1250,60 @@ describe("stage 5 hidden boundary", () => {
     await vi.waitFor(() => expect(f.api.completeResume).toHaveBeenCalledTimes(1));
     await f.controller.dispose(); await f.budget.close();
   });
+  it.each(["initial playback", "instructions", "commit"])("waits for decoder recovery during retained resume at %s before opening input", async phase => {
+    const f = fixture(40, true); configureResume(f);
+    await enterInterpreter(f);
+    const old = f.clients.at(-1)!;
+    f.setVisible(false);
+    await vi.waitFor(() => expect(old.peer.channel.sent).toContain("session.close"));
+    old.peer.channel.emit({ type: "session.closed" });
+    await vi.waitFor(() => expect(f.c.status).toBe("paused"));
+    const element = f.audio.audioElement;
+    let error: MediaError | null = null;
+    Object.defineProperty(element, "error", { get: () => error, configurable: true });
+    element.load = vi.fn(() => { error = null; });
+    let firstPlay!: () => void;
+    let recoveredPlay!: () => void;
+    element.play = vi.fn().mockImplementationOnce(() => new Promise<void>(resolve => { firstPlay = resolve; }))
+      .mockImplementationOnce(() => new Promise<void>(resolve => { recoveredPlay = resolve; }));
+    f.setVisible(true);
+    await vi.waitFor(() => expect(firstPlay).toBeDefined());
+    let releaseStage!: () => void;
+    let stageEntered = false;
+    const stageGate = new Promise<void>(resolve => { releaseStage = resolve; });
+    if (phase === "instructions") {
+      const client = f.clients.at(-1)!.client;
+      const append = client.appendInstructions.bind(client);
+      vi.spyOn(client, "appendInstructions").mockImplementationOnce(async (...args) => {
+        stageEntered = true; await stageGate; await append(...args);
+      });
+    } else if (phase === "commit") {
+      const complete = f.api.completeResume.getMockImplementation()!;
+      f.api.completeResume.mockImplementationOnce(async (...args) => {
+        const result = await complete(...args);
+        stageEntered = true; await stageGate; return result;
+      });
+    }
+    if (phase !== "initial playback") {
+      firstPlay();
+      await vi.waitFor(() => expect(stageEntered).toBe(true));
+    }
+    error = { code: 3 } as MediaError;
+    element.dispatchEvent(new Event("error"));
+    expect(element.play).toHaveBeenCalledTimes(2);
+    if (phase === "initial playback") firstPlay();
+    else releaseStage();
+    await settle();
+    expect(f.api.abortResume).not.toHaveBeenCalled();
+    expect(f.api.completeResume).toHaveBeenCalledTimes(phase === "commit" ? 1 : 0);
+    expect(f.track.enabled).toBe(false);
+    recoveredPlay();
+    await vi.waitFor(() => expect(f.controller.session.state).toBe("listening"));
+    expect(f.api.completeResume).toHaveBeenCalledTimes(1);
+    expect(f.track.enabled).toBe(true);
+    await f.controller.dispose(); await f.budget.close();
+  });
+
   it("A5.9 dead microphone track aborts before dispatch and retries without relying on the old peer", async () => {
     const f = fixture(40, true); configureResume(f);
     await f.controller.startBootstrap();
@@ -1284,7 +1338,7 @@ describe("stage 5 hidden boundary", () => {
     expect(f.clients.at(-1)!.peer.channel.events.filter(event => event.type === "session.thinking.append")).toHaveLength(0);
     await f.controller.dispose(); await f.budget.close();
   });
-  it("A5.7 counts an interrupted turn once while restoring no executable text", async () => {
+  it("A5.7 retains interrupted captions for display without restoring an active turn", async () => {
     const f = fixture(40, true); configureResume(f);
     await enterInterpreter(f);
     const old = f.clients.at(-1)!;
@@ -1297,7 +1351,7 @@ describe("stage 5 hidden boundary", () => {
     f.setVisible(true);
     await vi.waitFor(() => expect(f.controller.session.state).toBe("listening"));
     expect(f.controller.session.activeTurn).toBeUndefined();
-    expect(f.controller.session.recentTurns).toEqual([]);
+    expect(f.controller.session.recentTurns).toEqual([expect.objectContaining({ originalText: "I was about to say", status: "discarded" })]);
     expect(f.controller.metrics.snapshot().discardedTurnCount).toBe(1);
     expect(f.controller.recoveryPrompt).toBe("repeat");
     const ending = f.controller.endConversation(); f.clients.at(-1)!.peer.channel.emit({ type: "session.closed" }); await ending;

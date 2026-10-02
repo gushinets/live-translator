@@ -94,7 +94,7 @@ test("long captions stay readable, retain their size in pauses, and respect manu
   await page.screenshot({ path: testInfo.outputPath("conversation-200-percent.png") });
 });
 
-test("keeps retained text in place when the oldest history entry is evicted", async ({ page }) => {
+test("keeps all history and the reading position when another turn arrives", async ({ page }) => {
   const harness = await MockLiveHarness.attach(page);
   await harness.startListeningConversation();
   const captions = ["First", "Second", "Third", "Fourth"].map(word => ({
@@ -127,8 +127,45 @@ test("keeps retained text in place when the oldest history entry is evicted", as
   await harness.sourceQuiet();
   await harness.advance(runtime.audioStartGraceMs + runtime.captionIdleMs);
   for (const [index, side] of (["A", "B"] as const).entries()) {
-    const retained = page.getByTestId(`participant-scroll-${side}`).locator(".recent-turn").first();
+    const history = page.getByTestId(`participant-scroll-${side}`).locator(".recent-turn");
+    await expect(history).toHaveCount(4);
+    await expect(history.first()).toContainText("First:");
+    const retained = history.nth(1);
     await expect(retained).toContainText("Second:");
     await expect.poll(async () => Math.abs((await retained.boundingBox())!.y - before[index]!)).toBeLessThan(2);
   }
+});
+
+test("a long dialogue keeps both languages, including short and translation-only turns", async ({ page }, testInfo) => {
+  const harness = await MockLiveHarness.attach(page);
+  await harness.startListeningConversation();
+  for (let i = 0; i < 12; i++) {
+    await harness.sourceActive();
+    const spanishSource = i % 2 === 1;
+    if (i !== 10) await harness.inputDelta(i === 11 ? "OK" : spanishSource
+      ? `¿Podría decirme dónde está la estación de tren? ${i}`
+      : `Could you tell me where the train station is? ${i}`);
+    await harness.outputDelta(spanishSource ? `Thank you very much. ${i}` : `¿Podría decirme dónde está la estación de tren? ${i}`);
+    await harness.sourceQuiet();
+    await harness.advance(runtime.audioStartGraceMs + runtime.captionIdleMs);
+    await harness.waitForGateBUnmuted();
+    // Let the prior output's drain window settle before delivering the next provider response.
+    await harness.advance(runtime.captionIdleMs);
+    for (const side of ["A", "B"] as const) {
+      await expect(page.getByTestId(`participant-scroll-${side}`).locator("li")).toHaveCount(i + 1);
+    }
+  }
+  const a = page.getByTestId("participant-scroll-A");
+  const b = page.getByTestId("participant-scroll-B");
+  await expect(a.locator("li").first()).toContainText("Could you tell me");
+  await expect(b.locator("li").first()).toContainText("¿Podría decirme");
+  await expect(a.locator("li").last()).toContainText("Thank you very much. 11");
+  await expect(b.locator("li").last()).toContainText("OK");
+  await expect(b.locator("li").nth(10)).toContainText("¿Podría decirme");
+  for (const scroll of [a, b]) {
+    expect(await scroll.evaluate(el => el.scrollHeight > el.clientHeight)).toBe(true);
+    await scroll.evaluate(el => { el.scrollTop = 0; el.dispatchEvent(new Event("scroll")); });
+    await expect(scroll.locator("li").first()).toBeInViewport();
+  }
+  await page.screenshot({ path: testInfo.outputPath("conversation-full-history.png") });
 });

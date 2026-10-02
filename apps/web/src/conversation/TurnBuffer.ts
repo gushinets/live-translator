@@ -1,13 +1,6 @@
 import type { TranscriptFragment } from "./TranscriptFragment";
 import type { Side, Turn } from "./Turn";
 
-/**
- * Binding spec 1.2.1 §12.4: keep at most 2-3 completed turns for UI plus
- * the active turn. This is a UI history cap, not a timing constant, so it
- * lives here rather than in `config/runtime.ts`.
- */
-export const MAX_RECENT_TURNS = 3;
-
 export interface StartTurnParams {
   id: string;
   speaker: Side | undefined;
@@ -144,17 +137,15 @@ export function discardTurn(turn: Turn, nowMs: number): Turn {
   return { ...turn, status: "discarded", turnCompletedAtMs: nowMs };
 }
 
-/** Pure append into a capped recent-turns history (oldest dropped first). */
+/** Retain the whole conversation for both participants' scrollable history. */
 export function pushRecentTurn(recent: readonly Turn[], turn: Turn): Turn[] {
-  const next = [...recent, turn];
-  return next.length > MAX_RECENT_TURNS ? next.slice(next.length - MAX_RECENT_TURNS) : next;
+  return [...recent, turn];
 }
 
 /**
  * Stateful convenience wrapper around the pure turn-lifecycle functions
- * above. Holds at most one active turn and up to `MAX_RECENT_TURNS`
- * completed/failed/discarded turns for UI history (binding spec 1.2.1
- * §12.4). No persistence beyond the in-memory session.
+ * above. Holds one active turn and every completed/failed/discarded turn
+ * for UI history. No persistence beyond the in-memory session.
  */
 export class TurnBuffer {
   private active: Turn | undefined;

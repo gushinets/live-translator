@@ -4,7 +4,6 @@ import { fileURLToPath } from "node:url";
 import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import { Profiler } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { MAX_RECENT_TURNS } from "../conversation/TurnBuffer";
 import type { Side, Turn } from "../conversation/Turn";
 import type { LifecycleSuspendReason, RecoveryPrompt } from "../session/SessionController";
 import {
@@ -363,8 +362,8 @@ describe("ConversationScreen typography and clarification", () => {
     expect(screen.getByTestId("current-primary-B")).toHaveClass("current-message");
   });
 
-  it("mutes older turns and caps visible history at MAX_RECENT_TURNS", () => {
-    const recentTurns = [1, 2, 3, 4].map((index) =>
+  it("keeps the whole bilingual history in both scrollable panes", () => {
+    const recentTurns = Array.from({ length: 30 }, (_, i) => i + 1).map((index) =>
       turn({
         id: `old-${index}`,
         speaker: index % 2 === 0 ? "B" : "A",
@@ -382,9 +381,14 @@ describe("ConversationScreen typography and clarification", () => {
     render(<ConversationScreen controller={controller} />);
 
     const muted = document.querySelectorAll(".recent-turn");
-    expect(muted).toHaveLength(MAX_RECENT_TURNS * 2);
-    expect(screen.queryByText("original 1")).not.toBeInTheDocument();
-    expect(screen.getAllByText("original 4")).toHaveLength(1);
+    expect(muted).toHaveLength(recentTurns.length * 2);
+    for (const side of ["A", "B"] as const) {
+      const pane = screen.getByTestId(`participant-scroll-${side}`);
+      expect(pane.querySelectorAll("li")).toHaveLength(recentTurns.length);
+      for (const entry of recentTurns) {
+        expect(within(pane).getByText(entry.speaker === side ? entry.originalText : entry.translatedText!)).toBeInTheDocument();
+      }
+    }
   });
 });
 

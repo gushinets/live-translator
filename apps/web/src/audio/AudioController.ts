@@ -261,6 +261,8 @@ export class AudioController {
 
   attachRemoteStream(stream: MediaStream): void {
     this.audioElement.srcObject = stream;
+    // Recreate the media pipeline after Android backgrounding or a replaced WebRTC stream.
+    this.audioElement.load();
     this.remoteSource?.disconnect();
     stopTracks(this.remoteAnalysisStream);
     const context = this.ensureAudioContext();
@@ -276,6 +278,7 @@ export class AudioController {
     const context = this.ensureAudioContext();
     await context.resume();
     if (this.audioElement.srcObject !== null) {
+      if (this.audioElement.error !== null) this.audioElement.load();
       await this.audioElement.play();
     }
   }
