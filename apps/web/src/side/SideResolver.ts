@@ -36,7 +36,7 @@ export function resolveSide(
   languages: ConversationLanguages,
 ): Side | undefined {
   if (languages.A === languages.B) return undefined;
-  const language = detectLanguage(text);
+  const language = detectLanguage(text, 1);
   if (language === languages.A) return "A";
   if (language === languages.B) return "B";
   return undefined;

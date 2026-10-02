@@ -23,7 +23,7 @@ export type TurnStatus =
 export interface Turn {
   id: string;
   speaker: Side | undefined;
-  sideSource: "unresolved" | "language";
+  sideSource: "unresolved" | "language" | "translation";
   /** Fixed display languages for this utterance, retained after setup changes. */
   languages?: ConversationLanguages;
   sourceFragments: TranscriptFragment[];

@@ -1,6 +1,5 @@
 import { expect, test, type Page } from "@playwright/test";
 import { runtime } from "../../src/config/runtime";
-import { MAX_RECENT_TURNS } from "../../src/conversation/TurnBuffer";
 import { MockLiveHarness } from "./mockLiveHarness";
 
 const COURIER_TURNS: ReadonlyArray<{ original: string; translation: string }> = [
@@ -89,7 +88,7 @@ test.describe("mocked conversation runtime", () => {
     await expect(page.getByRole("button", { name: "Start translation", exact: true })).toBeEnabled();
     await expect(page.locator(".conversation-screen")).toHaveCount(0);
   });
-  test("courier flow alternates A/B, keeps B rotated, and caps recent turns", async ({
+  test("courier flow alternates A/B, keeps B rotated, and retains every turn", async ({
     page,
   }) => {
     const harness = await MockLiveHarness.attach(page);
@@ -123,13 +122,13 @@ test.describe("mocked conversation runtime", () => {
     await expect(page.getByTestId("participant-status-A")).toHaveText("Speak");
     await expect(page.getByTestId("participant-status-B")).toHaveText("Habla");
     await expect(page.getByTestId("participant-pane-A").locator(".recent-turn")).toHaveCount(
-      MAX_RECENT_TURNS,
+      COURIER_TURNS.length,
     );
     await expect(page.getByTestId("participant-pane-B").locator(".recent-turn")).toHaveCount(
-      MAX_RECENT_TURNS,
+      COURIER_TURNS.length,
     );
-    await expect(page.getByText(COURIER_TURNS[0]!.original)).toHaveCount(0);
-    await expect(page.getByText(COURIER_TURNS[6]!.original)).toHaveCount(0);
+    await expect(page.getByText(COURIER_TURNS[0]!.original)).toHaveCount(1);
+    await expect(page.getByText(COURIER_TURNS[6]!.original)).toHaveCount(1);
     await expect(page.getByText(COURIER_TURNS[7]!.original)).toHaveCount(1);
     await expect(page.getByText(COURIER_TURNS[9]!.original)).toHaveCount(1);
   });

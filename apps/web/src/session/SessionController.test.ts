@@ -138,6 +138,7 @@ function createFakeAudio() {
     attachRemoteStream: vi.fn(),
     audioElement: {
       play: vi.fn(async () => {}),
+      load: vi.fn(),
     } as unknown as HTMLAudioElement,
     onVoiceActivity: null as ((event: { active: boolean; atMs: number }) => void) | null,
     onPlaybackActivity: null as ((event: { active: boolean; atMs: number }) => void) | null,
@@ -811,6 +812,48 @@ describe("SessionController", () => {
 
     expect(audio.attachRemoteStream).toHaveBeenCalledExactlyOnceWith(remoteStream);
     expect(audio.audioElement.play).toHaveBeenCalledOnce();
+  });
+
+  it("recovers a decoder error arriving after playback was already ready, once per stream", async () => {
+    const { controller, audio } = createController();
+    const element = audio.audioElement;
+    controller.handleRemoteStream(fakeRemoteStream("remote"), controllerHarnesses.get(controller)!.live as unknown as LiveClient);
+    await flushMicrotasks();
+    let error: MediaError | null = { code: 3 } as MediaError;
+    Object.defineProperty(element, "error", { get: () => error, configurable: true });
+    vi.mocked(element.load).mockImplementation(() => { error = null; });
+    element.onerror?.call(element, new Event("error"));
+    await flushMicrotasks();
+    expect(element.play).toHaveBeenCalledTimes(2);
+    expect(error).toBeNull();
+    expect((controller as unknown as { remotePlaybackState: string }).remotePlaybackState).toBe("ready");
+    expect(audio.stopCapture).not.toHaveBeenCalled();
+    const logged = vi.spyOn(console, "error").mockImplementation(() => {});
+    error = { code: 3 } as MediaError;
+    element.onerror?.call(element, new Event("error"));
+    await flushMicrotasks();
+    expect(element.play).toHaveBeenCalledTimes(2);
+    expect((controller as unknown as { remotePlaybackState: string }).remotePlaybackState).toBe("failed");
+    expect(logged).toHaveBeenCalled();
+  });
+
+  it("preserves playback ending while decoder recovery is pending", async () => {
+    const { controller, audio } = createController();
+    await enterListening(controller);
+    const element = audio.audioElement;
+    controller.handleRemoteStream(fakeRemoteStream("remote"), controllerHarnesses.get(controller)!.live as unknown as LiveClient);
+    await flushMicrotasks();
+    emitPlayback(audio, true);
+    let resolvePlay!: () => void;
+    vi.mocked(element.play).mockImplementationOnce(() => new Promise<void>(resolve => { resolvePlay = resolve; }));
+    let error: MediaError | null = { code: 3 } as MediaError;
+    Object.defineProperty(element, "error", { get: () => error, configurable: true });
+    vi.mocked(element.load).mockImplementation(() => { error = null; });
+    element.onerror?.call(element, new Event("error"));
+    emitPlayback(audio, false);
+    resolvePlay();
+    await flushMicrotasks();
+    expect((controller as unknown as { playbackActive: boolean }).playbackActive).toBe(false);
   });
 
   it("logs a remote audio play failure without leaking an unhandled rejection", async () => {
@@ -4422,7 +4465,7 @@ async function waitUntil(check: () => boolean): Promise<void> {
 describe("fixed-language conversation regression", () => {
   beforeEach(() => { vi.useFakeTimers(); });
 
-  it("routes B-A-A-A-B-B by language, retains the pair after pause, and leaves OK unassigned", async () => {
+  it("routes B-A-A-A-B-B by language, retains history after pause, and routes OK by its translation", async () => {
     const { controller, live, audio, visibility } = createController();
     await controller.startBootstrap();
     await controller.acceptBootstrap("Я говорю по-русски и хочу узнать дорогу к вокзалу.");
@@ -4450,13 +4493,15 @@ describe("fixed-language conversation regression", () => {
     expect(controller.session.state).toBe("listening");
     expect(controller.session.participantA.language).toBe("ru");
     expect(controller.session.participantB.language).toBe("en");
+    expect(controller.session.recentTurns).toHaveLength(6);
     emitVoice(audio, true);
     live.emit({ type: "session.input_transcript.delta", delta: "OK" });
     expect(controller.session.activeTurn?.speaker).toBeUndefined();
     live.emit({ type: "session.output_transcript.delta", delta: "Хорошо" });
     emitVoice(audio, false);
     await vi.advanceTimersByTimeAsync(runtime.audioStartGraceMs + runtime.captionIdleMs);
-    expect(controller.session.recentTurns.at(-1)?.speaker).toBeUndefined();
+    expect(controller.session.recentTurns.at(-1)?.speaker).toBe("B");
+    expect(controller.session.recentTurns).toHaveLength(7);
   });
 
   it("does not commit a calibration result after cancellation", async () => {

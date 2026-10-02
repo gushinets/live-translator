@@ -156,8 +156,13 @@ function assignLanguageSide(session: TranslationSession, turn: Turn): Turn {
   const A = turn.languages?.A ?? session.participantA.language;
   const B = turn.languages?.B ?? session.participantB.language;
   if (A === undefined || B === undefined) return turn;
-  const speaker = resolveSide(turn.originalText, { A, B });
-  return { ...turn, speaker, sideSource: speaker === undefined ? "unresolved" : "language" };
+  const sourceSide = resolveSide(turn.originalText, { A, B }) ?? (turn.sideSource === "language" ? turn.speaker : undefined);
+  if (sourceSide !== undefined) return { ...turn, speaker: sourceSide, sideSource: "language" };
+  // A reliable translation identifies its recipient when source captions are short or missing.
+  // Recheck the growing translation: a partial word can initially resemble another language.
+  const outputSide = resolveSide(turn.translatedText ?? "", { A, B });
+  const speaker = outputSide === "A" ? "B" : outputSide === "B" ? "A" : undefined;
+  return { ...turn, speaker, sideSource: speaker === undefined ? "unresolved" : "translation" };
 }
 
 function handleSourceFragment(
@@ -283,7 +288,7 @@ export function sessionReducer(session: TranslationSession, action: SessionActio
     case "OUTPUT_DELTA": {
       assertOutputEventAllowed(session);
       const updated = appendOutputTextToTurn(requireActiveTurn(session), action.text, action.nowMs);
-      return withOutputtingIfListening(session, updated);
+      return withOutputtingIfListening(session, assignLanguageSide(session, updated));
     }
     case "AUDIO_STARTED": {
       assertOutputEventAllowed(session);

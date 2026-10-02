@@ -115,6 +115,7 @@ describe("AudioController", () => {
     audioContext = new FakeAudioContext();
     audioElement = document.createElement("audio");
     audioElement.play = vi.fn().mockResolvedValue(undefined);
+    audioElement.load = vi.fn();
     getUserMedia = vi.fn(async () => fakeStream(track));
     nowMs = 0;
     controller = new AudioController({
@@ -298,6 +299,21 @@ describe("AudioController", () => {
 
     expect(audioContext.resume).toHaveBeenCalled();
     expect(audioElement.play).toHaveBeenCalledOnce();
+  });
+
+  it.each(["new stream", "same stream"])("recovers a decoder error when resuming with a %s", async mode => {
+    const first = fakeStream(new FakeAudioTrack());
+    controller.attachRemoteStream(first);
+    let error: MediaError | null = { code: 3 } as MediaError;
+    Object.defineProperty(audioElement, "error", { get: () => error, configurable: true });
+    audioElement.load = vi.fn(() => { error = null; });
+    audioElement.play = vi.fn(async () => { if (error) throw new DOMException("Decoder stopped", "NotSupportedError"); });
+    const resumed = mode === "new stream" ? fakeStream(new FakeAudioTrack()) : first;
+    if (mode === "new stream") controller.attachRemoteStream(resumed);
+    await expect(controller.primeOutput()).resolves.toBeUndefined();
+    expect(audioElement.error).toBeNull();
+    expect(audioElement.srcObject).toBe(resumed);
+    expect(audioElement.muted).toBe(true);
   });
 
   it("clones the capture stream for analysis so Live can consume the original", async () => {

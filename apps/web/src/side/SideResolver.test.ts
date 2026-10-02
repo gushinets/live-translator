@@ -37,4 +37,7 @@ describe("language-based side resolution", () => {
   it("distinguishes languages sharing a script", () => {
     expect(resolveSide("¿Dónde está la estación de tren, por favor?", { A: "en", B: "es" })).toBe("B");
   });
+  it("accepts short replies when the detector is reliable", () => {
+    for (const text of ["Привет", "Спасибо", "Хорошо"]) expect(resolveSide(text, languages)).toBe("A");
+  });
 });

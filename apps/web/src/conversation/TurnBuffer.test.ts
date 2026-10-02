@@ -114,10 +114,10 @@ describe("TurnBuffer.complete / fail / discard", () => {
     expect(() => buffer.appendSourceFragment(fragment("x", 2001))).toThrow(/no active turn/i);
   });
 
-  it("keeps at most 3 recent completed turns", () => {
+  it("keeps every completed turn in a long conversation", () => {
     const buffer = new TurnBuffer();
     const ids: string[] = [];
-    for (let i = 0; i < 4; i += 1) {
+    for (let i = 0; i < 30; i += 1) {
       const id = `t${i}`;
       buffer.start({ id, speaker: i % 2 === 0 ? "A" : "B", sideSource: "language", nowMs: i * 100 });
       buffer.complete(i * 100 + 50);
@@ -125,7 +125,7 @@ describe("TurnBuffer.complete / fail / discard", () => {
     }
 
     const recentIds = buffer.recent().map((turn) => turn.id);
-    expect(recentIds).toEqual(["t1", "t2", "t3"]);
+    expect(recentIds).toEqual(ids);
   });
 
   it("fails the active turn and moves it into recent as failed", () => {

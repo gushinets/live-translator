@@ -139,7 +139,7 @@ The application does not provide:
 
 - accounts;
 - login;
-- conversation history;
+- saved conversation history after session end;
 - saved transcripts;
 - cloud persistence.
 
@@ -291,9 +291,9 @@ For current-turn text:
 
 ### 3.7 Turn history
 
-Only the latest 2–3 turns are retained for display. Older turns fade/drop from the UI.
+Retain every turn for display during the current conversation. Both participant panes show the full dialogue in that participant's selected language and allow scrolling through earlier turns. Do not drop older turns as new ones arrive.
 
-This is not a messenger/chat interface.
+History remains in memory across background/resume in the same page. A full page reload or conversation end clears the displayed history; no transcripts are persisted.
 
 ---
 
@@ -1036,7 +1036,7 @@ interface TranslationSession {
 
 ### 12.4 Turn buffer
 
-Keep at most 2–3 completed turns for UI plus the active turn.
+Keep the active turn plus every completed, failed and discarded turn in the current conversation for UI history, without a fixed turn-count cap.
 
 No persistence after session end.
 
