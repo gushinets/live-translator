@@ -58,9 +58,10 @@ export function ParticipantPane({
         const bounds = scroll?.getBoundingClientRect();
         const gutter = scroll ? scroll.offsetWidth - scroll.clientWidth : 0;
         const x = bounds ? event.clientX - bounds.left : 0;
-        // Native scrollbar placement varies with rotation, direction and browser.
-        const scrollbar = scroll !== null && event.target === scroll && bounds !== undefined &&
-          gutter > 0 && (x < gutter || x >= bounds.width - gutter);
+        // Native scrollbar hits can target the pane or its content after rotation.
+        const scrollbar = bounds !== undefined && gutter > 0 &&
+          event.clientY >= bounds.top && event.clientY <= bounds.bottom &&
+          x >= 0 && x <= bounds.width && (x < gutter || x >= bounds.width - gutter);
         pointerMoved.current = scrollbar;
         pointerStart.current = event.isPrimary && event.button === 0 && !scrollbar ? { x: event.clientX, y: event.clientY } : undefined;
       }}

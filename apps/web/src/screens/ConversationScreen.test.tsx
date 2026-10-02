@@ -308,17 +308,20 @@ describe("ConversationScreen typography and clarification", () => {
     const controller = new FakeConversationController(session({ activeTurn: turn({ id: "scroll", speaker: "A", originalText: "Hello", translatedText: "Привет" }) }));
     render(<ConversationScreen controller={controller} />);
     const scroll = screen.getByTestId(`participant-scroll-${side}`);
-    vi.spyOn(scroll, "getBoundingClientRect").mockReturnValue({ left: 100, right: 400, width: 300 } as DOMRect);
+    vi.spyOn(scroll, "getBoundingClientRect").mockReturnValue({ left: 100, right: 400, top: 100, bottom: 400, width: 300, height: 300 } as DOMRect);
     Object.defineProperties(scroll, { offsetWidth: { value: 300 }, clientWidth: { value: 290 } });
-    const tap = (clientX: number) => {
+    const tap = (clientX: number, target = scroll) => {
       for (const type of ["pointerdown", "pointerup"]) {
         const event = new MouseEvent(type, { bubbles: true, button: 0, clientX, clientY: 200 });
         Object.defineProperty(event, "isPrimary", { value: true });
-        fireEvent(scroll, event);
+        fireEvent(target, event);
       }
     };
-    tap(105);
-    tap(395);
+    // Transformed native scrollbar events can be retargeted to the pane or content.
+    for (const target of [scroll, screen.getByTestId(`participant-pane-${side}`), screen.getByTestId(`current-primary-${side}`)]) {
+      tap(105, target);
+      tap(395, target);
+    }
     expect(controller.correctLastTurn).not.toHaveBeenCalled();
     tap(250);
     expect(controller.correctLastTurn).toHaveBeenCalledExactlyOnceWith(side);
