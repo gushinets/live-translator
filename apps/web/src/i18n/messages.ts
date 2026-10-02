@@ -3,6 +3,9 @@
 const locales = ["en", "fr", "it", "de", "es", "pt"] as const;
 type Translations = readonly [string, string, string, string, string, string];
 const messages: Record<string, Translations> = {
+  "Говорите друг с другом": ["Talk to each other", "Parlez ensemble", "Parlate tra voi", "Sprechen Sie miteinander", "Hablad entre vosotros", "Conversem entre si"],
+  "Перевод разговора в реальном времени.": ["Translate your conversation in real time.", "Traduction de la conversation en temps réel.", "Traduzione della conversazione in tempo reale.", "Gesprächsübersetzung in Echtzeit.", "Traducción de la conversación en tiempo real.", "Tradução da conversa em tempo real."],
+  "Положите телефон между вами.": ["Place the phone between you.", "Placez le téléphone entre vous.", "Posizionate il telefono tra voi.", "Legen Sie das Telefon zwischen sich.", "Colocad el teléfono entre vosotros.", "Coloquem o telefone entre vocês."],
   "Я": ["Me", "Moi", "Io", "Ich", "Yo", "Eu"],
   "Он": ["Him", "Lui", "Lui", "Er", "Él", "Ele"],
   "Реплики участника {side}": ["Participant {side}'s captions", "Répliques du participant {side}", "Frasi del partecipante {side}", "Äußerungen von Teilnehmer {side}", "Frases del participante {side}", "Falas do participante {side}"],

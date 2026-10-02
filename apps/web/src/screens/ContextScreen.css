@@ -4,7 +4,7 @@
 }
 
 html {
-  scrollbar-color: #8f8374 #0f0d0b;
+  scrollbar-color: #93a7a3 #172326;
   scrollbar-width: thin;
 }
 
@@ -14,13 +14,13 @@ html {
 }
 
 *::-webkit-scrollbar-track {
-  background: #0f0d0b;
+  background: #172326;
 }
 
 *::-webkit-scrollbar-thumb {
-  border: 2px solid #0f0d0b;
+  border: 2px solid #172326;
   border-radius: 999px;
-  background: #8f8374;
+  background: #93a7a3;
 }
 
 .setup-screen {
@@ -32,11 +32,9 @@ html {
     calc(env(safe-area-inset-right) + 1rem)
     calc(env(safe-area-inset-bottom) + 1rem)
     calc(env(safe-area-inset-left) + 1rem);
-  background:
-    radial-gradient(circle at top, rgba(244, 234, 213, 0.08), transparent 34rem),
-    #0f0d0b;
-  color: #f7f0e4;
-  font-family: Bahnschrift, "DIN Alternate", "Segoe UI", system-ui, sans-serif;
+  background: #172326;
+  color: #f1f6f3;
+  font-family: system-ui, sans-serif;
 }
 
 .setup-shell {
@@ -48,10 +46,11 @@ html {
   gap: 1rem;
 }
 
-.setup-shell--picker,
-.setup-shell--start {
+.setup-shell--picker {
   height: calc(100dvh - env(safe-area-inset-top) - env(safe-area-inset-bottom) - 2rem);
 }
+
+.setup-shell--start { height: auto; }
 
 .setup-header {
   position: sticky;
@@ -62,7 +61,7 @@ html {
   flex: 0 0 auto;
   align-items: center;
   padding: 0.5rem 0.15rem 0.2rem;
-  background: #0f0d0b;
+  background: #172326;
 }
 
 .setup-settings-action {
@@ -71,10 +70,10 @@ html {
   height: 3.25rem;
   place-items: center;
   margin-left: auto;
-  border: 1px solid #43382d;
+  border: 1px solid #3b5353;
   border-radius: 0.95rem;
-  background: #231d18;
-  color: #f7f0e4;
+  background: #263b3c;
+  color: #f1f6f3;
   cursor: pointer;
 }
 
@@ -83,8 +82,8 @@ html {
 
 .setup-brand {
   margin: 0;
-  color: #f7f0e4;
-  font-family: "Iowan Old Style", "Palatino Linotype", Palatino, serif;
+  color: #f1f6f3;
+  font-family: inherit;
   font-size: clamp(1.3rem, 5vw, 1.6rem);
   font-weight: 600;
   line-height: 1;
@@ -96,9 +95,9 @@ html {
   flex-direction: column;
   gap: 1rem;
   padding: clamp(1rem, 4vw, 1.35rem);
-  border: 1px solid #312920;
+  border: 1px solid #354a4b;
   border-radius: 1.4rem;
-  background: rgba(28, 23, 19, 0.96);
+  background: #202f32;
   box-shadow: 0 0.8rem 2rem rgba(0, 0, 0, 0.22);
 }
 
@@ -111,12 +110,60 @@ html {
   padding: 0;
   background: transparent;
   box-shadow: none;
+  gap: 1.1rem;
 }
 
 .setup-card--start .setup-primary-action {
-  min-height: 5.5rem;
-  font-size: 1.3rem;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.75rem;
+  min-height: 4.5rem;
+  margin-top: 0.75rem;
+  font-size: 1.2rem;
 }
+
+.setup-intro { margin: 0 0 0.65rem; text-align: center; }
+.setup-voice-mark { display: block; width: 10rem; height: 4rem; margin: 0 auto 1.75rem; color: #ace2c9; }
+.setup-voice-mark__partner { color: #a48348; }
+.setup-title { margin: 0; font-size: clamp(1.5rem, 6vw, 1.8rem); font-weight: 700; line-height: 1.2; }
+.setup-description { margin: 0.75rem 0 0; color: #afbfbd; font-size: 1rem; line-height: 1.45; }
+.setup-languages { display: grid; gap: 0.75rem; }
+.setup-language-card {
+  position: relative;
+  display: grid;
+  gap: 0.4rem;
+  width: 100%;
+  min-height: 6rem;
+  border: 1px solid transparent;
+  border-radius: 0.85rem;
+  padding: 1rem 3rem 1rem 1.25rem;
+  background: #263b3c;
+  color: #f1f6f3;
+  text-align: left;
+  cursor: pointer;
+}
+.setup-language-card::after {
+  content: "";
+  position: absolute;
+  top: calc(50% - 0.35rem);
+  right: 1.3rem;
+  width: 0.6rem;
+  height: 0.6rem;
+  border-top: 2px solid currentColor;
+  border-right: 2px solid currentColor;
+  transform: rotate(45deg);
+}
+.setup-language-card__label { color: #ace2c9; font-size: 0.95rem; font-weight: 500; }
+.setup-language-card__value { overflow-wrap: anywhere; font-size: 1.5rem; font-weight: 650; line-height: 1.25; }
+.setup-language-card__value::first-letter { text-transform: uppercase; }
+.setup-language-card--partner { background: #f1e8d7; color: #25231f; }
+.setup-language-card--partner .setup-language-card__label { color: #816333; }
+.setup-language-card:hover:not(:disabled) { border-color: #ace2c9; }
+.setup-language-card--partner:hover:not(:disabled) { border-color: #816333; }
+.setup-language-card:disabled { opacity: 0.65; cursor: wait; }
+.setup-microphone { flex: 0 0 auto; width: 1.6rem; height: 1.6rem; vertical-align: middle; }
+.setup-placement-hint { margin: 0; color: #afbfbd; font-size: 0.95rem; line-height: 1.45; text-align: center; }
 
 .setup-card .error-overlay {
   width: 100%;
@@ -133,7 +180,7 @@ html {
 
 .bootstrap-title {
   margin: 0;
-  color: #f7f0e4;
+  color: #f1f6f3;
   font-family: "Iowan Old Style", "Palatino Linotype", Palatino, serif;
   font-size: clamp(1.75rem, 8vw, 2.45rem);
   font-weight: 600;
@@ -142,7 +189,7 @@ html {
 
 .bootstrap-description {
   margin: 0;
-  color: #ada08e;
+  color: #afbfbd;
   font-size: 0.95rem;
   line-height: 1.5;
 }
@@ -172,8 +219,8 @@ html {
 }
 
 .setup-primary-action {
-  background: #f4ead5;
-  color: #17130f;
+  background: #ace2c9;
+  color: #172326;
   box-shadow: 0 0.65rem 1.5rem rgba(0, 0, 0, 0.2);
 }
 
@@ -184,9 +231,9 @@ html {
 }
 
 .setup-secondary-action {
-  border-color: #43382d;
-  background: #231d18;
-  color: #f2e8d7;
+  border-color: #3b5353;
+  background: #263b3c;
+  color: #f1f6f3;
 }
 
 .setup-context-action {
@@ -222,7 +269,7 @@ html {
 }
 
 .setup-field-label span {
-  color: #8f8374;
+  color: #93a7a3;
   font-size: 0.7rem;
   font-weight: 600;
   letter-spacing: 0.08em;
@@ -238,24 +285,24 @@ html {
   outline: none;
   padding: 0.9rem 0.95rem;
   background: #15110e;
-  color: #f7f0e4;
+  color: #f1f6f3;
   font-size: 1rem;
   line-height: 1.45;
 }
 
 .language-picker { display: flex; flex: 1; min-height: 0; flex-direction: column; gap: 0.85rem; }
-.language-picker-owner { margin: 0; color: #d7c9b4; }
+.language-picker-owner { margin: 0; color: #afbfbd; }
 .language-picker select {
   width: 100%;
   min-height: 3rem;
-  border: 1px solid #8f8374;
+  border: 1px solid #93a7a3;
   border-radius: 0.7rem;
   padding: 0.5rem;
-  background: #231d18;
-  color: #f7f0e4;
+  background: #263b3c;
+  color: #f1f6f3;
   font: inherit;
 }
-.language-picker select:focus-visible { outline: 2px solid #f4ead5; outline-offset: 2px; }
+.language-picker select:focus-visible { outline: 2px solid #ace2c9; outline-offset: 2px; }
 .language-picker-fieldset {
   flex: 1 1 0;
   min-height: 0;
@@ -290,22 +337,22 @@ html {
   height: 100%;
   align-items: center;
   justify-content: space-between;
-  border: 1px solid #514437;
+  border: 1px solid #3b5353;
   border-radius: 0.95rem;
   padding: 0 1rem;
-  background: #231d18;
-  color: #f7f0e4;
+  background: #263b3c;
+  color: #f1f6f3;
   font-size: clamp(1.1rem, 5vw, 1.35rem);
   font-weight: 600;
 }
 
 .language-picker-option span::after { content: ""; width: 1.25rem; }
 .language-picker-option input:checked + span {
-  border-color: #f4ead5;
-  background: #33291e;
+  border-color: #ace2c9;
+  background: #354a4b;
 }
-.language-picker-option input:checked + span::after { content: "✓"; color: #f4ead5; }
-.language-picker-option input:focus-visible + span { outline: 2px solid #f4ead5; outline-offset: 2px; }
+.language-picker-option input:checked + span::after { content: "✓"; color: #ace2c9; }
+.language-picker-option input:focus-visible + span { outline: 2px solid #ace2c9; outline-offset: 2px; }
 .language-picker-action { min-height: 5rem; margin-top: auto; font-size: 1.2rem; }
 .language-picker-overlay {
   position: fixed;
@@ -322,11 +369,11 @@ html {
   margin: 0;
   border: 0;
   padding: max(env(safe-area-inset-top), 1rem) 1rem max(env(safe-area-inset-bottom), 1rem);
-  background: rgba(15, 13, 11, 0.96);
-  color: #f7f0e4;
-  font-family: Bahnschrift, "Segoe UI", sans-serif;
+  background: rgba(23, 35, 38, 0.96);
+  color: #f1f6f3;
+  font-family: system-ui, sans-serif;
 }
-.language-picker-overlay::backdrop { background: rgba(15, 13, 11, 0.92); }
+.language-picker-overlay::backdrop { background: rgba(23, 35, 38, 0.92); }
 .language-picker-overlay-content {
   box-sizing: border-box;
   display: flex;
@@ -339,13 +386,13 @@ html {
   box-sizing: border-box;
   width: 100%;
   padding: 1rem;
-  border: 1px solid #43382d;
+  border: 1px solid #3b5353;
   border-radius: 1.4rem;
-  background: #1c1713;
+  background: #202f32;
 }
 
 .setup-field textarea::placeholder {
-  color: #8f8374;
+  color: #93a7a3;
 }
 
 .setup-field textarea:focus-visible {
@@ -359,7 +406,7 @@ html {
   justify-content: space-between;
   gap: 0.8rem;
   margin-top: -0.35rem;
-  color: #8f8374;
+  color: #93a7a3;
   font-size: 0.75rem;
   line-height: 1.4;
 }
@@ -371,7 +418,7 @@ html {
   border: 0;
   padding: 0.4rem;
   background: transparent;
-  color: #c9baa5;
+  color: #afbfbd;
   font-size: 0.8rem;
   font-weight: 700;
   cursor: pointer;
@@ -388,7 +435,7 @@ html {
   border-radius: 999px;
   padding: 0.45rem 0.65rem;
   background: rgba(244, 234, 213, 0.05);
-  color: #d7c9b4;
+  color: #afbfbd;
   font-size: 0.75rem;
   font-weight: 700;
   letter-spacing: 0.04em;
@@ -425,7 +472,7 @@ html {
 
 .bootstrap-hint-label {
   margin: 0;
-  color: #8f8374;
+  color: #93a7a3;
   font-size: 0.7rem;
   font-weight: 700;
   letter-spacing: 0.09em;
@@ -434,7 +481,7 @@ html {
 
 .bootstrap-hint-value {
   margin: 0;
-  color: #f7f0e4;
+  color: #f1f6f3;
   font-family: "Iowan Old Style", "Palatino Linotype", Palatino, serif;
   font-size: clamp(1.35rem, 6vw, 1.75rem);
   line-height: 1.15;
@@ -448,7 +495,7 @@ html {
   border: 1px dashed #3a3027;
   border-radius: 1rem;
   padding: 1rem;
-  color: #8f8374;
+  color: #93a7a3;
   font-size: 0.86rem;
   text-align: center;
 }
@@ -478,7 +525,7 @@ html {
 .setup-screen button:focus-visible,
 .setup-settings-action:focus-visible,
 .setup-screen textarea:focus-visible {
-  outline: 2px solid #f4ead5;
+  outline: 2px solid #ace2c9;
   outline-offset: 3px;
 }
 

@@ -424,7 +424,7 @@ describe("per-participant language and authors (ANY-558 / ANY-559)", () => {
   it("shows each participant language and exposes independent participant status", () => {
     const controller = new FakeConversationController(bilingualSession());
     const view = render(<ConversationScreen controller={controller} />);
-    for (const [side, description] of [["A", "A · русский"], ["B", "B · English"]] as const) {
+    for (const [side, description] of [["A", "русский"], ["B", "English"]] as const) {
       const pane = within(screen.getByTestId(`participant-pane-${side}`));
       expect(pane.getByText(description)).toBeInTheDocument();
       const status = pane.getByTestId(`participant-status-${side}`);
@@ -462,7 +462,7 @@ describe("per-participant language and authors (ANY-558 / ANY-559)", () => {
     expect(screen.getByTestId("participant-status-A")).toHaveTextContent("Говорите");
     expect(screen.getByTestId("participant-status-B")).toHaveTextContent("Speak");
     expect(screen.getByRole("button", { name: "Завершить" })).toBeInTheDocument();
-    expect(screen.getByTestId("participant-pane-B")).toHaveTextContent("B · English");
+    expect(screen.getByTestId("participant-pane-B")).toHaveTextContent("English");
     controller.session = { ...controller.session, participantB: { ...controller.session.participantB, language: "de" } };
     view.rerender(<ConversationScreen controller={controller} onChangeLanguage={() => {}} />);
     expect(screen.getByTestId("participant-pane-B")).toHaveTextContent("Thank you");

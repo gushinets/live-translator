@@ -25,7 +25,7 @@ export function ParticipantPane({
 }) {
   const locale = uiLocale(language);
   const t = (text: string) => translate(text, locale);
-  const languageLabel = language === undefined ? undefined : `${side} · ${languageName(language, locale)}`;
+  const languageLabel = language === undefined ? undefined : languageName(language, locale);
   const primaryText = activeTurn ? paneTextForTurn(activeTurn, side) : "";
   const author = (turn: Turn) => t(turn.speaker === side ? "Я" : "Он");
   const latest = primaryText.length > 0 ? undefined : [...recentTurns].reverse().find(entry =>

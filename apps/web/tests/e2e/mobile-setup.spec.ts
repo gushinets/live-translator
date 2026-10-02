@@ -83,7 +83,7 @@ test.describe("mobile setup layout", () => {
     expect(await contrastRatio(owner)).toBeGreaterThanOrEqual(4.5);
   });
 
-  test("centers the repeat-start action and reopens the saved choice from settings", async ({ page }) => {
+  test("shows the saved language cards and reopens the choice from settings", async ({ page }, testInfo) => {
     await page.addInitScript(() => localStorage.setItem("live-translator-interlocutor-language", "es"));
     await page.goto("/");
 
@@ -97,7 +97,10 @@ test.describe("mobile setup layout", () => {
     expect(Math.abs((brandBox?.y ?? 0) + (brandBox?.height ?? 0) / 2 -
       (settingsBox?.y ?? 0) - (settingsBox?.height ?? 0) / 2)).toBeLessThan(3);
     const box = await start.boundingBox();
-    expect(Math.abs((box?.y ?? 0) + (box?.height ?? 0) / 2 - 844 / 2)).toBeLessThan(70);
+    await expect(page.getByRole("button", { name: "Your language English" })).toBeVisible();
+    await expect(page.getByRole("button", { name: "Partner's language Spanish" })).toBeVisible();
+    expect(box!.y + box!.height).toBeLessThanOrEqual(844);
+    await page.screenshot({ path: testInfo.outputPath("variant-four-start.png") });
     await expect(page.getByRole("radio", { name: "Spanish" })).toHaveCount(0);
 
     await page.getByRole("button", { name: "Settings" }).click();
