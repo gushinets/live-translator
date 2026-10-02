@@ -8,12 +8,6 @@ import type { Side, Turn } from "./Turn";
  */
 export const MAX_RECENT_TURNS = 3;
 
-/** Ambiguous source text can be assigned manually even if Live stayed silent. */
-export function canAssignUnresolvedSource(turn: Turn): boolean {
-  return turn.speaker === undefined && turn.originalText.trim().length > 0 &&
-    (turn.status === "streaming" || turn.status === "failed");
-}
-
 export interface StartTurnParams {
   id: string;
   speaker: Side | undefined;
@@ -57,7 +51,6 @@ export function createTurn(params: StartTurnParams): Turn {
     sourceFragments: [],
     originalText: "",
     status: "streaming",
-    corrected: false,
     audioOutputStarted: false,
     speechStartAtMs: params.nowMs,
   };
@@ -103,7 +96,7 @@ export function appendOutputTextToTurn(turn: Turn, text: string, nowMs: number):
   }
   return {
     ...turn,
-    status: turn.status === "correcting" ? "correcting" : "outputting",
+    status: "outputting",
     translatedText: `${turn.translatedText ?? ""}${text}`,
     firstOutputTextAtMs: turn.firstOutputTextAtMs ?? nowMs,
     outputTextEndAtMs: nowMs,
@@ -134,27 +127,6 @@ export function clearSourceIdle(turn: Turn): Turn {
     throw new Error(`Cannot clear source idle on a turn with terminal status "${turn.status}".`);
   }
   return { ...turn, sourceIdleAtMs: undefined };
-}
-
-/**
- * §11.2 / P0 Risk 6: after a side correction is accepted, discard the stale
- * output epoch so the next text/audio onset is observed as fresh.
- */
-export function startFreshOutputEpoch(turn: Turn, speaker: Side): Turn {
-  return {
-    ...turn,
-    speaker,
-    sideSource: "manual",
-    corrected: true,
-    status: "outputting",
-    translatedText: undefined,
-    firstOutputTextAtMs: undefined,
-    outputTextEndAtMs: undefined,
-    audioOutputStarted: false,
-    firstAudibleOutputAtMs: undefined,
-    playbackEndAtMs: undefined,
-    turnCompletedAtMs: undefined,
-  };
 }
 
 /** Pure transition: the §10 completion predicate succeeded. */

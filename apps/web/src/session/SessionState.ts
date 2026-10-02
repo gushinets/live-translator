@@ -8,7 +8,6 @@ export type SessionState =
   | "bootstrap"
   | "listening"
   | "outputting"
-  | "correcting"
   | "suspended"
   | "error"
   | "ending"

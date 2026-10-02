@@ -30,7 +30,6 @@ function turn(overrides: Partial<Turn> & Pick<Turn, "id" | "speaker">): Turn {
     sourceFragments: [],
     originalText: "",
     status: "outputting",
-    corrected: false,
     audioOutputStarted: false,
     ...overrides,
   };
@@ -51,7 +50,6 @@ class FakeConversationController implements ConversationScreenController {
   ownerError: string | undefined;
   suspendReason: LifecycleSuspendReason | undefined;
   retainedRecoveryState: "paused" | "resuming" | "ending" | "failed" | "pending_end" | "pending_claim" | "blocked" | "unresolved_create" | undefined;
-  readonly correctLastTurn = vi.fn<(side: Side) => Promise<void>>(async () => {});
   readonly endConversation = vi.fn(async () => {});
   readonly resumeFromSourceTimeout = vi.fn(async () => {});
   readonly resumeRetainedConversation = vi.fn(async () => {});
@@ -284,18 +282,7 @@ describe("ConversationScreen orientation and status", () => {
     expect(screen.getByTestId("participant-status-B")).not.toHaveTextContent("Говорите");
   });
 
-  it("shows CORRECTING on both panes while correcting and PAUSED on both while suspended", () => {
-    const correcting = new FakeConversationController(
-      session({
-        state: "correcting",
-        activeTurn: turn({ id: "t-corr", speaker: "A", status: "correcting" }),
-      }),
-    );
-    const { unmount } = render(<ConversationScreen controller={correcting} />);
-    expect(screen.getByTestId("participant-status-A")).toHaveTextContent("Исправляю");
-    expect(screen.getByTestId("participant-status-B")).toHaveTextContent("Исправляю");
-    unmount();
-
+  it("shows PAUSED on both panes while suspended", () => {
     const suspended = new FakeConversationController(session({ state: "suspended" }));
     render(<ConversationScreen controller={suspended} />);
     expect(screen.getByTestId("participant-status-A")).toHaveTextContent("Пауза");
@@ -304,28 +291,6 @@ describe("ConversationScreen orientation and status", () => {
 });
 
 describe("ConversationScreen typography and clarification", () => {
-  it.each(["A", "B"] as const)("does not correct speaker %s when either scrollbar edge is clicked", side => {
-    const controller = new FakeConversationController(session({ activeTurn: turn({ id: "scroll", speaker: "A", originalText: "Hello", translatedText: "Привет" }) }));
-    render(<ConversationScreen controller={controller} />);
-    const scroll = screen.getByTestId(`participant-scroll-${side}`);
-    vi.spyOn(scroll, "getBoundingClientRect").mockReturnValue({ left: 100, right: 400, top: 100, bottom: 400, width: 300, height: 300 } as DOMRect);
-    Object.defineProperties(scroll, { offsetWidth: { value: 300 }, clientWidth: { value: 290 } });
-    const tap = (clientX: number, target = scroll) => {
-      for (const type of ["pointerdown", "pointerup"]) {
-        const event = new MouseEvent(type, { bubbles: true, button: 0, clientX, clientY: 200 });
-        Object.defineProperty(event, "isPrimary", { value: true });
-        fireEvent(target, event);
-      }
-    };
-    // Transformed native scrollbar events can be retargeted to the pane or content.
-    for (const target of [scroll, screen.getByTestId(`participant-pane-${side}`), screen.getByTestId(`current-primary-${side}`)]) {
-      tap(105, target);
-      tap(395, target);
-    }
-    expect(controller.correctLastTurn).not.toHaveBeenCalled();
-    tap(250);
-    expect(controller.correctLastTurn).toHaveBeenCalledExactlyOnceWith(side);
-  });
 
   it("keeps long messages at one size in a keyboard-accessible scroller on B", () => {
     const translatedText = "T".repeat(200);
@@ -452,12 +417,12 @@ describe("per-participant language and authors (ANY-558 / ANY-559)", () => {
     expect(screen.getByTestId("participant-pane-B")).toHaveAttribute("lang", "en");
   });
 
-  it("includes the visible language in the button name and exposes independent participant status", () => {
+  it("shows each participant language and exposes independent participant status", () => {
     const controller = new FakeConversationController(bilingualSession());
     const view = render(<ConversationScreen controller={controller} />);
     for (const [side, description] of [["A", "A · русский"], ["B", "B · English"]] as const) {
       const pane = within(screen.getByTestId(`participant-pane-${side}`));
-      expect(pane.getByRole("button")).toHaveAccessibleName(expect.stringContaining(description));
+      expect(pane.getByText(description)).toBeInTheDocument();
       const status = pane.getByTestId(`participant-status-${side}`);
       expect(status).toHaveAttribute("role", "status");
       expect(status.closest("button")).toBeNull();
@@ -465,11 +430,10 @@ describe("per-participant language and authors (ANY-558 / ANY-559)", () => {
     controller.session = { ...controller.session, participantB: { ...controller.session.participantB, language: undefined } };
     view.rerender(<ConversationScreen controller={controller} />);
     const b = screen.getByTestId("participant-pane-B");
-    expect(within(b).getByRole("button")).not.toHaveAccessibleName(/B ·/);
     expect(b.querySelector(".participant-language")).toBeNull();
   });
 
-  it("waits without exposing unidentified text or guessed authors, then updates both panes on assignment/correction", () => {
+  it("waits without exposing unidentified text or guessed authors, then updates both panes on language detection", () => {
     const controller = new FakeConversationController(bilingualSession({
       activeTurn: turn({ id: "unknown", speaker: undefined, originalText: "OK", translatedText: "Хорошо" }),
       recentTurns: [turn({ id: "old-unknown", speaker: undefined, originalText: "123", status: "failed" })],
@@ -484,12 +448,6 @@ describe("per-participant language and authors (ANY-558 / ANY-559)", () => {
     view.rerender(<ConversationScreen controller={controller} />);
     expect(screen.getByTestId("current-author-A")).toHaveTextContent("Он");
     expect(screen.getByTestId("current-author-B")).toHaveTextContent("Me");
-    controller.session = { ...controller.session, activeTurn: { ...controller.session.activeTurn!, speaker: "A", translatedText: undefined } };
-    view.rerender(<ConversationScreen controller={controller} />);
-    expect(screen.getByTestId("current-author-A")).toHaveTextContent("Я");
-    expect(screen.getByTestId("current-author-B")).toHaveTextContent("Him");
-    expect(screen.queryByTestId("current-primary-B")).not.toBeInTheDocument();
-    expect(screen.getByTestId("participant-pane-B")).toHaveTextContent("Waiting");
   });
 
   it("localizes each pane and common controls independently and preserves old text on a language change", () => {
@@ -500,7 +458,7 @@ describe("per-participant language and authors (ANY-558 / ANY-559)", () => {
     expect(screen.getByTestId("participant-status-A")).toHaveTextContent("Говорите");
     expect(screen.getByTestId("participant-status-B")).toHaveTextContent("Speak");
     expect(screen.getByRole("button", { name: "Завершить" })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: /Correct: participant B was speaking/ })).toBeInTheDocument();
+    expect(screen.getByTestId("participant-pane-B")).toHaveTextContent("B · English");
     controller.session = { ...controller.session, participantB: { ...controller.session.participantB, language: "de" } };
     view.rerender(<ConversationScreen controller={controller} onChangeLanguage={() => {}} />);
     expect(screen.getByTestId("participant-pane-B")).toHaveTextContent("Thank you");
@@ -566,36 +524,19 @@ describe("per-participant language and authors (ANY-558 / ANY-559)", () => {
 });
 
 describe("ConversationScreen actions", () => {
-  it("keeps the pane readable and gives correction its own native button", () => {
-    const controller = new FakeConversationController();
+  it("keeps participant labels static and captions keyboard-scrollable", () => {
+    const controller = new FakeConversationController(session({
+      participantA: { ...participant("A"), language: "ru" },
+      participantB: { ...participant("B"), language: "en" },
+    }));
     render(<ConversationScreen controller={controller} />);
 
-    const sideA = screen.getByTestId("participant-pane-A");
-    expect(sideA).not.toHaveAttribute("role", "button");
-    expect(sideA).not.toHaveAttribute("tabindex");
-
-    fireEvent.click(screen.getByRole("button", { name: "Исправить: говорил участник A" }));
-    expect(controller.correctLastTurn).toHaveBeenCalledExactlyOnceWith("A");
-  });
-
-  it("taps invoke correctLastTurn for that side", () => {
-    const controller = new FakeConversationController(
-      session({
-        state: "outputting",
-        activeTurn: turn({
-          id: "t-tap",
-          speaker: "A",
-          originalText: "Hello",
-          translatedText: "Hola",
-        }),
-      }),
-    );
-    render(<ConversationScreen controller={controller} />);
-
-    fireEvent.click(screen.getByRole("button", { name: "Исправить: говорил участник B" }));
-    expect(controller.correctLastTurn).toHaveBeenCalledExactlyOnceWith("B");
-    fireEvent.click(screen.getByRole("button", { name: "Исправить: говорил участник A" }));
-    expect(controller.correctLastTurn).toHaveBeenLastCalledWith("A");
+    for (const side of ["A", "B"]) {
+      const pane = screen.getByTestId(`participant-pane-${side}`);
+      expect(within(pane).queryByRole("button")).not.toBeInTheDocument();
+      expect(pane.querySelector(".participant-language")?.tagName).toBe("SPAN");
+      expect(screen.getByTestId(`participant-scroll-${side}`)).toHaveAttribute("tabindex", "0");
+    }
   });
 
   it("End conversation calls endConversation", () => {

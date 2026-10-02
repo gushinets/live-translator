@@ -302,7 +302,7 @@ afterEach(() => {
 });
 
 describe("stage 4 transport/accounting integration", () => {
-  it("preserves old speech languages and ignores correction across a real language switch", async () => {
+  it("preserves old speech languages across a real language switch", async () => {
     const f = fixture(40);
     await f.controller.startWithLanguages({ A: "en", B: "es" });
     vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
@@ -314,12 +314,6 @@ describe("stage 4 transport/accounting integration", () => {
     await vi.waitFor(() => expect(f.controller.session.recentTurns).toHaveLength(1), { timeout: 2500 });
     await vi.waitFor(() => expect(f.controller.inputReady).toBe(true));
     await f.controller.changeInterlocutorLanguage("de");
-    const old = f.controller.session.recentTurns[0]!;
-    const eventCount = channel.events.length;
-    await f.controller.correctLastTurn("B");
-    expect(f.controller.session.activeTurn).toBeUndefined();
-    expect(f.controller.session.recentTurns[0]).toBe(old);
-    expect(channel.events).toHaveLength(eventCount);
     render(jsx(ConversationScreen, { controller: f.controller }));
     expect(screen.getByText("¿Dónde está la estación de tren?")).toHaveAttribute("lang", "es");
     await vi.advanceTimersByTimeAsync(runtime.captionIdleMs);

@@ -85,9 +85,8 @@ Result key: **NOT RUN** — no hardware / no live key in this agent environment.
 | Orientation change (landscape → suspend) | NOT RUN | NOT RUN | NOT RUN | NOT RUN |
 | Background / foreground | NOT RUN | NOT RUN | NOT RUN | NOT RUN |
 | Network loss | NOT RUN | NOT RUN | NOT RUN | NOT RUN |
-| One participant twice (correction) | NOT RUN | NOT RUN | NOT RUN | NOT RUN |
+| One participant speaks twice (automatic language routing) | NOT RUN | NOT RUN | NOT RUN | NOT RUN |
 | Text-only output | NOT RUN | NOT RUN | NOT RUN | NOT RUN |
-| Correction stale-audio tail | NOT RUN | NOT RUN | NOT RUN | NOT RUN |
 | 5–10 minute conversation | NOT RUN | NOT RUN | NOT RUN | NOT RUN |
 | 10-turn courier conversation (Step 5) | NOT RUN | NOT RUN | NOT RUN | NOT RUN |
 
@@ -119,7 +118,7 @@ Each row is a live-device criterion. Result is **NOT RUN** (no hardware / no liv
 | 25.7 | Text-only / no-audio completion after caption idle + audio-start grace | NOT RUN |
 | 25.8 | No-output watchdog: retry/LISTENING or error; same speaker; no hang | NOT RUN |
 | 25.9 | Critical values: ask to repeat rather than invent | NOT RUN |
-| 25.10 | Same speaker twice: one-tap correction; no stale queued output | NOT RUN |
+| 25.10 | Same speaker twice: language routing; no stale queued output | NOT RUN |
 | 25.11 | Same-language utterance: deterministic interpreter behavior acceptable | NOT RUN |
 | 25.12 | Overlapping humans: no client diarization promise; ask to repeat if needed | NOT RUN |
 | 25.13 | Speech during established output: not accepted as a translated turn | NOT RUN |
@@ -142,7 +141,6 @@ Each row is a live-device criterion. Result is **NOT RUN** (no hardware / no liv
 | Requested vs resulting AEC/NS/AGC/channels/rate | NOT RUN | NOT RUN | See microphone-settings table. |
 | Far-talker with `noiseSuppression: false` | NOT RUN | NOT RUN | No hardware / no live key in this agent environment. |
 | High-volume local TTS bleed into mic/VAM | NOT RUN | NOT RUN | No hardware / no live key in this agent environment. |
-| Correction stale-audio tail / jitter buffer | NOT RUN | NOT RUN | No hardware / no live key in this agent environment. |
 
 ## 10-turn courier (Task 15 Step 5)
 
@@ -187,8 +185,6 @@ Automated unit/e2e coverage does **not** close these. All remain **NOT RUN** on 
 - Text-only output can close a turn without audible TTS
 - No-output branch fails/retries instead of hanging
 - `MAX_SOURCE_MS` enters explicit repeat/recovery
-- Wrong-side correction suppresses stale local output and produces a fresh epoch
-- Only the latest correctable turn can be reassigned
 - Landscape/background/audio interruption enters `SUSPENDED` and discards unfinished turns (device, not desktop Playwright)
 - Abandoned context/bootstrap sessions close on idle timeout (live session)
 - Session reaches `session.closed` before normal WebRTC teardown (live)

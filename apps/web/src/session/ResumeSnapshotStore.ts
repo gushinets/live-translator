@@ -9,6 +9,8 @@ const CONVERSATION_VERSION_KEY = "live-translator-retained-conversation-version-
 const NO_PROVIDER_END_KEY = "live-translator-no-provider-end-v1";
 const PENDING_CREATE = "pending-create";
 const PROMPT_VERSION = "fixed-language-interpreter-v1";
+// Previous clients saved these counters in schema-v1 snapshots; keep recovery compatible.
+const SNAPSHOT_COUNTER_NAMES = [...COUNTER_NAMES, "wrongSideCorrectionCount", "correctionSuccessCount", "correctionAttemptCount"];
 const ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 export interface ResumeSnapshotInput {
@@ -83,7 +85,7 @@ function validSnapshot(value: unknown, clientInstanceId: string, conversationId:
     (value.localResumeDeadlineAt !== null && !timestamp(value.localResumeDeadlineAt)) ||
     (value.serverResumeExpiresAt !== null && !timestamp(value.serverResumeExpiresAt)) ||
     (value.resumeAttemptId !== null && (typeof value.resumeAttemptId !== "string" || !ID.test(value.resumeAttemptId))) ||
-    !record(value.counters) || !only(value.counters, COUNTER_NAMES) ||
+    !record(value.counters) || !only(value.counters, SNAPSHOT_COUNTER_NAMES) ||
     !Object.values(value.counters).every(count => Number.isSafeInteger(count) && (count as number) >= 0)) return false;
   if (value.setupStage === "interpreter" && (!value.enteredInterpreter ||
     !(value.participantA as Record<string, unknown>).language || !(value.participantB as Record<string, unknown>).language ||

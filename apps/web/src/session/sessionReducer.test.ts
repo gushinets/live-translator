@@ -45,35 +45,11 @@ function stateWithCompletedTurn(speaker: Side): TranslationSession {
   };
 }
 
-/** Outputting session whose active turn already has a stale output epoch. */
-function outputtingStateWithStaleEpoch(speaker: Side): TranslationSession {
-  const base = stateWithCompletedTurn(speaker);
-  const activeTurn = base.activeTurn;
-  if (activeTurn === undefined) {
-    throw new Error("outputtingStateWithStaleEpoch requires an active turn.");
-  }
-  return {
-    ...base,
-    activeTurn: {
-      ...activeTurn,
-      translatedText: "Hola",
-      firstOutputTextAtMs: 1500,
-      outputTextEndAtMs: 1800,
-      audioOutputStarted: true,
-      firstAudibleOutputAtMs: 1600,
-      playbackEndAtMs: 2000,
-    },
-  };
-}
-
-const SOURCE_APPEND_BLOCKED_STATES = ["correcting", "ending", "ended", "error", "suspended"] as const;
-const TURN_CLOSE_BLOCKED_STATES = ["error", "ended", "suspended", "correcting"] as const;
-const OUTPUT_EVENT_BLOCKED_STATES = ["error", "ended", "suspended", "correcting"] as const;
+const SOURCE_APPEND_BLOCKED_STATES = ["ending", "ended", "error", "suspended"] as const;
+const TURN_CLOSE_BLOCKED_STATES = ["error", "ended", "suspended"] as const;
+const OUTPUT_EVENT_BLOCKED_STATES = ["error", "ended", "suspended"] as const;
 
 function sessionWithActiveTurnIn(state: (typeof TURN_CLOSE_BLOCKED_STATES)[number]): TranslationSession {
-  if (state === "correcting") {
-    return sessionReducer(stateWithCompletedTurn("A"), { type: "CORRECTION_START" });
-  }
   if (state === "error") {
     return sessionReducer(stateWithCompletedTurn("A"), { type: "SESSION_ERROR", message: "boom" });
   }
@@ -279,88 +255,6 @@ describe("sessionReducer: main conversation flow", () => {
   });
 });
 
-describe("sessionReducer: correction flow (§11.2)", () => {
-  it("moves outputting -> correcting on CORRECTION_START", () => {
-    const state = stateWithCompletedTurn("A");
-    const next = sessionReducer(state, { type: "CORRECTION_START" });
-    expect(next.state).toBe("correcting");
-    expect(next.activeTurn?.status).toBe("correcting");
-  });
-
-  it("throws if there is no correctable turn", () => {
-    const state = listeningState({ initialSpeaker: "A", sourceActive: false });
-    expect(() => sessionReducer(state, { type: "CORRECTION_START" })).toThrow(/no correctable turn/i);
-  });
-
-  it("throws if CORRECTION_START arrives while listening to a streaming active turn", () => {
-    const state = listeningState({ initialSpeaker: "A", sourceActive: true, speaker: "A" });
-    expect(state.state).toBe("listening");
-    expect(state.activeTurn?.status).toBe("streaming");
-    expect(() => sessionReducer(state, { type: "CORRECTION_START" })).toThrow();
-  });
-
-  it("promotes a completed latest turn onto activeTurn as correcting", () => {
-    const closed = sessionReducer(stateWithCompletedTurn("A"), { type: "TURN_CLOSED", speaker: "A" });
-    expect(closed.activeTurn).toBeUndefined();
-    expect(closed.recentTurns[0]?.status).toBe("completed");
-
-    const next = sessionReducer(closed, { type: "CORRECTION_START" });
-    expect(next.state).toBe("correcting");
-    expect(next.activeTurn?.id).toBe("active-turn");
-    expect(next.activeTurn?.status).toBe("correcting");
-    expect(next.recentTurns).toEqual([]);
-  });
-
-  it("does not rehydrate a failed latest turn from recentTurns", () => {
-    const failed = sessionReducer(stateWithCompletedTurn("A"), { type: "TURN_FAILED" });
-    expect(failed.recentTurns[0]?.status).toBe("failed");
-    expect(() => sessionReducer(failed, { type: "CORRECTION_START" })).toThrow(/no correctable turn/i);
-  });
-
-  it("does not rehydrate a discarded latest turn from recentTurns", () => {
-    const suspended = sessionReducer(
-      listeningState({ initialSpeaker: "A", sourceActive: true, speaker: "A" }),
-      { type: "SUSPEND" },
-    );
-    const resumed = sessionReducer(suspended, { type: "RESUME" });
-    expect(resumed.recentTurns[0]?.status).toBe("discarded");
-    expect(() => sessionReducer(resumed, { type: "CORRECTION_START" })).toThrow(/no correctable turn/i);
-  });
-
-  it("does not skip a failed latest turn to an older completed turn", () => {
-    const closed = sessionReducer(stateWithCompletedTurn("A"), { type: "TURN_CLOSED", speaker: "A" });
-    const failed = sessionReducer(stateWithCompletedTurn("B"), { type: "TURN_FAILED" });
-    const mixed: TranslationSession = {
-      ...failed,
-      recentTurns: [...closed.recentTurns, ...failed.recentTurns],
-    };
-    expect(mixed.recentTurns.map((turn) => turn.status)).toEqual(["completed", "failed"]);
-    expect(() => sessionReducer(mixed, { type: "CORRECTION_START" })).toThrow(/no correctable turn/i);
-  });
-
-  it("reassigns speaker and marks the turn corrected", () => {
-    const correcting = sessionReducer(stateWithCompletedTurn("B"), { type: "CORRECTION_START" });
-    const next = sessionReducer(correcting, { type: "CORRECTION_APPLIED", speaker: "A" });
-
-    expect(next.state).toBe("outputting");
-    expect(next.activeTurn?.speaker).toBe("A");
-    expect(next.activeTurn?.corrected).toBe(true);
-    expect(next.activeTurn?.sideSource).toBe("manual");
-  });
-
-  it("starts a fresh output epoch", () => {
-    const correcting = sessionReducer(outputtingStateWithStaleEpoch("B"), { type: "CORRECTION_START" });
-    const next = sessionReducer(correcting, { type: "CORRECTION_APPLIED", speaker: "A" });
-
-    expect(next.activeTurn?.translatedText).toBeUndefined();
-    expect(next.activeTurn?.firstOutputTextAtMs).toBeUndefined();
-    expect(next.activeTurn?.outputTextEndAtMs).toBeUndefined();
-    expect(next.activeTurn?.audioOutputStarted).toBe(false);
-    expect(next.activeTurn?.firstAudibleOutputAtMs).toBeUndefined();
-    expect(next.activeTurn?.playbackEndAtMs).toBeUndefined();
-  });
-});
-
 describe("sessionReducer: output epoch actions", () => {
   it("OUTPUT_DELTA appends text through the turn helper and moves listening to outputting", () => {
     const state = listeningState({ initialSpeaker: "A", sourceActive: true, speaker: "A" });
@@ -398,18 +292,6 @@ describe("sessionReducer: output epoch actions", () => {
     );
   });
 
-  it("rejects OUTPUT_DELTA, AUDIO_STARTED, PLAYBACK_ENDED, SOURCE_IDLE, and OUTPUT_ACTIVE while correcting", () => {
-    const correcting = sessionReducer(stateWithCompletedTurn("A"), { type: "CORRECTION_START" });
-
-    expect(() => sessionReducer(correcting, { type: "OUTPUT_DELTA", text: "stale", nowMs: 1500 })).toThrow(
-      /correcting/,
-    );
-    expect(() => sessionReducer(correcting, { type: "AUDIO_STARTED", nowMs: 1600 })).toThrow(/correcting/);
-    expect(() => sessionReducer(correcting, { type: "PLAYBACK_ENDED", nowMs: 2100 })).toThrow(/correcting/);
-    expect(() => sessionReducer(correcting, { type: "SOURCE_IDLE" })).toThrow(/correcting/);
-    expect(() => sessionReducer(correcting, { type: "OUTPUT_ACTIVE" })).toThrow(/correcting/);
-  });
-
   it.each(OUTPUT_EVENT_BLOCKED_STATES)("rejects OUTPUT_DELTA while session state is %s", (blockedState) => {
     const state = sessionWithActiveTurnIn(blockedState);
     expect(() => sessionReducer(state, { type: "OUTPUT_DELTA", text: "stale", nowMs: 1500 })).toThrow(
@@ -438,21 +320,6 @@ describe("sessionReducer: output epoch actions", () => {
     expect(next.state).toBe("ending");
     expect(next.activeTurn?.translatedText).toBe("tail");
   });
-
-  it("accepts output events after CORRECTION_APPLIED starts a fresh epoch", () => {
-    const correcting = sessionReducer(stateWithCompletedTurn("A"), { type: "CORRECTION_START" });
-    const applied = sessionReducer(correcting, { type: "CORRECTION_APPLIED", speaker: "B" });
-
-    const withText = sessionReducer(applied, { type: "OUTPUT_DELTA", text: "Hello", nowMs: 3000 });
-    expect(withText.activeTurn?.translatedText).toBe("Hello");
-    expect(withText.state).toBe("outputting");
-
-    const withAudio = sessionReducer(withText, { type: "AUDIO_STARTED", nowMs: 3100 });
-    expect(withAudio.activeTurn?.audioOutputStarted).toBe(true);
-
-    const withPlayback = sessionReducer(withAudio, { type: "PLAYBACK_ENDED", nowMs: 3200 });
-    expect(withPlayback.activeTurn?.playbackEndAtMs).toBe(3200);
-  });
 });
 
 describe("sessionReducer: suspension flow (§11.3)", () => {
@@ -463,34 +330,6 @@ describe("sessionReducer: suspension flow (§11.3)", () => {
     expect(next.state).toBe("suspended");
     expect(next.activeTurn).toBeUndefined();
     expect(next.recentTurns[0]?.status).toBe("discarded");
-  });
-
-  it("does not discard a completed turn promoted for correction on SUSPEND", () => {
-    const closed = sessionReducer(stateWithCompletedTurn("A"), { type: "TURN_CLOSED", speaker: "A" });
-    const correcting = sessionReducer(closed, { type: "CORRECTION_START" });
-    expect(correcting.activeTurn?.status).toBe("correcting");
-
-    const next = sessionReducer(correcting, { type: "SUSPEND" });
-
-    expect(next.state).toBe("suspended");
-    expect(next.activeTurn).toBeUndefined();
-    expect(next.recentTurns).toHaveLength(1);
-    expect(next.recentTurns[0]?.id).toBe("active-turn");
-    expect(next.recentTurns[0]?.status).toBe("completed");
-  });
-
-  it("does not discard a corrected turn after CORRECTION_APPLIED on SUSPEND", () => {
-    const closed = sessionReducer(stateWithCompletedTurn("A"), { type: "TURN_CLOSED", speaker: "A" });
-    const correcting = sessionReducer(closed, { type: "CORRECTION_START" });
-    const applied = sessionReducer(correcting, { type: "CORRECTION_APPLIED", speaker: "B" });
-
-    const next = sessionReducer(applied, { type: "SUSPEND" });
-
-    expect(next.state).toBe("suspended");
-    expect(next.activeTurn).toBeUndefined();
-    expect(next.recentTurns).toHaveLength(1);
-    expect(next.recentTurns[0]?.status).toBe("completed");
-    expect(next.recentTurns[0]?.corrected).toBe(true);
   });
 
   it("keeps initialSpeaker unchanged across suspend/resume so the same speaker can repeat", () => {

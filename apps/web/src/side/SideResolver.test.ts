@@ -34,8 +34,7 @@ describe("language-based side resolution", () => {
       expect(resolveSide(text, languages)).toBeUndefined();
     }
   });
-  it("distinguishes languages sharing a script and respects manual assignment", () => {
+  it("distinguishes languages sharing a script", () => {
     expect(resolveSide("¿Dónde está la estación de tren, por favor?", { A: "en", B: "es" })).toBe("B");
-    expect(resolveSide("OK", languages, "A")).toBe("A");
   });
 });

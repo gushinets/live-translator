@@ -76,6 +76,23 @@ async function rawRow(factory: IDBFactory, name: string, key: [string, string], 
 }
 
 describe("retained conversation snapshot", () => {
+  it("loads a paused conversation saved by the previous client", async () => {
+    const f = fixture(), store = await f.open();
+    await seed(store);
+    await rawRow(f.indexedDB, f.name, [store.clientInstanceId, input.conversationId], row => ({
+      ...row,
+      counters: { ...input.counters, wrongSideCorrectionCount: 0, correctionSuccessCount: 0, correctionAttemptCount: 0 },
+    }));
+    await store.dispose();
+    const reload = await f.open();
+    const result = await reload.inspectReload(async () => paused());
+    expect(result).toMatchObject({ kind: "paused", snapshot: {
+      contextText: input.contextText, participantA: input.participantA, participantB: input.participantB,
+      counters: { completedTurnCount: 2 },
+    } });
+    await reload.dispose();
+  });
+
   it("does not report an empty reload when the identity survived but its row did not", async () => {
     const f = fixture(), store = await f.open();
     store.retainIdentity(input.conversationId);

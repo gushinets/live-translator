@@ -48,7 +48,6 @@ class MobileUiController implements ContextScreenController {
   async acceptBootstrap(): Promise<void> {}
   async beginInterpreter(): Promise<void> {}
   async cancel(): Promise<void> {}
-  async correctLastTurn(): Promise<void> {}
   async endConversation(): Promise<void> {}
   async resumeFromSourceTimeout(): Promise<void> {}
 }

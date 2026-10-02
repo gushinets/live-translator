@@ -4,7 +4,6 @@ import {
   appendOutputTextToTurn,
   appendSourceFragmentToTurn,
   clearSourceIdle,
-  canAssignUnresolvedSource,
   completeTurn,
   createTurn,
   discardTurn,
@@ -14,7 +13,6 @@ import {
   markPlaybackEnded,
   markSourceIdle,
   pushRecentTurn,
-  startFreshOutputEpoch,
 } from "../conversation/TurnBuffer";
 import { resolveSide } from "../side/SideResolver";
 import type { SessionState, TranslationSession } from "./SessionState";
@@ -43,11 +41,6 @@ export type SessionAction =
   | { type: "OUTPUT_IDLE" }
   | { type: "TURN_CLOSED"; speaker: Side | undefined }
   | { type: "TURN_FAILED" }
-  // Correction flow (§11.2).
-  | { type: "CORRECTION_START" }
-  | { type: "CORRECTION_SOURCE_ACTIVITY"; active: boolean }
-  | { type: "CORRECTION_SOURCE_FRAGMENT"; fragment: TranscriptFragment }
-  | { type: "CORRECTION_APPLIED"; speaker: Side }
   // Suspension flow (§11.3).
   | { type: "SUSPEND" }
   | { type: "RESUME" }
@@ -68,7 +61,6 @@ function requireActiveTurn(session: TranslationSession): Turn {
 }
 
 const SOURCE_APPEND_BLOCKED_STATES: ReadonlySet<SessionState> = new Set([
-  "correcting",
   "ending",
   "ended",
   "error",
@@ -85,7 +77,6 @@ const TURN_CLOSE_BLOCKED_STATES: ReadonlySet<SessionState> = new Set([
   "error",
   "ended",
   "suspended",
-  "correcting",
 ]);
 
 function assertTurnCloseAllowed(session: TranslationSession): void {
@@ -94,31 +85,16 @@ function assertTurnCloseAllowed(session: TranslationSession): void {
   }
 }
 
-function assertFreshOutputEpoch(session: TranslationSession): void {
-  if (session.state === "correcting") {
-    throw new Error(`Cannot accept output or source-idle events while session state is "correcting".`);
-  }
-}
-
 const OUTPUT_EVENT_BLOCKED_STATES: ReadonlySet<SessionState> = new Set([
   "error",
   "ended",
   "suspended",
-  "correcting",
 ]);
 
 function assertOutputEventAllowed(session: TranslationSession): void {
   if (OUTPUT_EVENT_BLOCKED_STATES.has(session.state)) {
     throw new Error(`Cannot accept output events while session state is "${session.state}".`);
   }
-}
-
-function isPreservedCompletedTarget(turn: Turn): boolean {
-  return turn.turnCompletedAtMs !== undefined || turn.corrected;
-}
-
-function isRecentCorrectable(turn: Turn): boolean {
-  return turn.status === "completed" || turn.status === "outputting" || canAssignUnresolvedSource(turn);
 }
 
 function withOutputtingIfListening(session: TranslationSession, activeTurn: Turn): TranslationSession {
@@ -177,7 +153,6 @@ function handleSourceActive(
 }
 
 function assignLanguageSide(session: TranslationSession, turn: Turn): Turn {
-  if (turn.sideSource === "manual") return turn;
   const A = turn.languages?.A ?? session.participantA.language;
   const B = turn.languages?.B ?? session.participantB.language;
   if (A === undefined || B === undefined) return turn;
@@ -248,58 +223,6 @@ function handleTurnFailed(session: TranslationSession): TranslationSession {
   };
 }
 
-function handleCorrectionStart(session: TranslationSession): TranslationSession {
-  if (session.state !== "outputting" && session.state !== "listening") {
-    throw new Error(`Cannot start a correction while session state is "${session.state}".`);
-  }
-
-  if (session.activeTurn !== undefined) {
-    if (
-      session.activeTurn.status === "failed" ||
-      session.activeTurn.status === "discarded" ||
-      (session.state === "listening" && session.activeTurn.status === "streaming" &&
-        !canAssignUnresolvedSource(session.activeTurn))
-    ) {
-      throw new Error("Cannot start a correction: no correctable turn exists.");
-    }
-    return {
-      ...session,
-      state: "correcting",
-      activeTurn: { ...session.activeTurn, status: "correcting" },
-    };
-  }
-
-  const latest = session.recentTurns.at(-1);
-  if (latest === undefined || !isRecentCorrectable(latest)) {
-    throw new Error("Cannot start a correction: no correctable turn exists.");
-  }
-
-  return {
-    ...session,
-    state: "correcting",
-    activeTurn: { ...latest, status: "correcting" },
-    recentTurns: session.recentTurns.slice(0, -1),
-  };
-}
-
-function handleCorrectionApplied(
-  session: TranslationSession,
-  action: Extract<SessionAction, { type: "CORRECTION_APPLIED" }>,
-): TranslationSession {
-  if (session.state !== "correcting") {
-    throw new Error(`Cannot apply a correction while session state is "${session.state}"; expected "correcting".`);
-  }
-  if (session.activeTurn === undefined || session.activeTurn.status !== "correcting") {
-    throw new Error("Cannot apply a correction: no active correcting turn exists.");
-  }
-
-  return {
-    ...session,
-    state: "outputting",
-    activeTurn: startFreshOutputEpoch(session.activeTurn, action.speaker),
-  };
-}
-
 function handleSuspend(session: TranslationSession): TranslationSession {
   if (
     session.state === "idle" ||
@@ -313,10 +236,7 @@ function handleSuspend(session: TranslationSession): TranslationSession {
   if (session.activeTurn === undefined) {
     return { ...session, state: "suspended" };
   }
-  // §11.3 discards an unfinished source turn. A completed or already-corrected
-  // utterance must return to recentTurns as completed, including after
-  // CORRECTION_APPLIED (which clears turnCompletedAtMs for the fresh epoch).
-  if (isPreservedCompletedTarget(session.activeTurn)) {
+  if (session.activeTurn.turnCompletedAtMs !== undefined) {
     return {
       ...session,
       state: "suspended",
@@ -351,7 +271,6 @@ export function sessionReducer(session: TranslationSession, action: SessionActio
     case "SOURCE_FRAGMENT":
       return handleSourceFragment(session, action);
     case "SOURCE_IDLE":
-      assertFreshOutputEpoch(session);
       if (session.activeTurn === undefined) {
         return session;
       }
@@ -382,27 +301,6 @@ export function sessionReducer(session: TranslationSession, action: SessionActio
       return handleTurnClosed(session, action);
     case "TURN_FAILED":
       return handleTurnFailed(session);
-
-    case "CORRECTION_START":
-      return handleCorrectionStart(session);
-    case "CORRECTION_SOURCE_ACTIVITY":
-      if (session.state !== "correcting" || session.activeTurn === undefined) return session;
-      return {
-        ...session,
-        activeTurn: action.active
-          ? clearSourceIdle(session.activeTurn)
-          : markSourceIdle(session.activeTurn, Date.now()),
-      };
-    case "CORRECTION_SOURCE_FRAGMENT":
-      if (session.state !== "correcting" || session.activeTurn === undefined) return session;
-      return {
-        ...session,
-        // Manual correction owns side assignment for this utterance. Preserve
-        // transcript tail without re-running language routing mid-correction.
-        activeTurn: appendSourceFragmentToTurn(session.activeTurn, action.fragment),
-      };
-    case "CORRECTION_APPLIED":
-      return handleCorrectionApplied(session, action);
 
     case "SUSPEND":
       return handleSuspend(session);

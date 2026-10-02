@@ -19,9 +19,9 @@ describe("per-provider application totals", () => {
     const r = new UsageReporter("id", "c", out, { now: () => now, automatic: false, initial: ready });
     for (now = 0; now <= 5000; now += 50) r.observeProduct({ ...ready, atMs: now, turnId: "one", sample: { atMs: now, active: now < 5000 } });
     r.observeProduct({ ...ready, atMs: 5050, completedTurnId: "one", counters: { audioCompletedTurnCount: 1 } });
-    r.observeProduct({ ...ready, atMs: 5100, completedTurnId: "one", counters: { audioCompletedTurnCount: 1, correctionAttemptCount: 1 } });
+    r.observeProduct({ ...ready, atMs: 5100, completedTurnId: "one", counters: { audioCompletedTurnCount: 1 } });
     now = 6000; r.observeUsage({ kind: "provider_closed", seconds: 15 }); await r.idle();
-    expect(out.enqueue.mock.calls.at(-1)![2].app).toMatchObject({ acceptedSourceSpeechMs: 5000, completedSourceSpeechMs: 5000, counters: { audioCompletedTurnCount: 1, correctionAttemptCount: 1 } });
+    expect(out.enqueue.mock.calls.at(-1)![2].app).toMatchObject({ acceptedSourceSpeechMs: 5000, completedSourceSpeechMs: 5000, counters: { audioCompletedTurnCount: 1 } });
   });
   it("subtracts the previous provider's conversation counters without duplicating the engine", async () => {
     const out = { enqueue: vi.fn().mockResolvedValue(undefined), finishProducer: vi.fn(), noProvider: vi.fn() };

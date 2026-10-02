@@ -97,25 +97,21 @@ describe("ConversationMetrics", () => {
     expect(snapshot.poorOutputRoute).toBe(true);
   });
 
-  it("records VAM false-active and correction counters", () => {
+  it("records VAM false-active counts", () => {
     const metrics = new ConversationMetrics();
     metrics.recordVamFalseActive();
-    metrics.recordWrongSideCorrection();
-    metrics.recordCorrectionSuccess();
 
     const snapshot = metrics.snapshot();
     expect(snapshot.vamFalseActiveCount).toBe(1);
-    expect(snapshot.wrongSideCorrectionCount).toBe(1);
-    expect(snapshot.correctionSuccessCount).toBe(1);
   });
 });
 
-it("keeps technical outcomes distinct and deduplicates correction of one logical turn", () => {
+it("keeps technical outcomes distinct and deduplicates completion of one logical turn", () => {
   const metrics = new ConversationMetrics();
   metrics.recordTechnicalOutcome("one", "audio"); metrics.recordTechnicalOutcome("one", "audio");
   metrics.recordTechnicalOutcome("two", "text_only"); metrics.recordTechnicalOutcome("three", "failed");
-  metrics.recordTechnicalOutcome("four", "discarded"); metrics.recordCorrectionAttempt();
-  expect(metrics.snapshot()).toMatchObject({ audioCompletedTurnCount: 1, textOnlyCompletedTurnCount: 1, failedTurnCount: 1, discardedTurnCount: 1, correctionAttemptCount: 1 });
+  metrics.recordTechnicalOutcome("four", "discarded");
+  expect(metrics.snapshot()).toMatchObject({ audioCompletedTurnCount: 1, textOnlyCompletedTurnCount: 1, failedTurnCount: 1, discardedTurnCount: 1 });
 });
 
 it("restores cumulative counters without reviving old turn IDs or losing poor output history", () => {

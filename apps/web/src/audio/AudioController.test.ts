@@ -202,7 +202,7 @@ describe("AudioController", () => {
     expect(track.readyState).toBe("ended");
   });
 
-  it("mutes local output immediately during correction", async () => {
+  it("mutes local output immediately", async () => {
     await controller.startCapture();
     controller.setOutputAudible(true);
 
