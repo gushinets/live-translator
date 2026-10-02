@@ -27,22 +27,30 @@ test("compact participant headers leave room for four readable exchanges on each
     await harness.waitForGateBUnmuted();
     await harness.advance(runtime.captionIdleMs);
   }
-  await page.screenshot({ path: testInfo.outputPath("variant-four-dialogue.png") });
-  for (const side of ["A", "B"] as const) {
-    const pane = page.getByTestId(`participant-pane-${side}`);
-    expect((await pane.locator(".participant-header").boundingBox())!.height).toBeLessThanOrEqual(32);
-    const rows = pane.locator("li");
-    await expect(rows).toHaveCount(4);
-    for (const row of await rows.all()) {
-      await expect(row).toBeInViewport({ ratio: 0.99 });
-      await expect(row).toHaveCSS("font-size", "22px");
+  for (const viewport of [page.viewportSize()!, { width: 320, height: 640 }]) {
+    await page.setViewportSize(viewport);
+    await page.screenshot({ path: testInfo.outputPath(`variant-four-dialogue-${viewport.width}.png`) });
+    for (const side of ["A", "B"] as const) {
+      const pane = page.getByTestId(`participant-pane-${side}`);
+      expect((await pane.locator(".participant-header").boundingBox())!.height).toBeLessThanOrEqual(32);
+      const rows = pane.locator("li");
+      await expect(rows).toHaveCount(4);
+      for (const row of await rows.all()) {
+        await expect(row).toBeInViewport({ ratio: 0.99 });
+        await expect(row).toHaveCSS("font-size", "22px");
+      }
     }
+    for (const name of ["Язык собеседника", "Завершить"]) {
+      const button = page.getByRole("button", { name });
+      const box = (await button.boundingBox())!;
+      expect(box.width).toBeGreaterThanOrEqual(44);
+      expect(box.height).toBeGreaterThanOrEqual(44);
+      await expect(button).toBeInViewport({ ratio: 0.99 });
+    }
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
   }
   await expect(page.getByTestId("participant-pane-A")).toHaveCSS("background-color", "rgb(23, 35, 38)");
   await expect(page.getByTestId("participant-pane-B")).toHaveCSS("background-color", "rgb(241, 232, 215)");
-  await page.setViewportSize({ width: 320, height: 640 });
-  await expect(page.getByRole("button", { name: "Завершить" })).toBeInViewport();
-  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
 });
 
 test("long captions stay readable, retain their size in pauses, and respect manual scrolling on both sides", async ({ page }, testInfo) => {

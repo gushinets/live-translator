@@ -59,7 +59,7 @@ body,
   cursor: pointer;
 }
 
-.conversation-center .conversation-language-action { display: flex; flex: 1 1 11rem; min-width: min(11rem, 100%); align-items: center; justify-content: center; gap: 0.5rem; }
+.conversation-center .conversation-language-action { display: flex; flex: 1 1 9rem; min-width: min(9rem, 100%); align-items: center; justify-content: center; gap: 0.5rem; }
 .conversation-language-action span { min-width: 0; }
 .conversation-language-action svg { flex: 0 0 auto; width: 1.35rem; height: 1.35rem; color: #ace2c9; }
 .conversation-center button:hover:not(:disabled) { background: #354d4c; }
@@ -100,7 +100,7 @@ body,
   --participant-rule: #d1c5b0;
   background: #f1e8d7;
   color: #25231f;
-  scrollbar-color: #a48348 #f1e8d7;
+  scrollbar-color: #816333 #f1e8d7;
 }
 
 .participant-header {
@@ -165,6 +165,10 @@ body,
 .rotate-overlay p { margin: 0; padding: 1rem; }
 @media (max-height: 46rem) {
   .recent-turn { margin-bottom: 0.375rem; padding-bottom: 0.375rem; }
+}
+@media (max-width: 22rem) {
+  .conversation-center { gap: 0.375rem; padding: 0.25rem 0.5rem; }
+  .recent-turn { margin-bottom: 0.25rem; padding-bottom: 0.25rem; }
 }
 @media (prefers-reduced-motion: reduce) {
   .conversation-center button:active:not(:disabled) { transform: none; }
