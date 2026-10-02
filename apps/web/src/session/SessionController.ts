@@ -7,9 +7,9 @@ import {
   buildTurnCompletionSnapshot,
   evaluateTurnCompletion,
 } from "../conversation/TurnCompletion";
-import { canAssignUnresolvedSource, createTranscriptFragment } from "../conversation/TurnBuffer";
+import { createTranscriptFragment } from "../conversation/TurnBuffer";
 import type { ResumeSnapshot, ResumeSnapshotInput } from "./ResumeSnapshotStore";
-import type { Side, Turn } from "../conversation/Turn";
+import type { Side } from "../conversation/Turn";
 import { AckTimeoutError } from "../live/AckRegistry";
 import { LiveClient, type LiveClientErrorEvent } from "../live/LiveClient";
 import {
@@ -21,8 +21,6 @@ import {
 } from "../live/LiveEvents";
 import {
   buildAuthoritativeContext,
-  buildCorrectionCommentaryTrigger,
-  buildCorrectionInstruction,
   buildInterpreterInstructions,
   buildSteering,
   buildUnfinishedTurnWarning,
@@ -134,12 +132,7 @@ export class SessionController {
   private speechInputReady = false;
   private recoveryPromptKind: RecoveryPrompt | undefined;
   private steeringDegradedFlag = false;
-  private correctionEpoch = 0;
-  private gateCHeldForCorrectionEpoch: number | null = null;
-  private correctionWork: Promise<void> | null = null;
   private endWork: Promise<void> | null = null;
-  private playbackIdleWaitResolve: (() => void) | null = null;
-  private playbackIdleWaitTimer: number | null = null;
   private platformStarted = false;
   private earlyVisibilityStarted = false;
   private backgroundPaused = false;
@@ -593,9 +586,7 @@ export class SessionController {
     }
     const generation = this.sessionGeneration;
     const lifecycleEpoch = this.lifecycleEpoch;
-    const correctionEpoch = this.correctionEpoch;
     const current = () => generation === this.sessionGeneration && lifecycleEpoch === this.lifecycleEpoch &&
-      correctionEpoch === this.correctionEpoch && this.correctionWork === null &&
       (this.currentSession.state === "listening" || this.currentSession.state === "outputting");
     const interrupted = () => new Error("Смена языка прервана изменением состояния разговора.");
     this.speechInputReady = false;
@@ -685,7 +676,7 @@ export class SessionController {
       this.remotePlaybackGeneration !== playbackGeneration || this.remotePlaybackState === "failed") return;
     this.remotePlaybackState = "failed";
     this.pendingRemotePlaybackActivity = null;
-    if (this.playbackActive) { this.playbackActive = false; this.finishPlaybackIdleWait(); }
+    this.playbackActive = false;
     console.error("Remote audio playback failed", { error });
     if (this.retainedPlaybackCommitted) {
       try { this.stopLocalMedia(); }
@@ -720,10 +711,7 @@ export class SessionController {
     this.remotePlaybackWork = null;
     this.remotePlaybackTrack = null;
     this.pendingRemotePlaybackActivity = null;
-    if (this.playbackActive) {
-      this.playbackActive = false;
-      this.finishPlaybackIdleWait();
-    }
+    this.playbackActive = false;
   }
 
   async resumeFromSourceTimeout(): Promise<void> {
@@ -844,21 +832,6 @@ export class SessionController {
     this.recoveryPromptKind = undefined;
     this.speechInputReady = true;
     this.dispatch({ type: "RESUME" });
-  }
-
-  async correctLastTurn(side: Side): Promise<void> {
-    if (this.correctionWork !== null) {
-      await this.correctionWork;
-    }
-    const work = this.runCorrectLastTurn(side);
-    this.correctionWork = work;
-    try {
-      await work;
-    } finally {
-      if (this.correctionWork === work) {
-        this.correctionWork = null;
-      }
-    }
   }
 
   endConversation(): Promise<void> { return this.runTerminalBoundary("end"); }
@@ -1154,93 +1127,6 @@ export class SessionController {
     }
   }
 
-  private latestCorrectableTurn(): Turn | undefined {
-    const session = this.currentSession;
-    if (session.state !== "outputting" && session.state !== "listening") {
-      return undefined;
-    }
-    if (session.activeTurn !== undefined) {
-      if (canAssignUnresolvedSource(session.activeTurn)) return session.activeTurn;
-      if (
-        session.activeTurn.status === "failed" ||
-        session.activeTurn.status === "discarded" ||
-        (session.state === "listening" && session.activeTurn.status === "streaming")
-      ) {
-        return undefined;
-      }
-      return session.activeTurn;
-    }
-    const latest = session.recentTurns.at(-1);
-    if (latest === undefined) {
-      return undefined;
-    }
-    if (canAssignUnresolvedSource(latest)) return latest;
-    if (latest.status !== "completed" && latest.status !== "outputting") {
-      return undefined;
-    }
-    return latest;
-  }
-
-  private async runCorrectLastTurn(side: Side): Promise<void> {
-    const target = this.latestCorrectableTurn();
-    // Changing languages retires old correction targets; keep their history intact.
-    if (target === undefined || target.speaker === side ||
-      (target.languages !== undefined &&
-        (target.languages.A !== this.languages.A || target.languages.B !== this.languages.B))) {
-      return;
-    }
-    this.conversationMetrics.recordWrongSideCorrection();
-    this.recoveryPromptKind = undefined;
-    const previousSpeaker = target.speaker;
-    const generation = this.sessionGeneration;
-    this.clearMaxSourceTimer();
-    this.clearCompletionTimer();
-    this.clearCaptionIdleTimer();
-    this.audio.setOutputAudible(false);
-    this.speechInputReady = false;
-    this.dispatch({ type: "CORRECTION_START" });
-    this.beginLeftoverOutputDrain();
-    try {
-      await this.live.appendInstructions(
-        buildCorrectionInstruction({ actualSpeaker: side, previousSpeaker }),
-        { kind: "correction" },
-      );
-      if (this.sessionGeneration !== generation || this.currentSession.state !== "correcting") {
-        return;
-      }
-      await this.waitForPlaybackIdleOrSettle();
-      if (this.sessionGeneration !== generation || this.currentSession.state !== "correcting") {
-        return;
-      }
-      await this.live.appendCommentary(buildCorrectionCommentaryTrigger(), {
-        kind: "correction",
-      });
-      if (this.sessionGeneration !== generation || this.currentSession.state !== "correcting") {
-        return;
-      }
-      this.dispatch({ type: "CORRECTION_APPLIED", speaker: side });
-      if (this.currentSession.activeTurn?.sourceIdleAtMs === undefined) this.armMaxSourceTimer();
-      this.conversationMetrics.recordCorrectionSuccess();
-      this.correctionEpoch += 1;
-      this.gateCHeldForCorrectionEpoch = this.correctionEpoch;
-    } catch (error) {
-      if (this.sessionGeneration !== generation) {
-        return;
-      }
-      this.finishPlaybackIdleWait();
-      this.ownerErrorMessage = CONNECTION_ERROR_MESSAGE;
-      this.dispatch({
-        type: "SESSION_ERROR",
-        message: this.ownerErrorMessage,
-      });
-      console.error("Correction append failed", {
-        error,
-        state: this.currentSession.state,
-      });
-      throw error;
-    }
-  }
-
   private async runEndConversation(): Promise<void> {
     if (this.currentSession.state === "idle" || this.currentSession.state === "ended") {
       throw new Error(`Cannot end a session in state "${this.currentSession.state}"`);
@@ -1385,13 +1271,6 @@ export class SessionController {
       startMs: event.start_ms,
       endMs: event.end_ms,
     });
-    if (this.currentSession.state === "correcting") {
-      const activeTurn = this.currentSession.activeTurn;
-      if (activeTurn !== undefined && activeTurn.turnCompletedAtMs === undefined) {
-        this.dispatch({ type: "CORRECTION_SOURCE_FRAGMENT", fragment });
-      }
-      return;
-    }
     if (this.currentSession.state !== "listening" && this.currentSession.state !== "outputting") {
       return;
     }
@@ -1435,7 +1314,6 @@ export class SessionController {
       text: event.delta,
       nowMs: Date.now(),
     });
-    this.releaseGateCAfterFreshCorrectionOutput();
     this.armCaptionIdleTimer();
     void this.considerTurnCompletion(Date.now());
   }
@@ -1443,10 +1321,6 @@ export class SessionController {
   private async handleVoiceActivity(event: AudioActivityEvent): Promise<void> {
     if (this.backgroundPaused) return;
     if (this.turnClosing) {
-      return;
-    }
-    if (this.currentSession.state === "correcting") {
-      this.dispatch({ type: "CORRECTION_SOURCE_ACTIVITY", active: event.active });
       return;
     }
     if (this.currentSession.state !== "listening" && this.currentSession.state !== "outputting") {
@@ -1551,22 +1425,11 @@ export class SessionController {
     if (!this.acceptRemotePlaybackActivity(event)) {
       return;
     }
-    const wasActive = this.playbackActive;
     this.playbackActive = event.active;
-    if (!event.active) {
-      this.finishPlaybackIdleWait();
-    }
-    const isPlaybackOnset = event.active && !wasActive;
     if (this.leftoverOutputDraining) {
-      if (isPlaybackOnset && this.tryEstablishCorrectionEpochFromPlayback(event.atMs)) {
-        return;
-      }
       if (!event.active) {
         this.maybeFinishLeftoverOutputDrain();
       }
-      return;
-    }
-    if (this.currentSession.state === "correcting") {
       return;
     }
     if (this.currentSession.state !== "listening" && this.currentSession.state !== "outputting") {
@@ -1576,11 +1439,7 @@ export class SessionController {
       return;
     }
     if (event.active) {
-      if (this.gateCHeldForCorrectionEpoch !== null && !isPlaybackOnset) {
-        return;
-      }
       this.dispatch({ type: "AUDIO_STARTED", nowMs: event.atMs });
-      this.releaseGateCAfterFreshCorrectionOutput();
       return;
     }
     this.dispatch({ type: "PLAYBACK_ENDED", nowMs: event.atMs });
@@ -1588,7 +1447,7 @@ export class SessionController {
   }
 
   private async considerTurnCompletion(nowMs: number): Promise<void> {
-    if (this.turnClosing || this.gateCHeldForCorrectionEpoch !== null) {
+    if (this.turnClosing) {
       return;
     }
     const turn = this.currentSession.activeTurn;
@@ -1988,52 +1847,6 @@ export class SessionController {
     this.leftoverDrainTimer = null;
   }
 
-  private releaseGateCAfterFreshCorrectionOutput(): void {
-    if (this.leftoverOutputDraining || this.gateCHeldForCorrectionEpoch === null) {
-      return;
-    }
-    if (this.gateCHeldForCorrectionEpoch !== this.correctionEpoch) {
-      return;
-    }
-    this.gateCHeldForCorrectionEpoch = null;
-    this.finishLeftoverOutputDrain();
-    this.audio.setOutputAudible(true);
-  }
-
-  private tryEstablishCorrectionEpochFromPlayback(atMs: number): boolean {
-    if (this.leftoverOutputDraining || !this.playbackActive || this.gateCHeldForCorrectionEpoch === null) {
-      return false;
-    }
-    if (this.currentSession.state !== "outputting" || this.currentSession.activeTurn === undefined) {
-      return false;
-    }
-    this.dispatch({ type: "AUDIO_STARTED", nowMs: atMs });
-    this.releaseGateCAfterFreshCorrectionOutput();
-    return true;
-  }
-
-  private async waitForPlaybackIdleOrSettle(): Promise<void> {
-    if (!this.playbackActive) {
-      return;
-    }
-    await new Promise<void>((resolve) => {
-      this.playbackIdleWaitResolve = resolve;
-      this.playbackIdleWaitTimer = window.setTimeout(() => {
-        this.finishPlaybackIdleWait();
-      }, runtime.playbackIdleMs + runtime.outputSettleGraceMs);
-    });
-  }
-
-  private finishPlaybackIdleWait(): void {
-    if (this.playbackIdleWaitTimer !== null) {
-      window.clearTimeout(this.playbackIdleWaitTimer);
-      this.playbackIdleWaitTimer = null;
-    }
-    const resolve = this.playbackIdleWaitResolve;
-    this.playbackIdleWaitResolve = null;
-    resolve?.();
-  }
-
   private finishLeftoverOutputDrain(): void {
     this.leftoverOutputDraining = false;
     this.leftoverCaptionIdle = true;
@@ -2069,7 +1882,6 @@ export class SessionController {
     this.clearCompletionTimer();
     this.clearCaptionIdleTimer();
     this.clearLeftoverDrainTimer();
-    this.finishPlaybackIdleWait();
   }
 
   private clearMaxSourceTimer(): void {
@@ -2554,7 +2366,7 @@ export class SessionController {
 
   private conversationCanSuspend(): boolean {
     const state = this.currentSession.state;
-    return state === "listening" || state === "outputting" || state === "correcting";
+    return state === "listening" || state === "outputting";
   }
 
   private async handleOrientationChange(orientation: "portrait" | "landscape"): Promise<void> {
@@ -2604,7 +2416,7 @@ export class SessionController {
         contextText: this.capturingContext ? "" : this.contextBuffer,
         setupStage: (this.enteredInterpreter ? "interpreter" : state.state === "bootstrap" ? "bootstrap" : "context") as ResumeSnapshotInput["setupStage"],
         enteredInterpreter: this.enteredInterpreter,
-        interruptedUtterance: state.activeTurn !== undefined && state.activeTurn.turnCompletedAtMs === undefined && !state.activeTurn.corrected,
+        interruptedUtterance: state.activeTurn !== undefined && state.activeTurn.turnCompletedAtMs === undefined,
         counters,
       };
       this.sessionGeneration += 1;
@@ -2731,7 +2543,6 @@ export class SessionController {
     this.clearMaxSourceTimer();
     this.clearCompletionTimer();
     this.clearCaptionIdleTimer();
-    this.finishPlaybackIdleWait();
   }
 
   private async suspendFromLifecycle(reason: LifecycleSuspendReason): Promise<void> {
@@ -2750,7 +2561,7 @@ export class SessionController {
     const active = this.currentSession.activeTurn;
     this.speechInputReady = false;
     this.discardedUnfinishedOnSuspend =
-      active !== undefined && active.turnCompletedAtMs === undefined && !active.corrected;
+      active !== undefined && active.turnCompletedAtMs === undefined;
     this.clearTurnEngineTimersKeepingLeftoverDrain();
     this.turnClosing = false;
     if (this.playbackActive && !this.leftoverOutputDraining) {
@@ -3007,13 +2818,9 @@ export class SessionController {
     this.resolveLeftoverDrainWaiters();
     this.recoveryPromptKind = undefined;
     this.steeringDegradedFlag = false;
-    this.correctionEpoch = 0;
-    this.gateCHeldForCorrectionEpoch = null;
-    this.correctionWork = null;
     this.enteredInterpreter = false;
     this.pendingInterlocutorLanguage = undefined;
     this.conversationMetrics = new ConversationMetrics();
-    this.finishPlaybackIdleWait();
     this.clearTurnEngineTimers();
     this.clearMaxSessionTimer();
     this.stopPlatformLifecycle();
@@ -3028,14 +2835,13 @@ export class SessionController {
     const previousTurn = this.currentSession.activeTurn;
     this.currentSession = sessionReducer(this.currentSession, action);
     let completedTurnId: string | undefined;
-    if (action.type === "CORRECTION_START") this.conversationMetrics.recordCorrectionAttempt();
     if (previousTurn && action.type === "TURN_CLOSED") {
       if (previousTurn.audioOutputStarted && previousTurn.playbackEndAtMs !== undefined && this.audio.audioElement.muted === false && this.remotePlaybackState === "ready") {
         if (this.conversationMetrics.recordTechnicalOutcome(previousTurn.id, "audio")) completedTurnId = previousTurn.id;
       } else if (!previousTurn.audioOutputStarted) this.conversationMetrics.recordTechnicalOutcome(previousTurn.id, "text_only");
     }
     if (previousTurn && action.type === "TURN_FAILED") this.conversationMetrics.recordTechnicalOutcome(previousTurn.id, "failed");
-    if (previousTurn && ["SUSPEND", "END", "SESSION_ERROR"].includes(action.type) && previousTurn.turnCompletedAtMs === undefined && !previousTurn.corrected) {
+    if (previousTurn && ["SUSPEND", "END", "SESSION_ERROR"].includes(action.type) && previousTurn.turnCompletedAtMs === undefined) {
       this.conversationMetrics.recordTechnicalOutcome(previousTurn.id, action.type === "SESSION_ERROR" ? "failed" : "discarded");
     }
     this.notify(completedTurnId);

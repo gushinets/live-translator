@@ -81,7 +81,6 @@ class FakeOwnerController implements ContextScreenController {
 
   beginInterpreter = vi.fn(async () => {});
 
-  correctLastTurn = vi.fn(async () => {});
 
   endConversation = vi.fn(async () => {});
 

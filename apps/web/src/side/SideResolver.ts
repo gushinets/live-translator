@@ -24,7 +24,7 @@ export function preferredLanguage(locales: readonly string[]): string | undefine
 
 export function detectLanguage(text: string, minLetters = 8): string | undefined {
   // ponytail: text detection cannot identify very short or ambiguous speech;
-  // leave it unassigned and offer manual correction instead of guessing.
+  // leave it unassigned instead of guessing.
   const sample = text.slice(0, 2000);
   if ((sample.match(/\p{L}/gu)?.length ?? 0) < minLetters) return undefined;
   const result = eld.detect(sample);
@@ -34,9 +34,7 @@ export function detectLanguage(text: string, minLetters = 8): string | undefined
 export function resolveSide(
   text: string,
   languages: ConversationLanguages,
-  manualOverride?: Side,
 ): Side | undefined {
-  if (manualOverride !== undefined) return manualOverride;
   if (languages.A === languages.B) return undefined;
   const language = detectLanguage(text);
   if (language === languages.A) return "A";

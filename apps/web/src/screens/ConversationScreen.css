@@ -72,7 +72,6 @@ html { scrollbar-color: #8f8374 #1c1713; scrollbar-width: auto; }
 .conversation-end-size { visibility: hidden; }
 
 .conversation-center button:focus-visible,
-.participant-correction-target:focus-visible,
 .participant-scroll:focus-visible { outline: 2px solid #f4ead5; outline-offset: -3px; }
 
 .participant-pane {
@@ -99,22 +98,6 @@ html { scrollbar-color: #8f8374 #1c1713; scrollbar-width: auto; }
   border-bottom: 1px solid #3a3025;
 }
 
-.participant-correction-target {
-  min-width: 44px;
-  max-width: 100%;
-  min-height: 44px;
-  padding: 0.25rem 0;
-  border: 0;
-  background: transparent;
-  color: inherit;
-  font: inherit;
-  text-align: left;
-  overflow-wrap: anywhere;
-  cursor: pointer;
-}
-
-.participant-correction-target:hover { background: #2a2218; }
-.participant-correction-target:active { background: #3a3025; }
 .participant-language { color: #c4b6a1; }
 .participant-status { font-weight: 600; }
 

@@ -60,8 +60,7 @@ export interface LiveCloseResult {
 export type AppendPolicyKind =
   | "startup_interpreter"
   | "first_steering"
-  | "later_steering"
-  | "correction";
+  | "later_steering";
 
 export interface AppendPolicy {
   kind: AppendPolicyKind;

@@ -5,7 +5,6 @@ import "./ConversationScreen.css";
 import { ParticipantPane } from "../components/ParticipantPane";
 import { deriveParticipantStatus } from "../components/ParticipantStatus";
 import { MAX_RECENT_TURNS } from "../conversation/TurnBuffer";
-import type { Side } from "../conversation/Turn";
 import type { LifecycleSuspendReason, RecoveryPrompt } from "../session/SessionController";
 import type { TranslationSession } from "../session/SessionState";
 import { translate, uiLocale } from "../i18n/messages";
@@ -18,7 +17,6 @@ export interface ConversationScreenController {
   readonly suspendReason?: LifecycleSuspendReason;
   readonly retainedRecoveryState?: RetainedRecoveryState;
   subscribe(listener: () => void): () => void;
-  correctLastTurn(side: Side): Promise<void>;
   endConversation(): Promise<void>;
   resumeFromSourceTimeout(): Promise<void>;
   resumeRetainedConversation?(): Promise<void>;
@@ -64,12 +62,6 @@ export function ConversationScreen({
   const hasOutputText = (active?.translatedText ?? "").length > 0;
   const audioOutputStarted = active?.audioOutputStarted === true;
   const recentTurns = session.recentTurns.slice(-MAX_RECENT_TURNS);
-  const unassigned = active ?? recentTurns.at(-1);
-  const canChooseSide = (session.state === "listening" || session.state === "outputting") &&
-    unassigned?.speaker === undefined && (unassigned?.originalText.trim().length ?? 0) > 0 &&
-    (unassigned?.languages === undefined || (unassigned.languages.A === session.participantA.language &&
-      unassigned.languages.B === session.participantB.language)) &&
-    unassigned?.status !== "discarded";
   const terminalAlert =
     session.state === "error" || session.state === "ending"
       ? controller.ownerError === undefined ? undefined : t(controller.ownerError)
@@ -115,15 +107,6 @@ export function ConversationScreen({
         recentTurns={recentTurns}
         alertText={terminalAlert}
         alertLanguage={ownerLocale}
-        onTap={() => {
-          void controller.correctLastTurn("B").catch((error: unknown) => {
-            console.error("Correction failed", {
-              error,
-              side: "B",
-              state: session.state,
-            });
-          });
-        }}
       />
       <div className="conversation-center">
         {onChangeLanguage ? <button className="conversation-language-action" type="button"
@@ -136,9 +119,6 @@ export function ConversationScreen({
           onResume={controller.resumeRetainedConversation?.bind(controller)}
           onVerify={controller.verifyRetainedConversation?.bind(controller)}
           onEnd={() => controller.endConversation()} /> : null}
-        {canChooseSide ? (
-          <p role="status">{t("Сторона не определена. Для исправления нажмите свою половину экрана.")}</p>
-        ) : null}
         {recoveryState === undefined ? <button
           ref={endRef}
           className="conversation-end-action"
@@ -186,15 +166,6 @@ export function ConversationScreen({
         recentTurns={recentTurns}
         alertText={terminalAlert}
         alertLanguage={ownerLocale}
-        onTap={() => {
-          void controller.correctLastTurn("A").catch((error: unknown) => {
-            console.error("Correction failed", {
-              error,
-              side: "A",
-              state: session.state,
-            });
-          });
-        }}
       />
     </section>
   );

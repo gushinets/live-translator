@@ -1,5 +1,5 @@
 /** Versioned metadata-only wire contract. No transcript, context, SDP or audio fields. */
-export const COUNTER_NAMES = ["earlyOutputCount", "completedTurnCount", "sourceTailClippingReports", "noOutputWatchdogCount", "textOnlyCompletionCount", "vamFalseActiveCount", "wrongSideCorrectionCount", "correctionSuccessCount", "audioCompletedTurnCount", "textOnlyCompletedTurnCount", "failedTurnCount", "discardedTurnCount", "correctionAttemptCount", "deliveryDegradedCount"] as const;
+export const COUNTER_NAMES = ["earlyOutputCount", "completedTurnCount", "sourceTailClippingReports", "noOutputWatchdogCount", "textOnlyCompletionCount", "vamFalseActiveCount", "audioCompletedTurnCount", "textOnlyCompletedTurnCount", "failedTurnCount", "discardedTurnCount", "deliveryDegradedCount"] as const;
 export type MetricCounters = Partial<Record<typeof COUNTER_NAMES[number], number>>;
 export interface AppMetricsReport {
   activityReportSeq: number; measurementVersion: "active-time-v1";

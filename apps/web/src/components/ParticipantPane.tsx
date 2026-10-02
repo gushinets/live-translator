@@ -11,7 +11,6 @@ export function ParticipantPane({
   status,
   activeTurn,
   recentTurns,
-  onTap,
   alertText,
   alertLanguage,
 }: {
@@ -21,22 +20,18 @@ export function ParticipantPane({
   status: ParticipantStatusLabel;
   activeTurn?: Turn;
   recentTurns: readonly Turn[];
-  onTap: () => void;
   alertText?: string;
   alertLanguage?: string;
 }) {
   const locale = uiLocale(language);
   const t = (text: string) => translate(text, locale);
   const languageLabel = language === undefined ? undefined : `${side} · ${languageName(language, locale)}`;
-  const correctionLabel = t("Исправить: говорил участник {side}").replace("{side}", side);
   const primaryText = activeTurn ? paneTextForTurn(activeTurn, side) : "";
   const author = (turn: Turn) => t(turn.speaker === side ? "Я" : "Он");
   const latest = primaryText.length > 0 ? undefined : [...recentTurns].reverse().find(entry =>
     entry.status === "completed" && paneTextForTurn(entry, side).length > 0);
   const scrollRef = useRef<HTMLDivElement>(null);
   const followEnd = useRef(true);
-  const pointerStart = useRef<{ x: number; y: number } | undefined>(undefined);
-  const pointerMoved = useRef(false);
   useLayoutEffect(() => {
     const scroll = scrollRef.current;
     if (scroll && followEnd.current) scroll.scrollTop = scroll.scrollHeight;
@@ -53,45 +48,9 @@ export function ParticipantPane({
           ? { transform: "rotate(180deg)", overflow: "hidden" }
           : { overflow: "hidden" }
       }
-      onPointerDown={event => {
-        const scroll = scrollRef.current;
-        const bounds = scroll?.getBoundingClientRect();
-        const gutter = scroll ? scroll.offsetWidth - scroll.clientWidth : 0;
-        const x = bounds ? event.clientX - bounds.left : 0;
-        // Native scrollbar hits can target the pane or its content after rotation.
-        const scrollbar = bounds !== undefined && gutter > 0 &&
-          event.clientY >= bounds.top && event.clientY <= bounds.bottom &&
-          x >= 0 && x <= bounds.width && (x < gutter || x >= bounds.width - gutter);
-        pointerMoved.current = scrollbar;
-        pointerStart.current = event.isPrimary && event.button === 0 && !scrollbar ? { x: event.clientX, y: event.clientY } : undefined;
-      }}
-      onPointerMove={event => {
-        const start = pointerStart.current;
-        if (start && Math.hypot(event.clientX - start.x, event.clientY - start.y) > 8) {
-          pointerStart.current = undefined;
-          pointerMoved.current = true;
-        }
-      }}
-      onPointerCancel={() => { pointerStart.current = undefined; pointerMoved.current = true; }}
-      onPointerUp={event => {
-        const start = pointerStart.current;
-        pointerStart.current = undefined;
-        if (start && !(event.target as Element).closest("button") &&
-          Math.hypot(event.clientX - start.x, event.clientY - start.y) <= 8 &&
-          window.getSelection()?.isCollapsed !== false) onTap();
-      }}
     >
       <div className="participant-header">
-        <button
-          className="participant-correction-target"
-          type="button"
-          aria-label={languageLabel ? `${languageLabel}. ${correctionLabel}` : correctionLabel}
-          onClick={event => {
-            if (event.detail === 0 || (!pointerMoved.current && window.getSelection()?.isCollapsed !== false)) onTap();
-          }}
-        >
-          {languageLabel !== undefined ? <span className="participant-language">{languageLabel}</span> : null}
-        </button>
+        {languageLabel !== undefined ? <span className="participant-language">{languageLabel}</span> : null}
         <ParticipantStatus side={side} label={status} language={locale} />
       </div>
       <div className="participant-scroll" ref={scrollRef} tabIndex={0} role="region"

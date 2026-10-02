@@ -8,7 +8,6 @@ import {
   createTurn,
   markAudioOutputStarted,
   markPlaybackEnded,
-  startFreshOutputEpoch,
 } from "./TurnBuffer";
 
 function fragment(text: string, nowMs: number): TranscriptFragment {
@@ -43,7 +42,6 @@ describe("TurnBuffer.start", () => {
     expect(turn.speaker).toBe("A");
     expect(turn.sideSource).toBe("language");
     expect(turn.status).toBe("streaming");
-    expect(turn.corrected).toBe(false);
     expect(turn.audioOutputStarted).toBe(false);
     expect(turn.sourceFragments).toEqual([]);
     expect(turn.originalText).toBe("");
@@ -167,33 +165,6 @@ describe("clearSourceIdle", () => {
       sourceIdleAtMs: 1200,
     };
     expect(clearSourceIdle(turn).sourceIdleAtMs).toBeUndefined();
-  });
-});
-
-describe("startFreshOutputEpoch", () => {
-  it("clears stale output-epoch fields and marks the turn corrected", () => {
-    const turn: Turn = {
-      ...createTurn({ id: "t1", speaker: "B", sideSource: "language", nowMs: 1000 }),
-      status: "correcting",
-      translatedText: "Hola",
-      firstOutputTextAtMs: 1500,
-      outputTextEndAtMs: 1800,
-      audioOutputStarted: true,
-      firstAudibleOutputAtMs: 1600,
-      playbackEndAtMs: 2000,
-    };
-    const next = startFreshOutputEpoch(turn, "A");
-
-    expect(next.speaker).toBe("A");
-    expect(next.sideSource).toBe("manual");
-    expect(next.corrected).toBe(true);
-    expect(next.status).toBe("outputting");
-    expect(next.translatedText).toBeUndefined();
-    expect(next.firstOutputTextAtMs).toBeUndefined();
-    expect(next.outputTextEndAtMs).toBeUndefined();
-    expect(next.audioOutputStarted).toBe(false);
-    expect(next.firstAudibleOutputAtMs).toBeUndefined();
-    expect(next.playbackEndAtMs).toBeUndefined();
   });
 });
 

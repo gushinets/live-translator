@@ -52,7 +52,6 @@ export interface ContextScreenController {
   acceptBootstrap(text: string): Promise<void>;
   beginInterpreter(): Promise<void>;
   cancel(): Promise<void>;
-  correctLastTurn(side: Side): Promise<void>;
   endConversation(): Promise<void>;
   resumeFromSourceTimeout(): Promise<void>;
   resumeRetainedConversation?(): Promise<void>;
@@ -320,7 +319,6 @@ export function ContextScreen({
   const isConversation =
     sessionState === "listening" ||
     sessionState === "outputting" ||
-    sessionState === "correcting" ||
     sessionState === "suspended" ||
     sessionState === "ending" ||
     (sessionState === "error" && controller.hasEnteredInterpreter === true);

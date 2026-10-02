@@ -16,7 +16,6 @@ Backchannel policy: No listening sounds or acknowledgments.
 Interruption policy: Stop speaking when a human interrupts and listen.
 Do not infer a speaker change from silence, your own translated speech, or a completed translation. Ignore playback echo.
 For mixed speech use the dominant source language; if the source language is unclear, wait for more speech rather than guess or change the language pair.
-Manual speaker corrections from the application apply only to that utterance; translate it into the other participant's fixed language.
 Begin with the next human utterance.`;
 }
 
@@ -26,15 +25,4 @@ export function buildAuthoritativeContext(editedText: string): string {
 
 export function buildUnfinishedTurnWarning(): string {
   return "The previous source utterance was interrupted and is not a completed conversation turn. Do not treat it as finished interpretation or advance the conversation. Wait for the same speaker to resume or repeat.";
-}
-
-export function buildCorrectionInstruction(input: {
-  actualSpeaker: "A" | "B";
-  previousSpeaker: "A" | "B" | undefined;
-}): string {
-  return `Stop speaking. The latest human utterance was from Participant ${input.actualSpeaker}${input.previousSpeaker === undefined ? "" : `, not ${input.previousSpeaker}`}. Update the assignment for this utterance only; keep both fixed languages. Do not speak until prompted.`;
-}
-
-export function buildCorrectionCommentaryTrigger(): string {
-  return "Please produce a fresh spoken interpretation into the other participant's fixed language.";
 }

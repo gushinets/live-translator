@@ -132,26 +132,3 @@ test("keeps retained text in place when the oldest history entry is evicted", as
     await expect.poll(async () => Math.abs((await retained.boundingBox())!.y - before[index]!)).toBeLessThan(2);
   }
 });
-
-test("a deliberate tap on the caption area still corrects the speaker", async ({ page }) => {
-  const harness = await MockLiveHarness.attach(page);
-  await harness.startListeningConversation();
-  await harness.sourceActive();
-  await harness.inputDelta("Could you tell me where the train station is?");
-  await harness.outputDelta("¿Dónde está la estación de tren?");
-  const header = (await page.getByRole("button", { name: "Corregir: hablaba el participante B" }).boundingBox())!;
-  await page.mouse.move(header.x + header.width / 2, header.y + header.height / 2);
-  await page.mouse.down();
-  await page.mouse.move(header.x + header.width / 2 + 30, header.y + header.height / 2, { steps: 5 });
-  await page.mouse.up();
-  await expect(page.getByTestId("current-author-B")).toHaveText("Él:");
-  await page.getByTestId("participant-scroll-B").click({ position: { x: 25, y: 150 } });
-  await expect(page.getByTestId("current-author-B")).toHaveText("Yo:");
-  await expect(page.getByTestId("current-author-A")).toHaveText("Him:");
-  const scrollA = page.getByTestId("participant-scroll-A");
-  const boxA = (await scrollA.boundingBox())!;
-  const gutterA = await scrollA.evaluate(el => (el as HTMLElement).offsetWidth - el.clientWidth);
-  if (gutterA > 0) await page.mouse.click(boxA.x + boxA.width - gutterA / 2, boxA.y + boxA.height / 2);
-  await expect(page.getByTestId("current-author-B")).toHaveText("Yo:");
-  await expect(page.getByTestId("current-author-A")).toHaveText("Him:");
-});

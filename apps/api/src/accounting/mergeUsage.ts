@@ -5,9 +5,11 @@ const nonNegative = z.number().finite().nonnegative();
 const integer = nonNegative.int().max(Number.MAX_SAFE_INTEGER);
 export const counterNames = [
   "earlyOutputCount", "completedTurnCount", "sourceTailClippingReports", "noOutputWatchdogCount",
-  "textOnlyCompletionCount", "vamFalseActiveCount", "wrongSideCorrectionCount", "correctionSuccessCount",
+  "textOnlyCompletionCount", "vamFalseActiveCount",
   "audioCompletedTurnCount", "textOnlyCompletedTurnCount", "failedTurnCount", "discardedTurnCount",
-  "correctionAttemptCount", "deliveryDegradedCount",
+  "deliveryDegradedCount",
+  // Keep accepting queued usage reports from clients predating removal of manual speaker assignment.
+  "wrongSideCorrectionCount", "correctionSuccessCount", "correctionAttemptCount",
 ] as const;
 export const counterSchema = z.object(Object.fromEntries(counterNames.map(key => [key, integer.optional()])) as Record<typeof counterNames[number], z.ZodOptional<typeof integer>>).strict();
 export const appMetricsSchema = z.object({
