@@ -29,7 +29,7 @@ export function ParticipantPane({
   const primaryText = activeTurn ? paneTextForTurn(activeTurn, side) : "";
   const author = (turn: Turn) => t(turn.speaker === side ? "Я" : "Он");
   const latest = primaryText.length > 0 ? undefined : [...recentTurns].reverse().find(entry =>
-    entry.status === "completed" && paneTextForTurn(entry, side).length > 0);
+    (entry.status === "completed" || entry.status === "outputting") && paneTextForTurn(entry, side).length > 0);
   const scrollRef = useRef<HTMLDivElement>(null);
   const followEnd = useRef(true);
   useLayoutEffect(() => {
@@ -66,7 +66,7 @@ export function ParticipantPane({
         </p>
       ) : null}
       <ol className="participant-recent">
-        {recentTurns.map((entry) => {
+        {recentTurns.filter(entry => !entry.translationOnly || entry.speaker !== side).map((entry) => {
           const text = paneTextForTurn(entry, side);
           return (
             <li key={entry.id} className={`recent-turn${entry === latest ? " recent-turn--latest" : ""}`}>

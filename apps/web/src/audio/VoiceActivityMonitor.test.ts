@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { VoiceActivityMonitor } from "./VoiceActivityMonitor";
 
-const SOURCE_TAIL_GRACE_MS = 1_000;
+const SOURCE_TAIL_GRACE_MS = 250;
 
 function pushQuietBaseline(monitor: VoiceActivityMonitor): void {
   for (let i = 0; i < 100; i += 1) {

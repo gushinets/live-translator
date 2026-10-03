@@ -401,6 +401,45 @@ describe("per-participant language and authors (ANY-558 / ANY-559)", () => {
     });
   }
 
+  it("keeps A's pending translation visible while B's source is current", () => {
+    const controller = new FakeConversationController(bilingualSession({
+      activeTurn: turn({ id: "b", speaker: "B", originalText: "The station is ahead.", speechStartAtMs: 20 }),
+      pendingTurns: [turn({ id: "a", speaker: "A", originalText: "Где вокзал?", translatedText: "Where is the station?", speechStartAtMs: 10 })],
+    }));
+    render(<ConversationScreen controller={controller} />);
+    const a = within(screen.getByTestId("participant-pane-A"));
+    const b = within(screen.getByTestId("participant-pane-B"));
+    expect(a.getByText("Где вокзал?").closest("li")).toHaveTextContent("Я");
+    expect(b.getByText("Where is the station?").closest("li")).toHaveTextContent("Him");
+    expect(b.getByTestId("current-primary-B")).toHaveTextContent("The station is ahead.");
+    expect(a.queryByText("Where is the station?")).not.toBeInTheDocument();
+  });
+
+  it("shows an independent translation only in its recipient pane, without inventing source text", () => {
+    const controller = new FakeConversationController(bilingualSession({
+      recentTurns: [turn({ id: "source", speaker: "A", originalText: "Спасибо", status: "failed", speechStartAtMs: 10 })],
+      pendingTurns: [turn({ id: "translation", speaker: "A", translationOnly: true,
+        translatedText: "Thank you, I will walk there.", speechStartAtMs: 20 })],
+    }));
+    render(<ConversationScreen controller={controller} />);
+    const a = screen.getByTestId("participant-pane-A");
+    const b = screen.getByTestId("participant-pane-B");
+    expect(a.querySelectorAll("li")).toHaveLength(1);
+    expect(within(b).getByText("Thank you, I will walk there.").closest("li")).toHaveTextContent("Him");
+    expect(within(a).queryByText("Thank you, I will walk there.")).not.toBeInTheDocument();
+  });
+
+  it("orders history and pending sources by speech time, despite translations completing out of order", () => {
+    const controller = new FakeConversationController(bilingualSession({
+      recentTurns: [turn({ id: "second", speaker: "A", originalText: "Вторая фраза", speechStartAtMs: 20 }),
+        turn({ id: "first", speaker: "A", originalText: "Первая фраза", speechStartAtMs: 10 })],
+      pendingTurns: [turn({ id: "third", speaker: "A", originalText: "Третья фраза", speechStartAtMs: 30 })],
+    }));
+    render(<ConversationScreen controller={controller} />);
+    const texts = [...screen.getByTestId("participant-pane-A").querySelectorAll(".recent-turn-primary")].map(node => node.textContent);
+    expect(texts).toEqual(["Первая фраза", "Вторая фраза", "Третья фраза"]);
+  });
+
   it("keeps both speakers' text and authors relative to each pane, including history", () => {
     const controller = new FakeConversationController(bilingualSession({
       activeTurn: turn({ id: "active", speaker: "B", originalText: "Hello", translatedText: "Привет" }),

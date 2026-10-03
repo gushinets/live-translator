@@ -20,6 +20,8 @@ export interface TranslationSession {
   state: SessionState;
   contextText: string;
   activeTurn?: Turn;
+  /** Earlier source turns whose translations are still arriving. */
+  pendingTurns?: Turn[];
   recentTurns: Turn[];
   lastSpeaker?: Side;
   participantA: ParticipantProfile;

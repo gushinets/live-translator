@@ -201,3 +201,20 @@ Automated unit/e2e coverage does **not** close these. All remain **NOT RUN** on 
 6. Keep this gate **OPEN** until those rows are evidence, not inference.
 
 **MVP acceptance: not claimed.**
+
+## Rapid language turns — 2026-10-03
+
+Implementation checks: 1200 workspace tests pass; API/web type checks and lint pass; web production build passes. Chromium/WebKit routing checks pass (26 cases), with mocked GPT-Live and audio. These checks do not exercise real speech or model latency.
+
+New local defaults: 450 ms quiet hysteresis plus 250 ms source-tail grace (about 700 ms, sampled every 50 ms); 200 ms output-settle grace. Source end never closes normal model input. Startup, explicit language replacement, pause and recovery retain their control commands. Timing remains provisional until phone testing.
+
+| Real-phone scenario | Expected behavior | Result |
+| --- | --- | --- |
+| A asks, B replies after 100–300 ms | Distinct source records, fixed-language authors; A's later translation stays authored by A | NOT RUN |
+| A pauses and continues while translation is pending | Same unfinished source record; no repeated control-command delay | NOT RUN |
+| B interrupts model speech | Model stops and listens; B's source is accepted; interrupted A audio is not counted as B's delivery | NOT RUN |
+| A → B → A before translations finish | Preserve each source; ambiguous same-author output stays an independently authored translation | NOT RUN |
+| Short reply, partial word, numbers or borrowed word | Wait for language evidence; preserve content, avoid guessing an author | NOT RUN |
+| Hide/rotate, then resume | Discard unfinished source/buffer state; preserve earlier history and the selected pair; no old-event replay | NOT RUN |
+
+For the final Android check, use the current production build in Vite preview at `http://localhost:5173` via USB reverse, following `AGENTS.md`. Do not use the development transport spike. Real-phone UI/API verification and real speech remain pending.

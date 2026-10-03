@@ -12,3 +12,10 @@ export interface TranscriptFragment {
   endMs?: number;
   receivedAtMs: number;
 }
+
+/** Approximate session time is safer than arrival order when all fragments carry it. */
+export function orderTranscriptFragments(fragments: TranscriptFragment[]): TranscriptFragment[] {
+  return fragments.every(fragment => fragment.startMs !== undefined)
+    ? [...fragments].sort((a, b) => a.startMs! - b.startMs!)
+    : fragments;
+}

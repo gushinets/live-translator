@@ -175,7 +175,7 @@ test.describe("mocked conversation runtime", () => {
     await expect(page.getByTestId("participant-status-A")).not.toHaveText("Waiting");
 
     await harness.sourceQuiet();
-    await expect.poll(async () => harness.lastGateBCommand()).toBe("mute");
+    expect(await harness.lastGateBCommand()).toBe("unmute");
     await expect(page.getByTestId("participant-status-A")).toHaveText("Waiting");
     await expect(page.getByTestId("participant-status-B")).toHaveText("Traducción");
   });
@@ -205,9 +205,9 @@ test.describe("mocked conversation runtime", () => {
     await harness.inputDelta("Hello, where is the nearest train station?");
     await expect(page.getByTestId("current-primary-A")).toHaveText("Hello, where is the nearest train station?");
     await harness.sourceQuiet();
-    await expect.poll(async () => harness.lastGateBCommand()).toBe("mute");
+    expect(await harness.lastGateBCommand()).toBe("unmute");
     await expect(page.getByText("Please repeat")).toHaveCount(0);
-    await expect(page.getByTestId("participant-status-B")).toHaveText("Esperando");
+    await expect(page.getByTestId("participant-status-B")).toHaveText("Habla");
 
     await harness.advance(runtime.noOutputTimeoutMs);
     await expect(page.getByText("Please repeat")).toBeVisible();
@@ -229,9 +229,11 @@ async function completeTextOnlyTurn(
 ): Promise<void> {
   await harness.sourceActive();
   await harness.inputDelta(turn.original);
+  await harness.advance(runtime.captionIdleMs);
   await expect(page.getByTestId(`current-primary-${turn.speaker}`)).toHaveText(turn.original);
   await expect(page.getByTestId(`current-author-${turn.speaker}`)).toHaveText(turn.speaker === "A" ? "Me:" : "Yo:");
   await harness.outputDelta(turn.translation);
+  await harness.advance(runtime.captionIdleMs);
   await expect(page.getByTestId(`current-primary-${turn.recipient}`)).toHaveText(
     turn.translation,
   );
@@ -239,7 +241,7 @@ async function completeTextOnlyTurn(
   await expect(page.getByTestId(`participant-status-${turn.speaker}`)).toHaveText(turn.speaker === "A" ? "Listening" : "Escuchando");
   expect(await harness.lastGateBCommand()).not.toBe("mute");
   await harness.sourceQuiet();
-  await expect.poll(async () => harness.lastGateBCommand()).toBe("mute");
+  expect(await harness.lastGateBCommand()).toBe("unmute");
   await harness.advance(runtime.audioStartGraceMs);
   await expect(page.getByTestId(`participant-status-${turn.recipient}`)).toHaveText(turn.recipient === "A" ? "Speak" : "Habla");
   await expect(page.getByTestId(`participant-status-${turn.speaker}`)).toHaveText(turn.speaker === "A" ? "Speak" : "Habla");

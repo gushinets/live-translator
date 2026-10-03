@@ -1566,28 +1566,6 @@ async function completeTextOnlyTurn(
   }
 }
 
-async function completeTextOnlyTurnUntilLaterSteeringStarts(
-  controller: SessionController,
-  live: FakeLive,
-  audio: ReturnType<typeof createFakeAudio>,
-): Promise<void> {
-  emitVoice(audio, true);
-  live.emit({
-    type: "session.input_transcript.delta",
-    delta: "Hello, where is the nearest train station?",
-    start_ms: 10,
-    end_ms: 40,
-  });
-  live.emit({ type: "session.output_transcript.delta", delta: "Hola" });
-  emitVoice(audio, false);
-  await flushMicrotasks();
-  await vi.advanceTimersByTimeAsync(runtime.audioStartGraceMs);
-  await flushMicrotasks();
-  if (controller.session.state !== "listening") {
-    throw new Error(`Expected listening during text-only close, got "${controller.session.state}"`);
-  }
-}
-
 async function enterOutputtingTurn(
   controller: SessionController,
   live: FakeLive,
@@ -1721,12 +1699,14 @@ describe("SessionController turn engine", () => {
     emitVoice(audio, true);
     live.emit({ type: "session.input_transcript.delta", delta: "Hello, where is the nearest train station?" });
 
+    const receivedAtMs = Date.now();
     live.emit({ type: "session.output_transcript.delta", delta: "Hola" });
+    await vi.advanceTimersByTimeAsync(runtime.captionIdleMs);
 
     expect(controller.session.state).toBe("outputting");
     expect(controller.session).not.toHaveProperty("expectedSpeaker");
     expect(controller.session.activeTurn?.translatedText).toBe("Hola");
-    expect(controller.session.activeTurn?.firstOutputTextAtMs).toBe(Date.now());
+    expect(controller.session.activeTurn?.firstOutputTextAtMs).toBe(receivedAtMs);
     expect(live.setInputMuted).not.toHaveBeenCalled();
   });
 
@@ -1754,6 +1734,7 @@ describe("SessionController turn engine", () => {
       end_ms: 40,
     });
     live.emit({ type: "session.output_transcript.delta", delta: "Hola" });
+    await vi.advanceTimersByTimeAsync(runtime.captionIdleMs);
 
     expect(controller.session.state).toBe("outputting");
     expect(controller.session.activeTurn?.translatedText).toBe("Hola");
@@ -1780,6 +1761,7 @@ describe("SessionController turn engine", () => {
 
     emitVoice(audio, true);
     live.emit({ type: "session.input_transcript.delta", delta: "Next" });
+    await vi.advanceTimersByTimeAsync(runtime.captionIdleMs);
 
     expect(controller.session.activeTurn?.originalText).toBe("Next");
     expect(controller.session).not.toHaveProperty("expectedSpeaker");
@@ -1826,7 +1808,7 @@ describe("SessionController turn engine", () => {
     expect(controller.session).not.toHaveProperty("expectedSpeaker");
   });
 
-  it("mutes Gate B only after source idle, then closes a text-only turn with the fixed language pair and later steering", async () => {
+  it("closes a text-only turn with fixed languages while input stays open", async () => {
     const { controller, live, audio } = createController();
     await enterListening(controller);
     emitVoice(audio, true);
@@ -1841,7 +1823,7 @@ describe("SessionController turn engine", () => {
 
     emitVoice(audio, false);
     await flushMicrotasks();
-    expect(live.setInputMuted).toHaveBeenCalledExactlyOnceWith(true);
+    expect(live.setInputMuted).not.toHaveBeenCalled();
     expect(controller.session).not.toHaveProperty("expectedSpeaker");
 
     await vi.advanceTimersByTimeAsync(runtime.audioStartGraceMs);
@@ -1854,11 +1836,8 @@ describe("SessionController turn engine", () => {
     expect(controller.session).not.toHaveProperty("expectedSpeaker");
     expect(controller.session.participantA.hasAcceptedConversationSpeech).toBe(true);
     expect(controller.session.participantB.hasAcceptedConversationSpeech).toBe(false);
-    expect(live.setInputMuted).toHaveBeenLastCalledWith(false);
-    expect(live.appendInstructions).toHaveBeenLastCalledWith(
-      buildSteering({ A: "en", B: "es" }),
-      { kind: "later_steering", sessionState: "listening" },
-    );
+    expect(live.setInputMuted).not.toHaveBeenCalled();
+    expect(live.appendInstructions.mock.calls.filter(call => call[1]?.kind === "later_steering")).toHaveLength(0);
   });
 
   it("keeps the source turn open when playback goes idle before the human has finished", async () => {
@@ -1923,109 +1902,12 @@ describe("SessionController turn engine", () => {
     expect(controller.session).not.toHaveProperty("expectedSpeaker");
     expect(controller.session.participantA.hasAcceptedConversationSpeech).toBe(false);
     expect(controller.recoveryPrompt).toBe("repeat");
-    expect(live.setInputMuted).toHaveBeenLastCalledWith(false);
+    expect(live.setInputMuted).not.toHaveBeenCalled();
     expect(live.appendInstructions.mock.calls.length).toBe(appendCountAfterStart);
   });
 
-  it("still arms no-output timeout when Gate B mute ack times out", async () => {
-    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
-    const { controller, live, audio } = createController();
-    live.setInputMuted.mockImplementation(async (muted: boolean) => {
-      if (muted) {
-        throw new AckTimeoutError("evt-mute");
-      }
-    });
-    await enterListening(controller);
-    emitVoice(audio, true);
-    live.emit({ type: "session.input_transcript.delta", delta: "Hello, where is the nearest train station?" });
-    emitVoice(audio, false);
-    await flushMicrotasks();
 
-    expect(controller.session.activeTurn?.sourceIdleAtMs).toBeDefined();
-    expect(live.setInputMuted).toHaveBeenCalledWith(true);
 
-    await vi.advanceTimersByTimeAsync(runtime.noOutputTimeoutMs - 1);
-    await flushMicrotasks();
-    expect(controller.session.activeTurn).toBeDefined();
-    expect(controller.session.recentTurns).toHaveLength(0);
-
-    await vi.advanceTimersByTimeAsync(1);
-    await flushMicrotasks();
-
-    expect(controller.session.state).toBe("listening");
-    expect(controller.session.recentTurns[0]?.status).toBe("failed");
-    expect(controller.session).not.toHaveProperty("expectedSpeaker");
-    expect(controller.recoveryPrompt).toBe("repeat");
-    expect(live.setInputMuted).toHaveBeenLastCalledWith(false);
-    expect(errorSpy).toHaveBeenCalled();
-  });
-
-  it("continues text-only completion when source-idle Gate B mute rejects", async () => {
-    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
-    const { controller, live, audio } = createController();
-    live.setInputMuted.mockImplementation(async (muted: boolean) => {
-      if (muted) {
-        throw new Error("network failed");
-      }
-    });
-    await enterListening(controller);
-    emitVoice(audio, true);
-    live.emit({ type: "session.input_transcript.delta", delta: "Hello, where is the nearest train station?" });
-    live.emit({ type: "session.output_transcript.delta", delta: "Hola" });
-
-    const unhandled = await collectUnhandledRejectionsDuringFakeTimers(async () => {
-      emitVoice(audio, false);
-      await flushMicrotasks();
-      await vi.advanceTimersByTimeAsync(runtime.audioStartGraceMs);
-      await flushMicrotasks();
-    });
-
-    expect(unhandled).toEqual([]);
-    expect(controller.session.state).toBe("listening");
-    expect(controller.session.recentTurns[0]?.status).toBe("completed");
-    expect(controller.session).not.toHaveProperty("expectedSpeaker");
-    expect(controller.inputReady).toBe(true);
-    expect(live.setInputMuted).toHaveBeenCalledWith(true);
-    expect(live.setInputMuted).toHaveBeenLastCalledWith(false);
-    expect(errorSpy).toHaveBeenCalled();
-  });
-
-  it("fails closed when source reactivation Gate B unmute rejects", async () => {
-    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
-    const { controller, live, audio } = createController();
-    live.setInputMuted.mockImplementation(async (muted: boolean) => {
-      if (!muted) {
-        throw new Error("reactivation unmute failed");
-      }
-    });
-    await enterListening(controller);
-    audio.setOutputAudible.mockClear();
-    emitVoice(audio, true);
-    live.emit({ type: "session.input_transcript.delta", delta: "Hello, where is the nearest train station?" });
-    emitVoice(audio, false);
-    await flushMicrotasks();
-
-    expect(controller.session.activeTurn?.sourceIdleAtMs).toBeDefined();
-    expect(live.setInputMuted).toHaveBeenCalledWith(true);
-
-    const unhandled = await collectUnhandledRejectionsDuringFakeTimers(async () => {
-      emitVoice(audio, true);
-      await flushMicrotasks();
-    });
-
-    expect(unhandled).toEqual([]);
-    expect(controller.session.state).toBe("error");
-    expect(controller.session.activeTurn).toBeUndefined();
-    expect(controller.session.recentTurns[0]?.status).toBe("failed");
-    expect(controller.inputReady).toBe(false);
-    expect(controller.ownerError).toBe(CONNECTION_ERROR_MESSAGE);
-    expect(audio.setCaptureEnabled).toHaveBeenLastCalledWith(false);
-    expect(audio.setOutputAudible).toHaveBeenLastCalledWith(false);
-    expect(live.setInputMuted).toHaveBeenLastCalledWith(false);
-    live.emit({ type: "session.input_transcript.delta", delta: "ignored" });
-    expect(controller.session.activeTurn).toBeUndefined();
-    expect(errorSpy).toHaveBeenCalled();
-  });
 
   it("MAX_SOURCE_MS mutes, closes output, fails, warns, and suspends with Resume/Repeat", async () => {
     const { controller, live, audio } = createController();
@@ -2741,25 +2623,6 @@ describe("SessionController turn engine", () => {
     expect(controller.ownerError).toBeUndefined();
   });
 
-  it("later-turn double timeout records degraded steering and continues listening", async () => {
-    const { controller, live, audio } = createController();
-    live.appendInstructions.mockImplementation(
-      async (text: string, policy?: { kind: string }) => {
-        live.callOrder.push(`instructions:${text}`);
-        if (policy?.kind === "later_steering") {
-          return { eventId: "evt-degraded", degraded: true };
-        }
-        return { eventId: "evt-ok" };
-      },
-    );
-    await enterListening(controller);
-    await completeTextOnlyTurn(controller, live, audio);
-
-    expect(controller.session.state).toBe("listening");
-    expect(controller.session).not.toHaveProperty("expectedSpeaker");
-    expect(controller.steeringDegraded).toBe(true);
-    expect(controller.inputReady).toBe(true);
-  });
 
   it("ignores residual output transcript after the active turn is cleared", async () => {
     const { controller, live, audio } = createController();
@@ -2861,245 +2724,13 @@ describe("SessionController turn engine", () => {
     expect(controller.session.state).toBe("listening");
   });
 
-  it("does not accept the next source turn until later steering and unmute have settled", async () => {
-    const { controller, live, audio } = createController();
-    let releaseSteering: (() => void) | undefined;
-    live.appendInstructions.mockImplementation(async (text: string, policy?: { kind: string }) => {
-      live.callOrder.push(`instructions:${text}`);
-      if (policy?.kind === "later_steering") {
-        await new Promise<void>((resolve) => {
-          releaseSteering = resolve;
-        });
-      }
-      return { eventId: "evt-steer" };
-    });
-    await enterListening(controller);
-    emitVoice(audio, true);
-    live.emit({ type: "session.input_transcript.delta", delta: "Hello, where is the nearest train station?" });
-    live.emit({ type: "session.output_transcript.delta", delta: "Hola" });
-    emitVoice(audio, false);
-    await flushMicrotasks();
-    await vi.advanceTimersByTimeAsync(runtime.audioStartGraceMs);
-    await flushMicrotasks();
-    await vi.waitFor(() => {
-      if (releaseSteering === undefined) {
-        throw new Error("later steering append was not started");
-      }
-    });
-    const finishSteering = releaseSteering;
-    if (finishSteering === undefined) {
-      throw new Error("later steering append was not started");
-    }
 
-    expect(controller.session.state).toBe("listening");
-    expect(controller.session.activeTurn).toBeUndefined();
-    expect(controller.session).not.toHaveProperty("expectedSpeaker");
-    expect(controller.inputReady).toBe(false);
-    emitVoice(audio, true);
-    live.emit({ type: "session.input_transcript.delta", delta: "Next" });
-    expect(controller.session.activeTurn).toBeUndefined();
-    expect(live.setInputMuted).not.toHaveBeenCalledWith(false);
 
-    finishSteering();
-    await flushMicrotasks();
-    const unmuteResult = live.setInputMuted.mock.results.at(-1)?.value;
-    if (unmuteResult instanceof Promise) {
-      await unmuteResult;
-    }
-    await flushMicrotasks();
 
-    expect(live.setInputMuted).toHaveBeenLastCalledWith(false);
-    expect(controller.inputReady).toBe(true);
-    emitVoice(audio, true);
-    live.emit({ type: "session.input_transcript.delta", delta: "Next" });
-    expect(controller.session.activeTurn?.originalText).toBe("Next");
-    expect(controller.session).not.toHaveProperty("expectedSpeaker");
-  });
 
-  it("fails closed when later steering append explicitly rejects", async () => {
-    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
-    try {
-      const { controller, live, audio } = createController();
-      live.appendInstructions.mockImplementation(async (text: string, policy?: { kind: string }) => {
-        live.callOrder.push(`instructions:${text}`);
-        if (policy?.kind === "later_steering") {
-          throw new Error("instructions rejected");
-        }
-        return { eventId: "evt-ok" };
-      });
-      await enterListening(controller);
-      emitVoice(audio, true);
-      live.emit({ type: "session.input_transcript.delta", delta: "Hello, where is the nearest train station?" });
-      live.emit({ type: "session.output_transcript.delta", delta: "Hola" });
-      const turnCloseCallStart = live.callOrder.length;
 
-      const unhandled = await collectUnhandledRejectionsDuringFakeTimers(async () => {
-        emitVoice(audio, false);
-        await flushMicrotasks();
-        await vi.advanceTimersByTimeAsync(runtime.audioStartGraceMs);
-        await flushMicrotasks();
-      });
 
-      expect(unhandled).toEqual([]);
-      expect(controller.session.state).toBe("error");
-      expect(controller.ownerError).toBe(CONNECTION_ERROR_MESSAGE);
-      expect(controller.inputReady).toBe(false);
-      expect(audio.setOutputAudible).toHaveBeenLastCalledWith(false);
-      expect(live.callOrder.slice(turnCloseCallStart)).not.toContain("setInputMuted:false");
-      expect(controller.session.activeTurn).toBeUndefined();
-      const recentTurnCount = controller.session.recentTurns.length;
 
-      emitVoice(audio, true);
-      live.emit({ type: "session.input_transcript.delta", delta: "Next" });
-
-      expect(controller.session.activeTurn).toBeUndefined();
-      expect(controller.session.recentTurns).toHaveLength(recentTurnCount);
-    } finally {
-      errorSpy.mockRestore();
-    }
-  });
-
-  it("does not mark input ready while Gate B unmute is still pending after steering", async () => {
-    const { controller, live, audio } = createController();
-    let releaseUnmute: (() => void) | undefined;
-    live.setInputMuted.mockImplementation(async (muted: boolean) => {
-      live.callOrder.push(`setInputMuted:${muted}`);
-      if (!muted) {
-        await new Promise<void>((resolve) => {
-          releaseUnmute = resolve;
-        });
-      }
-    });
-    await enterListening(controller);
-    await completeTextOnlyTurnUntilLaterSteeringStarts(controller, live, audio);
-    await vi.waitFor(() => {
-      if (releaseUnmute === undefined) {
-        throw new Error("Gate B unmute did not start");
-      }
-    });
-
-    expect(controller.session.state).toBe("listening");
-    expect(controller.session).not.toHaveProperty("expectedSpeaker");
-    expect(controller.inputReady).toBe(false);
-
-    releaseUnmute?.();
-    await flushMicrotasks();
-
-    expect(controller.inputReady).toBe(true);
-  });
-
-  it("stays not ready and errors when Gate B unmute fails after turn completion", async () => {
-    const { controller, live, audio } = createController();
-    let rejectUnmute: ((error: Error) => void) | undefined;
-    live.setInputMuted.mockImplementation(async (muted: boolean) => {
-      live.callOrder.push(`setInputMuted:${muted}`);
-      if (!muted) {
-        await new Promise<void>((_resolve, reject) => {
-          rejectUnmute = reject;
-        });
-      }
-    });
-    await enterListening(controller);
-    await completeTextOnlyTurnUntilLaterSteeringStarts(controller, live, audio);
-    await vi.waitFor(() => {
-      if (rejectUnmute === undefined) {
-        throw new Error("Gate B unmute did not start");
-      }
-    });
-
-    expect(controller.session.state).toBe("listening");
-    expect(controller.inputReady).toBe(false);
-
-    rejectUnmute?.(new Error("unmute failed"));
-    await flushMicrotasks();
-
-    expect(controller.session.state).toBe("error");
-    expect(controller.ownerError).toBe(CONNECTION_ERROR_MESSAGE);
-    expect(controller.inputReady).toBe(false);
-  });
-
-  it("does not attach residual output to the next source turn before leftover drain", async () => {
-    const { controller, live, audio } = createController();
-    await enterListening(controller);
-    await completeTextOnlyTurn(controller, live, audio);
-    expect(controller.session).not.toHaveProperty("expectedSpeaker");
-
-    emitVoice(audio, true);
-    live.emit({ type: "session.input_transcript.delta", delta: "Next" });
-    live.emit({ type: "session.output_transcript.delta", delta: "stale leftover" });
-
-    expect(controller.session.activeTurn?.originalText).toBe("Next");
-    expect(controller.session.activeTurn?.translatedText).toBeUndefined();
-    expect(controller.session.activeTurn?.status).toBe("streaming");
-    expect(controller.session).not.toHaveProperty("expectedSpeaker");
-    expect(controller.session.recentTurns).toHaveLength(1);
-  });
-
-  it("does not treat leftover captions as success after a no-output fail", async () => {
-    const { controller, live, audio } = createController();
-    await enterListening(controller);
-    const laterSteeringBefore = live.appendInstructions.mock.calls.filter(
-      (call) => call[1]?.kind === "later_steering",
-    ).length;
-    emitVoice(audio, true);
-    live.emit({ type: "session.input_transcript.delta", delta: "Hello, where is the nearest train station?" });
-    emitVoice(audio, false);
-    await flushMicrotasks();
-    await vi.advanceTimersByTimeAsync(runtime.noOutputTimeoutMs);
-    await flushMicrotasks();
-    expect(controller.session.recentTurns[0]?.status).toBe("failed");
-    expect(controller.session).not.toHaveProperty("expectedSpeaker");
-
-    emitVoice(audio, true);
-    live.emit({ type: "session.input_transcript.delta", delta: "Hello again" });
-    live.emit({ type: "session.output_transcript.delta", delta: "stale leftover" });
-    expect(controller.session.activeTurn?.translatedText).toBeUndefined();
-
-    emitVoice(audio, false);
-    await flushMicrotasks();
-    await vi.advanceTimersByTimeAsync(runtime.noOutputTimeoutMs);
-    await flushMicrotasks();
-
-    expect(controller.session.state).toBe("listening");
-    expect(controller.session).not.toHaveProperty("expectedSpeaker");
-    expect(controller.session.recentTurns.at(-1)?.status).toBe("failed");
-    expect(
-      live.appendInstructions.mock.calls.filter((call) => call[1]?.kind === "later_steering").length,
-    ).toBe(laterSteeringBefore);
-  });
-
-  it("does not mark AUDIO_STARTED on the next turn from residual playback during drain", async () => {
-    const { controller, live, audio } = createController();
-    await enterListening(controller);
-    await completeTextOnlyTurn(controller, live, audio);
-
-    emitVoice(audio, true);
-    live.emit({ type: "session.input_transcript.delta", delta: "Next" });
-    emitPlayback(audio, true);
-    await flushMicrotasks();
-
-    expect(controller.session.activeTurn?.audioOutputStarted).toBe(false);
-    expect(controller.session.activeTurn?.firstAudibleOutputAtMs).toBeUndefined();
-    expect(controller.session).not.toHaveProperty("expectedSpeaker");
-  });
-
-  it("attaches genuine output to the new turn after leftover caption and playback drain", async () => {
-    const { controller, live, audio } = createController();
-    await enterListening(controller);
-    await completeTextOnlyTurn(controller, live, audio);
-
-    emitVoice(audio, true);
-    live.emit({ type: "session.input_transcript.delta", delta: "Next" });
-    live.emit({ type: "session.output_transcript.delta", delta: "stale leftover" });
-    expect(controller.session.activeTurn?.translatedText).toBeUndefined();
-
-    await vi.advanceTimersByTimeAsync(runtime.captionIdleMs);
-    await flushMicrotasks();
-    live.emit({ type: "session.output_transcript.delta", delta: "Siguiente" });
-
-    expect(controller.session.activeTurn?.translatedText).toBe("Siguiente");
-    expect(controller.session).not.toHaveProperty("expectedSpeaker");
-  });
 
   it("advertises resume-repeat only after suspend and allows resume during warning append", async () => {
     const { controller, live, audio } = createController();
@@ -3161,6 +2792,7 @@ describe("SessionController turn engine", () => {
 
     emitVoice(audio, true);
     live.emit({ type: "session.input_transcript.delta", delta: "Next" });
+    await vi.advanceTimersByTimeAsync(runtime.captionIdleMs);
     live.emit({ type: "session.output_transcript.delta", delta: "stale leftover" });
     emitPlayback(audio, true);
     await flushMicrotasks();
@@ -3176,6 +2808,7 @@ describe("SessionController turn engine", () => {
     await vi.advanceTimersByTimeAsync(runtime.captionIdleMs);
     await flushMicrotasks();
     live.emit({ type: "session.output_transcript.delta", delta: "Siguiente" });
+    await vi.advanceTimersByTimeAsync(runtime.captionIdleMs);
 
     expect(controller.session.activeTurn?.translatedText).toBe("Siguiente");
     expect(controller.session).not.toHaveProperty("expectedSpeaker");
@@ -3301,117 +2934,8 @@ describe("SessionController endConversation", () => {
     expect(controller.ownerError).toBeUndefined();
   });
 
-  it("does not unmute after close rejects a pending later steering ack", async () => {
-    const { controller, live, audio } = createController();
-    let rejectSteering: ((error: Error) => void) | undefined;
-    live.appendInstructions.mockImplementation(async (text: string, policy?: { kind: string }) => {
-      live.callOrder.push(`instructions:${text}`);
-      if (policy?.kind === "later_steering") {
-        await new Promise<void>((_resolve, reject) => {
-          rejectSteering = reject;
-        });
-      }
-      return { eventId: "evt-steer" };
-    });
-    live.setInputMuted.mockImplementation(async (muted: boolean) => {
-      live.callOrder.push(`setInputMuted:${muted}`);
-    });
-    live.close.mockImplementation(async () => {
-      live.callOrder.push("close");
-      rejectSteering?.(new Error("Live client is closing"));
-      return { finalized: true };
-    });
-    await enterListening(controller);
-    emitVoice(audio, true);
-    live.emit({ type: "session.input_transcript.delta", delta: "Hello, where is the nearest train station?" });
-    live.emit({ type: "session.output_transcript.delta", delta: "Hola" });
-    emitVoice(audio, false);
-    await flushMicrotasks();
-    await vi.advanceTimersByTimeAsync(runtime.audioStartGraceMs);
-    await flushMicrotasks();
-    await vi.waitFor(() => {
-      if (rejectSteering === undefined) {
-        throw new Error("later steering append was not started");
-      }
-    });
 
-    await controller.endConversation();
-    await flushMicrotasks();
 
-    const closeIndex = live.callOrder.indexOf("close");
-    expect(closeIndex).toBeGreaterThanOrEqual(0);
-    expect(live.callOrder.slice(closeIndex + 1)).not.toContain("setInputMuted:false");
-    expect(controller.session.state).toBe("idle");
-  });
-
-  it("handles a pending unmute rejection after local end starts", async () => {
-    const { controller, live, audio } = createController();
-    let rejectUnmute: ((error: Error) => void) | undefined;
-    live.setInputMuted.mockImplementation(async (muted: boolean) => {
-      live.callOrder.push(`setInputMuted:${muted}`);
-      if (!muted) {
-        await new Promise<void>((_resolve, reject) => {
-          rejectUnmute = reject;
-        });
-      }
-    });
-    await enterListening(controller);
-    emitVoice(audio, true);
-    live.emit({ type: "session.input_transcript.delta", delta: "Hello, where is the nearest train station?" });
-    live.emit({ type: "session.output_transcript.delta", delta: "Hola" });
-    emitVoice(audio, false);
-    await flushMicrotasks();
-    await vi.advanceTimersByTimeAsync(runtime.audioStartGraceMs);
-    await flushMicrotasks();
-    await vi.waitFor(() => {
-      if (rejectUnmute === undefined) {
-        throw new Error("unmute was not started");
-      }
-    });
-
-    const ending = controller.endConversation();
-    rejectUnmute?.(new Error("Live client is closing"));
-    await ending;
-    await flushMicrotasks();
-
-    expect(controller.session.state).toBe("idle");
-    expect(controller.ownerError).toBeUndefined();
-  });
-
-  it("handles a pending source-resume unmute rejection after local end starts", async () => {
-    const { controller, live, audio } = createController();
-    let rejectUnmute: ((error: Error) => void) | undefined;
-    live.setInputMuted.mockImplementation(async (muted: boolean) => {
-      live.callOrder.push(`setInputMuted:${muted}`);
-      if (!muted) {
-        await new Promise<void>((_resolve, reject) => {
-          rejectUnmute = reject;
-        });
-      }
-    });
-    await enterListening(controller);
-    emitVoice(audio, true);
-    live.emit({ type: "session.input_transcript.delta", delta: "Hello, where is the nearest train station?" });
-    emitVoice(audio, false);
-    await flushMicrotasks();
-    expect(controller.session.activeTurn?.sourceIdleAtMs).toBeDefined();
-    expect(live.setInputMuted).toHaveBeenCalledWith(true);
-
-    emitVoice(audio, true);
-    await vi.waitFor(() => {
-      if (rejectUnmute === undefined) {
-        throw new Error("source-resume unmute was not started");
-      }
-    });
-
-    const ending = controller.endConversation();
-    rejectUnmute?.(new Error("Live client is closing"));
-    await ending;
-    await flushMicrotasks();
-
-    expect(controller.session.state).toBe("idle");
-    expect(controller.ownerError).toBeUndefined();
-  });
 });
 
 describe("SessionController max session duration", () => {
@@ -4532,6 +4056,255 @@ describe("fixed-language conversation regression", () => {
     await saving;
     expect(controller.session.state).toBe("idle");
     expect(controller.session.participantA.language).toBeUndefined();
+  });
+});
+
+describe("open-input interpretation", () => {
+  beforeEach(() => { vi.useFakeTimers(); });
+
+  async function startRussianEnglish() {
+    const fixture = createController();
+    await fixture.controller.startWithLanguages({ A: "ru", B: "en" });
+    fixture.live.setInputMuted.mockClear();
+    return fixture;
+  }
+
+  it("does not strand a buffered new speaker when local quiet arrived before language evidence", async () => {
+    const { controller, live, audio } = await startRussianEnglish();
+    emitVoice(audio, true);
+    live.emit({ type: "session.input_transcript.delta", delta: "Подскажите, где находится вокзал?" });
+    live.emit({ type: "session.input_transcript.delta", delta: "Thank you" });
+    emitVoice(audio, false);
+    await vi.advanceTimersByTimeAsync(runtime.captionIdleMs);
+    expect(controller.session.activeTurn).toMatchObject({ speaker: "B", originalText: "Thank you" });
+    expect(controller.session.activeTurn?.sourceIdleAtMs).toBeDefined();
+    live.emit({ type: "session.output_transcript.delta", delta: "Спасибо за вашу помощь." });
+    await vi.advanceTimersByTimeAsync(runtime.noOutputTimeoutMs + runtime.captionIdleMs);
+    expect(controller.session.activeTurn).toBeUndefined();
+    expect(controller.inputReady).toBe(true);
+  });
+
+  it("updates completed A source with a delayed timed fragment after B starts", async () => {
+    const { controller, live, audio } = await startRussianEnglish();
+    emitVoice(audio, true);
+    live.emit({ type: "session.input_transcript.delta", delta: "Подскажите, где находится вокзал?", start_ms: 0, end_ms: 500 });
+    const aId = controller.session.activeTurn?.id;
+    live.emit({ type: "session.output_transcript.delta", delta: "Where is the train station?" });
+    emitVoice(audio, false);
+    await vi.advanceTimersByTimeAsync(runtime.audioStartGraceMs + runtime.captionIdleMs);
+    emitVoice(audio, true);
+    live.emit({ type: "session.input_transcript.delta", delta: "The station is straight ahead.", start_ms: 1000, end_ms: 1500 });
+    const bId = controller.session.activeTurn?.id;
+    live.emit({ type: "session.input_transcript.delta", delta: " Я хочу дойти туда пешком.", start_ms: 550, end_ms: 950 });
+    expect(controller.session.activeTurn?.id).toBe(bId);
+    expect(controller.session.recentTurns.find(turn => turn.id === aId)?.originalText).toBe("Подскажите, где находится вокзал? Я хочу дойти туда пешком.");
+  });
+
+  it("never assigns late A playback to the new B source after A caption idle", async () => {
+    const { controller, live, audio } = await startRussianEnglish();
+    emitVoice(audio, true);
+    live.emit({ type: "session.input_transcript.delta", delta: "Подскажите, где находится вокзал?" });
+    live.emit({ type: "session.output_transcript.delta", delta: "Where is the train station?" });
+    emitVoice(audio, false);
+    await vi.advanceTimersByTimeAsync(runtime.audioStartGraceMs + runtime.captionIdleMs);
+    emitVoice(audio, true);
+    live.emit({ type: "session.input_transcript.delta", delta: "The station is straight ahead." });
+    emitPlayback(audio, true);
+    expect(controller.session.activeTurn?.audioOutputStarted).toBe(false);
+    expect(controller.session.activeTurn?.firstAudibleOutputAtMs).toBeUndefined();
+  });
+
+  it("orders late source fragments by their session timestamps without deleting repeated words", async () => {
+    const { controller, live, audio } = await startRussianEnglish();
+    emitVoice(audio, true);
+    live.emit({ type: "session.input_transcript.delta", delta: "Подскажите, пожалуйста, мне нужна", start_ms: 0, end_ms: 200 });
+    live.emit({ type: "session.input_transcript.delta", delta: " информация пораньше.", start_ms: 600, end_ms: 900 });
+    const aId = controller.session.activeTurn?.id;
+    live.emit({ type: "session.input_transcript.delta", delta: "The station is straight ahead.", start_ms: 1000, end_ms: 1500 });
+    live.emit({ type: "session.input_transcript.delta", delta: " эта информация,", start_ms: 250, end_ms: 550 });
+    await vi.advanceTimersByTimeAsync(runtime.captionIdleMs);
+    expect(controller.session.pendingTurns?.find(t => t.id === aId)?.originalText).toBe("Подскажите, пожалуйста, мне нужна эта информация, информация пораньше.");
+  });
+
+  it("routes a late translation to the completed earlier author without recording a second success", async () => {
+    const { controller, live, audio } = await startRussianEnglish();
+    emitVoice(audio, true);
+    live.emit({ type: "session.input_transcript.delta", delta: "Подскажите, где находится вокзал?" });
+    const aId = controller.session.activeTurn?.id;
+    live.emit({ type: "session.output_transcript.delta", delta: "Where is the train station?" });
+    emitVoice(audio, false);
+    await vi.advanceTimersByTimeAsync(runtime.audioStartGraceMs + runtime.captionIdleMs);
+    const before = controller.metrics.snapshot().textOnlyCompletedTurnCount;
+    emitVoice(audio, true);
+    live.emit({ type: "session.input_transcript.delta", delta: "The station is straight ahead." });
+    live.emit({ type: "session.output_transcript.delta", delta: " I want to walk there." });
+    expect(controller.session.recentTurns.find(t => t.id === aId)).toMatchObject({ speaker: "A",
+      translatedText: "Where is the train station? I want to walk there." });
+    expect(controller.session.activeTurn?.translatedText).toBeUndefined();
+    expect(controller.metrics.snapshot().textOnlyCompletedTurnCount).toBe(before);
+  });
+
+  it("does not count interrupted A audio as a delivered B or A audio turn", async () => {
+    const { controller, live, audio } = await startRussianEnglish();
+    Object.defineProperty(audio.audioElement, "muted", { value: false, writable: true });
+    emitVoice(audio, true);
+    live.emit({ type: "session.input_transcript.delta", delta: "Подскажите, где находится вокзал?" });
+    live.emit({ type: "session.output_transcript.delta", delta: "Where is the train station?" });
+    emitPlayback(audio, true);
+    live.emit({ type: "session.input_transcript.delta", delta: "The station is straight ahead." });
+    live.emit({ type: "session.output_transcript.delta", delta: "Вокзал находится прямо впереди." });
+    emitPlayback(audio, false);
+    emitVoice(audio, false);
+    await vi.advanceTimersByTimeAsync(runtime.audioStartGraceMs + runtime.captionIdleMs);
+    expect(controller.metrics.snapshot().audioCompletedTurnCount).toBe(0);
+    expect(controller.metrics.snapshot().textOnlyCompletedTurnCount).toBe(2);
+    expect(controller.session.recentTurns).toHaveLength(2);
+  });
+
+  it("suspends all pending sources and prevents their old fragment timers from touching resumed speech", async () => {
+    const { controller, live, audio, visibility } = await startRussianEnglish();
+    emitVoice(audio, true);
+    live.emit({ type: "session.input_transcript.delta", delta: "Подскажите, где находится вокзал?" });
+    live.emit({ type: "session.input_transcript.delta", delta: "The station is straight ahead." });
+    live.emit({ type: "session.input_transcript.delta", delta: "Tha" });
+    live.emit({ type: "session.output_transcript.delta", delta: "OK" });
+    visibility.hide();
+    await flushMicrotasks();
+    expect(controller.session.pendingTurns ?? []).toHaveLength(0);
+    expect(controller.session.recentTurns.every(turn => turn.status === "discarded")).toBe(true);
+    // The ambiguous fragment is retained separately, with no guessed author.
+    expect(controller.session.recentTurns.find(turn => turn.originalText === "Tha")?.speaker).toBeUndefined();
+    expect(controller.metrics.snapshot().discardedTurnCount).toBe(3);
+    visibility.show();
+    await vi.advanceTimersByTimeAsync(runtime.captionIdleMs);
+    emitVoice(audio, true);
+    live.emit({ type: "session.input_transcript.delta", delta: "Я хочу продолжить разговор и узнать дорогу." });
+    await vi.advanceTimersByTimeAsync(runtime.captionIdleMs);
+    expect(controller.session.activeTurn?.originalText).toBe("Я хочу продолжить разговор и узнать дорогу.");
+  });
+
+  it("defers language replacement until every pending source is settled", async () => {
+    const { controller, live, audio } = await startRussianEnglish();
+    emitVoice(audio, true);
+    live.emit({ type: "session.input_transcript.delta", delta: "Подскажите, где находится вокзал?" });
+    live.emit({ type: "session.input_transcript.delta", delta: "The station is straight ahead." });
+    await controller.changeInterlocutorLanguage("es");
+    expect(controller.session.participantB.language).toBe("en");
+    live.emit({ type: "session.output_transcript.delta", delta: "Вокзал находится прямо впереди." });
+    emitVoice(audio, false);
+    await vi.advanceTimersByTimeAsync(runtime.audioStartGraceMs + runtime.captionIdleMs);
+    expect(controller.session.activeTurn).toBeUndefined();
+    expect(controller.session.participantB.language).toBe("en");
+    live.emit({ type: "session.output_transcript.delta", delta: "Where is the train station?" });
+    await vi.advanceTimersByTimeAsync(runtime.audioStartGraceMs + runtime.captionIdleMs);
+    expect(controller.session.participantB.language).toBe("es");
+  });
+
+  it("holds ambiguous source separately, then drops its flush when the session is cancelled", async () => {
+    const { controller, live, audio } = await startRussianEnglish();
+    emitVoice(audio, true);
+    live.emit({ type: "session.input_transcript.delta", delta: "Подскажите, где находится вокзал?" });
+    live.emit({ type: "session.input_transcript.delta", delta: "The" });
+    expect(controller.session.activeTurn?.originalText).toBe("Подскажите, где находится вокзал?");
+    live.emit({ type: "session.output_transcript.delta", delta: "OK" });
+    await controller.cancel();
+    await vi.advanceTimersByTimeAsync(runtime.captionIdleMs + runtime.noOutputTimeoutMs);
+    expect(controller.session.state).toBe("idle");
+    expect(controller.session.activeTurn).toBeUndefined();
+    expect(controller.session.pendingTurns ?? []).toHaveLength(0);
+  });
+
+  it("preserves unfinished same-speaker speech across a pause", async () => {
+    const { controller, live, audio } = await startRussianEnglish();
+    emitVoice(audio, true);
+    live.emit({ type: "session.input_transcript.delta", delta: "Подскажите, где находится вокзал?" });
+    const id = controller.session.activeTurn?.id;
+    emitVoice(audio, false);
+    await vi.advanceTimersByTimeAsync(300);
+    emitVoice(audio, true);
+    live.emit({ type: "session.input_transcript.delta", delta: " Я хочу дойти туда пешком." });
+    expect(controller.session.activeTurn).toMatchObject({ id, speaker: "A",
+      originalText: "Подскажите, где находится вокзал? Я хочу дойти туда пешком." });
+    expect(controller.session.pendingTurns ?? []).toHaveLength(0);
+    expect(live.setInputMuted).not.toHaveBeenCalled();
+  });
+
+  it("shows an independently authored translation when A-B-A leaves two plausible A sources", async () => {
+    const { controller, live, audio } = await startRussianEnglish();
+    emitVoice(audio, true);
+    live.emit({ type: "session.input_transcript.delta", delta: "Подскажите, где находится вокзал?" });
+    live.emit({ type: "session.input_transcript.delta", delta: "The station is straight ahead." });
+    live.emit({ type: "session.input_transcript.delta", delta: "Спасибо, я пойду туда пешком." });
+    live.emit({ type: "session.output_transcript.delta", delta: "Thank you, I will walk there." });
+    expect(controller.session.activeTurn?.translatedText).toBeUndefined();
+    const translation = controller.session.pendingTurns?.find(turn => turn.translationOnly);
+    expect(translation).toMatchObject({ speaker: "A", translatedText: "Thank you, I will walk there." });
+    emitVoice(audio, false);
+    await vi.advanceTimersByTimeAsync(runtime.noOutputTimeoutMs + runtime.captionIdleMs);
+    expect(controller.session.recentTurns.find(turn => turn.id === translation?.id)).toMatchObject({ speaker: "A", status: "completed" });
+    expect(controller.inputReady).toBe(true);
+  });
+
+  it("retains punctuation on its confirmed source and accepts a new source while output is pending", async () => {
+    const { controller, live, audio } = await startRussianEnglish();
+    emitVoice(audio, true);
+    live.emit({ type: "session.input_transcript.delta", delta: "Подскажите, где находится вокзал" });
+    live.emit({ type: "session.input_transcript.delta", delta: "? " });
+    expect(controller.session.activeTurn?.originalText).toBe("Подскажите, где находится вокзал? ");
+    live.emit({ type: "session.output_transcript.delta", delta: "Where is the train station?" });
+    emitPlayback(audio, true);
+    live.emit({ type: "session.input_transcript.delta", delta: "The station is straight ahead." });
+    expect(controller.session.activeTurn?.speaker).toBe("B");
+    expect(controller.session.activeTurn?.audioOutputStarted).toBe(false);
+    expect(controller.session.pendingTurns?.[0]).toMatchObject({ speaker: "A", audioOutputInterrupted: true });
+    expect(live.setInputMuted).not.toHaveBeenCalled();
+  });
+
+  it("separates a rapid B reply while A's late translation is still pending", async () => {
+    const { controller, live, audio } = await startRussianEnglish();
+    emitVoice(audio, true);
+    live.emit({ type: "session.input_transcript.delta", delta: "Подскажите, пожалуйста, где находится вокзал?", start_ms: 0, end_ms: 1000 });
+    const aId = controller.session.activeTurn?.id;
+    await vi.advanceTimersByTimeAsync(100);
+    live.emit({ type: "session.input_transcript.delta", delta: "The station is straight ahead.", start_ms: 1100, end_ms: 1600 });
+    expect(controller.session.activeTurn).toMatchObject({ speaker: "B", originalText: "The station is straight ahead." });
+    expect(controller.session.activeTurn?.id).not.toBe(aId);
+    live.emit({ type: "session.output_transcript.delta", delta: "Where is the train station?", start_ms: 1700, end_ms: 2000 });
+    expect(controller.session.activeTurn?.translatedText).toBeUndefined();
+    expect(controller.session.pendingTurns?.find(t => t.id === aId)?.translatedText).toBe("Where is the train station?");
+    expect(live.setInputMuted).not.toHaveBeenCalled();
+  });
+
+  it("routes timestamped late A speech to A after B has started", async () => {
+    const { controller, live, audio } = await startRussianEnglish();
+    emitVoice(audio, true);
+    live.emit({ type: "session.input_transcript.delta", delta: "Подскажите, где находится вокзал?", start_ms: 0, end_ms: 800 });
+    const aId = controller.session.activeTurn?.id;
+    live.emit({ type: "session.input_transcript.delta", delta: "The station is straight ahead.", start_ms: 1000, end_ms: 1500 });
+    const bId = controller.session.activeTurn?.id;
+    live.emit({ type: "session.input_transcript.delta", delta: " Я хочу туда дойти пешком.", start_ms: 810, end_ms: 980 });
+    expect(controller.session.activeTurn?.id).toBe(bId);
+    expect(controller.session.activeTurn?.originalText).toBe("The station is straight ahead.");
+    expect(controller.session.pendingTurns?.find(t => t.id === aId)?.originalText).toBe("Подскажите, где находится вокзал? Я хочу туда дойти пешком.");
+  });
+
+  it("keeps model input open through quiet, playback and bookkeeping completion", async () => {
+    const { controller, live, audio } = createController();
+    await enterListening(controller);
+    const startupInstructions = live.appendInstructions.mock.calls.length;
+    emitVoice(audio, true);
+    live.emit({ type: "session.input_transcript.delta", delta: "Hello, where is the nearest train station?" });
+    live.emit({ type: "session.output_transcript.delta", delta: "Hola" });
+    emitPlayback(audio, true);
+    emitVoice(audio, false);
+    await flushMicrotasks();
+    expect(live.setInputMuted).not.toHaveBeenCalled();
+    emitPlayback(audio, false);
+    await vi.advanceTimersByTimeAsync(runtime.outputSettleGraceMs + runtime.postSourceOutputGraceMs);
+    expect(controller.session.activeTurn).toBeUndefined();
+    expect(controller.inputReady).toBe(true);
+    expect(live.setInputMuted).not.toHaveBeenCalled();
+    expect(live.appendInstructions).toHaveBeenCalledTimes(startupInstructions);
   });
 });
 

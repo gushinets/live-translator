@@ -17,7 +17,7 @@ Status: implementation authorized by the user on 2026-10-03. Intermediate design
 
 Retain the current active source turn and a collection of earlier source turns whose translations are pending. Route output independently using its target language and an explicit turn ID chosen by the router, rather than the current source pointer. Completed history can receive correctly identified late captions without recording a second technical outcome. Ambiguous same-direction output is a translation-only display record, not a successful source turn.
 
-Language routing uses the installed `eld` detector with a bounded streaming buffer and stable word boundaries. A single partial word must not permanently flip an established author. Pending language evidence cannot be appended to the previous source until resolved. Same-speaker continuation and opposite-speaker handoff use distinct reducer actions.
+Language routing uses independent instances of the installed `eld` detector, restricted to the fixed language pair, with a bounded streaming buffer and stable word boundaries. The setup detector remains unrestricted. A single partial word must not permanently flip an established author. Pending language evidence cannot be appended to the previous source until resolved. Same-speaker continuation and opposite-speaker handoff use distinct reducer actions.
 
 Normal turn completion is local bookkeeping. Remove per-turn input mute/unmute and repeated fixed-language steering; startup, explicit language changes, suspension and recovery retain their control commands. Model audio activity must not be blindly assigned to whichever person most recently started talking.
 
@@ -32,3 +32,7 @@ Cover A→B with 100–300 ms gaps, same-speaker pauses, source arrival during o
 GPT-Live transcript intervals are approximate and have no source-turn correlation ID. Language routing establishes the participant; exact source/translation pairing is only made when unambiguous. This implementation cannot promise word-level alignment or physically identify speakers who speak the same language.
 
 No paid Live session or speech synthesis is necessary for automated verification. Final real-speech verification belongs to the user.
+
+## Provider evidence
+
+The [GPT-Live transcript guide](https://developers.openai.com/api/docs/guides/live-conversations#transcript-deltas) exposes approximate `start_ms`/`end_ms` session intervals, without source-turn correlation IDs. The [model reference](https://developers.openai.com/api/docs/models/gpt-live-1) describes simultaneous listening and speaking. Keep input available and treat quiet/completion as local bookkeeping. Timed late source fragments update their earlier interval; audio without an unambiguous caption target cannot establish a new participant's delivery.

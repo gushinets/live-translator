@@ -60,7 +60,9 @@ export function ConversationScreen({
   const sourceActive = active !== undefined && active.sourceIdleAtMs === undefined;
   const hasOutputText = (active?.translatedText ?? "").length > 0;
   const audioOutputStarted = active?.audioOutputStarted === true;
-  const recentTurns = session.recentTurns;
+  const recentTurns = [...session.recentTurns, ...(session.pendingTurns ?? [])].sort((a, b) =>
+    (a.speechStartAtMs ?? 0) - (b.speechStartAtMs ?? 0) ||
+    (a.sourceFragments[0]?.startMs ?? 0) - (b.sourceFragments[0]?.startMs ?? 0));
   const terminalAlert =
     session.state === "error" || session.state === "ending"
       ? controller.ownerError === undefined ? undefined : t(controller.ownerError)
