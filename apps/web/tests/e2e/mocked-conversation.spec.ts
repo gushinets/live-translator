@@ -12,7 +12,7 @@ const COURIER_TURNS: ReadonlyArray<{ original: string; translation: string }> = 
   { original: "Have a good evening", translation: "Que tenga una buena noche" },
   { original: "Que tenga una buena tarde también", translation: "Same to you" },
   { original: "The elevator is on the left", translation: "El ascensor esta a la izquierda" },
-  { original: "Perfecto, muchas gracias por su ayuda", translation: "Perfect" },
+  { original: "Perfecto, muchas gracias por su ayuda", translation: "Perfect, thank you for your help." },
 ];
 
 test.describe("mocked conversation runtime", () => {
@@ -57,7 +57,7 @@ test.describe("mocked conversation runtime", () => {
     await page.getByRole("button", { name: "Partner's language" }).click();
     await expect(page.getByRole("radio", { name: "German" })).toBeChecked();
     await page.getByRole("button", { name: "Confirm" }).click();
-    await harness.outputDelta("Wo ist der Bahnhof?");
+    await harness.outputDelta("¿Dónde está la estación de tren, por favor?");
     await harness.sourceQuiet();
     await harness.advance(runtime.audioStartGraceMs);
     await expect(page.getByText("Deutsch")).toBeVisible();
@@ -234,15 +234,14 @@ async function completeTextOnlyTurn(
   await expect(page.getByTestId(`current-author-${turn.speaker}`)).toHaveText(turn.speaker === "A" ? "Me:" : "Yo:");
   await harness.outputDelta(turn.translation);
   await harness.advance(runtime.captionIdleMs);
-  await expect(page.getByTestId(`current-primary-${turn.recipient}`)).toHaveText(
-    turn.translation,
-  );
-  await expect(page.getByTestId(`current-author-${turn.recipient}`)).toHaveText(turn.recipient === "A" ? "Him:" : "Él:");
+  const caption = page.getByTestId(`participant-pane-${turn.recipient}`).getByText(turn.translation, { exact: true }).last();
+  await expect(caption).toBeVisible();
+  await expect(caption.locator("..")).toContainText(turn.recipient === "A" ? "Him:" : "Él:");
   await expect(page.getByTestId(`participant-status-${turn.speaker}`)).toHaveText(turn.speaker === "A" ? "Listening" : "Escuchando");
   expect(await harness.lastGateBCommand()).not.toBe("mute");
   await harness.sourceQuiet();
   expect(await harness.lastGateBCommand()).toBe("unmute");
-  await harness.advance(runtime.audioStartGraceMs);
+  await harness.advance(runtime.noOutputTimeoutMs);
   await expect(page.getByTestId(`participant-status-${turn.recipient}`)).toHaveText(turn.recipient === "A" ? "Speak" : "Habla");
   await expect(page.getByTestId(`participant-status-${turn.speaker}`)).toHaveText(turn.speaker === "A" ? "Speak" : "Habla");
   await harness.waitForGateBUnmuted();

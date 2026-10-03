@@ -66,7 +66,8 @@ export function ParticipantPane({
         </p>
       ) : null}
       <ol className="participant-recent">
-        {recentTurns.filter(entry => !entry.translationOnly || entry.speaker !== side).map((entry) => {
+        {recentTurns.filter(entry => (!entry.translationOnly || entry.speaker !== side) &&
+          (paneTextForTurn(entry, side).length > 0 || !["failed", "discarded"].includes(entry.status))).map((entry) => {
           const text = paneTextForTurn(entry, side);
           return (
             <li key={entry.id} className={`recent-turn${entry === latest ? " recent-turn--latest" : ""}`}>
@@ -98,6 +99,7 @@ export function ParticipantPane({
 }
 
 function paneTextForTurn(entry: Turn, side: Side): string {
-  if (entry.speaker === undefined) return "";
+  if (entry.speaker === undefined) return entry.translationOnly ? (entry.translatedText ?? "")
+    : entry.status === "failed" ? entry.originalText : "";
   return entry.speaker === side ? entry.originalText : (entry.translatedText ?? "");
 }

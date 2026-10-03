@@ -429,6 +429,55 @@ describe("per-participant language and authors (ANY-558 / ANY-559)", () => {
     expect(within(a).queryByText("Thank you, I will walk there.")).not.toBeInTheDocument();
   });
 
+  it("shows unassigned captions in both panes without an invented author", () => {
+    const controller = new FakeConversationController(session({
+      pendingTurns: [turn({ id: "unknown-caption", speaker: undefined, translationOnly: true,
+        sideSource: "unresolved", translatedText: "OK" })],
+    }));
+    render(<ConversationScreen controller={controller} />);
+    for (const side of ["A", "B"]) {
+      const pane = screen.getByTestId(`participant-pane-${side}`);
+      expect(within(pane).getByText("OK")).toBeInTheDocument();
+      expect(pane.querySelector(".turn-author")).toBeNull();
+    }
+  });
+
+  it("retains failed source text without leaving an empty recipient waiting forever", () => {
+    const controller = new FakeConversationController(session({
+      recentTurns: [turn({ id: "failed-source", speaker: "A", status: "failed", originalText: "Где вокзал?" }),
+        turn({ id: "independent", speaker: "A", translationOnly: true, status: "completed", translatedText: "Where is the station?" })],
+    }));
+    render(<ConversationScreen controller={controller} />);
+    const a = screen.getByTestId("participant-pane-A");
+    const b = screen.getByTestId("participant-pane-B");
+    expect(within(a).getByText("Где вокзал?")).toBeInTheDocument();
+    expect(within(b).getByText("Where is the station?")).toBeInTheDocument();
+    expect(b.querySelector(".turn-waiting")).toBeNull();
+  });
+
+  it("retains a failed short source without guessing its participant", () => {
+    const controller = new FakeConversationController(session({
+      recentTurns: [turn({ id: "unknown-source", speaker: undefined, status: "failed", originalText: "OK" })],
+    }));
+    render(<ConversationScreen controller={controller} />);
+    for (const side of ["A", "B"]) {
+      const pane = screen.getByTestId(`participant-pane-${side}`);
+      expect(within(pane).getByText("OK")).toBeInTheDocument();
+      expect(pane.querySelector(".turn-author")).toBeNull();
+    }
+  });
+
+  it("orders a source before its independent output when the clock has equal millisecond timestamps", () => {
+    const controller = new FakeConversationController(session({
+      recentTurns: [turn({ id: "output-first-closed", speaker: "B", translationOnly: true, status: "completed",
+        translatedText: "Thank you very much.", speechStartAtMs: 1000 }),
+        turn({ id: "source-later-failed", speaker: undefined, status: "failed", originalText: "OK", speechStartAtMs: 1000 })],
+    }));
+    render(<ConversationScreen controller={controller} />);
+    const a = screen.getByTestId("participant-pane-A");
+    expect([...a.querySelectorAll("li")].map(entry => entry.textContent)).toEqual(["OK", "Он: Thank you very much."]);
+  });
+
   it("orders history and pending sources by speech time, despite translations completing out of order", () => {
     const controller = new FakeConversationController(bilingualSession({
       recentTurns: [turn({ id: "second", speaker: "A", originalText: "Вторая фраза", speechStartAtMs: 20 }),
@@ -476,14 +525,14 @@ describe("per-participant language and authors (ANY-558 / ANY-559)", () => {
     expect(b.querySelector(".participant-language")).toBeNull();
   });
 
-  it("waits without exposing unidentified text or guessed authors, then updates both panes on language detection", () => {
+  it("holds active unidentified text, retains unassigned history, and updates panes on language detection", () => {
     const controller = new FakeConversationController(bilingualSession({
       activeTurn: turn({ id: "unknown", speaker: undefined, originalText: "OK", translatedText: "Хорошо" }),
       recentTurns: [turn({ id: "old-unknown", speaker: undefined, originalText: "123", status: "failed" })],
     }));
     const view = render(<ConversationScreen controller={controller} />);
     expect(screen.queryByText("OK")).not.toBeInTheDocument();
-    expect(screen.queryByText("123")).not.toBeInTheDocument();
+    expect(screen.getAllByText("123")).toHaveLength(2);
     expect(screen.queryByTestId("current-author-A")).not.toBeInTheDocument();
     expect(screen.queryByTestId("current-author-B")).not.toBeInTheDocument();
     expect(screen.getByTestId("participant-pane-B")).toHaveTextContent("Waiting");

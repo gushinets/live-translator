@@ -2,15 +2,15 @@ import { expect, test, type Page } from "@playwright/test";
 import { runtime } from "../../src/config/runtime";
 import { MockLiveHarness } from "./mockLiveHarness";
 
-async function startRussianEnglish(page: Page): Promise<MockLiveHarness> {
+async function startRussianEnglish(page: Page, languages = { A: "ru", B: "en" }): Promise<MockLiveHarness> {
   const harness = await MockLiveHarness.attach(page);
-  await page.addInitScript(() => {
-    localStorage.setItem("live-translator-owner-language", "ru");
-    localStorage.setItem("live-translator-interlocutor-language", "en");
-  });
+  await page.addInitScript(pair => {
+    localStorage.setItem("live-translator-owner-language", pair.A);
+    localStorage.setItem("live-translator-interlocutor-language", pair.B);
+  }, languages);
   await page.goto("/");
-  await page.getByRole("button", { name: "Начать перевод" }).click();
-  await expect(page.getByRole("button", { name: "Завершить" })).toBeVisible();
+  await page.getByRole("button", { name: /^(Начать перевод|Start translation)$/ }).click();
+  await expect(page.getByRole("button", { name: /^(Завершить|End)$/ })).toBeVisible();
   return harness;
 }
 
@@ -44,6 +44,58 @@ test("partial words stay separate until the new speaker's language resolves", as
   await harness.inputDelta(" station is straight ahead.", 1150, 1600);
   await expect(page.getByTestId("current-primary-B")).toHaveText("The station is straight ahead.");
   await expect(page.getByTestId("participant-pane-A").locator("li")).toHaveText("Я: Подскажите, где находится вокзал?");
+});
+
+test("an idle timer cannot turn an unfinished English word into a Spanish author", async ({ page }) => {
+  const harness = await startRussianEnglish(page, { A: "en", B: "es" });
+  await harness.sourceActive();
+  await harness.inputDelta("Where is the nearest station?");
+  await harness.inputDelta(" Thank y");
+  await harness.advance(runtime.captionIdleMs);
+  await expect(page.getByTestId("current-primary-A")).toHaveText("Where is the nearest station?");
+  await expect(page.locator(".recent-turn")).toHaveCount(0);
+  await harness.inputDelta("ou very much.");
+  await expect(page.getByTestId("current-primary-A")).toHaveText("Where is the nearest station? Thank you very much.");
+  await expect(page.getByTestId("current-author-A")).toHaveText("Me:");
+  await expect(page.locator(".recent-turn")).toHaveCount(0);
+});
+
+test("unidentified translation captions remain visible without acquiring the current source author", async ({ page }) => {
+  const harness = await startRussianEnglish(page);
+  await harness.sourceActive();
+  await harness.inputDelta("Подскажите, где находится вокзал?");
+  await harness.outputDelta("OK");
+  await harness.sourceQuiet();
+  await harness.advance(runtime.captionIdleMs);
+  for (const side of ["A", "B"]) {
+    const caption = page.getByTestId(`participant-pane-${side}`).locator("li").filter({ hasText: "OK" });
+    await expect(caption).toHaveText("OK");
+    await expect(caption.locator(".turn-author")).toHaveCount(0);
+  }
+  await expect(page.getByTestId("current-primary-A")).toHaveText("Подскажите, где находится вокзал?");
+  await expect(page.getByTestId("current-primary-B")).toHaveCount(0);
+  expect(await harness.lastGateBCommand()).toBe("unmute");
+});
+
+test("a queued language replacement retains undecidable speech before switching the model pair", async ({ page }) => {
+  const harness = await startRussianEnglish(page, { A: "en", B: "es" });
+  await harness.sourceActive();
+  await harness.inputDelta("Where is the nearest station?");
+  await harness.outputDelta("¿Dónde está la estación de tren, por favor?");
+  await harness.inputDelta(" Thank y");
+  await page.getByRole("button", { name: "Partner's language" }).click();
+  await page.getByRole("radio", { name: "German" }).check();
+  await page.getByRole("button", { name: "Confirm" }).click();
+  await harness.sourceQuiet();
+  await harness.advance(runtime.audioStartGraceMs + runtime.captionIdleMs);
+  await expect(page.getByTestId("participant-pane-B")).toHaveAttribute("lang", "es");
+  await harness.advance(runtime.noOutputTimeoutMs + runtime.captionIdleMs);
+  await expect(page.getByTestId("participant-pane-B")).toHaveAttribute("lang", "de");
+  for (const side of ["A", "B"]) {
+    const caption = page.getByTestId(`participant-pane-${side}`).getByText("Thank y", { exact: true });
+    await expect(caption).toBeVisible();
+    await expect(caption.locator("..").locator(".turn-author")).toHaveCount(0);
+  }
 });
 
 test("same-speaker continuation stays in the original source across a short pause", async ({ page }) => {

@@ -605,9 +605,13 @@ export class SessionController {
       this.notify();
       return;
     }
-    if (this.currentSession.activeTurn || this.currentSession.pendingTurns?.length || this.turnClosing) {
+    if (this.currentSession.activeTurn || this.currentSession.pendingTurns?.length || this.turnClosing ||
+        this.sourceRouter.hasPending || this.outputRouter.hasPending) {
       this.pendingInterlocutorLanguage = language;
       this.notify();
+      if (!this.currentSession.activeTurn && !this.currentSession.pendingTurns?.length && !this.turnClosing) {
+        await this.considerTurnCompletion(Date.now());
+      }
       return;
     }
     const generation = this.sessionGeneration;
@@ -1310,12 +1314,11 @@ export class SessionController {
   private handleConversationInputDelta(event: TranscriptDeltaEvent): void {
     if (!event.delta || !["listening", "outputting"].includes(this.currentSession.state) || this.turnClosing) return;
     const fragment = createTranscriptFragment({ text: event.delta, nowMs: Date.now(), startMs: event.start_ms, endMs: event.end_ms });
-    const historical = this.findSourceTarget(fragment);
-    if (historical && historical.id !== this.currentSession.activeTurn?.id) {
-      this.dispatch({ type: "SOURCE_TARGETED_FRAGMENT", turnId: historical.id, fragment });
-      return;
-    }
-    this.routeSource(this.sourceRouter.push(fragment, this.languages, this.currentSession.activeTurn?.speaker));
+    const active = this.currentSession.activeTurn;
+    const activeStart = active?.sourceFragments[0]?.startMs;
+    const currentSide = fragment.startMs === undefined || activeStart === undefined || fragment.startMs >= activeStart
+      ? active?.speaker : undefined;
+    this.routeSource(this.sourceRouter.push(fragment, this.languages, currentSide));
     const generation = this.sessionGeneration;
     const epoch = this.lifecycleEpoch;
     if (this.sourceFragmentTimer !== null) window.clearTimeout(this.sourceFragmentTimer);
@@ -1328,12 +1331,13 @@ export class SessionController {
     }, runtime.captionIdleMs);
   }
 
-  private routeSource(groups: RoutedTranscript[]): void {
+  private routeSource(groups: RoutedTranscript[], considerCompletion = true): void {
     for (const { side, fragments } of groups) {
       const first = fragments[0];
       if (!first) continue;
       const historical = this.findSourceTarget(first, side);
-      if (historical && historical.id !== this.currentSession.activeTurn?.id) {
+      if (historical) {
+        this.extendSourceOpening(historical, first);
         for (const fragment of fragments) this.dispatch({ type: "SOURCE_TARGETED_FRAGMENT", turnId: historical.id, fragment });
         continue;
       }
@@ -1348,17 +1352,17 @@ export class SessionController {
         if (!this.speechInputReady) continue;
         this.speechInputReady = false;
         this.dispatch({ type: "SOURCE_ACTIVE", turnId: crypto.randomUUID(), speaker: side,
-          sideSource: side ? "language" : "unresolved", fragment: first });
+          sideSource: side ? "language" : "unresolved", fragment: first, languageRouted: true });
         this.armMaxSourceTimer();
-        for (const fragment of fragments.slice(1)) this.dispatch({ type: "SOURCE_FRAGMENT", fragment, speaker: side });
+        for (const fragment of fragments.slice(1)) this.dispatch({ type: "SOURCE_FRAGMENT", fragment, speaker: side, languageRouted: true });
       } else if (active.speaker !== undefined && active.speaker !== side &&
                  !(side === undefined && active.originalText === "" && active.sideSource === "translation")) {
         const id = crypto.randomUUID();
-        this.dispatch({ type: "SOURCE_HANDOFF", turnId: id, speaker: side, fragment: first, nowMs: Date.now() });
+        this.dispatch({ type: "SOURCE_HANDOFF", turnId: id, speaker: side, fragment: first, nowMs: Date.now(), languageRouted: true });
         this.armMaxSourceTimer();
-        for (const fragment of fragments.slice(1)) this.dispatch({ type: "SOURCE_FRAGMENT", fragment, speaker: side });
+        for (const fragment of fragments.slice(1)) this.dispatch({ type: "SOURCE_FRAGMENT", fragment, speaker: side, languageRouted: true });
       } else {
-        for (const fragment of fragments) this.dispatch({ type: "SOURCE_FRAGMENT", fragment, speaker: side });
+        for (const fragment of fragments) this.dispatch({ type: "SOURCE_FRAGMENT", fragment, speaker: side, languageRouted: true });
       }
       active = this.currentSession.activeTurn;
       if (active) {
@@ -1366,27 +1370,41 @@ export class SessionController {
         if (this.sourceVoiceActive === false && active.sourceIdleAtMs === undefined) {
           this.dispatch({ type: "SOURCE_IDLE" });
           this.clearMaxSourceTimer();
-          this.speechInputReady = this.pendingInterlocutorLanguage === undefined;
+          this.speechInputReady = true;
         }
       }
     }
-    void this.considerTurnCompletion(Date.now());
+    if (considerCompletion) void this.considerTurnCompletion(Date.now());
   }
 
   private routingTurns(): Turn[] {
     return [...this.currentSession.recentTurns, ...(this.currentSession.pendingTurns ?? []),
       ...(this.currentSession.activeTurn ? [this.currentSession.activeTurn] : [])]
-      .filter(turn => this.routingTurnIds.has(turn.id) && turn.status !== "discarded" && turn.status !== "failed");
+      .filter(turn => this.routingTurnIds.has(turn.id) && turn.status !== "discarded");
   }
 
   private findSourceTarget(fragment: TranscriptFragment, side?: Side): Turn | undefined {
-    if (fragment.startMs === undefined) return undefined;
-    const candidates = this.routingTurns().filter(turn => {
-      const start = turn.sourceFragments.find(part => part.startMs !== undefined)?.startMs;
-      return !turn.translationOnly && (side === undefined || turn.speaker === side) && start !== undefined &&
-        fragment.startMs! >= start && turn.sourceEndMs !== undefined && fragment.startMs! < turn.sourceEndMs;
-    });
-    return candidates.length === 1 ? candidates[0] : undefined;
+    if (fragment.startMs === undefined || side === undefined) return undefined;
+    const sources = this.routingTurns().filter(turn => !turn.translationOnly && turn.sourceFragments[0]?.startMs !== undefined)
+      .sort((a, b) => a.sourceFragments[0]!.startMs! - b.sourceFragments[0]!.startMs!);
+    const preceding = sources.findLast(turn => turn.sourceFragments[0]!.startMs! <= fragment.startMs!);
+    if (preceding?.speaker === side &&
+        (preceding.sourceEndMs === undefined || fragment.startMs < preceding.sourceEndMs)) return preceding;
+    // The first packet is not necessarily the opening. An earlier packet in the next
+    // speaker's language extends that source, rather than contaminating the preceding one.
+    const following = sources.find(turn => turn.sourceFragments[0]!.startMs! > fragment.startMs!);
+    return following?.speaker === side ? following : undefined;
+  }
+
+  private extendSourceOpening(target: Turn, fragment: TranscriptFragment): void {
+    const start = target.sourceFragments[0]?.startMs;
+    if (fragment.startMs === undefined || start === undefined || fragment.startMs >= start) return;
+    const preceding = this.routingTurns().filter(turn => !turn.translationOnly && turn.id !== target.id &&
+      turn.sourceFragments[0]?.startMs !== undefined && turn.sourceFragments[0].startMs < start)
+      .sort((a, b) => b.sourceFragments[0]!.startMs! - a.sourceFragments[0]!.startMs!)[0];
+    if (preceding && preceding.sourceFragments[0]!.startMs! < fragment.startMs) {
+      this.dispatch({ type: "SOURCE_BOUNDARY", turnId: preceding.id, endMs: fragment.startMs });
+    }
   }
 
   private closePreviousSourceInterval(fragment: TranscriptFragment): void {
@@ -1401,9 +1419,9 @@ export class SessionController {
     if (!event.delta || !["listening", "outputting"].includes(this.currentSession.state)) return;
     if (this.leftoverOutputDraining) { this.noteLeftoverCaption(); return; }
     const fragment = createTranscriptFragment({ text: event.delta, nowMs: Date.now(), startMs: event.start_ms, endMs: event.end_ms });
-    const activeSpeaker = this.currentSession.activeTurn?.speaker;
-    const recipient = this.lastOutputSide ?? (activeSpeaker === "A" ? "B" : activeSpeaker === "B" ? "A" : undefined);
-    this.routeOutput(this.outputRouter.push(fragment, this.languages, recipient));
+    if (!this.outputRouter.hasPending && /^[\p{P}\s]+$/u.test(fragment.text)) {
+      this.routeOutput([{ side: undefined, fragments: [fragment] }]);
+    } else this.routeOutput(this.outputRouter.push(fragment, this.languages, this.lastOutputSide));
     const generation = this.sessionGeneration;
     const epoch = this.lifecycleEpoch;
     if (this.outputFragmentTimer !== null) window.clearTimeout(this.outputFragmentTimer);
@@ -1417,21 +1435,20 @@ export class SessionController {
     }, runtime.captionIdleMs);
   }
 
-  private routeOutput(groups: RoutedTranscript[]): void {
+  private routeOutput(groups: RoutedTranscript[], considerCompletion = true): void {
     for (const { side, fragments } of groups) {
       const speaker = side === "A" ? "B" : side === "B" ? "A" : undefined;
       const turns = this.routingTurns();
-      const matching = turns.filter(turn => !turn.translationOnly &&
-        (speaker === undefined || turn.speaker === speaker || turn.speaker === undefined));
-      const unfinished = matching.filter(turn => turn.status !== "completed");
-      const candidates = unfinished.length ? unfinished : matching;
-      let target = candidates.length === 1 ? candidates[0] : undefined;
       const continuation = this.outputTurnId ? findSessionTurn(this.currentSession, this.outputTurnId) : undefined;
+      const candidates = speaker === undefined ? [] : turns.filter(turn => !turn.translationOnly &&
+        (turn.speaker === speaker || turn.speaker === undefined));
+      let target = candidates.length === 1 && candidates[0]?.status !== "failed" ? candidates[0] : undefined;
+      if (fragments.every(fragment => /^[\p{P}\s]+$/u.test(fragment.text))) target = this.findOutputContinuation(fragments);
       if (!target && continuation?.translationOnly && continuation.status !== "completed" &&
           continuation.speaker === speaker && this.lastOutputSide === side) target = continuation;
       for (const fragment of fragments) {
         if (target) this.dispatch({ type: "OUTPUT_DELTA", turnId: target.id, text: fragment.text,
-          nowMs: fragment.receivedAtMs, fragment, speaker });
+          nowMs: fragment.receivedAtMs, fragment, speaker: speaker ?? target.speaker, languageRouted: true });
         else {
           const turnId = crypto.randomUUID();
           this.dispatch({ type: "OUTPUT_STANDALONE", turnId, speaker, text: fragment.text,
@@ -1444,7 +1461,22 @@ export class SessionController {
       this.lastOutputSide = side;
     }
     this.armCaptionIdleTimer();
-    void this.considerTurnCompletion(Date.now());
+    if (considerCompletion) void this.considerTurnCompletion(Date.now());
+  }
+
+  private findOutputContinuation(fragments: TranscriptFragment[]): Turn | undefined {
+    const eligible = this.routingTurns().filter(turn => turn.speaker !== undefined && turn.status !== "failed");
+    if (fragments.every(fragment => fragment.startMs !== undefined)) {
+      const candidates = eligible.filter(turn => {
+        const starts = (turn.outputFragments ?? []).flatMap(fragment => fragment.startMs === undefined ? [] : [fragment.startMs]);
+        const ends = (turn.outputFragments ?? []).flatMap(fragment => fragment.endMs === undefined ? [] : [fragment.endMs]);
+        return starts.length > 0 && ends.length > 0 && fragments.every(fragment =>
+          fragment.startMs! >= Math.min(...starts) && fragment.startMs! <= Math.max(...ends));
+      });
+      return candidates.length === 1 ? candidates[0] : undefined;
+    }
+    return this.lastOutputSide === undefined ? undefined : eligible.find(turn => turn.id === this.outputTurnId &&
+      turn.speaker !== this.lastOutputSide);
   }
 
   private async handleVoiceActivity(event: AudioActivityEvent): Promise<void> {
@@ -1456,10 +1488,11 @@ export class SessionController {
       this.recoveryPromptKind = undefined;
       this.clearCompletionTimer();
       const active = this.currentSession.activeTurn;
-      if (!active) {
+      if (!active || (active.speaker === undefined && active.originalText.length > 0 && active.sourceIdleAtMs !== undefined)) {
         if (!this.speechInputReady) return;
         this.speechInputReady = false;
-        this.dispatch({ type: "SOURCE_ACTIVE", turnId: crypto.randomUUID(), speaker: undefined, sideSource: "unresolved" });
+        if (active) this.dispatch({ type: "SOURCE_HANDOFF", turnId: crypto.randomUUID(), speaker: undefined, nowMs: event.atMs });
+        else this.dispatch({ type: "SOURCE_ACTIVE", turnId: crypto.randomUUID(), speaker: undefined, sideSource: "unresolved" });
         this.routingTurnIds.add(this.currentSession.activeTurn!.id);
         this.armMaxSourceTimer();
       } else {
@@ -1471,7 +1504,7 @@ export class SessionController {
     if (!this.currentSession.activeTurn) return;
     this.clearMaxSourceTimer();
     this.dispatch({ type: "SOURCE_IDLE" });
-    this.speechInputReady = this.pendingInterlocutorLanguage === undefined;
+    this.speechInputReady = true;
     // GPT-Live must hear the next speaker, including interruptions during its output.
     await this.considerTurnCompletion(Date.now());
   }
@@ -1524,12 +1557,24 @@ export class SessionController {
     }
     this.armCompletionTimer(retryAtMs, nowMs);
     if (this.pendingInterlocutorLanguage && !this.currentSession.activeTurn && !(this.currentSession.pendingTurns?.length)) {
+      if (this.sourceRouter.hasPending || this.outputRouter.hasPending) {
+        // Gate B still uses the current pair. Preserve pending text before replacement
+        // resets the routers; an unresolved caption is not an empty conversation.
+        this.speechInputReady = true;
+        this.flushTranscriptBuffers();
+        await this.considerTurnCompletion(nowMs);
+        return;
+      }
       const language = this.pendingInterlocutorLanguage;
       await this.changeInterlocutorLanguage(language).catch(error => console.error("Language change after turn failed", { error }));
     }
   }
 
   private closeCompletedTurn(turn: Turn): void {
+    const replacingLanguage = this.pendingInterlocutorLanguage !== undefined &&
+      (!this.currentSession.activeTurn || this.currentSession.activeTurn.id === turn.id) &&
+      !(this.currentSession.pendingTurns?.some(pending => pending.id !== turn.id));
+    this.speechInputReady = !replacingLanguage;
     this.dispatch({ type: "TURN_CLOSED", turnId: turn.id, speaker: turn.speaker });
     if (!turn.translationOnly && turn.sourceIdleAtMs !== undefined && turn.firstOutputTextAtMs !== undefined) {
       this.conversationMetrics.recordTurn({ sourceIdleAtMs: turn.sourceIdleAtMs,
@@ -1537,17 +1582,19 @@ export class SessionController {
         playbackEndAtMs: turn.playbackEndAtMs, turnCompletedAtMs: Date.now(), listeningRestoredAtMs: Date.now(),
         audioOutputStarted: turn.audioOutputStarted && !turn.audioOutputInterrupted });
     }
-    this.speechInputReady = this.pendingInterlocutorLanguage === undefined;
     this.notify();
   }
 
   private failTurnNoOutput(turn: Turn): void {
+    const replacingLanguage = this.pendingInterlocutorLanguage !== undefined &&
+      (!this.currentSession.activeTurn || this.currentSession.activeTurn.id === turn.id) &&
+      !(this.currentSession.pendingTurns?.some(pending => pending.id !== turn.id));
+    this.speechInputReady = !replacingLanguage;
     if (!turn.translationOnly) this.conversationMetrics.recordNoOutputWatchdog();
     this.dispatch({ type: "TURN_FAILED", turnId: turn.id });
     const independentOutput = this.routingTurns().some(output => output.translationOnly && output.translatedText &&
       (output.speechStartAtMs ?? 0) >= (turn.speechStartAtMs ?? 0) && output.speaker === turn.speaker);
     if (!independentOutput && !this.currentSession.activeTurn && !(this.currentSession.pendingTurns?.length)) this.recoveryPromptKind = "repeat";
-    this.speechInputReady = this.pendingInterlocutorLanguage === undefined;
     this.notify();
   }
 
@@ -1831,8 +1878,10 @@ export class SessionController {
 
   private flushTranscriptBuffers(): void {
     if (!["listening", "outputting"].includes(this.currentSession.state)) return;
-    this.routeSource(this.sourceRouter.flush(this.languages));
-    this.routeOutput(this.outputRouter.flush(this.languages));
+    const source = this.sourceRouter.flush(this.languages, true);
+    const output = this.outputRouter.flush(this.languages, true);
+    this.routeSource(source, false);
+    this.routeOutput(output, false);
   }
 
   private clearMaxSourceTimer(): void {

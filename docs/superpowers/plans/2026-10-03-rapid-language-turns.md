@@ -32,10 +32,10 @@ Files: conversation/Turn.ts, session/SessionState.ts, session/sessionReducer.ts,
 
 Interfaces: `pendingTurns?: Turn[]` holds earlier source turns; targeted output/completion actions accept an optional `turnId` while legacy active-turn actions retain compatibility.
 
-- [ ] Add tests for two concurrent source/translation records and late targeted captions; observe RED.
-- [ ] Implement pending records and targeted updates; preserve chronological history and suspend cleanup.
-- [ ] Keep normal model input open and remove per-turn steering/control delays.
-- [ ] Verify controller, reducer, lifecycle and metering tests; document changed obsolete transport expectations.
+- [x] Add tests for two concurrent source/translation records and late targeted captions; observe RED.
+- [x] Implement pending records and targeted updates; preserve chronological history and suspend cleanup.
+- [x] Keep normal model input open and remove per-turn steering/control delays.
+- [x] Verify controller, reducer, lifecycle and metering tests; document changed obsolete transport expectations.
 
 ### Task 2: Streaming language routing
 
@@ -43,17 +43,17 @@ Files: conversation/TranscriptRouter.ts and tests, session/SessionController.ts,
 
 Interfaces: a session-scoped router buffers input/output separately, emits exact text fragments with a confirmed side, retains original intervals, and resets at provider/lifecycle boundaries.
 
-- [ ] Add rapid A→B, same-speaker continuation, partial/ambiguous language and delayed timestamp tests; observe RED.
-- [ ] Route before append, hand off source records explicitly, choose unique output targets by fixed direction.
-- [ ] Preserve ambiguous same-author translations as separate records and show pending records in both panes.
-- [ ] Verify ownership, interruption, delayed-caption and lifecycle regressions.
+- [x] Add rapid A→B, same-speaker continuation, partial/ambiguous language and delayed timestamp tests; observe RED.
+- [x] Route before append, hand off source records explicitly, choose unique output targets by fixed direction.
+- [x] Preserve ambiguous same-author translations as separate records and show pending records in both panes.
+- [x] Verify ownership, interruption, delayed-caption and lifecycle regressions.
 
 ### Task 3: Timing and final validation
 
 Files: config/runtime.ts, audio/VoiceActivityMonitor.test.ts, conversation/TurnCompletion.test.ts, targeted controller tests and device acceptance notes.
 
-- [ ] Add behavioral timing checks at provisional source grace 250 ms and output settle 200 ms; observe RED.
-- [ ] Change only those two values and verify all regressions.
-- [ ] Run complete workspace tests, types, lint, production build and browser regressions where available.
-- [ ] Obtain a fresh defect-first review and fix actionable findings with regression tests.
-- [ ] Deliver the verified implementation and a short real-phone conversation checklist.
+- [x] Add behavioral timing checks at provisional source grace 250 ms and output settle 200 ms; observe RED.
+- [x] Change only those two values and verify all regressions.
+- [x] Run complete workspace tests, types, lint, production build and browser regressions where available.
+- [x] Obtain a fresh defect-first review and fix actionable findings with regression tests.
+- [x] Deliver the verified implementation and a short real-phone conversation checklist.

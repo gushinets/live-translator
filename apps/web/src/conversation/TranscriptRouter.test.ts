@@ -28,6 +28,23 @@ describe("streaming language evidence", () => {
     ]);
   });
 
+  it("keeps a misleading unfinished word buffered across caption idle", () => {
+    const router = new TranscriptRouter();
+    const pair = { A: "en", B: "es" };
+    expect(router.push(fragment(" Thank y"), pair, "A")).toEqual([]);
+    expect(router.flush(pair)).toEqual([]);
+    const routed = router.push(fragment("ou very much."), pair, "A");
+    expect(routed[0]?.side).toBe("A");
+    expect(routed[0]?.fragments.map(part => part.text).join("")).toBe(" Thank you very much.");
+  });
+
+  it("resolves a short complete phrase at idle when its completed prefix supports the same language", () => {
+    const router = new TranscriptRouter();
+    const pair = { A: "en", B: "es" };
+    expect(router.push(fragment("Thank you"), pair, "B")).toEqual([]);
+    expect(router.flush(pair)[0]).toMatchObject({ side: "A", fragments: [fragment("Thank you")] });
+  });
+
   it("holds a partial English word and preserves its timestamps when the language resolves", () => {
     const router = new TranscriptRouter();
     expect(router.push(fragment("The", 300), languages, "A")).toEqual([]);

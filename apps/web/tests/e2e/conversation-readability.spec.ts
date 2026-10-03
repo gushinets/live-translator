@@ -157,7 +157,7 @@ test("keeps all history and the reading position when another turn arrives", asy
     await harness.inputDelta(caption.original);
     await harness.outputDelta(caption.translation);
     await harness.sourceQuiet();
-    await harness.advance(runtime.audioStartGraceMs);
+    await harness.advance(runtime.noOutputTimeoutMs);
     await expect(page.getByTestId("participant-status-A")).toHaveText("Speak");
     await harness.waitForGateBUnmuted();
     await harness.advance(runtime.captionIdleMs);
@@ -176,7 +176,7 @@ test("keeps all history and the reading position when another turn arrives", asy
   await harness.inputDelta(captions[3]!.original);
   await harness.outputDelta(captions[3]!.translation);
   await harness.sourceQuiet();
-  await harness.advance(runtime.audioStartGraceMs + runtime.captionIdleMs);
+  await harness.advance(runtime.noOutputTimeoutMs + runtime.captionIdleMs);
   for (const [index, side] of (["A", "B"] as const).entries()) {
     const history = page.getByTestId(`participant-scroll-${side}`).locator(".recent-turn");
     await expect(history).toHaveCount(4);
@@ -198,12 +198,11 @@ test("a long dialogue keeps both languages, including short and translation-only
       : `Could you tell me where the train station is? ${i}`);
     await harness.outputDelta(spanishSource ? `Thank you very much. ${i}` : `¿Podría decirme dónde está la estación de tren? ${i}`);
     await harness.sourceQuiet();
-    await harness.advance(runtime.audioStartGraceMs + runtime.captionIdleMs);
+    await harness.advance(runtime.noOutputTimeoutMs + runtime.captionIdleMs);
     await harness.waitForGateBUnmuted();
-    // Let the prior output's drain window settle before delivering the next provider response.
-    await harness.advance(runtime.captionIdleMs);
     for (const side of ["A", "B"] as const) {
-      await expect(page.getByTestId(`participant-scroll-${side}`).locator("li")).toHaveCount(i + 1);
+      // With no source at index 10, the independent caption only appears for its recipient.
+      await expect(page.getByTestId(`participant-scroll-${side}`).locator("li")).toHaveCount(i === 10 && side === "A" ? i : i + 1);
     }
   }
   const a = page.getByTestId("participant-scroll-A");

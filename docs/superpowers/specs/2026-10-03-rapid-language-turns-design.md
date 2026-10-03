@@ -1,6 +1,6 @@
 # Rapid language turns
 
-Status: implementation authorized by the user on 2026-10-03. Intermediate design/plan approvals were explicitly waived.
+Status: implemented and automatically verified on 2026-10-04. Implementation was authorized by the user on 2026-10-03; intermediate design/plan approvals were explicitly waived. Real-speech acceptance remains with the user.
 
 ## Agreed behavior
 
@@ -36,3 +36,14 @@ No paid Live session or speech synthesis is necessary for automated verification
 ## Provider evidence
 
 The [GPT-Live transcript guide](https://developers.openai.com/api/docs/guides/live-conversations#transcript-deltas) exposes approximate `start_ms`/`end_ms` session intervals, without source-turn correlation IDs. The [model reference](https://developers.openai.com/api/docs/models/gpt-live-1) describes simultaneous listening and speaking. Keep input available and treat quiet/completion as local bookkeeping. Timed late source fragments update their earlier interval; audio without an unambiguous caption target cannot establish a new participant's delivery.
+
+## Verification and implementation rulings — 2026-10-04
+
+- Full workspace: 58 files / 1222 tests pass. API/web type checks and lint pass. Production compilation and the full Chromium/WebKit suite pass: 72 browser cases, 3 existing skips for device descriptors that select another browser engine. No paid Live session was created.
+- A fresh read-only review found 10 actionable defects. Regression tests reproduced them before correction: idle partial-word classification, completed-plus-pending output ambiguity, delayed punctuation, unknown-output attribution, delayed source openings, unknown-source relabelling, queued-language speech loss, failed-source corrections and source-idle preservation. Follow-up checks also cover unresolved timed openings, backwards boundaries, buffered text at language replacement and equal-millisecond display ordering. No review finding was deferred.
+- Fifteen obsolete tests for normal-turn mute/unmute, repeated steering and leftover draining were replaced with open-input and independently routed output checks. Startup, explicit language replacement, suspension and recovery still test their acknowledgments and capture controls. Reverting this ruling would restore the normal-turn control delay and prevent model-managed interruptions from hearing new input promptly.
+- Language uncertainty is preserved. Lifecycle flushing cannot bypass streaming evidence through the legacy reducer detector. Idle classification requires reliable language evidence with a consistent completed-word prefix, or a script distinction plus sufficient evidence. Unknown captions display without an author; an unresolved source retained after its watchdog also displays without an author. Empty recipient placeholders disappear after failure.
+- Completed and failed same-author source records remain plausible for late events in the current provider generation. Multiple plausible sources yield an independently authored translation, including in a longer dialogue. This can produce more independent caption blocks than the earlier implementation. Choosing the latest unfinished source instead would silently attribute late A1 output to A2. Standalone captions do not record another successful source outcome.
+- Transport/timing test fixtures use complete phrases in the configured pair. They no longer infer ownership of an ambiguous single word such as `Hola` or `OK`. Dedicated uncertainty tests retain those cases. Real-phone testing must include short answers and borrowed words, as well as fast replies and interruptions.
+
+Final speech scenarios are recorded in [the device acceptance checklist](../../testing/device-acceptance-checklist.md). Mock checks establish application routing and lifecycle behavior, not real model latency, physical speaker identity or audible interruption responsiveness.

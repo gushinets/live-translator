@@ -62,6 +62,7 @@ export function ConversationScreen({
   const audioOutputStarted = active?.audioOutputStarted === true;
   const recentTurns = [...session.recentTurns, ...(session.pendingTurns ?? [])].sort((a, b) =>
     (a.speechStartAtMs ?? 0) - (b.speechStartAtMs ?? 0) ||
+    Number(a.translationOnly ?? false) - Number(b.translationOnly ?? false) ||
     (a.sourceFragments[0]?.startMs ?? 0) - (b.sourceFragments[0]?.startMs ?? 0));
   const terminalAlert =
     session.state === "error" || session.state === "ending"

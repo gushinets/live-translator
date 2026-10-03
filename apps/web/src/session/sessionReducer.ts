@@ -31,14 +31,15 @@ export type SessionAction =
       speaker: Side | undefined;
       sideSource: Turn["sideSource"];
       fragment?: TranscriptFragment;
+      languageRouted?: boolean;
     }
-  | { type: "SOURCE_FRAGMENT"; fragment: TranscriptFragment; speaker?: Side }
-  | { type: "SOURCE_HANDOFF"; turnId: string; speaker: Side | undefined; fragment: TranscriptFragment; nowMs: number }
+  | { type: "SOURCE_FRAGMENT"; fragment: TranscriptFragment; speaker?: Side; languageRouted?: boolean }
+  | { type: "SOURCE_HANDOFF"; turnId: string; speaker: Side | undefined; fragment?: TranscriptFragment; nowMs: number; languageRouted?: boolean }
   | { type: "SOURCE_TARGETED_FRAGMENT"; turnId: string; fragment: TranscriptFragment }
   | { type: "SOURCE_BOUNDARY"; turnId: string; endMs: number }
   | { type: "SOURCE_IDLE" }
   | { type: "OUTPUT_ACTIVE" }
-  | { type: "OUTPUT_DELTA"; text: string; nowMs: number; turnId?: string; fragment?: TranscriptFragment; speaker?: Side }
+  | { type: "OUTPUT_DELTA"; text: string; nowMs: number; turnId?: string; fragment?: TranscriptFragment; speaker?: Side; languageRouted?: boolean }
   | { type: "OUTPUT_STANDALONE"; turnId: string; speaker: Side | undefined; text: string; nowMs: number; fragment?: TranscriptFragment }
   | { type: "AUDIO_STARTED"; nowMs: number; turnId?: string }
   | { type: "AUDIO_INTERRUPTED"; nowMs: number; turnId: string }
@@ -170,7 +171,7 @@ function handleSourceActive(
   const B = session.participantB.language;
   if (A !== undefined && B !== undefined) created.languages = { A, B };
   const withFragment = action.fragment ? appendSourceFragmentToTurn(created, action.fragment) : created;
-  return { ...session, activeTurn: assignLanguageSide(session, withFragment) };
+  return { ...session, activeTurn: action.languageRouted ? withFragment : assignLanguageSide(session, withFragment) };
 }
 
 function assignLanguageSide(session: TranslationSession, turn: Turn): Turn {
@@ -193,7 +194,7 @@ function handleSourceFragment(
   assertSourceAppendAllowed(session);
   const appended = appendSourceFragmentToTurn(requireActiveTurn(session), action.fragment);
   return { ...session, activeTurn: action.speaker ? { ...appended, speaker: action.speaker, sideSource: "language" }
-    : assignLanguageSide(session, appended) };
+    : action.languageRouted ? appended : assignLanguageSide(session, appended) };
 }
 
 function withAcceptedSpeech(
@@ -312,16 +313,21 @@ export function sessionReducer(session: TranslationSession, action: SessionActio
       assertSourceAppendAllowed(session);
       const previous = session.activeTurn;
       const pendingTurns = [...(session.pendingTurns ?? [])];
-      if (previous) pendingTurns.push({ ...markSourceIdle(previous, action.nowMs), sourceEndMs: action.fragment.startMs });
+      const boundary = action.fragment?.startMs;
+      const previousStart = previous?.sourceFragments[0]?.startMs;
+      if (previous) pendingTurns.push({ ...markSourceIdle(previous, previous.sourceIdleAtMs ?? action.nowMs),
+        sourceEndMs: boundary !== undefined && (previousStart === undefined || boundary >= previousStart)
+          ? boundary : previous.sourceEndMs });
       const next = handleSourceActive({ ...session, state: "listening", activeTurn: undefined, pendingTurns }, {
         type: "SOURCE_ACTIVE", turnId: action.turnId, speaker: action.speaker, sideSource: action.speaker ? "language" : "unresolved", fragment: action.fragment,
+        languageRouted: action.languageRouted,
       });
       return { ...next, state: session.state };
     }
     case "SOURCE_TARGETED_FRAGMENT": {
       assertSourceAppendAllowed(session);
       return updateSessionTurn(session, action.turnId, turn => {
-        if (turn.status === "completed") {
+        if (turn.status === "completed" || turn.status === "failed") {
           const sourceFragments = orderTranscriptFragments([...turn.sourceFragments, action.fragment]);
           return { ...turn, sourceFragments, originalText: sourceFragments.map(fragment => fragment.text).join("") };
         }
@@ -348,7 +354,7 @@ export function sessionReducer(session: TranslationSession, action: SessionActio
       const updated = updateSessionTurn(session, target.id, turn => {
         let output = turn.status === "completed"
           ? { ...turn, translatedText: (turn.translatedText ?? "") + action.text, outputTextEndAtMs: action.nowMs }
-          : turn.sideSource === "language" ? appendOutputTextToTurn(turn, action.text, action.nowMs)
+          : turn.sideSource === "language" || action.languageRouted ? appendOutputTextToTurn(turn, action.text, action.nowMs)
           : assignLanguageSide(session, appendOutputTextToTurn(turn, action.text, action.nowMs));
         if (action.speaker !== undefined) output = { ...output, speaker: action.speaker,
           sideSource: turn.sideSource === "language" ? "language" : "translation" };
