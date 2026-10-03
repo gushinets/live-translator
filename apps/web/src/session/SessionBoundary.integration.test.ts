@@ -1830,6 +1830,32 @@ describe("stage 5 hidden boundary", () => {
     expect(resumed.peer.close).toHaveBeenCalled();
     await f.budget.close();
   });
+  it("shows retained participant languages and the owner locale before reload resume", async () => {
+    const f = fixture(40, true); configureResume(f);
+    await f.controller.startWithLanguages({ A: "en", B: "es" });
+    f.setVisible(false);
+    await vi.waitFor(() => expect(f.clients[0]!.peer.channel.sent).toContain("session.close"));
+    f.clients[0]!.peer.channel.emit({ type: "session.closed" });
+    await vi.waitFor(() => expect(f.c.status).toBe("paused"));
+    await f.controller.dispose();
+    f.setVisible(true);
+    const { controller } = await reloadedController(f);
+    await vi.waitFor(() => expect(controller.retainedRecoveryState).toBe("paused"));
+    render(jsx(ConversationScreen, { controller }));
+
+    expect(controller.session.participantA.language).toBe("en");
+    expect(controller.session.participantB.language).toBe("es");
+    expect(document.querySelector(".conversation-screen")).toHaveAttribute("lang", "en");
+    expect(screen.getByRole("button", { name: "Continue conversation" })).toBeEnabled();
+    expect(screen.getByTestId("participant-pane-A")).toHaveTextContent("English");
+    expect(screen.getByTestId("participant-pane-B")).toHaveTextContent("español");
+    expect(controller.inputReady).toBe(false);
+    expect(f.track.enabled).toBe(false);
+    expect(f.api.createSession).toHaveBeenCalledTimes(1);
+    cleanup();
+    await controller.dispose(); await f.budget.close();
+  });
+
   it("A5.15 explicit reload resume uses a confirmed paused snapshot and a fresh provider", async () => {
     const f = fixture(40, true); configureResume(f);
     await f.controller.startBootstrap();

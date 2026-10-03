@@ -86,7 +86,7 @@ export class AccountedSessionController extends SessionController {
         if (!store.ownsDocument && store.noProviderEnd()) { this.noProviderEndPending = true; return; }
         if (!store.ownsDocument) { this.ownershipUnavailable = true; return; }
         const result = await store.inspectReload(id => this.accounting.api.readConversation(id) as Promise<ConversationMetadata>);
-        if (result?.kind === "paused" || result?.kind === "pending") this.adoptRetainedPause();
+        if (result?.kind === "paused" || result?.kind === "pending") this.adoptRetainedPause(result.snapshot);
         if (result?.kind === "pending") this.pendingClaim = true;
         if (result?.kind === "active") this.retainedActive = true;
       } catch (error) {
@@ -163,7 +163,7 @@ export class AccountedSessionController extends SessionController {
     this.recoveryBlocked = false;
     this.retainedActive = result?.kind === "active";
     this.pendingClaim = result?.kind === "pending";
-    if (result?.kind === "paused" || result?.kind === "pending") this.adoptRetainedPause();
+    if (result?.kind === "paused" || result?.kind === "pending") this.adoptRetainedPause(result.snapshot);
     if (!result) {
       this.resumeFailed = false;
       if (this.retainedPaused) this.clearRetainedAfterEnd();
@@ -414,7 +414,7 @@ export class AccountedSessionController extends SessionController {
       const store = await this.snapshotStore;
       const result = await store.inspectReload(id => this.accounting.api.readConversation(id) as Promise<ConversationMetadata>);
       if (!result || result.kind === "active") throw new Error("Retained conversation requires explicit End");
-      this.adoptRetainedPause();
+      this.adoptRetainedPause(result.snapshot);
     }
     const generation = this.backgroundResumeGeneration;
     await this.awaitBackgroundPause();
