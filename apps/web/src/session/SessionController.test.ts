@@ -995,6 +995,23 @@ describe("SessionController", () => {
     expect(controller.session.state).toBe("context");
   });
 
+  it("notifies subscribers that start is available after cancelling a denied microphone", async () => {
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    const { controller, audio } = createController();
+    audio.startCapture.mockRejectedValueOnce(new DOMException("Permission denied", "NotAllowedError"));
+    await expect(controller.startWithLanguages({ A: "en", B: "es" })).rejects.toThrow();
+    let renderedBusy = controller.isConnectInFlight;
+    controller.subscribe(() => { renderedBusy = controller.isConnectInFlight; });
+
+    await controller.cancel();
+
+    expect(controller.session.state).toBe("idle");
+    expect(controller.ownerError).toBeUndefined();
+    expect(renderedBusy).toBe(false);
+    await controller.startWithLanguages({ A: "en", B: "es" });
+    expect(controller.session.state).toBe("listening");
+  });
+
   it("cancels cleanly after LiveClient connect fails before transport exists", async () => {
     const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
     try {

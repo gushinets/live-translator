@@ -183,11 +183,13 @@ export class SessionController {
   protected beginBackgroundPause(): void {}
   protected resumeBackground(): Promise<void> { return Promise.resolve(); }
   protected get backgroundResumeGeneration(): number { return this.sessionGeneration; }
-  protected adoptRetainedPause(): void {
+  protected adoptRetainedPause(snapshot: ResumeSnapshot): void {
     if (this.backgroundPaused || this.currentSession.state !== "idle") return;
     this.sessionGeneration++;
     this.backgroundPaused = true;
-    this.currentSession = { ...this.currentSession, state: "suspended" };
+    this.currentSession = { ...this.currentSession, state: "suspended",
+      participantA: { ...this.currentSession.participantA, ...snapshot.participantA },
+      participantB: { ...this.currentSession.participantB, ...snapshot.participantB } };
     this.lifecycleSuspendReason = "visibility";
     this.notify();
   }
@@ -891,6 +893,7 @@ export class SessionController {
     finally {
       if (this.endWork === work) this.endWork = null;
       if (this.cancelWork === work) this.cancelWork = null;
+      this.notify();
     }
   }
 
