@@ -2,6 +2,7 @@ import { eld } from "eld/extrasmall";
 import type { ConversationLanguages } from "../side/SideResolver";
 import type { Side } from "./Turn";
 import type { TranscriptFragment } from "./TranscriptFragment";
+import { completeScriptSide } from "./languageScripts";
 
 export interface RoutedTranscript {
   side: Side | undefined;
@@ -24,6 +25,8 @@ export class TranscriptRouter {
     this.currentSide = currentSide;
     const text = this.pending.map(part => part.text).join("");
     if (/^[\p{P}\s]+$/u.test(text) && currentSide !== undefined) return this.take(currentSide);
+    const scriptSide = completeScriptSide(text, languages);
+    if (scriptSide !== undefined) return this.take(scriptSide);
     // Only complete words are evidence: "Thank y" can otherwise be classified as Spanish.
     const evidence = text.replace(/\p{L}+$/u, "");
     const side = this.resolve(evidence, languages);
@@ -35,6 +38,8 @@ export class TranscriptRouter {
   flush(languages: ConversationLanguages, force = false): RoutedTranscript[] {
     if (!this.pending.length) return [];
     const text = this.pending.map(part => part.text).join("");
+    const scriptSide = completeScriptSide(text, languages);
+    if (scriptSide !== undefined) return this.take(scriptSide);
     const evidence = text.replace(/\p{L}+$/u, "");
     const side = this.resolve(evidence, languages);
     if (side !== undefined && this.hasEvidence(evidence, text, side, this.currentSide)) return this.take(side);

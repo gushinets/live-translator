@@ -16,7 +16,7 @@ User approved fixing the seven reproduced correctness issues and two documentati
 - [x] Implement minimal routing, completion and caption corrections.
 - [x] Run focused tests, full units/integration, typecheck/lint/build, and browser regressions.
 - [x] Fresh read-only review and fix material findings.
-- [ ] Commit only task files and update existing PR.
+- [x] Commit only task files and update existing PR (260e137).
 
 ## Verification
 Initial assessment reproduced all seven cases against real project classes in Vitest, using fake media/timers. Scratch harness and failure logs are in .data/pr32-review-all-reproduction.log. Full-history optimization remains deferred based on the explicitly accepted review decision.
@@ -30,3 +30,14 @@ Final local verification (2026-10-05):
 - Tests ran with the preserved, unrelated local `LivePrompts.ts` edit. That file is excluded from this commit; GitHub CI will separately verify the committed tree. No phone reload or paid speech session was performed.
 
 Language inference remains heuristic: a one-word script switch is absorbed only when neighbouring sentence context reliably supports the host language. Ambiguous fragments remain hidden. Full-history caption processing remains a separate performance follow-up.
+
+## Follow-up review (2026-10-05)
+
+Five further cases were independently reproduced and approved for correction: hidden complete short replies, embedded multiword names, short disjoint-script handoffs, transcript-first fresh speech, and buffered packets spanning historical source intervals.
+
+- Share script evidence between the caption assembler and router for completed single-script phrases; preserve conservative handling of unfinished or shared-script text.
+- Extend contextual caption correction to multiword spans surrounded by the same host language, while retaining complete opposite-language sentences.
+- Route each resolved packet by its own timestamps. Reject forward packets from open-ended retired sources regardless of VAD order or an active source's untimed prefix.
+- Initial targeted RED run: 13 failures, 230 existing tests passed. Review added an untimed-prefix regression, also reproduced before its correction.
+- Final targeted run: 246 tests passed across the controller, caption assembler and router. Web typecheck and lint passed. Unrelated local prompt changes remain excluded.
+- Per user instruction, the full local suite and browser run were not repeated; full validation is delegated to CI without waiting for completion.

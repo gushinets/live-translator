@@ -1344,9 +1344,8 @@ export class SessionController {
   }
 
   private routeSource(groups: RoutedTranscript[], considerCompletion = true): void {
-    for (const { side, fragments } of groups) {
-      const first = fragments[0];
-      if (!first) continue;
+    // A language-evidence group can contain packets from different source intervals.
+    for (const { side, first } of groups.flatMap(group => group.fragments.map(first => ({ side: group.side, first })))) {
       const historical = this.findSourceTarget(first, side);
       if (historical) {
         if (historical.id === this.currentSession.activeTurn?.id &&
@@ -1354,7 +1353,7 @@ export class SessionController {
           this.resumedSourceIdle = undefined;
         }
         this.extendSourceOpening(historical, first);
-        for (const fragment of fragments) this.dispatch({ type: "SOURCE_TARGETED_FRAGMENT", turnId: historical.id, fragment });
+        this.dispatch({ type: "SOURCE_TARGETED_FRAGMENT", turnId: historical.id, fragment: first });
         continue;
       }
       let active = this.currentSession.activeTurn;
@@ -1370,7 +1369,6 @@ export class SessionController {
         this.dispatch({ type: "SOURCE_ACTIVE", turnId: crypto.randomUUID(), speaker: side,
           sideSource: side ? "language" : "unresolved", fragment: first, languageRouted: true });
         this.armMaxSourceTimer();
-        for (const fragment of fragments.slice(1)) this.dispatch({ type: "SOURCE_FRAGMENT", fragment, speaker: side, languageRouted: true });
       } else if ((active.speaker !== undefined || active.originalText.length > 0) && active.speaker !== side &&
                  !(side === undefined && active.originalText === "" && active.sideSource === "translation")) {
         const id = crypto.randomUUID();
@@ -1378,10 +1376,9 @@ export class SessionController {
         this.resumedSourceIdle = undefined;
         this.dispatch({ type: "SOURCE_HANDOFF", turnId: id, speaker: side, fragment: first, nowMs: Date.now(), previousIdleAtMs, languageRouted: true });
         this.armMaxSourceTimer();
-        for (const fragment of fragments.slice(1)) this.dispatch({ type: "SOURCE_FRAGMENT", fragment, speaker: side, languageRouted: true });
       } else {
         this.resumedSourceIdle = undefined;
-        for (const fragment of fragments) this.dispatch({ type: "SOURCE_FRAGMENT", fragment, speaker: side, languageRouted: true });
+        this.dispatch({ type: "SOURCE_FRAGMENT", fragment: first, speaker: side, languageRouted: true });
       }
       active = this.currentSession.activeTurn;
       if (active) {
@@ -1407,12 +1404,10 @@ export class SessionController {
     const sources = this.routingTurns().filter(turn => !turn.translationOnly && turn.sourceFragments[0]?.startMs !== undefined)
       .sort((a, b) => a.sourceFragments[0]!.startMs! - b.sourceFragments[0]!.startMs!);
     const preceding = sources.findLast(turn => turn.sourceFragments[0]!.startMs! <= fragment.startMs!);
-    // A fresh VAD-created source must claim forward speech before a retired,
+    // Fresh speech, whether VAD- or transcript-first, must claim forward packets before a retired,
     // open-ended interval can mistake it for a correction. Overlapping timestamps
     // and intervals already bounded by another source still route historically.
-    const active = this.currentSession.activeTurn;
-    if (active && !active.sourceFragments.length && preceding && preceding.id !== active.id &&
-        ["completed", "failed"].includes(preceding.status) && preceding.sourceEndMs === undefined) {
+    if (preceding && ["completed", "failed"].includes(preceding.status) && preceding.sourceEndMs === undefined) {
       const lastEnd = Math.max(...preceding.sourceFragments.map(part => part.endMs ?? part.startMs ?? -Infinity));
       if (fragment.startMs > lastEnd) return undefined;
     }

@@ -4848,3 +4848,26 @@ describe("PR32 playback completion regression", () => {
     expect(controller.session.participantB.language).toBe("de");
   });
 });
+
+describe("PR32 timestamp routing follow-up", () => {
+  beforeEach(() => { vi.useFakeTimers(); vi.setSystemTime(0); });
+  it.each(["transcript-first", "buffered-correction", "untimed-prefix"])("separates fresh speech: %s", async scenario => {
+    const { controller, live, audio } = createController();
+    await controller.startWithLanguages({ A: "ru", B: "en" });
+    emitVoice(audio, true);
+    live.emit({ type: "session.input_transcript.delta", delta: "Подскажите, где находится вокзал?", start_ms: 0, end_ms: 500 });
+    const a = controller.session.activeTurn!.id;
+    live.emit({ type: "session.output_transcript.delta", delta: "Where is the train station?" });
+    emitVoice(audio, false);
+    await vi.advanceTimersByTimeAsync(runtime.audioStartGraceMs + runtime.captionIdleMs);
+    expect(controller.session.recentTurns.find(t=>t.id===a)?.status).toBe("completed");
+    if (scenario === "buffered-correction") {
+      emitVoice(audio, true);
+      live.emit({ type: "session.input_transcript.delta", delta: ", ", start_ms: 400, end_ms: 500 });
+    }
+    if (scenario === "untimed-prefix") live.emit({ type: "session.input_transcript.delta", delta: "12, " });
+    live.emit({ type: "session.input_transcript.delta", delta: "Спасибо, я пойду туда пешком.", start_ms: 2200, end_ms: 2700 });
+    expect(controller.session.activeTurn?.originalText).toBe((scenario === "untimed-prefix" ? "12, " : "") + "Спасибо, я пойду туда пешком.");
+    expect(controller.session.recentTurns.find(t=>t.id===a)?.originalText).not.toContain("Спасибо");
+  });
+});

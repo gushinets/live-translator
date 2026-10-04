@@ -153,3 +153,29 @@ it("preserves a brand inside unspaced Chinese speech", () => {
   for (const character of text) transcript.push("input", fragment(character), { A: "zh", B: "en" });
   expect(content(transcript)).toEqual([{ kind: "input", side: "A", text }]);
 });
+
+describe("PR32 short replies and multiword names", () => {
+  it.each([
+    ["input", "ru", "Да."], ["output", "ru", "Да."],
+    ["input", "ru", "Нет."], ["output", "ru", "Нет."],
+    ["input", "zh", "你好。"], ["output", "zh", "你好。"],
+  ] as const)("retains complete short %s %s %s replies", (kind, language, text) => {
+    const transcript = new DialogueTranscript();
+    const pair = { A: language, B: "en" };
+    transcript.push(kind, { id: "1", text, receivedAtMs: 0 }, pair);
+    transcript.push(kind, { id: "2", text: "The station is straight ahead.", receivedAtMs: 1 }, pair);
+    expect(transcript.blocks[0], text).toMatchObject({ side: "A", text });
+  });
+  it.each([1, 5, 1000])("retains embedded multiword names at packet size %i", size => {
+    for (const kind of ["input", "output"] as const) {
+      const transcript = new DialogueTranscript();
+      const text = "Я живу в New York рядом с вокзалом.";
+      for (let offset = 0; offset < text.length; offset += size) transcript.push(kind, fragment(text.slice(offset, offset + size)), pair);
+      transcript.push(kind, fragment("The station is straight ahead."), pair);
+      expect(content(transcript)).toEqual([
+        { kind, side: "A", text },
+        { kind, side: "B", text: "The station is straight ahead." },
+      ]);
+    }
+  });
+});

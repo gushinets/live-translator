@@ -2,6 +2,7 @@ import { eld } from "eld/extrasmall";
 import type { ConversationLanguages } from "../side/SideResolver";
 import { orderTranscriptFragments, type TranscriptFragment } from "./TranscriptFragment";
 import type { Side } from "./Turn";
+import { completeScriptSide, languageScripts, scriptPattern } from "./languageScripts";
 
 export interface DialogueBlock {
   id: string;
@@ -11,7 +12,6 @@ export interface DialogueBlock {
   language?: string;
   receivedAtMs: number;
 }
-
 interface Stream {
   id: number;
   kind: DialogueBlock["kind"];
@@ -115,7 +115,8 @@ export class DialogueTranscript {
         const previousSide = /\p{L}/u.test(before) ? previous?.side : undefined;
         const nextSide = !/[.!?。！？]/u.test(run.text) && /\p{L}/u.test(after) ? next?.side : undefined;
         const surroundingSide = previousSide ?? nextSide;
-        if (run.side !== undefined && (run.text.match(/\p{L}+/gu)?.length ?? 0) === 1 &&
+        const embedded = previousSide !== undefined && previousSide === nextSide;
+        if (run.side !== undefined && ((run.text.match(/\p{L}+/gu)?.length ?? 0) === 1 || embedded) &&
             surroundingSide !== undefined && surroundingSide !== run.side &&
             (nextSide === undefined || previousSide === undefined || nextSide === previousSide)) {
           const context = this.detector.detect((before + run.text + (nextSide === undefined ? "" : after)).slice(0, 2000));
@@ -132,7 +133,8 @@ export class DialogueTranscript {
       }
       runs.length = 0;
       for (const run of contextual) append(run.text, run.side);
-      return runs.map(run => ({ ...run, side: (run.text.match(/\p{L}/gu)?.length ?? 0) >= 4 ? run.side : undefined }));
+      return runs.map(run => ({ ...run, side: (run.text.match(/\p{L}/gu)?.length ?? 0) >= 4 ||
+        completeScriptSide(run.text, languages) === run.side ? run.side : undefined }));
     }
     // ponytail: same-script switches require sentence evidence in this prototype;
     // no reliable diarization can be inferred from a bare ambiguous word.
@@ -145,16 +147,4 @@ export class DialogueTranscript {
     }
     return runs;
   }
-}
-
-function languageScripts(language: string): string[] {
-  const script = new Intl.Locale(language).maximize().script;
-  return script === "Jpan" ? ["Han", "Hiragana", "Katakana"]
-    : script === "Kore" ? ["Hangul", "Han"] : script === "Hans" || script === "Hant" ? ["Han"] : script ? [script] : [];
-}
-
-function scriptPattern(scripts: string[]): RegExp | undefined {
-  if (!scripts.length) return undefined;
-  try { return new RegExp(scripts.map(value => `\\p{Script=${value}}`).join("|"), "u"); }
-  catch { return undefined; }
 }

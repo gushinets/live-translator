@@ -82,3 +82,17 @@ describe("streaming language evidence", () => {
     expect(router.flush(languages)).toEqual([]);
   });
 });
+
+it.each(["Привет.", "Да.", "Нет."])("routes complete short Cyrillic handoff %s", text => {
+  const router = new TranscriptRouter();
+  const part = fragment(text);
+  const routed = [...router.push(part, languages, "B"), ...router.flush(languages)];
+  expect(routed).toEqual([{ side: "A", fragments: [part] }]);
+});
+
+it("routes complete short Chinese speech without relying on character count", () => {
+  const router = new TranscriptRouter();
+  const pair = { A: "zh", B: "en" };
+  const part = fragment("你好。");
+  expect(router.push(part, pair, "B")).toEqual([{ side: "A", fragments: [part] }]);
+});
