@@ -25,3 +25,13 @@ export function completeScriptSide(text: string, languages: ConversationLanguage
   if (patternB && letters.every(letter => patternB.test(letter))) return "B";
   return undefined;
 }
+
+/** Shared decisive reply evidence for routing and displayed sentence context. */
+export function isExplicitShortReply(text: string, language: string): boolean {
+  if (!/[.!?。！？][\p{P}\s]*$/u.test(text)) return false;
+  const words = text.toLowerCase().match(/\p{L}+/gu) ?? [];
+  // ponytail: common short replies are explicit; broader vocabulary needs stronger language evidence.
+  return words.length > 0 && words.every(word =>
+    (language === "en" && /^(yes|no|hi|hey|bye|stop|wait|why|what|how|who|when|where|sure|fine)$/.test(word)) ||
+    (language === "ru" && /^(да|нет|ага|угу|стой|стоп|как|что|кто|где|эй)$/.test(word)));
+}

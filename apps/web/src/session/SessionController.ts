@@ -124,6 +124,8 @@ export class SessionController {
   private sourceTimeoutResumeWork: Promise<void> | null = null;
   private playbackActive = false;
   private outputTurnId: string | undefined;
+  private outputSourceTurnId: string | undefined;
+  private latestSourceTurnId: string | undefined;
   private playbackTurnId: string | undefined;
   private readonly sourceRouter = new TranscriptRouter();
   private readonly outputRouter = new TranscriptRouter();
@@ -134,7 +136,7 @@ export class SessionController {
   private lastOutputSide: Side | undefined;
   private readonly routingTurnIds = new Set<string>();
   private sourceVoiceActive: boolean | undefined;
-  private resumedSourceIdle: { turnId: string; atMs: number; endMs?: number } | undefined;
+  private resumedSourceIdle: { turnId: string; atMs: number; observedThroughMs?: number } | undefined;
   private remotePlaybackGeneration = 0;
   private remotePlaybackState: RemotePlaybackState = "ready";
   private remotePlaybackWork: Promise<void> | null = null;
@@ -1349,7 +1351,7 @@ export class SessionController {
       const historical = this.findSourceTarget(first, side);
       if (historical) {
         if (historical.id === this.currentSession.activeTurn?.id && /\p{L}/u.test(first.text) &&
-            (this.resumedSourceIdle?.endMs === undefined || first.startMs === undefined || first.startMs > this.resumedSourceIdle.endMs)) {
+            (this.resumedSourceIdle?.observedThroughMs === undefined || first.startMs === undefined || first.startMs > this.resumedSourceIdle.observedThroughMs)) {
           this.resumedSourceIdle = undefined;
         }
         this.extendSourceOpening(historical, first);
@@ -1463,6 +1465,7 @@ export class SessionController {
       const start = earliestFragmentStart(continuation?.outputFragments);
       // Retired output and older packets cannot supply context for a new translation.
       const hasContext = continuation && !["completed", "failed", "discarded"].includes(continuation.status) &&
+        (this.outputSourceTurnId === this.latestSourceTurnId) &&
         (fragment.startMs === undefined || start === undefined || fragment.startMs >= start);
       const side = hasContext ? (continuation.speaker === "A" ? "B" : continuation.speaker === "B" ? "A" : undefined) : undefined;
       this.routeOutput(this.outputRouter.push(fragment, this.languages, side, hasContext ? continuation.translatedText : undefined));
@@ -1490,7 +1493,7 @@ export class SessionController {
       let target = candidates.length === 1 && candidates[0]?.status !== "failed" ? candidates[0] : undefined;
       if (fragments.every(fragment => /^[\p{P}\s]+$/u.test(fragment.text))) target = this.findOutputContinuation(fragments);
       if (!target && continuation?.translationOnly && continuation.status !== "completed" &&
-          continuation.speaker === speaker && this.lastOutputSide === side) target = continuation;
+          continuation.speaker === speaker && this.outputSourceTurnId === this.latestSourceTurnId) target = continuation;
       for (const fragment of fragments) {
         if (target) this.dispatch({ type: "OUTPUT_DELTA", turnId: target.id, text: fragment.text,
           nowMs: fragment.receivedAtMs, fragment, speaker: speaker ?? target.speaker, languageRouted: true });
@@ -1502,7 +1505,10 @@ export class SessionController {
           target = findSessionTurn(this.currentSession, turnId);
         }
       }
-      if (target) this.outputTurnId = target.id;
+      if (target) {
+        this.outputTurnId = target.id;
+        this.outputSourceTurnId = target.translationOnly ? this.latestSourceTurnId : target.id;
+      }
       this.lastOutputSide = side;
     }
     this.armCaptionIdleTimer();
@@ -1542,9 +1548,12 @@ export class SessionController {
         this.armMaxSourceTimer();
       } else {
         if (active.sourceIdleAtMs !== undefined && this.resumedSourceIdle?.turnId !== active.id) {
-          const ends = active.sourceFragments.flatMap(part => part.endMs === undefined ? [] : [part.endMs]);
+          const observed = active.sourceFragments.flatMap(part => {
+            const timestamp = part.endMs ?? part.startMs;
+            return timestamp === undefined ? [] : [timestamp];
+          });
           this.resumedSourceIdle = { turnId: active.id, atMs: active.sourceIdleAtMs,
-            endMs: ends.length ? Math.max(...ends) : undefined };
+            observedThroughMs: observed.length ? Math.max(...observed) : undefined };
         }
         this.dispatch({ type: "SOURCE_ACTIVE", turnId: active.id, speaker: active.speaker, sideSource: active.sideSource });
         if (active.sourceIdleAtMs !== undefined) this.armMaxSourceTimer();
@@ -1578,7 +1587,12 @@ export class SessionController {
     if (event.active) {
       const turns = [...(this.currentSession.pendingTurns ?? []), ...(this.currentSession.activeTurn ? [this.currentSession.activeTurn] : [])];
       const target = (this.outputTurnId ? findSessionTurn(this.currentSession, this.outputTurnId) : undefined) ?? (turns.length === 1 ? turns[0] : undefined);
-      if (!target || target.status === "completed") return;
+      if (!target || ["completed", "failed", "discarded"].includes(target.status) ||
+          (this.outputTurnId !== undefined && this.outputSourceTurnId !== this.latestSourceTurnId)) {
+        // A previous source's caption does not identify newly starting audio.
+        this.playbackTurnId = undefined;
+        return;
+      }
       this.playbackTurnId = target.id;
       this.dispatch({ type: "AUDIO_STARTED", nowMs: event.atMs, turnId: target.id });
       return;
@@ -1934,6 +1948,8 @@ export class SessionController {
     this.outputRouter.reset();
     this.routingTurnIds.clear();
     this.outputTurnId = undefined;
+    this.outputSourceTurnId = undefined;
+    this.latestSourceTurnId = undefined;
     this.lastOutputSide = undefined;
     this.sourceVoiceActive = undefined;
     this.resumedSourceIdle = undefined;
@@ -2906,6 +2922,7 @@ export class SessionController {
     const previousUnfinished = [...(this.currentSession.pendingTurns ?? []),
       ...(this.currentSession.activeTurn ? [this.currentSession.activeTurn] : [])];
     this.currentSession = sessionReducer(this.currentSession, action);
+    if (action.type === "SOURCE_ACTIVE" || action.type === "SOURCE_HANDOFF") this.latestSourceTurnId = action.turnId;
     let completedTurnId: string | undefined;
     if (previousTurn && !previousTurn.translationOnly && action.type === "TURN_CLOSED") {
       if (previousTurn.audioOutputStarted && !previousTurn.audioOutputInterrupted && previousTurn.playbackEndAtMs !== undefined && this.audio.audioElement.muted === false && this.remotePlaybackState === "ready") {

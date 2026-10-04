@@ -2,7 +2,7 @@ import { eld } from "eld/extrasmall";
 import type { ConversationLanguages } from "../side/SideResolver";
 import { orderTranscriptFragments, type TranscriptFragment } from "./TranscriptFragment";
 import type { Side } from "./Turn";
-import { completeScriptSide, languageScripts, scriptPattern } from "./languageScripts";
+import { completeScriptSide, isExplicitShortReply, languageScripts, scriptPattern } from "./languageScripts";
 
 export interface DialogueBlock {
   id: string;
@@ -119,6 +119,7 @@ export class DialogueTranscript {
         }
       }
       const contextual = sentences.map((run, index) => {
+        if (run.side !== undefined && isExplicitShortReply(run.text, languages[run.side])) return run;
         const previous = sentences[index - 1], next = sentences[index + 1];
         const before = previous?.text.match(/[^.!?。！？]*$/u)?.[0] ?? "";
         const after = next?.text.match(/^[^.!?。！？]*/u)?.[0] ?? "";

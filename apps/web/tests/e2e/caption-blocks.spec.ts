@@ -132,3 +132,19 @@ test("untimed punctuation does not undo corrected caption word order", async ({ 
   await harness.inputDelta(".");
   await expect(caption).toHaveText("Я: Посылка для Михаила Гушина.");
 });
+
+test("short interruptions into unfinished speech appear on their own language pane", async ({ page }) => {
+  const harness = await MockLiveHarness.attach(page);
+  await page.addInitScript(() => {
+    localStorage.setItem("live-translator-owner-language", "ru");
+    localStorage.setItem("live-translator-interlocutor-language", "en");
+  });
+  await page.goto("/");
+  await page.getByRole("button", { name: "Начать перевод", exact: true }).click();
+  await expect(page.getByRole("button", { name: "Завершить", exact: true })).toBeVisible();
+  await harness.inputDelta("Подскажите, пожалуйста, где находится ");
+  await harness.inputDelta("No.");
+  const a = page.getByTestId("participant-pane-A"), b = page.getByTestId("participant-pane-B");
+  await expect(a.locator("li")).toHaveText("Я: Подскажите, пожалуйста, где находится");
+  await expect(b.locator("li")).toHaveText("Me: No.");
+});

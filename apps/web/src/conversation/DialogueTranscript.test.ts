@@ -206,3 +206,19 @@ it.each(["Я из New York.", "Я использую Google и OpenAI.", "Я в 
   for (const character of text) transcript.push("input", fragment(character), pair);
   expect(content(transcript)).toEqual([{ kind: "input", side: "A", text }]);
 });
+
+it.each(["input", "output"] as const)("keeps explicit interruptions separate in the %s stream across packets", kind => {
+  const transcript = new DialogueTranscript();
+  transcript.push(kind, fragment("Подскажите, пожалуйста, где находится "), pair);
+  for (const letter of "No.") transcript.push(kind, fragment(letter), pair);
+  expect(content(transcript)).toEqual([
+    { kind, side: "A", text: "Подскажите, пожалуйста, где находится" },
+    { kind, side: "B", text: "No." },
+  ]);
+  transcript.push(kind, fragment(" Я использую IBM."), pair);
+  expect(content(transcript)).toEqual([
+    { kind, side: "A", text: "Подскажите, пожалуйста, где находится" },
+    { kind, side: "B", text: "No." },
+    { kind, side: "A", text: "Я использую IBM." },
+  ]);
+});
