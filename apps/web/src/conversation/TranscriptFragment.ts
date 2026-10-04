@@ -13,9 +13,19 @@ export interface TranscriptFragment {
   receivedAtMs: number;
 }
 
-/** Approximate session time is safer than arrival order when all fragments carry it. */
+/** Keep known timing order; untimed tails follow the latest known text at arrival. */
 export function orderTranscriptFragments(fragments: TranscriptFragment[]): TranscriptFragment[] {
-  return fragments.every(fragment => fragment.startMs !== undefined)
-    ? [...fragments].sort((a, b) => a.startMs! - b.startMs!)
-    : fragments;
+  const prefix: TranscriptFragment[] = [];
+  const groups: Array<{ startMs: number; fragments: TranscriptFragment[] }> = [];
+  let tail: typeof groups[number] | undefined;
+  for (const fragment of fragments) {
+    if (fragment.startMs === undefined) {
+      (tail?.fragments ?? prefix).push(fragment);
+    } else {
+      const group = { startMs: fragment.startMs, fragments: [fragment] };
+      groups.push(group);
+      if (!tail || group.startMs >= tail.startMs) tail = group;
+    }
+  }
+  return [...prefix, ...groups.sort((a, b) => a.startMs - b.startMs).flatMap(group => group.fragments)];
 }

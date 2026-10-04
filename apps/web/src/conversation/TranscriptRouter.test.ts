@@ -96,3 +96,25 @@ it("routes complete short Chinese speech without relying on character count", ()
   const part = fragment("你好。");
   expect(router.push(part, pair, "B")).toEqual([{ side: "A", fragments: [part] }]);
 });
+
+it("keeps a reliable opposite-language reply even after unfinished source context", () => {
+  const router = new TranscriptRouter();
+  expect(router.push(fragment("Привет."), languages, "B", "Well, I was thinking ")[0]?.side).toBe("A");
+});
+
+it("does not retain source context after reset or when the next source is empty", () => {
+  const router = new TranscriptRouter();
+  expect(router.push(fragment("Google."), languages, "A", "Я использую ")[0]?.side).toBe("A");
+  router.reset();
+  expect(router.push(fragment("Google."), languages, "A")[0]?.side).toBe("B");
+});
+
+it.each([
+  ["B", "The station is straight ahead and ", "Да.", "A"],
+  ["B", "The station is straight ahead and ", "Нет.", "A"],
+  ["A", "Я хочу спросить вас ", "Yes.", "B"],
+  ["A", "Я хочу спросить вас ", "No.", "B"],
+] as const)("preserves a short %s interruption after %s: %s", (current, context, text, next) => {
+  const router = new TranscriptRouter();
+  expect(router.push(fragment(text), languages, current, context)[0]?.side).toBe(next);
+});

@@ -179,3 +179,30 @@ describe("PR32 short replies and multiword names", () => {
     }
   });
 });
+
+it.each(["input", "output"] as const)("preserves short reply through neutral tail: %s", kind => {
+  const transcript = new DialogueTranscript();
+  for (const [i, text] of ["Да.", " 12", " Please continue speaking."].entries()) transcript.push(kind, { id: String(i), text, receivedAtMs: i }, pair);
+  expect(transcript.blocks.filter(block => block.side === "A").map(block => block.text).join("")).toContain("Да.");
+});
+it.each([1, 5, 1000])("preserves sentence-final multiword name at packet size %s", size => {
+  const transcript = new DialogueTranscript();
+  const text = "Наш новый офис теперь находится в New York.";
+  for (let offset = 0; offset < text.length; offset += size) transcript.push("input", fragment(text.slice(offset, offset + size)), pair);
+  expect(content(transcript)).toEqual([{ kind: "input", side: "A", text }]);
+});
+it.each(["input", "output"] as const)("preserves known timestamp ordering with untimed suffix: %s", kind => {
+  const transcript = new DialogueTranscript();
+  transcript.push(kind, { id:"1", text:"Михаила Гушина", startMs:1000, receivedAtMs:0 }, pair);
+  transcript.push(kind, { id:"2", text:"Посылка для ", startMs:0, receivedAtMs:1 }, pair);
+  expect(transcript.blocks.map(block=>block.text).join("")).toBe("Посылка для Михаила Гушина");
+  transcript.push(kind, { id:"3", text:".", receivedAtMs:2 }, pair);
+  expect(transcript.blocks.map(block=>block.text).join("")).toBe("Посылка для Михаила Гушина.");
+});
+
+
+it.each(["Я из New York.", "Я использую Google и OpenAI.", "Я в Google каждый день."])("keeps short host-language spans within their contextual sentence: %s", text => {
+  const transcript = new DialogueTranscript();
+  for (const character of text) transcript.push("input", fragment(character), pair);
+  expect(content(transcript)).toEqual([{ kind: "input", side: "A", text }]);
+});

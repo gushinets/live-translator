@@ -108,6 +108,16 @@ export class DialogueTranscript {
       // Use the neighbouring sentence context, while preserving complete replies.
       const sentences = runs.flatMap(run => run.side === undefined ? [run]
         : (run.text.match(/[^.!?。！？]*[.!?。！？]+\s*|[^.!?。！？]+$/gu) ?? []).map(text => ({ text, side: run.side })));
+      const sentenceContexts: string[] = [];
+      let contextStart = 0, contextText = "";
+      for (let index = 0; index < sentences.length; index++) {
+        contextText += sentences[index]!.text;
+        if (/[.!?。！？]/u.test(sentences[index]!.text) || index === sentences.length - 1) {
+          for (let part = contextStart; part <= index; part++) sentenceContexts[part] = contextText;
+          contextStart = index + 1;
+          contextText = "";
+        }
+      }
       const contextual = sentences.map((run, index) => {
         const previous = sentences[index - 1], next = sentences[index + 1];
         const before = previous?.text.match(/[^.!?。！？]*$/u)?.[0] ?? "";
@@ -115,26 +125,43 @@ export class DialogueTranscript {
         const previousSide = /\p{L}/u.test(before) ? previous?.side : undefined;
         const nextSide = !/[.!?。！？]/u.test(run.text) && /\p{L}/u.test(after) ? next?.side : undefined;
         const surroundingSide = previousSide ?? nextSide;
-        const embedded = previousSide !== undefined && previousSide === nextSide;
-        if (run.side !== undefined && ((run.text.match(/\p{L}+/gu)?.length ?? 0) === 1 || embedded) &&
+        if (run.side !== undefined &&
             surroundingSide !== undefined && surroundingSide !== run.side &&
             (nextSide === undefined || previousSide === undefined || nextSide === previousSide)) {
-          const context = this.detector.detect((before + run.text + (nextSide === undefined ? "" : after)).slice(0, 2000));
+          const standalone = this.detector.detect(run.text.slice(0, 2000));
+          const embedded = previousSide !== undefined && previousSide === nextSide;
+          if (!embedded && standalone.isReliable() && standalone.language === languages[run.side]) return run;
+          const context = this.detector.detect(sentenceContexts[index]!.slice(0, 2000));
           if (context.isReliable() && context.language === languages[surroundingSide]) {
             return { ...run, side: surroundingSide };
           }
         }
         return run;
       });
+      const phrases: typeof runs = [];
+      for (let index = 0; index < contextual.length; index++) {
+        const run = contextual[index]!, previous = phrases.at(-1);
+        if (previous && previous.side === run.side && sentenceContexts[index] === sentenceContexts[index - 1]) {
+          previous.text += run.text;
+        } else phrases.push({ ...run });
+      }
+      // Decide each sentence before coalescing it with a new unfinished tail.
+      // A neutral suffix cannot revoke the language of a completed short reply.
+      for (let index = 0; index < phrases.length; index++) {
+        const run = phrases[index]!;
+        const letters = (run.text.match(/\p{L}/gu) ?? []).length;
+        if (letters >= 4 || completeScriptSide(run.text, languages) === run.side) continue;
+        if (!letters && phrases[index - 1]?.side === run.side) continue;
+        run.side = undefined;
+      }
       // Neutral prefixes (numbers, quotes, punctuation) wait for the first language.
-      const prefix = contextual[0];
-      if (prefix && prefix.side === undefined && !/\p{L}/u.test(prefix.text) && contextual[1]?.side) {
-        prefix.side = contextual[1].side;
+      const prefix = phrases[0];
+      if (prefix && prefix.side === undefined && !/\p{L}/u.test(prefix.text) && phrases[1]?.side) {
+        prefix.side = phrases[1].side;
       }
       runs.length = 0;
-      for (const run of contextual) append(run.text, run.side);
-      return runs.map(run => ({ ...run, side: (run.text.match(/\p{L}/gu)?.length ?? 0) >= 4 ||
-        completeScriptSide(run.text, languages) === run.side ? run.side : undefined }));
+      for (const run of phrases) append(run.text, run.side);
+      return runs;
     }
     // ponytail: same-script switches require sentence evidence in this prototype;
     // no reliable diarization can be inferred from a bare ambiguous word.

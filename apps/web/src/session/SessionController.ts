@@ -1330,7 +1330,7 @@ export class SessionController {
     const activeStart = active?.sourceFragments[0]?.startMs;
     const currentSide = fragment.startMs === undefined || activeStart === undefined || fragment.startMs >= activeStart
       ? active?.speaker : undefined;
-    this.routeSource(this.sourceRouter.push(fragment, this.languages, currentSide));
+    this.routeSource(this.sourceRouter.push(fragment, this.languages, currentSide, currentSide ? active?.originalText : undefined));
     const generation = this.sessionGeneration;
     const epoch = this.lifecycleEpoch;
     if (this.sourceFragmentTimer !== null) window.clearTimeout(this.sourceFragmentTimer);
@@ -1348,7 +1348,7 @@ export class SessionController {
     for (const { side, first } of groups.flatMap(group => group.fragments.map(first => ({ side: group.side, first })))) {
       const historical = this.findSourceTarget(first, side);
       if (historical) {
-        if (historical.id === this.currentSession.activeTurn?.id &&
+        if (historical.id === this.currentSession.activeTurn?.id && /\p{L}/u.test(first.text) &&
             (this.resumedSourceIdle?.endMs === undefined || first.startMs === undefined || first.startMs > this.resumedSourceIdle.endMs)) {
           this.resumedSourceIdle = undefined;
         }
@@ -1400,10 +1400,22 @@ export class SessionController {
   }
 
   private findSourceTarget(fragment: TranscriptFragment, side?: Side): Turn | undefined {
-    if (fragment.startMs === undefined || side === undefined) return undefined;
+    const neutral = !/\p{L}/u.test(fragment.text);
+    if (fragment.startMs === undefined || (side === undefined && !neutral)) return undefined;
     const sources = this.routingTurns().filter(turn => !turn.translationOnly && turn.sourceFragments[0]?.startMs !== undefined)
       .sort((a, b) => a.sourceFragments[0]!.startMs! - b.sourceFragments[0]!.startMs!);
     const preceding = sources.findLast(turn => turn.sourceFragments[0]!.startMs! <= fragment.startMs!);
+    if (neutral) {
+      // Neutral packets cannot inherit language from later buffered speech.
+      // Only known source timing can establish historical ownership; a new or
+      // untimed prefix stays on the normal path with its accompanying speech.
+      if (!preceding || (preceding.sourceEndMs !== undefined && fragment.startMs >= preceding.sourceEndMs)) return undefined;
+      const observedEnd = Math.max(...preceding.sourceFragments.map(part => part.endMs ?? part.startMs ?? -Infinity));
+      // The gap before a later source can also contain that source's delayed
+      // opening. Extend beyond observed audio only with matching language evidence.
+      const intervalEnd = side !== undefined && side === preceding.speaker ? preceding.sourceEndMs ?? observedEnd : observedEnd;
+      return (fragment.endMs ?? fragment.startMs) <= intervalEnd ? preceding : undefined;
+    }
     // Fresh speech, whether VAD- or transcript-first, must claim forward packets before a retired,
     // open-ended interval can mistake it for a correction. Overlapping timestamps
     // and intervals already bounded by another source still route historically.
@@ -1411,7 +1423,7 @@ export class SessionController {
       const lastEnd = Math.max(...preceding.sourceFragments.map(part => part.endMs ?? part.startMs ?? -Infinity));
       if (fragment.startMs > lastEnd) return undefined;
     }
-    if (preceding?.speaker === side &&
+    if (preceding && preceding.speaker === side &&
         (preceding.sourceEndMs === undefined || fragment.startMs < preceding.sourceEndMs)) return preceding;
     // The first packet is not necessarily the opening. An earlier packet in the next
     // speaker's language extends that source, rather than contaminating the preceding one.

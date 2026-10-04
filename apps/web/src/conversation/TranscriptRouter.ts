@@ -15,17 +15,19 @@ export class TranscriptRouter {
   private readonly detector = eld.newInstance();
   private languages?: ConversationLanguages;
   private currentSide?: Side;
+  private sourceText = "";
 
-  reset(): void { this.pending = []; this.currentSide = undefined; }
+  reset(): void { this.pending = []; this.currentSide = undefined; this.sourceText = ""; }
 
   get hasPending(): boolean { return this.pending.length > 0; }
 
-  push(fragment: TranscriptFragment, languages: ConversationLanguages, currentSide?: Side): RoutedTranscript[] {
+  push(fragment: TranscriptFragment, languages: ConversationLanguages, currentSide?: Side, sourceText = ""): RoutedTranscript[] {
     this.pending.push(fragment);
     this.currentSide = currentSide;
+    this.sourceText = sourceText;
     const text = this.pending.map(part => part.text).join("");
     if (/^[\p{P}\s]+$/u.test(text) && currentSide !== undefined) return this.take(currentSide);
-    const scriptSide = completeScriptSide(text, languages);
+    const scriptSide = this.resolveScript(text, languages);
     if (scriptSide !== undefined) return this.take(scriptSide);
     // Only complete words are evidence: "Thank y" can otherwise be classified as Spanish.
     const evidence = text.replace(/\p{L}+$/u, "");
@@ -38,7 +40,7 @@ export class TranscriptRouter {
   flush(languages: ConversationLanguages, force = false): RoutedTranscript[] {
     if (!this.pending.length) return [];
     const text = this.pending.map(part => part.text).join("");
-    const scriptSide = completeScriptSide(text, languages);
+    const scriptSide = this.resolveScript(text, languages);
     if (scriptSide !== undefined) return this.take(scriptSide);
     const evidence = text.replace(/\p{L}+$/u, "");
     const side = this.resolve(evidence, languages);
@@ -54,6 +56,19 @@ export class TranscriptRouter {
     if (distinctScripts && fullSide !== undefined && this.hasEvidence(text, text, fullSide, this.currentSide)) return this.take(fullSide);
     if (!force && fullSide !== undefined && /\p{L}$/u.test(text)) return [];
     return this.take(undefined);
+  }
+
+  private resolveScript(text: string, languages: ConversationLanguages): Side | undefined {
+    const side = completeScriptSide(text, languages);
+    if (side === undefined || this.currentSide === undefined || side === this.currentSide) return side;
+    // Very short replies (yes/no, Да/Нет) lack ELD evidence but still interrupt.
+    if ((text.match(/\p{L}/gu)?.length ?? 0) <= 4) return side;
+    const before = this.sourceText.match(/[^.!?。！？]*$/u)?.[0] ?? "";
+    // A packet ending in a period may finish the source's sentence ("Google.").
+    // Reliable standalone replies still establish a handoff, even mid-sentence.
+    if (/\p{L}/u.test(before) && this.resolve(text, languages) === undefined &&
+        this.resolve(before + text, languages) === this.currentSide) return this.currentSide;
+    return side;
   }
 
   private hasEvidence(evidence: string, text: string, side: Side, currentSide?: Side): boolean {

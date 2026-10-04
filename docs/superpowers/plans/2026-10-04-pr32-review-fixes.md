@@ -41,3 +41,20 @@ Five further cases were independently reproduced and approved for correction: hi
 - Initial targeted RED run: 13 failures, 230 existing tests passed. Review added an untimed-prefix regression, also reproduced before its correction.
 - Final targeted run: 246 tests passed across the controller, caption assembler and router. Web typecheck and lint passed. Unrelated local prompt changes remain excluded.
 - Per user instruction, the full local suite and browser run were not repeated; full validation is delegated to CI without waiting for completion.
+
+## Neutral packet ownership follow-up (2026-10-05)
+
+Corrected review comment 4178654909: a timed neutral packet inside observed historical source audio retains that source even when buffered with the other language. A gap before a later source needs matching group-language evidence; an unknown opening must not acquire an author from a provisional interval alone. Untimed or genuinely forward prefixes stay with new speech. Neutral corrections do not confirm resumed speech or clear its saved idle timestamp.
+
+Eight added regressions cover both language directions, punctuation and numbers, subsequent late corrections, missing timestamps, new forward prefixes, bounded historical gaps, and idle preservation. Targeted controller/router suite: 220 passed. Web typecheck and lint passed; full tests remain delegated to CI.
+
+During this work, four newer GitHub findings were reproduced separately: short replies disappearing after neutral tails (4178672411), sentence-final multiword names (4178672863), mixed-timing history reordering (4178674018), and foreign brand suffixes creating operational handoffs (4178674023). The user subsequently authorized fixing all four before merge.
+
+## Sentence and mixed-timing follow-up (2026-10-05)
+
+- Classify context using the whole sentence, then qualify adjacent same-side script spans within that sentence before combining it with new tails. Completed short replies retain attribution when neutral or unfinished text arrives.
+- Use reliable host-sentence evidence for sentence-final multiword names. Keep independently reliable opposite-language sentences and embedded short host words intact.
+- Provide the active source's unfinished sentence to the operational router so a packet such as `Google.` can complete that source instead of forcing a handoff. Very short complete script-resolved replies keep their side despite weak statistical language evidence. This remains heuristic, not speaker diarization.
+- Keep known timestamp order when timing is missing on some packets. Untimed prefixes remain first; untimed tails stay attached to the latest known timed group at arrival. Ordering is stable for equal timestamps and does not mutate the caller's array.
+- Seven initial regression cases failed before these changes; review additionally found short-host-span and short-interruption cases, also reproduced before correction.
+- Final targeted verification: 362 tests passed in the controller, reducer, router, caption assembler, turn buffer and fragment-ordering files. Two browser regressions were added for CI; the full local suite/browser run is intentionally not repeated and CI completion is not awaited.

@@ -92,3 +92,42 @@ test("numbers and embedded brands stay in the complete caption on its language p
   await expect(b.locator("li")).toHaveText("Me: I also use OpenAI every day.");
   await page.screenshot({ path: testInfo.outputPath("caption-prefix-and-brands.png") });
 });
+
+test("short resolved captions and sentence-final names survive subsequent packets", async ({ page }) => {
+  const harness = await MockLiveHarness.attach(page);
+  await page.addInitScript(() => {
+    localStorage.setItem("live-translator-owner-language", "ru");
+    localStorage.setItem("live-translator-interlocutor-language", "en");
+  });
+  await page.goto("/");
+  await page.getByRole("button", { name: "Начать перевод", exact: true }).click();
+  await expect(page.getByRole("button", { name: "Завершить", exact: true })).toBeVisible();
+  const a = page.getByTestId("participant-pane-A"), b = page.getByTestId("participant-pane-B");
+  await harness.inputDelta("Да.");
+  await expect(a.locator("li")).toHaveText("Я: Да.");
+  await harness.inputDelta(" 12");
+  await expect(a.locator("li")).toContainText("Да.");
+  await harness.inputDelta(" Please continue speaking.");
+  await expect(a.locator("li")).toContainText("Да.");
+  await expect(b.locator("li")).toHaveText("Me: Please continue speaking.");
+  await harness.outputDelta("Наш новый офис теперь находится в New York.");
+  await expect(a.locator("li").last()).toHaveText("Он: Наш новый офис теперь находится в New York.");
+  await expect(b.locator("li")).toHaveCount(1);
+});
+
+test("untimed punctuation does not undo corrected caption word order", async ({ page }) => {
+  const harness = await MockLiveHarness.attach(page);
+  await page.addInitScript(() => {
+    localStorage.setItem("live-translator-owner-language", "ru");
+    localStorage.setItem("live-translator-interlocutor-language", "en");
+  });
+  await page.goto("/");
+  await page.getByRole("button", { name: "Начать перевод", exact: true }).click();
+  await expect(page.getByRole("button", { name: "Завершить", exact: true })).toBeVisible();
+  const caption = page.getByTestId("participant-pane-A").locator("li");
+  await harness.inputDelta("Михаила Гушина", 1000, 1500);
+  await harness.inputDelta("Посылка для ", 0, 500);
+  await expect(caption).toHaveText("Я: Посылка для Михаила Гушина");
+  await harness.inputDelta(".");
+  await expect(caption).toHaveText("Я: Посылка для Михаила Гушина.");
+});
