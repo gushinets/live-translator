@@ -3,6 +3,8 @@ import { languageName } from "../side/SideResolver";
 import type { Side, Turn } from "../conversation/Turn";
 import { ParticipantStatus, type ParticipantStatusLabel } from "./ParticipantStatus";
 import { translate, uiLocale } from "../i18n/messages";
+import type { DialogueBlock } from "../conversation/DialogueTranscript";
+import { DialogueCaptions } from "./DialogueCaptions";
 
 export function ParticipantPane({
   side,
@@ -13,6 +15,7 @@ export function ParticipantPane({
   recentTurns,
   alertText,
   alertLanguage,
+  captions,
 }: {
   side: Side;
   language?: string;
@@ -22,6 +25,7 @@ export function ParticipantPane({
   recentTurns: readonly Turn[];
   alertText?: string;
   alertLanguage?: string;
+  captions?: readonly DialogueBlock[];
 }) {
   const locale = uiLocale(language);
   const t = (text: string) => translate(text, locale);
@@ -35,7 +39,7 @@ export function ParticipantPane({
   useLayoutEffect(() => {
     const scroll = scrollRef.current;
     if (scroll && followEnd.current) scroll.scrollTop = scroll.scrollHeight;
-  }, [primaryText, recentTurns]);
+  }, [primaryText, recentTurns, captions]);
 
   return (
     <section
@@ -65,6 +69,7 @@ export function ParticipantPane({
           {alertText}
         </p>
       ) : null}
+      {captions !== undefined ? <DialogueCaptions blocks={captions} language={language} /> : <>
       <ol className="participant-recent">
         {recentTurns.filter(entry => (!entry.translationOnly || entry.speaker !== side) &&
           (paneTextForTurn(entry, side).length > 0 || !["failed", "discarded"].includes(entry.status))).map((entry) => {
@@ -93,6 +98,7 @@ export function ParticipantPane({
           </span> : <span className="turn-waiting" role="status">{t("Ожидание")}</span>}
         </div>
       ) : null}
+      </>}
       </div>
     </section>
   );

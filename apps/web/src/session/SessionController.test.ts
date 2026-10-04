@@ -37,6 +37,7 @@ type FakeLiveErrorEvent = {
 afterEach(() => {
   vi.useRealTimers();
   vi.restoreAllMocks();
+  window.history.replaceState({}, "", "/");
 });
 
 class FakeLive {
@@ -1902,6 +1903,7 @@ describe("SessionController turn engine", () => {
     expect(controller.session).not.toHaveProperty("expectedSpeaker");
     expect(controller.session.participantA.hasAcceptedConversationSpeech).toBe(false);
     expect(controller.recoveryPrompt).toBe("repeat");
+    expect(controller.recoveryPromptIsTurnFailure).toBe(true);
     expect(live.setInputMuted).not.toHaveBeenCalled();
     expect(live.appendInstructions.mock.calls.length).toBe(appendCountAfterStart);
   });
@@ -4073,6 +4075,49 @@ describe("open-input interpretation", () => {
     fixture.live.setInputMuted.mockClear();
     return fixture;
   }
+
+  it("keeps independent display captions across service completion and clears them on cancellation", async () => {
+    window.history.replaceState({}, "", "/?captions=blocks");
+    const { controller, live, audio } = await startRussianEnglish();
+    emitVoice(audio, true);
+    live.emit({ type: "session.input_transcript.delta", delta: "Да, у вас посылка для меня?" });
+    live.emit({ type: "session.output_transcript.delta", delta: "Do you have a package for " });
+    emitVoice(audio, false);
+    await vi.advanceTimersByTimeAsync(runtime.noOutputTimeoutMs + runtime.captionIdleMs);
+    live.emit({ type: "session.output_transcript.delta", delta: "me?" });
+    expect(controller.captionBlocks.map(({ kind, side, text }) => ({ kind, side, text }))).toEqual([
+      { kind: "input", side: "A", text: "Да, у вас посылка для меня?" },
+      { kind: "output", side: "B", text: "Do you have a package for me?" },
+    ]);
+    expect(live.setInputMuted).not.toHaveBeenCalledWith(true);
+    await controller.cancel();
+    expect(controller.captionBlocks).toEqual([]);
+    window.history.replaceState({}, "", "/");
+  });
+
+  it("does not assemble the experimental history in the legacy comparison mode", async () => {
+    const { controller, live, audio } = await startRussianEnglish();
+    emitVoice(audio, true);
+    live.emit({ type: "session.input_transcript.delta", delta: "Здравствуйте, я хочу получить посылку." });
+    expect(controller.captionBlocks).toEqual([]);
+  });
+
+  it("seals caption context and retains real interruption guidance after orientation recovery", async () => {
+    window.history.replaceState({}, "", "/?captions=blocks");
+    const { controller, live, audio, orientation } = await startRussianEnglish();
+    emitVoice(audio, true);
+    live.emit({ type: "session.input_transcript.delta", delta: "Мне нужна посылка." });
+    orientation.emit("landscape");
+    await flushLifecycle();
+    orientation.emit("portrait");
+    await flushLifecycle();
+    expect(controller.session.state).toBe("listening");
+    expect(controller.recoveryPrompt).toBe("repeat");
+    expect(controller.recoveryPromptIsTurnFailure).toBe(false);
+    emitVoice(audio, true);
+    live.emit({ type: "session.input_transcript.delta", delta: "Повторю сначала." });
+    expect(controller.captionBlocks.map(block => block.text)).toEqual(["Мне нужна посылка.", "Повторю сначала."]);
+  });
 
   it("keeps an unfinished English continuation with A after the caption timer", async () => {
     const { controller, live, audio } = createController();

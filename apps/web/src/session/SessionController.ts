@@ -9,6 +9,7 @@ import {
 } from "../conversation/TurnCompletion";
 import { createTranscriptFragment } from "../conversation/TurnBuffer";
 import { TranscriptRouter, type RoutedTranscript } from "../conversation/TranscriptRouter";
+import { DialogueTranscript } from "../conversation/DialogueTranscript";
 import type { TranscriptFragment } from "../conversation/TranscriptFragment";
 import type { ResumeSnapshot, ResumeSnapshotInput } from "./ResumeSnapshotStore";
 import type { Side, Turn } from "../conversation/Turn";
@@ -126,6 +127,9 @@ export class SessionController {
   private playbackTurnId: string | undefined;
   private readonly sourceRouter = new TranscriptRouter();
   private readonly outputRouter = new TranscriptRouter();
+  private readonly dialogueTranscript = new DialogueTranscript();
+  private readonly captionsEnabled = new URLSearchParams(window.location.search).get("captions") === "blocks";
+  get captionBlocks() { return this.dialogueTranscript.blocks; }
   private sourceFragmentTimer: number | null = null;
   private outputFragmentTimer: number | null = null;
   private lastOutputSide: Side | undefined;
@@ -142,6 +146,7 @@ export class SessionController {
   private turnClosing = false;
   private speechInputReady = false;
   private recoveryPromptKind: RecoveryPrompt | undefined;
+  private turnFailurePrompt = false;
   private steeringDegradedFlag = false;
   private endWork: Promise<void> | null = null;
   private platformStarted = false;
@@ -317,6 +322,7 @@ export class SessionController {
     this.lifecycleSuspendReason = undefined;
     this.discardedUnfinishedOnSuspend = snapshot.interruptedUtterance;
     this.recoveryPromptKind = snapshot.interruptedUtterance ? "repeat" : undefined;
+    this.turnFailurePrompt = false;
     if (snapshot.setupStage === "interpreter") {
       await waitForPlayback();
       this.assertCaptureStreamLive(stream);
@@ -458,6 +464,10 @@ export class SessionController {
 
   get recoveryPrompt(): RecoveryPrompt | undefined {
     return this.recoveryPromptKind;
+  }
+
+  get recoveryPromptIsTurnFailure(): boolean {
+    return this.recoveryPromptKind === "repeat" && this.turnFailurePrompt;
   }
 
   get suspendReason(): LifecycleSuspendReason | undefined {
@@ -1314,6 +1324,10 @@ export class SessionController {
   private handleConversationInputDelta(event: TranscriptDeltaEvent): void {
     if (!event.delta || !["listening", "outputting"].includes(this.currentSession.state) || this.turnClosing) return;
     const fragment = createTranscriptFragment({ text: event.delta, nowMs: Date.now(), startMs: event.start_ms, endMs: event.end_ms });
+    if (this.captionsEnabled) {
+      this.dialogueTranscript.push("input", fragment, this.languages);
+      this.notify();
+    }
     const active = this.currentSession.activeTurn;
     const activeStart = active?.sourceFragments[0]?.startMs;
     const currentSide = fragment.startMs === undefined || activeStart === undefined || fragment.startMs >= activeStart
@@ -1419,6 +1433,10 @@ export class SessionController {
     if (!event.delta || !["listening", "outputting"].includes(this.currentSession.state)) return;
     if (this.leftoverOutputDraining) { this.noteLeftoverCaption(); return; }
     const fragment = createTranscriptFragment({ text: event.delta, nowMs: Date.now(), startMs: event.start_ms, endMs: event.end_ms });
+    if (this.captionsEnabled) {
+      this.dialogueTranscript.push("output", fragment, this.languages);
+      this.notify();
+    }
     if (!this.outputRouter.hasPending && /^[\p{P}\s]+$/u.test(fragment.text)) {
       this.routeOutput([{ side: undefined, fragments: [fragment] }]);
     } else this.routeOutput(this.outputRouter.push(fragment, this.languages, this.lastOutputSide));
@@ -1594,7 +1612,10 @@ export class SessionController {
     this.dispatch({ type: "TURN_FAILED", turnId: turn.id });
     const independentOutput = this.routingTurns().some(output => output.translationOnly && output.translatedText &&
       (output.speechStartAtMs ?? 0) >= (turn.speechStartAtMs ?? 0) && output.speaker === turn.speaker);
-    if (!independentOutput && !this.currentSession.activeTurn && !(this.currentSession.pendingTurns?.length)) this.recoveryPromptKind = "repeat";
+    if (!independentOutput && !this.currentSession.activeTurn && !(this.currentSession.pendingTurns?.length)) {
+      this.recoveryPromptKind = "repeat";
+      this.turnFailurePrompt = true;
+    }
     this.notify();
   }
 
@@ -1864,6 +1885,7 @@ export class SessionController {
   }
 
   private resetTranscriptRouting(): void {
+    this.dialogueTranscript.seal();
     if (this.sourceFragmentTimer !== null) window.clearTimeout(this.sourceFragmentTimer);
     if (this.outputFragmentTimer !== null) window.clearTimeout(this.outputFragmentTimer);
     this.sourceFragmentTimer = null;
@@ -2744,6 +2766,7 @@ export class SessionController {
     this.speechInputReady = true;
     this.dispatch({ type: "RESUME" });
     this.recoveryPromptKind = this.discardedUnfinishedOnSuspend ? "repeat" : undefined;
+    this.turnFailurePrompt = false;
     this.lifecycleSuspendReason = undefined;
     this.notify();
   }
@@ -2831,6 +2854,7 @@ export class SessionController {
     this.stopPlatformLifecycle();
     this.sessionGeneration += 1;
     this.currentSession = createEmptySession();
+    this.dialogueTranscript.clear();
     this.live = this.deps.createLive();
     this.bindLive();
     this.notify();

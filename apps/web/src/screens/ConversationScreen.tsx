@@ -7,11 +7,14 @@ import { deriveParticipantStatus } from "../components/ParticipantStatus";
 import type { LifecycleSuspendReason, RecoveryPrompt } from "../session/SessionController";
 import type { TranslationSession } from "../session/SessionState";
 import { translate, uiLocale } from "../i18n/messages";
+import type { DialogueBlock } from "../conversation/DialogueTranscript";
 
 export interface ConversationScreenController {
   readonly session: TranslationSession;
+  readonly captionBlocks?: readonly DialogueBlock[];
   readonly inputReady: boolean;
   readonly recoveryPrompt?: RecoveryPrompt;
+  readonly recoveryPromptIsTurnFailure?: boolean;
   readonly ownerError?: string;
   readonly suspendReason?: LifecycleSuspendReason;
   readonly retainedRecoveryState?: RetainedRecoveryState;
@@ -24,7 +27,7 @@ export interface ConversationScreenController {
 
 function uiSnapshot(controller: ConversationScreenController): unknown[] {
   return [controller.session, controller.inputReady, controller.recoveryPrompt, controller.ownerError,
-    controller.suspendReason, controller.retainedRecoveryState];
+    controller.suspendReason, controller.retainedRecoveryState, controller.captionBlocks, controller.recoveryPromptIsTurnFailure];
 }
 
 export function ConversationScreen({
@@ -51,6 +54,9 @@ export function ConversationScreen({
   }, [controller.retainedRecoveryState]);
 
   const session = controller.session;
+  const useCaptionBlocks = new URLSearchParams(window.location.search).get("captions") === "blocks";
+  const captions = useCaptionBlocks ? controller.captionBlocks ?? [] : undefined;
+  const unassigned = captions?.filter(block => block.side === undefined && block.text.trim()) ?? [];
   const ownerLocale = uiLocale(session.participantA.language);
   const t = (text: string) => translate(text, ownerLocale);
   const ending = session.state === "ending";
@@ -107,6 +113,7 @@ export function ConversationScreen({
         status={statusB}
         activeTurn={active}
         recentTurns={recentTurns}
+        captions={captions?.filter(block => block.side === "B")}
         alertText={terminalAlert}
         alertLanguage={ownerLocale}
       />
@@ -158,7 +165,11 @@ export function ConversationScreen({
             {t("Продолжить / повторить")}
           </button>
         ) : null}
-        {controller.recoveryPrompt === "repeat" ? <p>{t("Повторите")}</p> : null}
+        {controller.recoveryPrompt === "repeat" && (!useCaptionBlocks || !controller.recoveryPromptIsTurnFailure) ? <p>{t("Повторите")}</p> : null}
+        {unassigned.length > 0 ? <details className="unassigned-captions">
+          <summary>{t("Текст без определённого языка")} ({unassigned.length})</summary>
+          {unassigned.map(block => <p key={block.id}>{block.text}</p>)}
+        </details> : null}
         {controller.retainedRecoveryState === undefined && terminalAlert === undefined && controller.ownerError !== undefined ? (
           <ErrorOverlay message={controller.ownerError} language={ownerLocale} />
         ) : null}
@@ -170,6 +181,7 @@ export function ConversationScreen({
         status={statusA}
         activeTurn={active}
         recentTurns={recentTurns}
+        captions={captions?.filter(block => block.side === "A")}
         alertText={terminalAlert}
         alertLanguage={ownerLocale}
       />

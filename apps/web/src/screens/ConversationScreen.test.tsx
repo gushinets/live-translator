@@ -5,6 +5,7 @@ import { cleanup, fireEvent, render, screen, within } from "@testing-library/rea
 import { Profiler } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { Side, Turn } from "../conversation/Turn";
+import type { DialogueBlock } from "../conversation/DialogueTranscript";
 import type { LifecycleSuspendReason, RecoveryPrompt } from "../session/SessionController";
 import {
   createInitialSession,
@@ -44,8 +45,10 @@ function session(overrides: Partial<TranslationSession> = {}): TranslationSessio
 
 class FakeConversationController implements ConversationScreenController {
   session: TranslationSession;
+  captionBlocks: readonly DialogueBlock[] = [];
   inputReady = true;
   recoveryPrompt: RecoveryPrompt | undefined;
+  recoveryPromptIsTurnFailure = false;
   ownerError: string | undefined;
   suspendReason: LifecycleSuspendReason | undefined;
   retainedRecoveryState: "paused" | "resuming" | "ending" | "failed" | "pending_end" | "pending_claim" | "blocked" | "unresolved_create" | undefined;
@@ -72,6 +75,46 @@ class FakeConversationController implements ConversationScreenController {
     }
   }
 }
+
+describe("independent caption prototype", () => {
+  afterEach(() => { window.history.replaceState({}, "", "/"); });
+
+  it("shows the full dialogue on each pane without legacy waiting rows or duplicated unknown text", () => {
+    window.history.replaceState({}, "", "/?captions=blocks");
+    const controller = new FakeConversationController(session({
+      participantA: { ...participant("A"), language: "ru" },
+      participantB: { ...participant("B"), language: "en" },
+      activeTurn: turn({ id: "service", speaker: "A", originalText: "Legacy text" }),
+    }));
+    controller.recoveryPrompt = "repeat";
+    controller.recoveryPromptIsTurnFailure = true;
+    controller.captionBlocks = [
+      { id: "1", kind: "input", side: "A", language: "ru", text: "Кто вы?", receivedAtMs: 1 },
+      { id: "2", kind: "output", side: "B", language: "en", text: "Who are you?", receivedAtMs: 2 },
+      { id: "3", kind: "input", side: "B", language: "en", text: "I'm a courier.", receivedAtMs: 3 },
+      { id: "4", kind: "output", side: "A", language: "ru", text: "Я курьер.", receivedAtMs: 4 },
+      { id: "5", kind: "output", text: "OK", receivedAtMs: 5 },
+    ];
+    render(<ConversationScreen controller={controller} />);
+    const a = screen.getByTestId("participant-pane-A"), b = screen.getByTestId("participant-pane-B");
+    expect([...a.querySelectorAll("li")].map(row => row.textContent)).toEqual(["Я: Кто вы?", "Он: Я курьер."]);
+    expect([...b.querySelectorAll("li")].map(row => row.textContent)).toEqual(["Him: Who are you?", "Me: I'm a courier."]);
+    expect(a).not.toHaveTextContent("OK");
+    expect(b).not.toHaveTextContent("OK");
+    expect(screen.getAllByText("OK")).toHaveLength(1);
+    expect(screen.queryByText("Legacy text")).not.toBeInTheDocument();
+    expect(screen.queryByText("Повторите")).not.toBeInTheDocument();
+    expect(document.querySelector(".turn-waiting")).toBeNull();
+  });
+
+  it("preserves repeat guidance after a real lifecycle interruption", () => {
+    window.history.replaceState({}, "", "/?captions=blocks");
+    const controller = new FakeConversationController(session());
+    controller.recoveryPrompt = "repeat";
+    render(<ConversationScreen controller={controller} />);
+    expect(screen.getByText("Повторите")).toBeVisible();
+  });
+});
 
 describe("ConversationScreen orientation and status", () => {
   it("does not render again when subscribing to an unchanged controller", () => {
