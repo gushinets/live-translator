@@ -118,3 +118,14 @@ it.each([
   const router = new TranscriptRouter();
   expect(router.push(fragment(text), languages, current, context)[0]?.side).toBe(next);
 });
+
+
+it.each(["IBM.", "AI.", "OK."])("uses source context for short foreign token %s", text => {
+  const router = new TranscriptRouter();
+  expect(router.push(fragment(text), languages, "A", "Я работаю в ")[0]?.side).toBe("A");
+});
+
+it.each(["Stop.", "Wait.", "Why?", "Hi."])("preserves a brief English reply after Russian unfinished speech: %s", text => {
+  const router = new TranscriptRouter();
+  expect(router.push(fragment(text), languages, "A", "Я хочу спросить вас ")[0]?.side).toBe("B");
+});

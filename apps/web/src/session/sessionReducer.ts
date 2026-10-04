@@ -1,4 +1,4 @@
-import { orderTranscriptFragments, type TranscriptFragment } from "../conversation/TranscriptFragment";
+import { earliestFragmentStart, orderTranscriptFragments, type TranscriptFragment } from "../conversation/TranscriptFragment";
 import type { Side, Turn } from "../conversation/Turn";
 import {
   appendOutputTextToTurn,
@@ -314,7 +314,7 @@ export function sessionReducer(session: TranslationSession, action: SessionActio
       const previous = session.activeTurn;
       const pendingTurns = [...(session.pendingTurns ?? [])];
       const boundary = action.fragment?.startMs;
-      const previousStart = previous?.sourceFragments[0]?.startMs;
+      const previousStart = earliestFragmentStart(previous?.sourceFragments);
       if (previous) pendingTurns.push({ ...markSourceIdle(previous, action.previousIdleAtMs ?? previous.sourceIdleAtMs ?? action.nowMs),
         sourceEndMs: boundary !== undefined && (previousStart === undefined || boundary >= previousStart)
           ? boundary : previous.sourceEndMs });

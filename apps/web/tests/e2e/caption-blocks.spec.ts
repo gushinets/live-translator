@@ -109,7 +109,8 @@ test("short resolved captions and sentence-final names survive subsequent packet
   await expect(a.locator("li")).toContainText("Да.");
   await harness.inputDelta(" Please continue speaking.");
   await expect(a.locator("li")).toContainText("Да.");
-  await expect(b.locator("li")).toHaveText("Me: Please continue speaking.");
+  await expect(a.locator("li")).toHaveText("Я: Да.");
+  await expect(b.locator("li")).toHaveText("Me: 12 Please continue speaking.");
   await harness.outputDelta("Наш новый офис теперь находится в New York.");
   await expect(a.locator("li").last()).toHaveText("Он: Наш новый офис теперь находится в New York.");
   await expect(b.locator("li")).toHaveCount(1);

@@ -29,3 +29,9 @@ export function orderTranscriptFragments(fragments: TranscriptFragment[]): Trans
   }
   return [...prefix, ...groups.sort((a, b) => a.startMs - b.startMs).flatMap(group => group.fragments)];
 }
+
+/** Untimed prefixes do not hide the earliest observed audio timestamp. */
+export function earliestFragmentStart(fragments: readonly TranscriptFragment[] = []): number | undefined {
+  const starts = fragments.flatMap(fragment => fragment.startMs === undefined ? [] : [fragment.startMs]);
+  return starts.length ? Math.min(...starts) : undefined;
+}

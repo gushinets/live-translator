@@ -61,8 +61,12 @@ export class TranscriptRouter {
   private resolveScript(text: string, languages: ConversationLanguages): Side | undefined {
     const side = completeScriptSide(text, languages);
     if (side === undefined || this.currentSide === undefined || side === this.currentSide) return side;
-    // Very short replies (yes/no, Да/Нет) lack ELD evidence but still interrupt.
-    if ((text.match(/\p{L}/gu)?.length ?? 0) <= 4) return side;
+    // Known brief answers can interrupt; token length alone also matches brands.
+    const words = text.toLowerCase().match(/\p{L}+/gu) ?? [];
+    // ponytail: common short replies are explicit; broader vocabulary needs stronger language evidence.
+    if (words.length && words.every(word =>
+      (languages[side] === "en" && /^(yes|no|hi|hey|bye|stop|wait|why|what|how|who|when|where|sure|fine)$/.test(word)) ||
+      (languages[side] === "ru" && /^(да|нет|ага|угу|стой|стоп|как|что|кто|где|эй)$/.test(word)))) return side;
     const before = this.sourceText.match(/[^.!?。！？]*$/u)?.[0] ?? "";
     // A packet ending in a period may finish the source's sentence ("Google.").
     // Reliable standalone replies still establish a handoff, even mid-sentence.

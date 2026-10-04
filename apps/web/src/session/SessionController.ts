@@ -10,7 +10,7 @@ import {
 import { createTranscriptFragment } from "../conversation/TurnBuffer";
 import { TranscriptRouter, type RoutedTranscript } from "../conversation/TranscriptRouter";
 import { DialogueTranscript } from "../conversation/DialogueTranscript";
-import type { TranscriptFragment } from "../conversation/TranscriptFragment";
+import { earliestFragmentStart, type TranscriptFragment } from "../conversation/TranscriptFragment";
 import type { ResumeSnapshot, ResumeSnapshotInput } from "./ResumeSnapshotStore";
 import type { Side, Turn } from "../conversation/Turn";
 import { AckTimeoutError } from "../live/AckRegistry";
@@ -1327,7 +1327,7 @@ export class SessionController {
     this.dialogueTranscript.push("input", fragment, this.languages);
     this.notify();
     const active = this.currentSession.activeTurn;
-    const activeStart = active?.sourceFragments[0]?.startMs;
+    const activeStart = earliestFragmentStart(active?.sourceFragments);
     const currentSide = fragment.startMs === undefined || activeStart === undefined || fragment.startMs >= activeStart
       ? active?.speaker : undefined;
     this.routeSource(this.sourceRouter.push(fragment, this.languages, currentSide, currentSide ? active?.originalText : undefined));
@@ -1402,9 +1402,9 @@ export class SessionController {
   private findSourceTarget(fragment: TranscriptFragment, side?: Side): Turn | undefined {
     const neutral = !/\p{L}/u.test(fragment.text);
     if (fragment.startMs === undefined || (side === undefined && !neutral)) return undefined;
-    const sources = this.routingTurns().filter(turn => !turn.translationOnly && turn.sourceFragments[0]?.startMs !== undefined)
-      .sort((a, b) => a.sourceFragments[0]!.startMs! - b.sourceFragments[0]!.startMs!);
-    const preceding = sources.findLast(turn => turn.sourceFragments[0]!.startMs! <= fragment.startMs!);
+    const sources = this.routingTurns().filter(turn => !turn.translationOnly && earliestFragmentStart(turn.sourceFragments) !== undefined)
+      .sort((a, b) => earliestFragmentStart(a.sourceFragments)! - earliestFragmentStart(b.sourceFragments)!);
+    const preceding = sources.findLast(turn => earliestFragmentStart(turn.sourceFragments)! <= fragment.startMs!);
     if (neutral) {
       // Neutral packets cannot inherit language from later buffered speech.
       // Only known source timing can establish historical ownership; a new or
@@ -1427,17 +1427,17 @@ export class SessionController {
         (preceding.sourceEndMs === undefined || fragment.startMs < preceding.sourceEndMs)) return preceding;
     // The first packet is not necessarily the opening. An earlier packet in the next
     // speaker's language extends that source, rather than contaminating the preceding one.
-    const following = sources.find(turn => turn.sourceFragments[0]!.startMs! > fragment.startMs!);
+    const following = sources.find(turn => earliestFragmentStart(turn.sourceFragments)! > fragment.startMs!);
     return following?.speaker === side ? following : undefined;
   }
 
   private extendSourceOpening(target: Turn, fragment: TranscriptFragment): void {
-    const start = target.sourceFragments[0]?.startMs;
+    const start = earliestFragmentStart(target.sourceFragments);
     if (fragment.startMs === undefined || start === undefined || fragment.startMs >= start) return;
     const preceding = this.routingTurns().filter(turn => !turn.translationOnly && turn.id !== target.id &&
-      turn.sourceFragments[0]?.startMs !== undefined && turn.sourceFragments[0].startMs < start)
-      .sort((a, b) => b.sourceFragments[0]!.startMs! - a.sourceFragments[0]!.startMs!)[0];
-    if (preceding && preceding.sourceFragments[0]!.startMs! < fragment.startMs) {
+      earliestFragmentStart(turn.sourceFragments) !== undefined && earliestFragmentStart(turn.sourceFragments)! < start)
+      .sort((a, b) => earliestFragmentStart(b.sourceFragments)! - earliestFragmentStart(a.sourceFragments)!)[0];
+    if (preceding && earliestFragmentStart(preceding.sourceFragments)! < fragment.startMs) {
       this.dispatch({ type: "SOURCE_BOUNDARY", turnId: preceding.id, endMs: fragment.startMs });
     }
   }
@@ -1446,7 +1446,7 @@ export class SessionController {
     if (fragment.startMs === undefined) return;
     const previous = this.routingTurns().filter(turn => !turn.translationOnly && turn.sourceEndMs === undefined &&
       turn.sourceFragments.some(part => part.startMs !== undefined && part.startMs < fragment.startMs!))
-      .sort((a, b) => (b.sourceFragments[0]?.startMs ?? 0) - (a.sourceFragments[0]?.startMs ?? 0))[0];
+      .sort((a, b) => (earliestFragmentStart(b.sourceFragments) ?? 0) - (earliestFragmentStart(a.sourceFragments) ?? 0))[0];
     if (previous) this.dispatch({ type: "SOURCE_BOUNDARY", turnId: previous.id, endMs: fragment.startMs });
   }
 
@@ -1458,7 +1458,15 @@ export class SessionController {
     this.notify();
     if (!this.outputRouter.hasPending && /^[\p{P}\s]+$/u.test(fragment.text)) {
       this.routeOutput([{ side: undefined, fragments: [fragment] }]);
-    } else this.routeOutput(this.outputRouter.push(fragment, this.languages, this.lastOutputSide));
+    } else {
+      const continuation = this.outputTurnId ? findSessionTurn(this.currentSession, this.outputTurnId) : undefined;
+      const start = earliestFragmentStart(continuation?.outputFragments);
+      // Retired output and older packets cannot supply context for a new translation.
+      const hasContext = continuation && !["completed", "failed", "discarded"].includes(continuation.status) &&
+        (fragment.startMs === undefined || start === undefined || fragment.startMs >= start);
+      const side = hasContext ? (continuation.speaker === "A" ? "B" : continuation.speaker === "B" ? "A" : undefined) : undefined;
+      this.routeOutput(this.outputRouter.push(fragment, this.languages, side, hasContext ? continuation.translatedText : undefined));
+    }
     const generation = this.sessionGeneration;
     const epoch = this.lifecycleEpoch;
     if (this.outputFragmentTimer !== null) window.clearTimeout(this.outputFragmentTimer);
