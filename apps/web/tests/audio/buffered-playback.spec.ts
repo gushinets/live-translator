@@ -78,3 +78,27 @@ test("mode switch works by keyboard and stays beside End on a narrow phone", asy
   await toggle.click();
   await page.screenshot({ path: testInfo.outputPath("non-interrupting-switch.png") });
 });
+
+
+test("real WebRTC receiver decodes through the worklet in both playback modes", async ({ page }) => {
+  await page.evaluate(() => window.audioHarness.useWebRtc());
+  // As in a real translation, source speech precedes the generated reply.
+  await page.evaluate(() => { window.audioHarness.mic.gain.value = .2; });
+  await page.waitForTimeout(350);
+  await page.evaluate(() => { window.audioHarness.remote.gain.value = .1; });
+  await expect.poll(() => page.evaluate(() => window.audioHarness.readRms()), { intervals: [50] }).toBeGreaterThan(.02);
+  expect(await page.evaluate(() => window.audioHarness.receivedSamples())).toBeGreaterThan(0);
+  await page.evaluate(() => {
+    window.audioHarness.controller.setNonInterrupting(true);
+    window.audioHarness.mic.gain.value = .2;
+  });
+  await page.waitForTimeout(1000);
+  expect(await page.evaluate(() => window.audioHarness.readRms())).toBeLessThan(.001);
+  expect(await page.evaluate(() => window.audioHarness.controller.hasPendingPlayback)).toBe(true);
+  await page.evaluate(() => {
+    window.audioHarness.remote.gain.value = 0;
+    window.audioHarness.mic.gain.value = 0;
+  });
+  await expect.poll(() => page.evaluate(() => window.audioHarness.readRms()), { intervals: [20] }).toBeGreaterThan(.02);
+  expect(await page.evaluate(() => window.audioHarness.errors)).toBe(0);
+});

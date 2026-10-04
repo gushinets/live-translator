@@ -56,3 +56,12 @@ Follow AGENTS.md readiness/cache checks. Test a long utterance with breaths, con
 both language directions, repeated mode toggles, and background/return.
 After PR #32 is merged, update this branch from main, resolve SessionController/test conflicts, rerun unit and browser tests,
 then repeat the phone test before opening the new PR.
+
+
+## Phone follow-up: WebRTC decoder activation
+- User reported complete silence in both modes. On the actual phone, the output element was playing/unmuted, AudioContext was running, and RTP packets arrived, but totalSamplesReceived and jitterBufferEmittedCount stayed zero.
+- A temporary muted audio element attached to the original receiver track immediately started decoding (91,200 samples after 1.5 seconds); the user confirmed sound returned. The active conversation was not reloaded or ended.
+- Permanent fix keeps a separate always-muted, zero-volume element playing the original WebRTC stream while the existing audible element plays processed PCM. The decoder is released on stream replacement/disposal and remains active during Gate C closure for leftover-audio analysis.
+- Added a real RTCPeerConnection loopback regression: before the fix its processed output RMS remained zero; after the fix decoding, default streaming, buffering and release pass. Previous oscillator-only tests did not exercise Chromium's remote receiver decoder activation.
+- Verification: 1200 tests in 58 files passed, all 4 Chromium audio/browser tests passed, TypeScript, ESLint and production build passed. Logs: .data/decoder-all-tests.log, .data/webrtc-decoder-red.log, .data/webrtc-decoder-green.log, .data/decoder-types.log, .data/decoder-lint.log, .data/decoder-build.log.
+- Production preview now serves index-CQ0tDTMC.js. The current phone conversation still uses the temporary live diagnostic fix; reload after ending the conversation to load the permanent fix. The user was still listening with non-interrupting mode enabled at the final check, so no reload was forced.

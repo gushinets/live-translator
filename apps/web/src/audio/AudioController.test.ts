@@ -430,6 +430,11 @@ describe("AudioController", () => {
 });
 
 describe("buffered audio output", () => {
+  beforeEach(() => {
+    vi.spyOn(HTMLMediaElement.prototype, "play").mockResolvedValue(undefined);
+    vi.spyOn(HTMLMediaElement.prototype, "pause").mockImplementation(() => {});
+  });
+  afterEach(() => { vi.restoreAllMocks(); });
   function setup() {
     const context = new FakeAudioContext();
     const destinationStream = fakeStream(new FakeAudioTrack());
@@ -467,6 +472,34 @@ describe("buffered audio output", () => {
     expect(element.muted).toBe(false);
     expect(nodes[0]?.port.postMessage).toHaveBeenCalledWith({ type: "enabled", value: true });
     controller.dispose();
+  });
+  it("keeps the original WebRTC decoder silent and releases it on replacement and disposal", async () => {
+    const { controller, element } = setup();
+    await controller.primeOutput();
+    const remoteTrack = new FakeAudioTrack();
+    const remote = fakeStream(remoteTrack);
+    controller.attachRemoteStream(remote);
+    await controller.primeOutput();
+    const decoder = vi.mocked(HTMLMediaElement.prototype.play).mock.contexts[0] as HTMLMediaElement;
+    expect(decoder).not.toBe(element);
+    expect(decoder.srcObject).toBe(remote);
+    expect(decoder.muted).toBe(true);
+    expect(decoder.volume).toBe(0);
+    controller.setOutputAudible(true);
+    controller.setNonInterrupting(true);
+    controller.setNonInterrupting(false);
+    expect(decoder.muted).toBe(true);
+    controller.setOutputAudible(false);
+    expect(decoder.srcObject).toBe(remote); // still decode for lifecycle draining
+    controller.attachRemoteStream(fakeStream(new FakeAudioTrack()));
+    expect(decoder.srcObject).toBeNull();
+    expect(HTMLMediaElement.prototype.pause).toHaveBeenCalledOnce();
+    expect(remoteTrack.stop).not.toHaveBeenCalled();
+    await controller.primeOutput();
+    const replacement = vi.mocked(HTMLMediaElement.prototype.play).mock.contexts[1] as HTMLMediaElement;
+    controller.dispose();
+    expect(replacement.srcObject).toBeNull();
+    expect(HTMLMediaElement.prototype.pause).toHaveBeenCalledTimes(2);
   });
   it("clears the queue on gate closure and ignores a retired stream's messages", async () => {
     const { controller, nodes } = setup();

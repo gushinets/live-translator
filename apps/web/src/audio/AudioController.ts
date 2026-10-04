@@ -103,6 +103,7 @@ export class AudioController {
   private workletReady = false;
   private playbackNode: AudioWorkletNode | null = null;
   private playbackDestination: MediaStreamAudioDestinationNode | null = null;
+  private remoteDecoder: HTMLAudioElement | null = null;
   private queuedPlayback = false;
   private nonInterrupting = false;
   private sourceSpeaking = false;
@@ -311,6 +312,11 @@ export class AudioController {
   }
 
   private releasePlayback(): void {
+    if (this.remoteDecoder) {
+      this.remoteDecoder.pause();
+      this.remoteDecoder.srcObject = null;
+      this.remoteDecoder = null;
+    }
     if (this.playbackNode) {
       this.playbackNode.port.onmessage = null;
       this.playbackNode.onprocessorerror = null;
@@ -324,7 +330,7 @@ export class AudioController {
     this.lastSourceSpeaking = null;
   }
 
-  private connectPlayback(context: AudioContext): void {
+  private connectPlayback(context: AudioContext, remoteStream: MediaStream): void {
     const node = this.createPlaybackNode(context);
     this.playbackNode = node;
     this.playbackDestination = context.createMediaStreamDestination();
@@ -346,6 +352,13 @@ export class AudioController {
     this.playedAnalyser = context.createAnalyser();
     node.connect(this.playedAnalyser);
     node.connect(this.playbackDestination);
+    // Chrome does not pull/decode remote WebRTC audio through the cloned Web Audio
+    // source alone. Keep the original stream playing silently; only queued PCM is audible.
+    this.remoteDecoder = document.createElement("audio");
+    this.remoteDecoder.muted = this.remoteDecoder.defaultMuted = true;
+    this.remoteDecoder.volume = 0;
+    this.remoteDecoder.autoplay = true;
+    this.remoteDecoder.srcObject = remoteStream;
     this.audioElement.srcObject = this.playbackDestination.stream;
   }
 
@@ -361,7 +374,7 @@ export class AudioController {
     this.remoteAnalyser = context.createAnalyser();
     this.remoteSource.connect(this.remoteAnalyser);
     if (this.workletReady) {
-      try { this.connectPlayback(context); }
+      try { this.connectPlayback(context, stream); }
       catch {
         this.releasePlayback();
         // A selected non-interrupting mode must never silently become direct playback.
@@ -383,6 +396,10 @@ export class AudioController {
     const context = this.ensureAudioContext();
     await context.resume();
     await this.preparePlayback();
+    if (this.remoteDecoder) {
+      if (this.remoteDecoder.error !== null) this.remoteDecoder.load();
+      await this.remoteDecoder.play();
+    }
     if (this.audioElement.srcObject !== null) {
       if (this.audioElement.error !== null) this.audioElement.load();
       await this.audioElement.play();

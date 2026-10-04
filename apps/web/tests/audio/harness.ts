@@ -8,6 +8,7 @@ declare global {
   interface Window { audioHarness: {
     controller: AudioController; context: AudioContext; mic: GainNode; remote: GainNode;
     readRms(): number; errors: number; replaceRemote(): void;
+    useWebRtc(): Promise<void>; receivedSamples(): Promise<number>;
   }; }
 }
 document.querySelector("#start")!.addEventListener("click", async () => {
@@ -39,11 +40,44 @@ document.querySelector("#start")!.addEventListener("click", async () => {
   }
   connectMeter();
   const samples = new Float32Array(analyser.fftSize);
+  let rtcReceiver: RTCPeerConnection | null = null;
+  const rtcPeers: RTCPeerConnection[] = [];
+  window.addEventListener("pagehide", () => { for (const peer of rtcPeers) peer.close(); });
   window.audioHarness = {
     controller, context, mic, remote, errors: 0,
     readRms() {
       analyser.getFloatTimeDomainData(samples);
       return Math.sqrt(samples.reduce((sum, x) => sum + x * x, 0) / samples.length);
+    },
+    async useWebRtc() {
+      const sender = new RTCPeerConnection();
+      const receiver = new RTCPeerConnection();
+      rtcPeers.push(sender, receiver);
+      rtcReceiver = receiver;
+      const received = new Promise<MediaStream>(resolve => {
+        receiver.ontrack = event => resolve(new MediaStream([event.track]));
+      });
+      for (const track of remoteStream.stream.getTracks()) sender.addTrack(track, remoteStream.stream);
+      async function gather(peer: RTCPeerConnection, description: RTCSessionDescriptionInit) {
+        await peer.setLocalDescription(description);
+        if (peer.iceGatheringState !== "complete") await new Promise<void>(resolve => {
+          peer.addEventListener("icegatheringstatechange", () => {
+            if (peer.iceGatheringState === "complete") resolve();
+          });
+        });
+        return peer.localDescription!;
+      }
+      await receiver.setRemoteDescription(await gather(sender, await sender.createOffer()));
+      await sender.setRemoteDescription(await gather(receiver, await receiver.createAnswer()));
+      controller.attachRemoteStream(await received);
+      connectMeter();
+      await controller.primeOutput();
+    },
+    async receivedSamples() {
+      const stats = await rtcReceiver!.getStats();
+      let samples = 0;
+      stats.forEach(report => { if (report.type === "inbound-rtp" && report.kind === "audio") samples += report.totalSamplesReceived ?? 0; });
+      return samples;
     },
     replaceRemote() {
       controller.attachRemoteStream(remoteStream.stream);
