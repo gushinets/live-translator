@@ -26,8 +26,8 @@ Interface: `DialogueTranscript.push(kind, fragment, languages)`, `.blocks`, `.se
 - [x] Write courier/packet-invariance and UI tests; run and observe RED.
 - [x] Implement assembly, lifecycle attachment and renderer; run targeted tests GREEN.
 - [x] Run whole unit suite, typecheck/lint, browser regression plus prototype replay.
-- [ ] Fresh review, fix material defects, build and verify actual USB phone setup.
-- [ ] Record limitations and evidence; leave prototype reviewable on existing feature branch.
+- [x] Fresh review, fix material defects, build and verify actual USB phone setup.
+- [x] Record limitations and evidence; leave prototype reviewable on existing feature branch.
 
 ## Execution ledger
 - Existing feature branch `codex/mobile-qa-regression-fixes`, baseline `b14da47`; tracked tree clean. Work in the existing checkout under the user's autonomous authorization. Avoid recreating/archive operations that previously damaged shared dependency junctions.
@@ -39,4 +39,4 @@ Interface: `DialogueTranscript.push(kind, fragment, languages)`, `.blocks`, `.se
 - Performance: 400 alternating sentences / 3800 five-character packets: last-100 push median 1.296ms, p95 1.519ms on this computer, excluding React. Full active-stream reparsing remains a bounded-prototype limitation; the legacy mode no longer assembles this history.
 - Evidence: `output/caption-blocks-prototype-2026-10-04/` contains full logs, benchmark JSON and inspected Chromium/WebKit screenshots of the synthetic courier replay. No claim that the replay is the original phone event trace.
 - Local readiness: API health 200; preview policy 200 with usage ledger/recovery enabled and creation allowed. Read-only OpenAI SDK models.list outside sandbox, existing runtime/.env: HTTP 200 and gpt-live-1 visible. No paid session created.
-- Phone verification pending: Pixel 7a connected, USB reverse intact; device locked, local Chrome hidden, CDP screenshot times out. Requested physical unlock. Selected local tab 15424; current phone still has old assets before explicit refresh.
+- Phone verification completed after user unlocked Pixel 7a: local tab 15424 at `http://localhost:5173/?captions=blocks`, correct styled setup, enabled Start, secure microphone context, API policy 200. Cache Storage and registrations cleared only for this origin; cookies/localStorage/IndexedDB preserved. Initial re-registration left the precache empty; forced a fresh worker install via a temporary script query, then restored `/sw.js`. Verified its activated state and SHA256 against dist, plus loaded and precached `index-lsXeUa6j.js` / `index-CXcB9WCT.css`. Inspected actual phone screenshot. Evidence: `output/caption-blocks-prototype-2026-10-04/phone-ready.json` and `phone-ready.png`. OpenAI read-only check repeated: HTTP 200, gpt-live-1 visible; live speech remains for the user.
