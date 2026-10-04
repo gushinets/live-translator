@@ -7,7 +7,7 @@ test("courier dialogue retains originals, translations and split names across ca
     localStorage.setItem("live-translator-owner-language", "ru");
     localStorage.setItem("live-translator-interlocutor-language", "en");
   });
-  await page.goto("/?captions=blocks");
+  await page.goto("/");
   await page.getByRole("button", { name: "Начать перевод", exact: true }).click();
   await expect(page.getByRole("button", { name: "Завершить", exact: true })).toBeVisible();
   const startup = await harness.sentClientEvents();
@@ -46,20 +46,20 @@ test("courier dialogue retains originals, translations and split names across ca
   await page.screenshot({ path: testInfo.outputPath("courier-caption-blocks.png") });
 });
 
-test("unknown text is retained once outside both panes and resolves in place", async ({ page }) => {
+test("unknown text stays hidden until its complete phrase resolves", async ({ page }) => {
   const harness = await MockLiveHarness.attach(page);
   await page.addInitScript(() => {
     localStorage.setItem("live-translator-owner-language", "ru");
     localStorage.setItem("live-translator-interlocutor-language", "en");
   });
-  await page.goto("/?captions=blocks");
+  await page.goto("/");
   await page.getByRole("button", { name: "Начать перевод", exact: true }).click();
   await expect(page.getByRole("button", { name: "Завершить", exact: true })).toBeVisible();
   await harness.outputDelta("OK");
   await harness.advance(900);
   await expect(page.locator(".participant-pane li")).toHaveCount(0);
-  await page.getByText("Текст без определённого языка (1)", { exact: true }).click();
-  await expect(page.getByText("OK", { exact: true })).toBeVisible();
+  await expect(page.locator(".unassigned-captions")).toHaveCount(0);
+  await expect(page.getByText("OK", { exact: true })).toHaveCount(0);
   await harness.outputDelta(", I can check that for you.");
   await expect(page.locator(".unassigned-captions")).toHaveCount(0);
   await expect(page.getByTestId("participant-pane-B").locator("li")).toHaveText("Him: OK, I can check that for you.");

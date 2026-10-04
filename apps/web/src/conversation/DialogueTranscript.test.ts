@@ -72,6 +72,18 @@ describe("independent dialogue captions", () => {
     expect(content(transcript)).toEqual([{ kind: "output", side: "A", text: "Посылка для Михаила Гушина, 12." }]);
   });
 
+  it("does not let a preceding packet's trailing whitespace backdate the next language run", () => {
+    const transcript = new DialogueTranscript();
+    const languages = { A: "en", B: "es" };
+    transcript.push("input", fragment("Where is the train station? ", 1), languages);
+    transcript.push("output", fragment("¿Dónde está la estación de tren? ", 2), languages);
+    transcript.push("input", fragment("¿Podría decirme dónde está la estación de tren?", 3), languages);
+    transcript.push("output", fragment("Could you tell me where the train station is?", 4), languages);
+    expect(transcript.blocks.map(block => [block.kind, block.side, block.receivedAtMs])).toEqual([
+      ["input", "A", 1], ["output", "B", 2], ["input", "B", 3], ["output", "A", 4],
+    ]);
+  });
+
   it("preserves source timestamp order across language runs while merging delayed output", () => {
     const transcript = new DialogueTranscript();
     transcript.push("input", { ...fragment("Спасибо за помощь.", 1), startMs: 20 }, pair);

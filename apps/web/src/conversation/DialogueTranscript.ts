@@ -48,7 +48,9 @@ export class DialogueTranscript {
     stream.blocks = runs.map(run => {
       const start = offset;
       offset += run.text.length;
-      while (bounds[fragmentIndex] && bounds[fragmentIndex]!.end <= start) fragmentIndex++;
+      // A leading space may belong to the previous packet, before this phrase existed.
+      const contentStart = start + Math.max(0, run.text.search(/\S/u));
+      while (bounds[fragmentIndex] && bounds[fragmentIndex]!.end <= contentStart) fragmentIndex++;
       let receivedAtMs = Infinity;
       for (let index = fragmentIndex; bounds[index] && bounds[index]!.start < offset; index++) {
         receivedAtMs = Math.min(receivedAtMs, bounds[index]!.receivedAtMs);

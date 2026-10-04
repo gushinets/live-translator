@@ -4077,7 +4077,7 @@ describe("open-input interpretation", () => {
   }
 
   it("keeps independent display captions across service completion and clears them on cancellation", async () => {
-    window.history.replaceState({}, "", "/?captions=blocks");
+    window.history.replaceState({}, "", "/");
     const { controller, live, audio } = await startRussianEnglish();
     emitVoice(audio, true);
     live.emit({ type: "session.input_transcript.delta", delta: "Да, у вас посылка для меня?" });
@@ -4095,11 +4095,11 @@ describe("open-input interpretation", () => {
     window.history.replaceState({}, "", "/");
   });
 
-  it("does not assemble the experimental history in the legacy comparison mode", async () => {
+  it("collects dialogue captions at the normal URL without opting in", async () => {
     const { controller, live, audio } = await startRussianEnglish();
     emitVoice(audio, true);
     live.emit({ type: "session.input_transcript.delta", delta: "Здравствуйте, я хочу получить посылку." });
-    expect(controller.captionBlocks).toEqual([]);
+    expect(controller.captionBlocks).toMatchObject([{ kind: "input", side: "A", text: "Здравствуйте, я хочу получить посылку." }]);
   });
 
   it("seals caption context and retains real interruption guidance after orientation recovery", async () => {

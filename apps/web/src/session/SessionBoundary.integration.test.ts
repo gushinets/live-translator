@@ -321,7 +321,7 @@ describe("stage 4 transport/accounting integration", () => {
     channel.emit({ type: "session.output_transcript.delta", delta: "Wo ist das nächste Hotel?" });
     cleanup();
     render(jsx(ConversationScreen, { controller: f.controller }));
-    expect(screen.getByTestId("current-primary-B")).toHaveAttribute("lang", "de");
+    expect(screen.getByText("Wo ist das nächste Hotel?")).toHaveAttribute("lang", "de");
     expect(screen.getByText("¿Dónde está la estación de tren?")).toHaveAttribute("lang", "es");
     const ending = f.controller.endConversation();
     channel.emit({ type: "session.closed" });

@@ -128,7 +128,6 @@ export class SessionController {
   private readonly sourceRouter = new TranscriptRouter();
   private readonly outputRouter = new TranscriptRouter();
   private readonly dialogueTranscript = new DialogueTranscript();
-  private readonly captionsEnabled = new URLSearchParams(window.location.search).get("captions") === "blocks";
   get captionBlocks() { return this.dialogueTranscript.blocks; }
   private sourceFragmentTimer: number | null = null;
   private outputFragmentTimer: number | null = null;
@@ -1324,10 +1323,8 @@ export class SessionController {
   private handleConversationInputDelta(event: TranscriptDeltaEvent): void {
     if (!event.delta || !["listening", "outputting"].includes(this.currentSession.state) || this.turnClosing) return;
     const fragment = createTranscriptFragment({ text: event.delta, nowMs: Date.now(), startMs: event.start_ms, endMs: event.end_ms });
-    if (this.captionsEnabled) {
-      this.dialogueTranscript.push("input", fragment, this.languages);
-      this.notify();
-    }
+    this.dialogueTranscript.push("input", fragment, this.languages);
+    this.notify();
     const active = this.currentSession.activeTurn;
     const activeStart = active?.sourceFragments[0]?.startMs;
     const currentSide = fragment.startMs === undefined || activeStart === undefined || fragment.startMs >= activeStart
@@ -1433,10 +1430,8 @@ export class SessionController {
     if (!event.delta || !["listening", "outputting"].includes(this.currentSession.state)) return;
     if (this.leftoverOutputDraining) { this.noteLeftoverCaption(); return; }
     const fragment = createTranscriptFragment({ text: event.delta, nowMs: Date.now(), startMs: event.start_ms, endMs: event.end_ms });
-    if (this.captionsEnabled) {
-      this.dialogueTranscript.push("output", fragment, this.languages);
-      this.notify();
-    }
+    this.dialogueTranscript.push("output", fragment, this.languages);
+    this.notify();
     if (!this.outputRouter.hasPending && /^[\p{P}\s]+$/u.test(fragment.text)) {
       this.routeOutput([{ side: undefined, fragments: [fragment] }]);
     } else this.routeOutput(this.outputRouter.push(fragment, this.languages, this.lastOutputSide));

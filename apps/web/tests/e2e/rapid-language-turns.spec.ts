@@ -23,14 +23,14 @@ test("a rapid B reply retains A's late translation and both relative authors", a
   await harness.inputDelta("The station is straight ahead.", 1100, 1600);
   const a = page.getByTestId("participant-pane-A");
   const b = page.getByTestId("participant-pane-B");
-  await expect(b.getByTestId("current-primary-B")).toHaveText("The station is straight ahead.");
-  await expect(b.getByTestId("current-author-B")).toHaveText("Me:");
+  await expect(b.locator(".recent-turn-primary").last()).toHaveText("The station is straight ahead.");
+  await expect(b.locator(".turn-author").last()).toHaveText("Me:");
   await expect(a.locator("li")).toHaveText("Я: Подскажите, где находится вокзал?");
   await harness.outputDelta("Where is the train station?");
-  await expect(b.locator("li")).toHaveText("Him: Where is the train station?");
+  await expect(b.locator("li")).toHaveText(["Me: The station is straight ahead.", "Him: Where is the train station?"]);
   await harness.outputDelta("Вокзал находится прямо впереди.");
-  await expect(a.getByTestId("current-primary-A")).toHaveText("Вокзал находится прямо впереди.");
-  await expect(a.getByTestId("current-author-A")).toHaveText("Он:");
+  await expect(a.locator(".recent-turn-primary").last()).toHaveText("Вокзал находится прямо впереди.");
+  await expect(a.locator(".turn-author").last()).toHaveText("Он:");
   expect(await harness.sentClientEvents()).toEqual(startupEvents);
   await page.screenshot({ path: testInfo.outputPath("rapid-reply-late-translation.png") });
 });
@@ -40,9 +40,9 @@ test("partial words stay separate until the new speaker's language resolves", as
   await harness.sourceActive();
   await harness.inputDelta("Подскажите, где находится вокзал?", 0, 1000);
   await harness.inputDelta("The", 1100, 1150);
-  await expect(page.getByTestId("current-primary-A")).toHaveText("Подскажите, где находится вокзал?");
+  await expect(page.getByTestId("participant-pane-A").locator(".recent-turn-primary").last()).toHaveText("Подскажите, где находится вокзал?");
   await harness.inputDelta(" station is straight ahead.", 1150, 1600);
-  await expect(page.getByTestId("current-primary-B")).toHaveText("The station is straight ahead.");
+  await expect(page.getByTestId("participant-pane-B").locator(".recent-turn-primary").last()).toHaveText("The station is straight ahead.");
   await expect(page.getByTestId("participant-pane-A").locator("li")).toHaveText("Я: Подскажите, где находится вокзал?");
 });
 
@@ -52,15 +52,15 @@ test("an idle timer cannot turn an unfinished English word into a Spanish author
   await harness.inputDelta("Where is the nearest station?");
   await harness.inputDelta(" Thank y");
   await harness.advance(runtime.captionIdleMs);
-  await expect(page.getByTestId("current-primary-A")).toHaveText("Where is the nearest station?");
-  await expect(page.locator(".recent-turn")).toHaveCount(0);
+  await expect(page.getByTestId("participant-pane-A").locator(".recent-turn-primary").last()).toHaveText("Where is the nearest station?");
+  await expect(page.locator(".recent-turn")).toHaveCount(1);
   await harness.inputDelta("ou very much.");
-  await expect(page.getByTestId("current-primary-A")).toHaveText("Where is the nearest station? Thank you very much.");
-  await expect(page.getByTestId("current-author-A")).toHaveText("Me:");
-  await expect(page.locator(".recent-turn")).toHaveCount(0);
+  await expect(page.getByTestId("participant-pane-A").locator(".recent-turn-primary").last()).toHaveText("Where is the nearest station? Thank you very much.");
+  await expect(page.getByTestId("participant-pane-A").locator(".turn-author").last()).toHaveText("Me:");
+  await expect(page.locator(".recent-turn")).toHaveCount(1);
 });
 
-test("unidentified translation captions remain visible without acquiring the current source author", async ({ page }) => {
+test("unidentified translation captions stay hidden without acquiring the current source author", async ({ page }) => {
   const harness = await startRussianEnglish(page);
   await harness.sourceActive();
   await harness.inputDelta("Подскажите, где находится вокзал?");
@@ -69,15 +69,15 @@ test("unidentified translation captions remain visible without acquiring the cur
   await harness.advance(runtime.captionIdleMs);
   for (const side of ["A", "B"]) {
     const caption = page.getByTestId(`participant-pane-${side}`).locator("li").filter({ hasText: "OK" });
-    await expect(caption).toHaveText("OK");
+    await expect(caption).toHaveCount(0);
     await expect(caption.locator(".turn-author")).toHaveCount(0);
   }
-  await expect(page.getByTestId("current-primary-A")).toHaveText("Подскажите, где находится вокзал?");
-  await expect(page.getByTestId("current-primary-B")).toHaveCount(0);
+  await expect(page.getByTestId("participant-pane-A").locator(".recent-turn-primary").last()).toHaveText("Подскажите, где находится вокзал?");
+  await expect(page.getByTestId("participant-pane-B").locator(".recent-turn-primary").last()).toHaveCount(0);
   expect(await harness.lastGateBCommand()).toBe("unmute");
 });
 
-test("a queued language replacement retains undecidable speech before switching the model pair", async ({ page }) => {
+test("a queued language replacement keeps unresolved text hidden and preserves identified history", async ({ page }) => {
   const harness = await startRussianEnglish(page, { A: "en", B: "es" });
   await harness.sourceActive();
   await harness.inputDelta("Where is the nearest station?");
@@ -93,9 +93,10 @@ test("a queued language replacement retains undecidable speech before switching 
   await expect(page.getByTestId("participant-pane-B")).toHaveAttribute("lang", "de");
   for (const side of ["A", "B"]) {
     const caption = page.getByTestId(`participant-pane-${side}`).getByText("Thank y", { exact: true });
-    await expect(caption).toBeVisible();
+    await expect(caption).toHaveCount(0);
     await expect(caption.locator("..").locator(".turn-author")).toHaveCount(0);
   }
+  await expect(page.getByText("¿Dónde está la estación de tren, por favor?", { exact: true })).toHaveAttribute("lang", "es");
 });
 
 test("same-speaker continuation stays in the original source across a short pause", async ({ page }) => {
@@ -106,8 +107,8 @@ test("same-speaker continuation stays in the original source across a short paus
   await harness.advance(300);
   await harness.sourceActive();
   await harness.inputDelta(" Я хочу дойти туда пешком.");
-  await expect(page.getByTestId("current-primary-A")).toHaveText("Подскажите, где находится вокзал? Я хочу дойти туда пешком.");
-  await expect(page.locator(".recent-turn")).toHaveCount(0);
+  await expect(page.getByTestId("participant-pane-A").locator(".recent-turn-primary").last()).toHaveText("Подскажите, где находится вокзал? Я хочу дойти туда пешком.");
+  await expect(page.locator(".recent-turn")).toHaveCount(1);
   expect(await harness.lastGateBCommand()).toBe("unmute");
 });
 
@@ -125,7 +126,7 @@ test("ambiguous A-B-A output stays an independent authored block after source ti
   await expect(b.getByText("Thank you, I will walk there.").locator("..")).toContainText("Him:");
   await expect(a.getByText("Thank you, I will walk there.")).toHaveCount(0);
   await expect(a.locator("li")).toHaveCount(2);
-  await expect(b.locator("li")).toHaveCount(3);
+  await expect(b.locator("li")).toHaveCount(2);
   await harness.sourceQuiet();
   await harness.advance(runtime.noOutputTimeoutMs + runtime.captionIdleMs);
   await expect(b.getByText("Thank you, I will walk there.")).toBeVisible();

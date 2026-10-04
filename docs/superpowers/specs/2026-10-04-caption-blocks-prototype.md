@@ -1,5 +1,8 @@
 # Independent dialogue captions: bounded phone prototype
 
+> Follow-up (2026-10-04): the user accepted the phone-tested mode as the default. The [default-caption plan](../plans/2026-10-04-default-dialogue-captions.md) supersedes the opt-in URL and unresolved-text disclosure below: all URLs use caption blocks, unresolved text stays buffered internally and is hidden until its language resolves. The remaining prototype evidence and limitations below are historical context.
+
+
 The user's phone test found good translated audio but broken captions: tiny suffixes on both panes, split names, and unrelated waiting/repeat rows. Both own speech and translated partner speech must remain visible.
 
 Prototype scope: an opt-in `?captions=blocks` view on the existing product screen. Assemble input and output transcript streams independently of service `Turn` objects. Keep transport, model instructions, interruption, accounting and recovery unchanged. Do not promise exact input/output alignment without provider correlation IDs.
