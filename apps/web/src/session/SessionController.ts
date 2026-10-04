@@ -134,6 +134,7 @@ export class SessionController {
   private lastOutputSide: Side | undefined;
   private readonly routingTurnIds = new Set<string>();
   private sourceVoiceActive: boolean | undefined;
+  private resumedSourceIdle: { turnId: string; atMs: number; endMs?: number } | undefined;
   private remotePlaybackGeneration = 0;
   private remotePlaybackState: RemotePlaybackState = "ready";
   private remotePlaybackWork: Promise<void> | null = null;
@@ -614,7 +615,7 @@ export class SessionController {
       this.notify();
       return;
     }
-    if (this.currentSession.activeTurn || this.currentSession.pendingTurns?.length || this.turnClosing ||
+    if (this.currentSession.activeTurn || this.currentSession.pendingTurns?.length || this.turnClosing || this.playbackActive ||
         this.sourceRouter.hasPending || this.outputRouter.hasPending) {
       this.pendingInterlocutorLanguage = language;
       this.notify();
@@ -1348,6 +1349,10 @@ export class SessionController {
       if (!first) continue;
       const historical = this.findSourceTarget(first, side);
       if (historical) {
+        if (historical.id === this.currentSession.activeTurn?.id &&
+            (this.resumedSourceIdle?.endMs === undefined || first.startMs === undefined || first.startMs > this.resumedSourceIdle.endMs)) {
+          this.resumedSourceIdle = undefined;
+        }
         this.extendSourceOpening(historical, first);
         for (const fragment of fragments) this.dispatch({ type: "SOURCE_TARGETED_FRAGMENT", turnId: historical.id, fragment });
         continue;
@@ -1366,13 +1371,16 @@ export class SessionController {
           sideSource: side ? "language" : "unresolved", fragment: first, languageRouted: true });
         this.armMaxSourceTimer();
         for (const fragment of fragments.slice(1)) this.dispatch({ type: "SOURCE_FRAGMENT", fragment, speaker: side, languageRouted: true });
-      } else if (active.speaker !== undefined && active.speaker !== side &&
+      } else if ((active.speaker !== undefined || active.originalText.length > 0) && active.speaker !== side &&
                  !(side === undefined && active.originalText === "" && active.sideSource === "translation")) {
         const id = crypto.randomUUID();
-        this.dispatch({ type: "SOURCE_HANDOFF", turnId: id, speaker: side, fragment: first, nowMs: Date.now(), languageRouted: true });
+        const previousIdleAtMs = this.resumedSourceIdle?.turnId === active.id ? this.resumedSourceIdle.atMs : undefined;
+        this.resumedSourceIdle = undefined;
+        this.dispatch({ type: "SOURCE_HANDOFF", turnId: id, speaker: side, fragment: first, nowMs: Date.now(), previousIdleAtMs, languageRouted: true });
         this.armMaxSourceTimer();
         for (const fragment of fragments.slice(1)) this.dispatch({ type: "SOURCE_FRAGMENT", fragment, speaker: side, languageRouted: true });
       } else {
+        this.resumedSourceIdle = undefined;
         for (const fragment of fragments) this.dispatch({ type: "SOURCE_FRAGMENT", fragment, speaker: side, languageRouted: true });
       }
       active = this.currentSession.activeTurn;
@@ -1399,6 +1407,15 @@ export class SessionController {
     const sources = this.routingTurns().filter(turn => !turn.translationOnly && turn.sourceFragments[0]?.startMs !== undefined)
       .sort((a, b) => a.sourceFragments[0]!.startMs! - b.sourceFragments[0]!.startMs!);
     const preceding = sources.findLast(turn => turn.sourceFragments[0]!.startMs! <= fragment.startMs!);
+    // A fresh VAD-created source must claim forward speech before a retired,
+    // open-ended interval can mistake it for a correction. Overlapping timestamps
+    // and intervals already bounded by another source still route historically.
+    const active = this.currentSession.activeTurn;
+    if (active && !active.sourceFragments.length && preceding && preceding.id !== active.id &&
+        ["completed", "failed"].includes(preceding.status) && preceding.sourceEndMs === undefined) {
+      const lastEnd = Math.max(...preceding.sourceFragments.map(part => part.endMs ?? part.startMs ?? -Infinity));
+      if (fragment.startMs > lastEnd) return undefined;
+    }
     if (preceding?.speaker === side &&
         (preceding.sourceEndMs === undefined || fragment.startMs < preceding.sourceEndMs)) return preceding;
     // The first packet is not necessarily the opening. An earlier packet in the next
@@ -1509,9 +1526,15 @@ export class SessionController {
         this.routingTurnIds.add(this.currentSession.activeTurn!.id);
         this.armMaxSourceTimer();
       } else {
+        if (active.sourceIdleAtMs !== undefined && this.resumedSourceIdle?.turnId !== active.id) {
+          const ends = active.sourceFragments.flatMap(part => part.endMs === undefined ? [] : [part.endMs]);
+          this.resumedSourceIdle = { turnId: active.id, atMs: active.sourceIdleAtMs,
+            endMs: ends.length ? Math.max(...ends) : undefined };
+        }
         this.dispatch({ type: "SOURCE_ACTIVE", turnId: active.id, speaker: active.speaker, sideSource: active.sideSource });
         if (active.sourceIdleAtMs !== undefined) this.armMaxSourceTimer();
       }
+      await this.considerTurnCompletion(Date.now());
       return;
     }
     if (!this.currentSession.activeTurn) return;
@@ -1555,6 +1578,13 @@ export class SessionController {
 
   private async considerTurnCompletion(nowMs: number): Promise<void> {
     if (this.turnClosing || !["listening", "outputting"].includes(this.currentSession.state)) return;
+    const playback = this.playbackTurnId ? findSessionTurn(this.currentSession, this.playbackTurnId) : undefined;
+    if (this.playbackActive && (!playback || ["completed", "failed", "discarded"].includes(playback.status))) {
+      // Audio before its caption is not silence. Wait for the idle edge rather
+      // than inventing an owner or closing text-only turns under playing audio.
+      this.clearCompletionTimer();
+      return;
+    }
     const turns = [...(this.currentSession.pendingTurns ?? []), ...(this.currentSession.activeTurn ? [this.currentSession.activeTurn] : [])];
     let retryAtMs: number | undefined;
     for (const turn of turns) {
@@ -1891,6 +1921,7 @@ export class SessionController {
     this.outputTurnId = undefined;
     this.lastOutputSide = undefined;
     this.sourceVoiceActive = undefined;
+    this.resumedSourceIdle = undefined;
   }
 
   private flushTranscriptBuffers(): void {

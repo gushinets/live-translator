@@ -65,3 +65,30 @@ test("unknown text stays hidden until its complete phrase resolves", async ({ pa
   await expect(page.getByTestId("participant-pane-B").locator("li")).toHaveText("Him: OK, I can check that for you.");
   await expect(page.getByTestId("participant-pane-A").locator("li")).toHaveCount(0);
 });
+
+test("numbers and embedded brands stay in the complete caption on its language pane", async ({ page }, testInfo) => {
+  const harness = await MockLiveHarness.attach(page);
+  await page.addInitScript(() => {
+    localStorage.setItem("live-translator-owner-language", "ru");
+    localStorage.setItem("live-translator-interlocutor-language", "en");
+  });
+  await page.goto("/");
+  await page.getByRole("button", { name: "Начать перевод", exact: true }).click();
+  await expect(page.getByRole("button", { name: "Завершить", exact: true })).toBeVisible();
+  const a = page.getByTestId("participant-pane-A"), b = page.getByTestId("participant-pane-B");
+  await harness.sourceActive();
+  await harness.inputDelta("12, ");
+  await expect(page.locator(".participant-pane li")).toHaveCount(0);
+  await harness.inputDelta("Я использую ");
+  await harness.inputDelta("Google");
+  await expect(b.locator("li")).toHaveCount(0);
+  await harness.inputDelta(" каждый день.");
+  await expect(a.locator("li")).toHaveText("Я: 12, Я использую Google каждый день.");
+  await harness.inputDelta("I also use OpenAI every day.");
+  await harness.outputDelta("Я тоже использую OpenAI каждый день.");
+  await expect(a.locator("li")).toHaveText([
+    "Я: 12, Я использую Google каждый день.", "Он: Я тоже использую OpenAI каждый день.",
+  ]);
+  await expect(b.locator("li")).toHaveText("Me: I also use OpenAI every day.");
+  await page.screenshot({ path: testInfo.outputPath("caption-prefix-and-brands.png") });
+});

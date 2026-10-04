@@ -34,7 +34,7 @@ export type SessionAction =
       languageRouted?: boolean;
     }
   | { type: "SOURCE_FRAGMENT"; fragment: TranscriptFragment; speaker?: Side; languageRouted?: boolean }
-  | { type: "SOURCE_HANDOFF"; turnId: string; speaker: Side | undefined; fragment?: TranscriptFragment; nowMs: number; languageRouted?: boolean }
+  | { type: "SOURCE_HANDOFF"; turnId: string; speaker: Side | undefined; fragment?: TranscriptFragment; nowMs: number; previousIdleAtMs?: number; languageRouted?: boolean }
   | { type: "SOURCE_TARGETED_FRAGMENT"; turnId: string; fragment: TranscriptFragment }
   | { type: "SOURCE_BOUNDARY"; turnId: string; endMs: number }
   | { type: "SOURCE_IDLE" }
@@ -315,7 +315,7 @@ export function sessionReducer(session: TranslationSession, action: SessionActio
       const pendingTurns = [...(session.pendingTurns ?? [])];
       const boundary = action.fragment?.startMs;
       const previousStart = previous?.sourceFragments[0]?.startMs;
-      if (previous) pendingTurns.push({ ...markSourceIdle(previous, previous.sourceIdleAtMs ?? action.nowMs),
+      if (previous) pendingTurns.push({ ...markSourceIdle(previous, action.previousIdleAtMs ?? previous.sourceIdleAtMs ?? action.nowMs),
         sourceEndMs: boundary !== undefined && (previousStart === undefined || boundary >= previousStart)
           ? boundary : previous.sourceEndMs });
       const next = handleSourceActive({ ...session, state: "listening", activeTurn: undefined, pendingTurns }, {

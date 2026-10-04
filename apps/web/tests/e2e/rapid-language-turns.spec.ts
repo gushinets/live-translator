@@ -134,3 +134,25 @@ test("ambiguous A-B-A output stays an independent authored block after source ti
   expect(await harness.lastGateBCommand()).toBe("unmute");
   await page.screenshot({ path: testInfo.outputPath("independent-translation.png") });
 });
+
+test("queued language replacement waits for audio that started before its caption", async ({ page }) => {
+  const harness = await startRussianEnglish(page);
+  await harness.sourceActive();
+  await harness.inputDelta("Подскажите, где находится вокзал?");
+  await harness.outputDelta("Where is the train station?");
+  await harness.sourceQuiet();
+  await harness.advance(runtime.audioStartGraceMs + runtime.captionIdleMs);
+  await harness.sourceActive();
+  await harness.inputDelta("The station is straight ahead.");
+  await harness.playbackActive();
+  await harness.outputDelta("Вокзал находится прямо впереди.");
+  await harness.sourceQuiet();
+  await page.getByRole("button", { name: "Язык собеседника" }).click();
+  await page.getByRole("radio", { name: "немецкий", exact: true }).check();
+  await page.getByRole("button", { name: "Подтвердить", exact: true }).click();
+  await harness.advance(runtime.audioStartGraceMs + runtime.captionIdleMs);
+  await expect(page.getByTestId("participant-pane-B")).toHaveAttribute("lang", "en");
+  expect(await harness.lastGateBCommand()).toBe("unmute");
+  await harness.playbackIdle();
+  await expect(page.getByTestId("participant-pane-B")).toHaveAttribute("lang", "de");
+});

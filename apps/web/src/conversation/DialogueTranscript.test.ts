@@ -118,3 +118,38 @@ describe("independent dialogue captions", () => {
     expect(transcript.blocks.filter(block => block.text.trim()).map(block => block.language)).toEqual(["zh", "ja"]);
   });
 });
+
+describe("PR32 caption context regressions", () => {
+  it.each([1, 5, 1000])("keeps brands and borrowed words with surrounding speech at packet size %i", size => {
+    for (const text of ["Я использую Google каждый день.", "hotel находится рядом с вокзалом.", "Я использую OpenAI.", "Привет Google.", "Спасибо Google за помощь.", "Привет, John!", "Использую Google.", "We met Михаил at the station."]) {
+      const transcript = new DialogueTranscript();
+      for (let offset = 0; offset < text.length; offset += size) transcript.push("input", fragment(text.slice(offset, offset + size)), pair);
+      const side = text.startsWith("We") ? "B" : "A";
+      expect(content(transcript)).toEqual([{kind: "input", side, text}]);
+    }
+  });
+  it.each(["12, Привет", "—Hello", "«Здравствуйте», это квартира 12."])("keeps a leading neutral prefix with resolved language: %s", text => {
+    const transcript = new DialogueTranscript();
+    for (const character of text) transcript.push("input", fragment(character), pair);
+    expect(transcript.blocks.filter(block => block.side).map(block => block.text).join("")).toBe(text);
+  });
+});
+
+it("retains actual short replies and rapid language switches around borrowed words", () => {
+  const transcript = new DialogueTranscript();
+  const text = "Я использую Google. Hello.Я знаю OpenAI. The station is ahead.";
+  for (const character of text) transcript.push("input", fragment(character), pair);
+  expect(content(transcript)).toEqual([
+    {kind: "input", side: "A", text: "Я использую Google."},
+    {kind: "input", side: "B", text: "Hello."},
+    {kind: "input", side: "A", text: "Я знаю OpenAI."},
+    {kind: "input", side: "B", text: "The station is ahead."},
+  ]);
+});
+
+it("preserves a brand inside unspaced Chinese speech", () => {
+  const transcript = new DialogueTranscript();
+  const text = "我每天使用Google搜索信息。";
+  for (const character of text) transcript.push("input", fragment(character), { A: "zh", B: "en" });
+  expect(content(transcript)).toEqual([{ kind: "input", side: "A", text }]);
+});
