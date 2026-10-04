@@ -325,6 +325,25 @@ function createController<
 }
 
 describe("SessionController", () => {
+  it("switches local playback without changing Live instructions, then resets at end", async () => {
+    const audio = Object.assign(createFakeAudio(), { setNonInterrupting: vi.fn() });
+    const { controller, live, orientation } = createController({ audio });
+    expect(controller.nonInterrupting).toBe(false);
+    await controller.startWithLanguages({ A: "ru", B: "es" });
+    const instructionCount = live.appendInstructions.mock.calls.length;
+    controller.setNonInterrupting(true);
+    expect(controller.nonInterrupting).toBe(true);
+    expect(audio.setNonInterrupting).toHaveBeenLastCalledWith(true);
+    expect(live.appendInstructions).toHaveBeenCalledTimes(instructionCount);
+    orientation.emit("landscape");
+    await flushMicrotasks();
+    controller.setNonInterrupting(false);
+    expect(controller.nonInterrupting).toBe(true);
+    await controller.endConversation();
+    expect(controller.nonInterrupting).toBe(false);
+    expect(audio.setNonInterrupting).toHaveBeenLastCalledWith(false);
+  });
+
   beforeEach(() => {
     setDeviceLanguage("ru-RU");
   });
@@ -1606,6 +1625,25 @@ async function enterOutputtingTurn(
 }
 
 describe("SessionController turn engine", () => {
+  it("does not close a caption-only-looking turn while received audio is still queued", async () => {
+    vi.useFakeTimers();
+    const audio = Object.assign(createFakeAudio(), { hasPendingPlayback: true });
+    const { controller, live } = createController({ audio });
+    await controller.startWithLanguages({ A: "en", B: "es" });
+    emitVoice(audio, true);
+    live.emit({ type: "session.input_transcript.delta", delta: "Where is the station?" });
+    live.emit({ type: "session.output_transcript.delta", delta: "Dónde está la estación?" });
+    emitVoice(audio, false);
+    await flushMicrotasks();
+    await vi.advanceTimersByTimeAsync(runtime.audioStartGraceMs + runtime.outputSettleGraceMs + 500);
+    expect(controller.session.activeTurn).toBeDefined();
+    audio.hasPendingPlayback = false;
+    await vi.advanceTimersByTimeAsync(100);
+    expect(controller.session.activeTurn).toBeUndefined();
+    await controller.endConversation();
+    vi.useRealTimers();
+  });
+
   beforeEach(() => {
     setDeviceLanguage("ru-RU");
     vi.useFakeTimers();

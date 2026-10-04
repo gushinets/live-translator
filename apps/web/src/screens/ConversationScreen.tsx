@@ -11,6 +11,8 @@ import { translate, uiLocale } from "../i18n/messages";
 export interface ConversationScreenController {
   readonly session: TranslationSession;
   readonly inputReady: boolean;
+  readonly nonInterrupting?: boolean;
+  setNonInterrupting?(enabled: boolean): void;
   readonly recoveryPrompt?: RecoveryPrompt;
   readonly ownerError?: string;
   readonly suspendReason?: LifecycleSuspendReason;
@@ -24,7 +26,7 @@ export interface ConversationScreenController {
 
 function uiSnapshot(controller: ConversationScreenController): unknown[] {
   return [controller.session, controller.inputReady, controller.recoveryPrompt, controller.ownerError,
-    controller.suspendReason, controller.retainedRecoveryState];
+    controller.suspendReason, controller.retainedRecoveryState, controller.nonInterrupting];
 }
 
 export function ConversationScreen({
@@ -108,7 +110,7 @@ export function ConversationScreen({
         alertLanguage={ownerLocale}
       />
       <div className="conversation-center">
-        {onChangeLanguage ? <button className="conversation-language-action" type="button"
+        {onChangeLanguage ? <button className="conversation-language-action" type="button" title={t("Язык собеседника")}
           disabled={session.state !== "listening" && session.state !== "outputting"}
           onClick={onChangeLanguage}>
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"
@@ -139,6 +141,17 @@ export function ConversationScreen({
         >
           <span aria-hidden="true" className="conversation-end-size">{t("Завершаю…")}</span>
           <span aria-live="polite" className="conversation-end-label"><i aria-hidden="true" />{t(ending ? "Завершаю…" : "Завершить")}</span>
+        </button> : null}
+        {recoveryState === undefined ? <button
+          type="button"
+          role="switch"
+          className="conversation-playback-switch"
+          aria-checked={controller.nonInterrupting === true}
+          disabled={!controller.setNonInterrupting || !["listening", "outputting"].includes(session.state)}
+          onClick={() => controller.setNonInterrupting?.(!controller.nonInterrupting)}
+        >
+          <span className="conversation-switch-track" aria-hidden="true"><i /></span>
+          <span>{t("Не перебивать")}</span>
         </button> : null}
         {controller.recoveryPrompt === "resume-repeat" ? (
           <button

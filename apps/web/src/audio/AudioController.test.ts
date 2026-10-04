@@ -428,3 +428,90 @@ describe("AudioController", () => {
     expect(onVoiceActivity).toHaveBeenCalledWith({ active: true, atMs: 5_100 });
   });
 });
+
+describe("buffered audio output", () => {
+  function setup() {
+    const context = new FakeAudioContext();
+    const destinationStream = fakeStream(new FakeAudioTrack());
+    const nodes: Array<FakeAudioNode & { port: { postMessage: ReturnType<typeof vi.fn>; onmessage: ((event: MessageEvent) => void) | null }; onprocessorerror: (() => void) | null }> = [];
+    Object.assign(context, {
+      audioWorklet: { addModule: vi.fn(async () => {}) },
+      createMediaStreamDestination: () => ({ stream: destinationStream }),
+    });
+    const element = document.createElement("audio");
+    element.load = vi.fn(); element.play = vi.fn(async () => {});
+    const controller = new AudioController({
+      audioElement: element, createAudioContext: () => context as unknown as AudioContext,
+      getUserMedia: async () => fakeStream(new FakeAudioTrack()),
+      createPlaybackNode: () => {
+        const node = Object.assign(new FakeAudioNode(), {
+          port: { postMessage: vi.fn(), onmessage: null as ((event: MessageEvent) => void) | null },
+          onprocessorerror: null as (() => void) | null,
+        });
+        nodes.push(node);
+        return node as unknown as AudioWorkletNode;
+      },
+    });
+    return { context, controller, element, nodes, destinationStream };
+  }
+  it("plays processed PCM through the primed element and analyses played audio", async () => {
+    const { controller, element, context, nodes, destinationStream } = setup();
+    await controller.primeOutput();
+    const remote = fakeStream(new FakeAudioTrack());
+    controller.attachRemoteStream(remote);
+    expect(element.srcObject).toBe(destinationStream);
+    expect(context.sources[0]?.connections).toContain(context.analysers[0]);
+    expect(nodes[0]?.connections).toContain(context.analysers[1]);
+    controller.setOutputAudible(true);
+    controller.setNonInterrupting(true);
+    expect(element.muted).toBe(false);
+    expect(nodes[0]?.port.postMessage).toHaveBeenCalledWith({ type: "enabled", value: true });
+    controller.dispose();
+  });
+  it("clears the queue on gate closure and ignores a retired stream's messages", async () => {
+    const { controller, nodes } = setup();
+    await controller.primeOutput();
+    controller.attachRemoteStream(fakeStream(new FakeAudioTrack()));
+    controller.setOutputAudible(true);
+    const stale = nodes[0]!.port.onmessage!;
+    stale({ data: { type: "pending", value: true } } as MessageEvent);
+    expect(controller.hasPendingPlayback).toBe(true);
+    controller.setOutputAudible(false);
+    expect(controller.hasPendingPlayback).toBe(false);
+    controller.attachRemoteStream(fakeStream(new FakeAudioTrack()));
+    stale({ data: { type: "pending", value: true } } as MessageEvent);
+    expect(controller.hasPendingPlayback).toBe(false);
+    controller.dispose();
+  });
+  it("observes incoming audio while muted and played audio after reopening", async () => {
+    vi.useFakeTimers();
+    const { controller, context } = setup();
+    try {
+      await controller.primeOutput();
+      controller.attachRemoteStream(fakeStream(new FakeAudioTrack()));
+      const observed = vi.fn();
+      controller.onPlaybackActivity = observed;
+      context.analysers[0]!.fill(.2); // incoming provider audio
+      context.analysers[1]!.fill(0); // held/cleared output
+      await vi.advanceTimersByTimeAsync(100);
+      expect(observed).toHaveBeenLastCalledWith(expect.objectContaining({ active: true }));
+      controller.setOutputAudible(true);
+      await vi.advanceTimersByTimeAsync(600);
+      expect(observed).toHaveBeenLastCalledWith(expect.objectContaining({ active: false }));
+    } finally {
+      controller.dispose();
+      vi.useRealTimers();
+    }
+  });
+  it("fails closed when the worklet fails instead of switching to overlapping speech", async () => {
+    const { controller, nodes, element } = setup();
+    await controller.primeOutput();
+    controller.attachRemoteStream(fakeStream(new FakeAudioTrack()));
+    controller.setOutputAudible(true);
+    const failed = vi.fn(); controller.onPlaybackBufferError = failed;
+    nodes[0]!.onprocessorerror!();
+    expect(element.muted).toBe(true);
+    expect(failed).toHaveBeenCalledOnce();
+    controller.dispose();
+  });
+});

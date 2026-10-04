@@ -67,6 +67,9 @@ export interface SessionControllerDeps {
   > & {
     onSourceSample?: AudioController["onSourceSample"];
     meteringMediaReady?: boolean;
+    setNonInterrupting?: AudioController["setNonInterrupting"];
+    hasPendingPlayback?: boolean;
+    onPlaybackBufferError?: AudioController["onPlaybackBufferError"];
     onVoiceActivity: AudioController["onVoiceActivity"];
     onPlaybackActivity: AudioController["onPlaybackActivity"];
     onAudioInterruption: AudioController["onAudioInterruption"];
@@ -458,6 +461,21 @@ export class SessionController {
 
   get steeringDegraded(): boolean {
     return this.steeringDegradedFlag;
+  }
+
+  private nonInterruptingEnabled = false;
+  get nonInterrupting(): boolean { return this.nonInterruptingEnabled; }
+  setNonInterrupting(enabled: boolean): void {
+    if (!["listening", "outputting"].includes(this.currentSession.state)) return;
+    try {
+      if (!this.audio.setNonInterrupting) throw new Error("Buffered playback unavailable");
+      this.audio.setNonInterrupting(enabled);
+      this.nonInterruptingEnabled = enabled;
+      this.ownerErrorMessage = undefined;
+    } catch {
+      this.ownerErrorMessage = "Режим «Не перебивать» недоступен в этом браузере.";
+    }
+    this.notify();
   }
 
   get inputReady(): boolean {
@@ -1255,6 +1273,14 @@ export class SessionController {
   }
 
   private bindAudio(): void {
+    this.audio.onPlaybackBufferError = () => {
+      this.audio.setOutputAudible(false);
+      const message = "Не удалось сохранить звук перевода. Начните новый разговор.";
+      void this.endConversation().catch(() => undefined).then(() => {
+        this.ownerErrorMessage = message;
+        this.notify();
+      });
+    };
     this.audio.onSourceSample = sample => this.observeMetrics(undefined, sample);
     this.audio.onVoiceActivity = (event) => {
       void this.handleVoiceActivity(event);
@@ -1491,6 +1517,10 @@ export class SessionController {
       return;
     }
     if (this.currentSession.state !== "listening" && this.currentSession.state !== "outputting") {
+      return;
+    }
+    if (this.audio.hasPendingPlayback) {
+      this.armCompletionTimer(nowMs + 50, nowMs);
       return;
     }
     const decision = evaluateTurnCompletion(
@@ -2823,6 +2853,8 @@ export class SessionController {
   }
 
   private resetToIdle(options: { preserveOwnerError?: boolean } = {}): void {
+    this.nonInterruptingEnabled = false;
+    this.audio.setNonInterrupting?.(false);
     this.retainedProductDeadlineAt = null;
     const preservedError =
       options.preserveOwnerError === true ? this.ownerErrorMessage : undefined;

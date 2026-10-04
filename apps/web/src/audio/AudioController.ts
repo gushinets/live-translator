@@ -1,3 +1,4 @@
+import playbackWorkletUrl from "./BufferedPlaybackProcessor.ts?worker&url";
 import { PlaybackActivityDetector } from "./PlaybackActivityDetector";
 import { VAM_SAMPLE_INTERVAL_MS } from "./VoiceActivityEstimator";
 import {
@@ -18,6 +19,7 @@ export interface AudioControllerOptions {
   audioElement?: HTMLAudioElement;
   createAudioContext?: () => AudioContext;
   nowMs?: () => number;
+  createPlaybackNode?: (context: AudioContext) => AudioWorkletNode;
 }
 
 function rmsFromAnalyser(analyser: AnalyserNode): number {
@@ -61,8 +63,8 @@ function readMicrophoneSettings(track: MediaStreamTrack): MicrophoneSettingsDiag
 }
 
 /**
- * Owns microphone capture (Gate A), one remote HTMLAudioElement (Gate C),
- * analyser-only VAM/playback graphs, and user-gesture output priming.
+ * Owns microphone capture (Gate A), the HTMLAudioElement playback gate (Gate C),
+ * local PCM buffering, source/playback analysers, and user-gesture output priming.
  * Does not mute Live model input (Gate B).
  */
 export class AudioController {
@@ -72,6 +74,7 @@ export class AudioController {
   onAudioInterruption: (() => void) | null = null;
   onAudioRestored: (() => void) | null = null;
   onCaptureEnded: (() => void) | null = null;
+  onPlaybackBufferError: (() => void) | null = null;
 
   readonly audioElement: HTMLAudioElement;
 
@@ -92,8 +95,20 @@ export class AudioController {
   private micAnalysisStream: MediaStream | null = null;
   private remoteSource: MediaStreamAudioSourceNode | null = null;
   private remoteAnalyser: AnalyserNode | null = null;
+  private playedAnalyser: AnalyserNode | null = null;
   private remoteAnalysisStream: MediaStream | null = null;
   private sampleTimer: number | null = null;
+  private readonly createPlaybackNode: (context: AudioContext) => AudioWorkletNode;
+  private workletPreparation: Promise<void> | null = null;
+  private workletReady = false;
+  private playbackNode: AudioWorkletNode | null = null;
+  private playbackDestination: MediaStreamAudioDestinationNode | null = null;
+  private queuedPlayback = false;
+  private nonInterrupting = false;
+  private sourceSpeaking = false;
+  private lastSourceSpeaking: boolean | null = null;
+  get hasPendingPlayback(): boolean { return this.queuedPlayback; }
+
 
   constructor(options: AudioControllerOptions = {}) {
     this.getUserMedia =
@@ -105,11 +120,19 @@ export class AudioController {
     this.createAudioContext =
       options.createAudioContext ?? (() => new AudioContext());
     this.nowMs = options.nowMs ?? (() => Date.now());
+    this.createPlaybackNode = options.createPlaybackNode ?? (context =>
+      new AudioWorkletNode(context, "buffered-playback", {
+        numberOfInputs: 1, numberOfOutputs: 1, outputChannelCount: [1],
+        channelCount: 1, channelCountMode: "explicit",
+      }));
+
 
     this.voiceActivityMonitor.onActivity = (event) => {
       this.onVoiceActivity?.(event);
     };
     this.voiceActivityMonitor.onSample = event => {
+      this.sourceSpeaking = event.active;
+      this.sendSourceActivity();
       this.onSourceSample?.({ active: event.active, atMs: performance.now() });
     };
     this.playbackDetector.onActivity = (event) => {
@@ -163,6 +186,9 @@ export class AudioController {
 
   resetVoiceActivityBaseline(): void {
     this.voiceActivityMonitor.resetBaseline();
+    this.sourceSpeaking = false;
+    this.lastSourceSpeaking = null;
+    this.sendSourceActivity();
     try { this.onSourceSample?.({ active: false, atMs: performance.now(), reset: true }); }
     catch { console.error("Source reset metadata observer failed"); }
   }
@@ -257,12 +283,75 @@ export class AudioController {
   /** Gate C: mute local GPT playback. Never uses Live input mute. */
   setOutputAudible(audible: boolean): void {
     this.audioElement.muted = !audible;
+    this.playbackNode?.port.postMessage({ type: "audible", value: audible });
+    if (!audible) this.queuedPlayback = false;
+  }
+
+  setNonInterrupting(enabled: boolean): void {
+    if (enabled && !this.playbackNode) throw new Error("Buffered playback unavailable");
+    this.nonInterrupting = enabled;
+    this.playbackNode?.port.postMessage({ type: "enabled", value: enabled });
+    this.sendSourceActivity();
+  }
+
+  private sendSourceActivity(): void {
+    if (!this.playbackNode || this.lastSourceSpeaking === this.sourceSpeaking) return;
+    this.lastSourceSpeaking = this.sourceSpeaking;
+    this.playbackNode.port.postMessage({ type: "speaking", value: this.sourceSpeaking });
+  }
+
+  private async preparePlayback(): Promise<void> {
+    if (this.workletPreparation) return this.workletPreparation;
+    const context = this.ensureAudioContext();
+    if (!context.audioWorklet) return;
+    this.workletPreparation = context.audioWorklet.addModule(playbackWorkletUrl)
+      .then(() => { if (this.audioContext === context) this.workletReady = true; })
+      .catch(() => { console.warn("Buffered playback is unavailable in this browser"); });
+    return this.workletPreparation;
+  }
+
+  private releasePlayback(): void {
+    if (this.playbackNode) {
+      this.playbackNode.port.onmessage = null;
+      this.playbackNode.onprocessorerror = null;
+      this.playbackNode.disconnect();
+      this.playbackNode = null;
+    }
+    stopTracks(this.playbackDestination?.stream ?? null);
+    this.playbackDestination = null;
+    this.playedAnalyser = null;
+    this.queuedPlayback = false;
+    this.lastSourceSpeaking = null;
+  }
+
+  private connectPlayback(context: AudioContext): void {
+    const node = this.createPlaybackNode(context);
+    this.playbackNode = node;
+    this.playbackDestination = context.createMediaStreamDestination();
+    const fail = () => {
+      if (this.playbackNode !== node) return;
+      this.setOutputAudible(false);
+      this.onPlaybackBufferError?.();
+    };
+    node.onprocessorerror = fail;
+    node.port.onmessage = ({ data }: MessageEvent<{ type: string; value?: boolean }>) => {
+      if (this.playbackNode !== node) return;
+      if (data.type === "pending") this.queuedPlayback = !this.audioElement.muted && data.value === true;
+      if (data.type === "error") fail();
+    };
+    node.port.postMessage({ type: "enabled", value: this.nonInterrupting });
+    node.port.postMessage({ type: "audible", value: !this.audioElement.muted });
+    this.sendSourceActivity();
+    this.remoteSource!.connect(node);
+    this.playedAnalyser = context.createAnalyser();
+    node.connect(this.playedAnalyser);
+    node.connect(this.playbackDestination);
+    this.audioElement.srcObject = this.playbackDestination.stream;
   }
 
   attachRemoteStream(stream: MediaStream): void {
-    this.audioElement.srcObject = stream;
+    this.releasePlayback();
     // Recreate the media pipeline after Android backgrounding or a replaced WebRTC stream.
-    this.audioElement.load();
     this.remoteSource?.disconnect();
     stopTracks(this.remoteAnalysisStream);
     const context = this.ensureAudioContext();
@@ -271,12 +360,29 @@ export class AudioController {
     this.remoteSource = context.createMediaStreamSource(analysisStream);
     this.remoteAnalyser = context.createAnalyser();
     this.remoteSource.connect(this.remoteAnalyser);
+    if (this.workletReady) {
+      try { this.connectPlayback(context); }
+      catch {
+        this.releasePlayback();
+        // A selected non-interrupting mode must never silently become direct playback.
+        if (this.nonInterrupting) {
+          this.setOutputAudible(false);
+          this.onPlaybackBufferError?.();
+        } else {
+          this.audioElement.srcObject = stream;
+        }
+      }
+    } else {
+      this.audioElement.srcObject = stream;
+    }
+    this.audioElement.load();
     this.syncSampler();
   }
 
   async primeOutput(): Promise<void> {
     const context = this.ensureAudioContext();
     await context.resume();
+    await this.preparePlayback();
     if (this.audioElement.srcObject !== null) {
       if (this.audioElement.error !== null) this.audioElement.load();
       await this.audioElement.play();
@@ -284,6 +390,9 @@ export class AudioController {
   }
 
   dispose(): void {
+    this.releasePlayback();
+    this.workletReady = false;
+    this.workletPreparation = null;
     if (this.captureTrack !== null) {
       this.stopCapture();
     }
@@ -364,7 +473,9 @@ export class AudioController {
   private sample(): void {
     const atMs = this.nowMs();
     if (this.remoteAnalyser !== null) {
-      this.playbackDetector.pushRms(rmsFromAnalyser(this.remoteAnalyser), atMs);
+      // Muted lifecycle draining must still see incoming provider audio.
+      const analyser = !this.audioElement.muted && this.playedAnalyser ? this.playedAnalyser : this.remoteAnalyser;
+      this.playbackDetector.pushRms(rmsFromAnalyser(analyser), atMs);
     }
     if (this.micAnalyser !== null) {
       this.voiceActivityMonitor.pushRms(
