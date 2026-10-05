@@ -89,3 +89,78 @@ it.each(["'90s were great. Music was better.'", "'cause it was late. I left earl
 it.each(["Veuillez ouvrir le site example.no.", 'Veuillez ouvrir le site "example.no".'])("keeps a canonical reply inside a contiguous hostname: %s", text => {
   expect(splitLanguageSentences(text, { A: "en", B: "fr" }, eld.newInstance())).toEqual([text]);
 });
+
+it.each(["I stayed 'cept.", "I waited 'neath.", "I said 'scuse.", "I waited 'nęath.", "I left 'Cause it was late.", "I stayed 'CEPT.", "I looked 'Round.", "I loved the '90S.", "'Cause it was late."])("keeps unlisted leading elisions separate from quoted replies: %s", source => {
+  for (const reply of ["'Sí.'", "'sí.'", "'oui.'"]) {
+    expect(splitSentences(source + " " + reply)).toEqual([source + " ", reply]);
+  }
+});
+
+it.each([
+  "He said 'cept' and left.",
+  "'neath the bridge. I waited.'",
+  "'I stayed 'cept. I waited 'neath the bridge.'",
+  "'cept 'scuse was too short. I left early.'",
+  "'sí.'",
+  "He said 'YES' and left.",
+  "'Cause it was late. I left early.'",
+])("preserves paired quotes around elision-shaped words: %s", source => {
+  const sentences = splitSentences(source + " 'oui.'");
+  expect(sentences.at(-1)).toBe("'oui.'");
+  expect(sentences.slice(0, -1).join("")).toBe(source + " ");
+});
+
+it("bounds lookahead through repeated unlisted elisions", () => {
+  const source = "'I stayed " + "'cept ".repeat(12000) + "until morning.'", reply = "'sí.'";
+  const start = performance.now();
+  expect(splitSentences(source + " " + reply)).toEqual([source + " ", reply]);
+  expect(performance.now() - start).toBeLessThan(1000);
+});
+
+
+it("distinguishes adjacent terminal closers from quoted reply openers", () => {
+  expect(splitSentences("'The dogs' owner is here.'La estación está cerca."))
+    .toEqual(["'The dogs' owner is here.'", "La estación está cerca."]);
+  expect(splitSentences("I stayed 'cept.'sí.'"))
+    .toEqual(["I stayed 'cept.", "'sí.'"]);
+  expect(splitSentences("I stayed 'cept.'yes' then left."))
+    .toEqual(["I stayed 'cept.", "'yes' then left."]);
+});
+
+it("keeps a quoted reply's leading space after an adjacent source terminal", () => {
+  expect(splitSentences("I stayed 'cept.' sí.'")).toEqual(["I stayed 'cept.", "' sí.'"]);
+  expect(splitSentences("'It was quiet.' Unquoted text. 'Sí.'"))
+    .toEqual(["'It was quiet.' ", "Unquoted text. ", "'Sí.'"]);
+  expect(splitSentences("'It was quiet.' ' Sí.'"))
+    .toEqual(["'It was quiet.' ", "' Sí.'"]);
+});
+
+it.each([
+  { text: "'It was quiet.' Unquoted text. ' Sí.'", expected: ["'It was quiet.' ", "Unquoted text. ", "' Sí.'"] },
+  { text: "'It was quiet.' Sí. ' sí.'", expected: ["'It was quiet.' ", "Sí. ", "' sí.'"] },
+  { text: "'It was quiet.' Sí.' sí.'", expected: ["'It was quiet.' ", "Sí.", "' sí.'"] },
+  { text: "'It was quiet.'Sí.' sí.'", expected: ["'It was quiet.'", "Sí.", "' sí.'"] },
+])("keeps a real closer before unquoted speech and a padded quoted reply: $text", ({ text, expected }) => {
+  expect(splitSentences(text)).toEqual(expected);
+});
+
+it("keeps an actual reply mate before later unquoted and quoted text", () => {
+  expect(splitSentences("I stayed 'cept.'sí.' Unquoted text. ' oui.'"))
+    .toEqual(["I stayed 'cept.", "'sí.' ", "Unquoted text. ", "' oui.'"]);
+});
+
+it.each([
+  { text: "'It was quiet.' Sí. ' I'm happy.'", expected: ["'It was quiet.' ", "Sí. ", "' I'm happy.'"] },
+  { text: "'It was quiet.' Unquoted text. ' Don't go.'", expected: ["'It was quiet.' ", "Unquoted text. ", "' Don't go.'"] },
+  { text: "'It was quiet.' Unquoted text. ' I left 'cause it was late.'", expected: ["'It was quiet.' ", "Unquoted text. ", "' I left 'cause it was late.'"] },
+  { text: "I stayed 'cept.' I'm happy.'", expected: ["I stayed 'cept.", "' I'm happy.'"] },
+  { text: "'It was quiet.' Sí. ' The dogs' owner is here.'", expected: ["'It was quiet.' ", "Sí. ", "' The dogs' owner is here.'"] },
+  { text: "'It was quiet.' Sí. ' The board is 6' long.'", expected: ["'It was quiet.' ", "Sí. ", "' The board is 6' long.'"] },
+])("skips lexical apostrophes while finding a padded reply's mate: $text", ({ text, expected }) => {
+  expect(splitSentences(text)).toEqual(expected);
+});
+
+it.each(["yes", "oui", "90", "two words", "I'm happy"])("keeps an earlier closer before a padded word quote with an external terminal: %s", word => {
+  expect(splitSentences("'It was quiet.' Sí. ' " + word + "'."))
+    .toEqual(["'It was quiet.' ", "Sí. ", "' " + word + "'."]);
+});

@@ -5,24 +5,34 @@ export function isSentenceComplete(text: string): boolean {
 export function hasSentenceTerminator(text: string): boolean {
   return /\p{Sentence_Terminal}/u.test(text);
 }
+/** Preserve paired straight quotes; treat unpaired leading words/years as elisions. */
 export function splitSentences(text: string): string[] {
   const sentences: string[] = [];
   const terminal = /\p{Sentence_Terminal}/gu;
   const openQuotes: Record<string, number> = { '"': -1, "'": -1 };
   const quoteBoundaries: Record<string, number | undefined> = {};
-  // ponytail: common English elisions/abbreviated years use lexical evidence;
-  // other languages need their own evidence or explicit token metadata.
-  const leadingApostrophe = /^'(?:\p{Nd}{2}s?|cause|em|tis|twas|til|round|bout)(?![\p{L}\p{N}])/iu;
-  const nextQuoteBoundary = (char: string, index: number): number => {
-    let next = quoteBoundaries[char];
+  // ponytail: unpaired words/years are lexical; ambiguous unmatched quotes need token metadata.
+  const leadingApostrophe = /^'(?:\p{L}[\p{L}\p{M}]*|\p{Nd}{2}s?)(?![\p{L}\p{N}])/iu;
+  const followsSentence = (index: number): boolean => {
+    let before = index - 1;
+    while (/[\s\p{Pe}\p{Pf}"']/u.test(text[before] ?? "")) before--;
+    return /\p{Sentence_Terminal}/u.test(text[before] ?? "");
+  };
+  const nextQuoteBoundary = (char: string, index: number, pairedLevel = 0): number => {
+    // Separate forward caches keep mate lookahead from advancing the main quote scan.
+    const cacheKey = char + pairedLevel;
+    let next = quoteBoundaries[cacheKey];
     if (next === undefined || (next >= 0 && next <= index)) {
+      const word = pairedLevel ? /^\s*[\p{L}\p{M}\p{N}]+/u.exec(text.slice(index + 1))?.[0] : undefined;
+      const wordClosing = word && text[index + 1 + word.length] === char ? index + 1 + word.length : -1;
       next = text.indexOf(char, index + 1);
       // Share one forward scan through lexical marks, including contractions.
-      while (next >= 0 && (/\p{Nd}/u.test(text[next - 1] ?? "") || (char === "'" &&
-          (/[sS]/u.test(text[next - 1] ?? "") ||
+      while (next >= 0 && !(pairedLevel && /\p{Sentence_Terminal}/u.test(text[next + 1] ?? "")) &&
+          ((next !== wordClosing && /\p{Nd}/u.test(text[next - 1] ?? "")) || (char === "'" &&
+          ((next !== wordClosing && /[sS]/u.test(text[next - 1] ?? "")) ||
            (/[\p{L}\p{Nd}]/u.test(text[next - 1] ?? "") && /[\p{L}\p{Nd}]/u.test(text[next + 1] ?? "")) ||
-           leadingApostrophe.test(text.slice(next)))))) next = text.indexOf(char, next + 1);
-      quoteBoundaries[char] = next;
+           (leadingApostrophe.test(text.slice(next)) && !followsSentence(next)))))) next = text.indexOf(char, next + 1);
+      quoteBoundaries[cacheKey] = next;
     }
     return next;
   };
@@ -39,10 +49,23 @@ export function splitSentences(text: string): string[] {
       if (char === "'") {
         const lexical = leadingApostrophe.exec(text.slice(i));
         if (lexical) {
+          if (openQuotes[char]! >= 0) continue;
           const closing = nextQuoteBoundary(char, i);
+          const following = closing < 0 ? -1 : nextQuoteBoundary(char, closing, 1);
+          const quotedText = following < 0 ? "" : text.slice(closing + 1, following);
+          const next = following < 0 ? -1 : nextQuoteBoundary(char, following, 2);
+          const followingText = next < 0 ? "" : text.slice(following + 1, next);
+          // A later paired opener cannot serve as this candidate's closing mate.
+          const followingStartsQuote = /[\p{L}\p{N}]/u.test(followingText) &&
+            (/\p{Sentence_Terminal}/u.test(text[next + 1] ?? "") ||
+             (/\p{Sentence_Terminal}/u.test(text[next - 1] ?? "") &&
+              !/[\p{L}\p{N}]/u.test(text[next + 1] ?? "") && isSentenceComplete(followingText)));
+          const startsNextQuote = following >= 0 && !followingStartsQuote && !/[\p{L}\p{N}]/u.test(text[following + 1] ?? "") &&
+            (/^[\p{L}\p{M}\p{N}]+$/u.test(quotedText) || isSentenceComplete(quotedText));
           const paired = text[i + lexical[0].length] === "'" || (closing >= 0 &&
-            /\p{Sentence_Terminal}/u.test(text[closing - 1] ?? "") && !/[\p{L}\p{N}]/u.test(text[closing + 1] ?? ""));
-          if (openQuotes[char]! >= 0 || !paired) continue;
+            /\p{Sentence_Terminal}/u.test(text[closing - 1] ?? "") &&
+            !startsNextQuote);
+          if (!paired) continue;
         }
       }
       if (char === '"' && /\p{Nd}/u.test(before)) {

@@ -18,6 +18,7 @@ export class PlaybackQueue {
   private playedQuiet = 0;
   private readonly samples: Float32Array;
   private readonly preroll: Float32Array;
+  private readonly prerollSamples: number;
   private readonly tailSamples: number;
   private readonly energyFrameSamples: number;
   private readonly noiseRiseAlpha: number;
@@ -28,10 +29,14 @@ export class PlaybackQueue {
   private energySamples = 0;
   private noiseFloor = VAM_WARMUP_RMS_MAX;
   private quietSpeech = false;
+  private broadbandPrefix = false;
+  private noiseRiseSamples = 0;
+  private noiseRiseFloor = Infinity;
   private read = 0;
   private count = 0;
   private prerollWrite = 0;
   private prerollCount = 0;
+  private prerollHold = 0;
   private tail = 0;
   private quiet = 0;
   private audible = false;
@@ -41,8 +46,11 @@ export class PlaybackQueue {
 
   constructor(private readonly sampleRate: number, capacity = sampleRate * 120) {
     this.samples = new Float32Array(capacity);
-    this.preroll = new Float32Array(Math.ceil(sampleRate * .06));
+    this.prerollSamples = Math.ceil(sampleRate * .06);
     this.tailSamples = Math.ceil(sampleRate * .25);
+    // Non-DC quiet onsets retain 250 ms provisionally (230 ms onset/closure plus up
+    // to 20 ms frame confirmation). Silence/DC keep their 60 ms prefix.
+    this.preroll = new Float32Array(this.tailSamples);
     this.energyFrameSamples = Math.ceil(sampleRate * .01);
     this.noiseRiseAlpha = 1 - Math.exp(-this.energyFrameSamples / (sampleRate * 5));
   }
@@ -80,7 +88,7 @@ export class PlaybackQueue {
     if (!audible) this.clear();
   }
   clear(): void {
-    this.read = this.count = this.prerollWrite = this.prerollCount = this.tail = this.quiet = 0;
+    this.read = this.count = this.prerollWrite = this.prerollCount = this.prerollHold = this.tail = this.quiet = 0;
     this.owners.length = 0;
     this.captionTurns.clear();
     this.inputTurnId = this.playedTurnId = undefined;
@@ -89,7 +97,9 @@ export class PlaybackQueue {
     this.lastIncomingSpan = undefined;
     this.energy = this.energySum = this.differenceEnergy = this.previousSample = this.energySamples = 0;
     this.noiseFloor = VAM_WARMUP_RMS_MAX;
-    this.quietSpeech = false;
+    this.quietSpeech = this.broadbandPrefix = false;
+    this.noiseRiseSamples = 0;
+    this.noiseRiseFloor = Infinity;
   }
 
   process(input: Float32Array | undefined, output: Float32Array = new Float32Array(input?.length ?? 0)): Float32Array {
@@ -98,6 +108,7 @@ export class PlaybackQueue {
     for (let i = 0; i < output.length; i++) {
       const value = input?.[i] ?? 0;
       const voiced = this.observeEnergy(value);
+      if (this.prerollHold > 0) this.prerollHold--;
       this.observeIncoming(voiced);
       const held = this.enabled && (this.speaking || this.quiet < this.sampleRate * .3);
       if (!this.speaking) this.quiet++;
@@ -105,7 +116,7 @@ export class PlaybackQueue {
         // Default streaming path: no noise gate or added delay.
         output[i] = value;
         this.observePlayed(value, this.inputTurnId);
-        this.prerollCount = this.tail = 0;
+        this.prerollCount = this.prerollHold = this.tail = 0;
         continue;
       }
       // Free the outgoing slot before receiving another sample, including a synthetic silent tail.
@@ -118,7 +129,7 @@ export class PlaybackQueue {
       if (voiced) {
         for (let n = this.prerollCount; n > 0; n--)
           this.push(this.preroll[(this.prerollWrite - n + this.preroll.length) % this.preroll.length]!);
-        this.prerollCount = 0;
+        this.prerollCount = this.prerollHold = 0;
         this.tail = this.tailSamples;
         this.push(value);
       } else if (this.tail > 0) {
@@ -127,7 +138,9 @@ export class PlaybackQueue {
       } else {
         this.preroll[this.prerollWrite] = value;
         this.prerollWrite = (this.prerollWrite + 1) % this.preroll.length;
-        this.prerollCount = Math.min(this.prerollCount + 1, this.preroll.length);
+        // A brief closure must not erase an onset still inside the finite ring.
+        if (this.broadbandPrefix) this.prerollHold = this.tailSamples;
+        this.prerollCount = Math.min(this.prerollCount + 1, this.prerollHold > 0 ? this.preroll.length : this.prerollSamples);
       }
       if (!held && !dequeued && this.count > 0) {
         output[i] = this.shift();
@@ -149,6 +162,12 @@ export class PlaybackQueue {
       // Voiced quiet audio has strong adjacent-sample correlation; DC and
       // broadband/alternating decoder noise must not open the gate for seconds.
       const quietVoice = centeredEnergy > this.energy * .1 && this.differenceEnergy < centeredEnergy;
+      this.broadbandPrefix = rms > VAM_WARMUP_RMS_MAX && rms < VAM_ACTIVE_FLOOR &&
+        centeredEnergy > this.energy * .1 && !quietVoice;
+      if (!this.broadbandPrefix || this.tail > 0) {
+        this.noiseRiseSamples = 0;
+        this.noiseRiseFloor = Infinity;
+      }
       this.energy = this.energySum = this.differenceEnergy = this.energySamples = 0;
       if (rms < VAM_ACTIVE_FLOOR) {
         const floor = Math.max(VAM_WARMUP_RMS_MAX, Math.min(rms, VAM_QUIET_FLOOR));
@@ -156,7 +175,23 @@ export class PlaybackQueue {
         else if (quietVoice) this.noiseFloor += this.noiseRiseAlpha * (floor - this.noiseFloor);
         // Leave the adaptive entry threshold at this observed noise level. Do not
         // recalibrate during the captured tail: quiet consonants belong to speech.
-        else if (this.tail === 0) this.noiseFloor = Math.max(VAM_WARMUP_RMS_MAX, floor / VAM_ACTIVE_NOISE_MULTIPLIER);
+        else if (this.tail === 0) {
+          const candidate = Math.max(VAM_WARMUP_RMS_MAX, floor / VAM_ACTIVE_NOISE_MULTIPLIER);
+          if (!this.broadbandPrefix) this.noiseFloor = candidate;
+          else {
+            // Keep rising broadband levels provisional for the 250 ms prefix.
+            // Its minimum retains the earlier floor when a louder consonant
+            // starts during an established noise interval; falls apply at once.
+            this.noiseFloor = Math.min(this.noiseFloor, candidate);
+            this.noiseRiseFloor = Math.min(this.noiseRiseFloor, candidate);
+            this.noiseRiseSamples += this.energyFrameSamples;
+            if (this.noiseRiseSamples >= this.tailSamples) {
+              this.noiseFloor = this.noiseRiseFloor;
+              this.noiseRiseSamples = 0;
+              this.noiseRiseFloor = Infinity;
+            }
+          }
+        }
         // ponytail: correlated noise and equally quiet sustained tones still share
         // the slow EMA; isolated broadband speech also needs provider/semantic VAD.
       }
