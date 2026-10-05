@@ -229,3 +229,26 @@ it("routes new language evidence after an exhausted detection prefix", () => {
       .toEqual([{ side: undefined, text: prefix }, { side: "A", text }]);
   }
 });
+
+it("samples language after a single oversized neutral prefix", () => {
+  const router = new TranscriptRouter(), pair = { A: "en", B: "es" };
+  const part = fragment("123 ".repeat(600) + "Where is the station?");
+  expect(router.push(part, pair)).toEqual([{ side: "A", fragments: [part] }]);
+});
+
+it.each(["Visit example.com","Visit \"example.com\"","Visit (example.com)"])("keeps a hostname without a final sentence terminal on one source: %s", text => {
+  const router = new TranscriptRouter(), pair = { A: "en", B: "es" }, part = fragment(text);
+  const groups = [...router.push(part, pair), ...router.flush(pair, true)];
+  expect(groups).toEqual([{ side: "A", fragments: [part] }]);
+});
+
+it.each([
+  { prefix: "Visit example.", suffix: "com" },
+  { prefix: 'Visit "example.', suffix: 'com"' },
+  { prefix: "Visit (example.", suffix: "com)" },
+])("keeps an unfinished hostname suffix on its source after idle: $prefix$suffix", ({ prefix, suffix }) => {
+  const router = new TranscriptRouter(), pair = { A: "en", B: "es" };
+  const first = fragment(prefix), last = fragment(suffix);
+  const groups = [...router.push(first, pair), ...router.push(last, pair, "A", prefix), ...router.flush(pair, true)];
+  expect(groups).toEqual([{ side: "A", fragments: [first] }, { side: "A", fragments: [last] }]);
+});

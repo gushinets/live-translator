@@ -50,3 +50,17 @@ it.each(['"2 personas están aquí."', '"¿Dónde está la estación?"', '"(2 pe
   const source = 'He said "123" and left.';
   expect(splitSentences(source + reply)).toEqual([source, reply]);
 });
+
+it.each(["\"It is 12\", not 10.\"","\"The board is 12\".\"","'It is 6', not 5.'","\"The board is 12\" x 6\" long.\"","'The dogs' collars and cats' toys are here.'"])("preserves outer quotes across multiple and punctuated inner marks: %s", source => {
+  const reply = '"Sí."';
+  expect(splitSentences(source + " " + reply)).toEqual([source + " ", reply]);
+});
+
+it("bounds repeated measurement lookahead in a long outer quote", () => {
+  const source = '"It is ' + '12", '.repeat(12000) + 'long."', reply = '"Sí."';
+  const start = performance.now();
+  const sentences = splitSentences(source + " " + reply);
+  const elapsed = performance.now() - start;
+  expect(sentences).toEqual([source + " ", reply]);
+  expect(elapsed).toBeLessThan(1000);
+});

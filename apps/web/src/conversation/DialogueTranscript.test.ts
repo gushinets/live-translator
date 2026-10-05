@@ -356,6 +356,11 @@ it.each([
   { text: '"It is 12" long."' },
   { text: "'The board is 6' long.'" },
   { text: "'The dogs' owner is here.'" },
+  { text: "\"It is 12\", not 10.\"" },
+  { text: "\"The board is 12\".\"" },
+  { text: "'It is 6', not 5.'" },
+  { text: "\"The board is 12\" x 6\" long.\"" },
+  { text: "'The dogs' collars and cats' toys are here.'" },
 ].flatMap(example => (["input", "output"] as const).map(kind => ({ ...example, kind }))))("retains outer quotes around measurement/possessive marks in $kind: $text", ({ text, kind }) => {
   for (const size of [1, 1000]) {
     const transcript = new DialogueTranscript();
@@ -418,5 +423,23 @@ it.each(['"2 personas están aquí."', '"¿Dónde está la estación?"', '"(2 pe
     for (let i = 0; i < text.length; i += size) transcript.push(kind, fragment(text.slice(i, i + size)), { A: "en", B: "es" });
     expect(content(transcript)).toEqual([{ kind, side: "A", text: source }, { kind, side: "B", text: reply }]);
     expect(transcript.blocks.map(block => block.text).join("")).toBe(text);
+  }
+});
+
+it.each(["input", "output"] as const)("samples language after a single oversized neutral prefix in %s", kind => {
+  const prefix = "123 ".repeat(600), text = "Where is the station?";
+  for (const chunks of [[prefix + text], [prefix, text]]) {
+    const transcript = new DialogueTranscript();
+    for (const chunk of chunks) transcript.push(kind, fragment(chunk), { A: "en", B: "es" });
+    expect(content(transcript)).toEqual([{ kind, side: "A", text: prefix + text }]);
+    expect(transcript.blocks.map(block => block.text).join("")).toBe(prefix + text);
+  }
+});
+
+it.each(["Visit example.com","Visit \"example.com\"","Visit (example.com)"])("keeps a hostname without a final sentence terminal in both streams: %s", text => {
+  for (const kind of ["input", "output"] as const) for (const size of [1, 1000]) {
+    const transcript = new DialogueTranscript();
+    for (let i = 0; i < text.length; i += size) transcript.push(kind, fragment(text.slice(i, i + size)), { A: "en", B: "es" });
+    expect(content(transcript)).toEqual([{ kind, side: "A", text }]);
   }
 });

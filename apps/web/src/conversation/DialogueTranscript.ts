@@ -3,7 +3,7 @@ import { hasSentenceTerminator } from "./sentenceBoundaries";
 import type { ConversationLanguages } from "../side/SideResolver";
 import { orderTranscriptFragments, type TranscriptFragment } from "./TranscriptFragment";
 import type { Side } from "./Turn";
-import { completeScriptSide, shortReplyEvidence, isExplicitShortReply, languageScripts, scriptPattern, splitLanguageSentences } from "./languageScripts";
+import { completeScriptSide, shortReplyEvidence, isExplicitShortReply, languageScripts, scriptPattern, splitLanguageSentences, languageDetectionSample } from "./languageScripts";
 
 export interface DialogueBlock {
   id: string;
@@ -131,10 +131,10 @@ export class DialogueTranscript {
         if (run.side !== undefined &&
             surroundingSide !== undefined && surroundingSide !== run.side &&
             (nextSide === undefined || previousSide === undefined || nextSide === previousSide)) {
-          const standalone = this.detector.detect(run.text.slice(0, 2000));
+          const standalone = this.detector.detect(languageDetectionSample(run.text));
           const embedded = previousSide !== undefined && previousSide === nextSide;
           if (!embedded && standalone.isReliable() && standalone.language === languages[run.side]) return run;
-          const context = this.detector.detect(sentenceContexts[index]!.slice(0, 2000));
+          const context = this.detector.detect(languageDetectionSample(sentenceContexts[index]!));
           if (context.isReliable() && context.language === languages[surroundingSide]) {
             return { ...run, side: surroundingSide };
           }
@@ -174,7 +174,7 @@ export class DialogueTranscript {
       const scriptSide = reply ?? completeScriptSide(sentence, languages);
       if (scriptSide !== undefined) { append(sentence, scriptSide); continue; }
       const evidence = sentence.replace(/\p{L}+$/u, "");
-      const result = this.detector.detect(evidence.slice(0, 2000));
+      const result = this.detector.detect(languageDetectionSample(evidence));
       const side = languages.A === languages.B || !result.isReliable() ? undefined
         : result.language === languages.A ? "A" : result.language === languages.B ? "B" : undefined;
       append(sentence, side);

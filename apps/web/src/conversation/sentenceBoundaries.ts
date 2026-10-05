@@ -9,6 +9,7 @@ export function splitSentences(text: string): string[] {
   const sentences: string[] = [];
   const terminal = /\p{Sentence_Terminal}/gu;
   const openQuotes: Record<string, boolean> = { '"': false, "'": false };
+  const quoteBoundaries: Record<string, number | undefined> = {};
   let start = 0;
   for (let match = terminal.exec(text); match; match = terminal.exec(text)) {
     // Decimal points are part of a value, not a speaker/sentence boundary.
@@ -25,9 +26,19 @@ export function splitSentences(text: string): string[] {
         if (/['′]/u.test(text[numberStart - 1] ?? "") && /\p{Nd}/u.test(text[numberStart - 2] ?? "")) continue;
       }
       // Distinguish an outer closing quote from an adjacent quoted reply's opener.
-      if (char in openQuotes && /\s/u.test(after) && openQuotes[char] &&
+      if (char in openQuotes && openQuotes[char] &&
           ((char === "'" && /[sS]/u.test(before)) || /\p{Nd}/u.test(before))) {
-        const nextQuote = text.indexOf(char, i + 1);
+        let nextQuote = quoteBoundaries[char];
+        if (nextQuote === undefined || (nextQuote >= 0 && nextQuote <= i)) {
+          nextQuote = text.indexOf(char, i + 1);
+          // ponytail: lexical marks share one forward scan; ambiguous prose still
+          // needs explicit token metadata rather than full grammar.
+          while (nextQuote >= 0 && (/\p{Nd}/u.test(text[nextQuote - 1] ?? "") ||
+              (char === "'" && /[sS]/u.test(text[nextQuote - 1] ?? "")))) {
+            nextQuote = text.indexOf(char, nextQuote + 1);
+          }
+          quoteBoundaries[char] = nextQuote;
+        }
         const followingQuote = nextQuote < 0 ? -1 : text.indexOf(char, nextQuote + 1);
         const quotedText = followingQuote < 0 ? "" : text.slice(nextQuote + 1, followingQuote);
         const startsNextQuote = /^\S/u.test(quotedText) && /[\p{L}\p{Nd}]/u.test(quotedText) && isSentenceComplete(quotedText);
