@@ -5718,3 +5718,213 @@ it.each(["", "12, "])("bounds a completed predecessor when a new source has unti
   });
   expect(controller.session.recentTurns.find(turn => turn.id === b1)?.sourceEndMs).toBe(1000);
 });
+
+it("routes exclusive Spanish short replies in source and output streams", async () => {
+  vi.useFakeTimers(); vi.setSystemTime(0);
+  const { controller, live, audio } = createController();
+  await controller.startWithLanguages({ A: "en", B: "es" });
+  emitVoice(audio, true);
+  live.emit({ type: "session.input_transcript.delta", delta: "Where is the train station?" });
+  live.emit({ type: "session.output_transcript.delta", delta: "Sí." });
+  expect(controller.session.activeTurn?.translatedText).toBe("Sí.");
+  await vi.advanceTimersByTimeAsync(1);
+  live.emit({ type: "session.input_transcript.delta", delta: "Sí." });
+  expect(controller.session.activeTurn).toMatchObject({ speaker: "B", originalText: "Sí." });
+  expect(controller.captionBlocks.filter(block => block.side === "B").map(block => [block.kind, block.text])).toEqual([
+    ["output", "Sí."], ["input", "Sí."],
+  ]);
+});
+
+it.each(["input", "output"] as const)("does not merge ambiguous No with Spanish %s reply before caption idle", async kind => {
+  vi.useFakeTimers(); vi.setSystemTime(0);
+  const { controller, live, audio } = createController();
+  await controller.startWithLanguages({ A: "en", B: "es" });
+  emitVoice(audio, true);
+  live.emit({ type: "session.input_transcript.delta", delta: "Where is the train station?" });
+  live.emit({ type: kind === "input" ? "session.input_transcript.delta" : "session.output_transcript.delta", delta: "No." });
+  live.emit({ type: kind === "input" ? "session.input_transcript.delta" : "session.output_transcript.delta", delta: " Sí." });
+  expect(controller.captionBlocks.filter(block => block.side === "B").map(block => block.text.trim())).toEqual(["Sí."]);
+  expect(controller.captionBlocks.filter(block => block.side === undefined).map(block => block.text.trim())).toEqual(["No."]);
+  if (kind === "input") expect(controller.session.activeTurn).toMatchObject({ speaker: "B", originalText: "Sí." });
+  else expect(controller.session.activeTurn?.translatedText).toBe("Sí.");
+});
+
+
+it.each([
+  ["3.14 liters.", "3.14 литра."],
+  ["1.5 kilograms.", "1.5 килограмма."],
+])("keeps decimal replies on one source and attaches their translation: %s", async (source, translation) => {
+  vi.useFakeTimers(); vi.setSystemTime(0);
+  const { controller, live, audio } = createController();
+  await controller.startWithLanguages({ A: "ru", B: "en" });
+  emitVoice(audio, true);
+  live.emit({ type: "session.input_transcript.delta", delta: source });
+  const id = controller.session.activeTurn!.id;
+  expect(controller.session.activeTurn).toMatchObject({ speaker: "B", originalText: source });
+  expect(controller.session.pendingTurns ?? []).toHaveLength(0);
+  live.emit({ type: "session.output_transcript.delta", delta: translation });
+  expect(controller.session.activeTurn).toMatchObject({ id, speaker: "B", originalText: source, translatedText: translation });
+  expect(controller.session.pendingTurns ?? []).toHaveLength(0);
+  expect(controller.captionBlocks.map(block => [block.kind, block.side, block.text])).toEqual([
+    ["input", "B", source], ["output", "A", translation],
+  ]);
+});
+
+
+it.each([
+  { pair: { A: "ru", B: "de" }, speaker: "B", source: "5. Oktober.", translation: "Пятое октября." },
+  { pair: { A: "ru", B: "de" }, speaker: "B", source: "1. Stock.", translation: "Первый этаж." },
+  { pair: { A: "en", B: "es" }, speaker: "A", source: "Dr. Smith is here.", translation: "El doctor Smith está aquí." },
+  { pair: { A: "en", B: "es" }, speaker: "A", source: "J. Smith is here.", translation: "El señor Smith está aquí." },
+  { pair: { A: "en", B: "es" }, speaker: "A", source: "J. R. Smith is here.", translation: "El señor Smith está aquí." },
+  { pair: { A: "en", B: "sr" }, speaker: "B", source: "Dr. Ј. Петровић.", translation: "Doctor Petrovic is here." },
+  { pair: { A: "en", B: "es" }, speaker: "A", source: "Visit example.com.", translation: "Visite la página example.com." },
+  { pair: { A: "en", B: "es" }, speaker: "A", source: "\"Dr. Smith is here.\"", translation: "El doctor Smith está aquí." },
+  { pair: { A: "en", B: "es" }, speaker: "A", source: "(Dr. Smith is here.)", translation: "El doctor Smith está aquí." },
+  { pair: { A: "ru", B: "de" }, speaker: "B", source: "\"5. Oktober.\"", translation: "Пятое октября." },
+  { pair: { A: "en", B: "es" }, speaker: "A", source: "\"J. R. Smith is here.\"", translation: "El señor Smith está aquí." },
+  { pair: { A: "en", B: "es" }, speaker: "A", source: "No. 5 is ready.", translation: "El número cinco está listo." },
+  { pair: { A: "en", B: "es" }, speaker: "A", source: "Visit example.no.", translation: "Visite la página example.no." },
+  { pair: { A: "en", B: "es" }, speaker: "A", source: "Visit \"example.com\".", translation: "Visite la página example.com." },
+  { pair: { A: "en", B: "es" }, speaker: "A", source: "Visit (example.com).", translation: "Visite la página example.com." },
+].flatMap(example => [false, true].map(chunked => ({ ...example,
+  chunks: chunked ? [example.source.slice(0, example.source.indexOf(".") + 1), example.source.slice(example.source.indexOf(".") + 1)] : [example.source],
+}))))("retains periods inside ordinal, abbreviation and hostname replies: $chunks", async ({ pair, speaker, source, translation, chunks }) => {
+  vi.useFakeTimers(); vi.setSystemTime(0);
+  const { controller, live, audio } = createController();
+  await controller.startWithLanguages(pair);
+  emitVoice(audio, true);
+  for (const delta of chunks) live.emit({ type: "session.input_transcript.delta", delta });
+  const id = controller.session.activeTurn!.id;
+  expect(controller.session.activeTurn).toMatchObject({ speaker, originalText: source });
+  expect(controller.session.pendingTurns ?? []).toHaveLength(0);
+  const dot = translation.indexOf(".") + 1;
+  const outputChunks = chunks.length > 1 && dot < translation.length ? [translation.slice(0, dot), translation.slice(dot)] : [translation];
+  for (const delta of outputChunks) live.emit({ type: "session.output_transcript.delta", delta });
+  expect(controller.session.activeTurn).toMatchObject({ id, speaker, originalText: source, translatedText: translation });
+  expect(controller.session.pendingTurns ?? []).toHaveLength(0);
+  expect(controller.captionBlocks.map(block => [block.kind, block.side, block.text])).toEqual([
+    ["input", speaker, source], ["output", speaker === "A" ? "B" : "A", translation],
+  ]);
+});
+
+
+it.each([
+  { prefix: "Visit example.", suffix: "com." },
+  { prefix: "Visit example.", suffix: "no." },
+  { prefix: 'Visit "example.', suffix: 'com".' },
+  { prefix: "Visit (example.", suffix: "com)." },
+  { prefix: "Visit example.", suffix: "com" },
+  { prefix: 'Visit "example.', suffix: 'com"' },
+  { prefix: "Visit (example.", suffix: "com)" },
+])("keeps a chunked hostname on its source before the next Spanish speaker: $prefix$suffix", async ({ prefix, suffix }) => {
+  vi.useFakeTimers(); vi.setSystemTime(0);
+  const { controller, live, audio } = createController();
+  await controller.startWithLanguages({ A: "en", B: "es" });
+  emitVoice(audio, true);
+  live.emit({ type: "session.input_transcript.delta", delta: prefix });
+  const a = controller.session.activeTurn!.id;
+  live.emit({ type: "session.input_transcript.delta", delta: suffix });
+  await vi.advanceTimersByTimeAsync(runtime.captionIdleMs);
+  expect(controller.session.activeTurn).toMatchObject({ id: a, speaker: "A", originalText: prefix + suffix });
+  live.emit({ type: "session.input_transcript.delta", delta: " La estación está cerca del supermercado." });
+  expect(controller.session.activeTurn).toMatchObject({ speaker: "B", originalText: " La estación está cerca del supermercado." });
+  expect(controller.session.pendingTurns).toHaveLength(1);
+  expect(controller.session.pendingTurns![0]).toMatchObject({ id: a, speaker: "A", originalText: prefix + suffix });
+  live.emit({ type: "session.output_transcript.delta", delta: "Visite la página example.com." });
+  expect(controller.session.pendingTurns![0]).toMatchObject({ id: a, translatedText: "Visite la página example.com." });
+});
+
+it("attaches translation to speech after a single oversized neutral prefix", async () => {
+  vi.useFakeTimers(); vi.setSystemTime(0);
+  const { controller, live, audio } = createController();
+  await controller.startWithLanguages({ A: "en", B: "es" });
+  emitVoice(audio, true);
+  const source = "123 ".repeat(600) + "Where is the station?", translation = "La estación está cerca del supermercado.";
+  live.emit({ type: "session.input_transcript.delta", delta: source });
+  const id = controller.session.activeTurn!.id;
+  expect(controller.session.activeTurn).toMatchObject({ speaker: "A", originalText: source });
+  expect(controller.session.pendingTurns ?? []).toHaveLength(0);
+  live.emit({ type: "session.output_transcript.delta", delta: translation });
+  expect(controller.session.activeTurn).toMatchObject({ id, translatedText: translation });
+  expect(controller.captionBlocks.map(block => [block.kind, block.side, block.text])).toEqual([
+    ["input", "A", source], ["output", "B", translation],
+  ]);
+});
+
+it.each([
+  { name: "No", weak: "No." },
+  { name: "OK", weak: "OK." },
+  { name: "bounded numeric prefix", weak: "123. ".repeat(400) },
+])("attaches the next known speaker's translation after unresolved text: $name", async ({ weak }) => {
+  vi.useFakeTimers(); vi.setSystemTime(0);
+  const { controller, live, audio } = createController();
+  await controller.startWithLanguages({ A: "en", B: "es" });
+  emitVoice(audio, true);
+  live.emit({ type: "session.input_transcript.delta", delta: "Where is the train station?" });
+  live.emit({ type: "session.input_transcript.delta", delta: weak });
+  live.emit({ type: "session.input_transcript.delta", delta: " Sí." });
+  const id = controller.session.activeTurn!.id;
+  expect(controller.session.activeTurn?.speaker).toBe("B");
+  expect(controller.session.activeTurn?.originalText.trim()).toBe("Sí.");
+  const unknown = controller.session.pendingTurns?.find(turn => turn.speaker === undefined);
+  expect(unknown?.originalText.trim()).toBe(weak.trim());
+  live.emit({ type: "session.output_transcript.delta", delta: "Yes." });
+  live.emit({ type: "session.output_transcript.delta", delta: " The station is nearby." });
+  expect(controller.session.activeTurn).toMatchObject({ id, translatedText: "Yes. The station is nearby." });
+  expect(controller.session.pendingTurns?.find(turn => turn.id === unknown?.id)).toMatchObject({ speaker: undefined, originalText: unknown?.originalText });
+  expect(controller.session.pendingTurns?.some(turn => turn.translationOnly)).toBe(false);
+  expect(controller.captionBlocks.filter(block => block.side === undefined).map(block => block.text).join("").trim()).toBe(weak.trim());
+});
+
+it.each([
+  { text: "Пожалуйста, откройте сайт example.com." },
+  { text: 'Пожалуйста, откройте сайт "example.com".' },
+].flatMap(example => (["input", "output"] as const).flatMap(kind => [false, true].map(chunked => ({ ...example, kind, chunked })))))("keeps a Russian hostname in its language through $kind packets (chunked=$chunked): $text", async ({ text, kind, chunked }) => {
+  vi.useFakeTimers(); vi.setSystemTime(0);
+  const { controller, live, audio } = createController();
+  await controller.startWithLanguages({ A: "ru", B: "en" });
+  emitVoice(audio, true);
+  if (kind === "output") live.emit({ type: "session.input_transcript.delta", delta: "Please open the website example.com." });
+  const dot = text.indexOf(".") + 1;
+  for (const delta of chunked ? [text.slice(0, dot), text.slice(dot)] : [text])
+    live.emit({ type: kind === "input" ? "session.input_transcript.delta" : "session.output_transcript.delta", delta });
+  await vi.advanceTimersByTimeAsync(runtime.captionIdleMs);
+  expect(controller.session.pendingTurns ?? []).toHaveLength(0);
+  expect(controller.captionBlocks.filter(block => block.kind === kind).map(block => [block.side, block.text])).toEqual([["A", text]]);
+  if (kind === "input") {
+    expect(controller.session.activeTurn).toMatchObject({ speaker: "A", originalText: text });
+    const id = controller.session.activeTurn!.id;
+    live.emit({ type: "session.output_transcript.delta", delta: "Please open the website example.com." });
+    expect(controller.session.activeTurn).toMatchObject({ id, translatedText: "Please open the website example.com." });
+  } else expect(controller.session.activeTurn).toMatchObject({ speaker: "B", translatedText: text });
+});
+
+it("keeps output independent with two exact speaker sources and an unresolved source", async () => {
+  vi.useFakeTimers(); vi.setSystemTime(0);
+  const { controller, live, audio } = createController();
+  await controller.startWithLanguages({ A: "en", B: "es" });
+  emitVoice(audio, true);
+  for (const delta of ["Where is the train station?", "No.", " Sí.", " I would like to walk there."])
+    live.emit({ type: "session.input_transcript.delta", delta });
+  expect(controller.session.activeTurn?.speaker).toBe("A");
+  live.emit({ type: "session.output_transcript.delta", delta: "Quiero ir allí a pie." });
+  expect(controller.session.activeTurn?.translatedText).toBeUndefined();
+  expect(controller.session.pendingTurns?.find(turn => turn.translationOnly)).toMatchObject({ speaker: "A", translatedText: "Quiero ir allí a pie." });
+  expect(controller.session.pendingTurns?.find(turn => turn.speaker === undefined)?.originalText.trim()).toBe("No.");
+});
+
+it("uses an unresolved source only when no exact speaker source exists", async () => {
+  vi.useFakeTimers(); vi.setSystemTime(0);
+  const { controller, live, audio } = createController();
+  await controller.startWithLanguages({ A: "en", B: "es" });
+  emitVoice(audio, true);
+  live.emit({ type: "session.input_transcript.delta", delta: "No." });
+  await vi.advanceTimersByTimeAsync(runtime.captionIdleMs);
+  const id = controller.session.activeTurn!.id;
+  expect(controller.session.activeTurn?.speaker).toBeUndefined();
+  live.emit({ type: "session.output_transcript.delta", delta: "Yes." });
+  expect(controller.session.activeTurn).toMatchObject({ id, speaker: "B", originalText: "No.", translatedText: "Yes." });
+  expect(controller.captionBlocks.find(block => block.kind === "input")).toMatchObject({ side: undefined, text: "No." });
+  expect(controller.session.pendingTurns ?? []).toHaveLength(0);
+});

@@ -94,6 +94,8 @@ export function appendOutputTextToTurn(turn: Turn, text: string, nowMs: number):
     translatedText: `${turn.translatedText ?? ""}${text}`,
     firstOutputTextAtMs: turn.firstOutputTextAtMs ?? nowMs,
     outputTextEndAtMs: nowMs,
+    outputTextAfterPlaybackEdge: turn.playbackEndAtMs !== undefined || turn.audioOutputInterrupted
+      ? true : turn.outputTextAfterPlaybackEdge,
   };
 }
 
@@ -109,7 +111,7 @@ export function markAudioOutputStarted(turn: Turn, nowMs: number): Turn {
 
 /** Pure marker for local playback finishing for this turn. */
 export function markPlaybackEnded(turn: Turn, nowMs: number): Turn {
-  return { ...turn, playbackEndAtMs: nowMs };
+  return { ...turn, playbackEndAtMs: nowMs, outputTextAfterPlaybackEdge: false };
 }
 
 /**

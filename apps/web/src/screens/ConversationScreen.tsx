@@ -7,6 +7,7 @@ import { deriveParticipantStatus } from "../components/ParticipantStatus";
 import type { LifecycleSuspendReason, RecoveryPrompt } from "../session/SessionController";
 import type { TranslationSession } from "../session/SessionState";
 import { translate, uiLocale } from "../i18n/messages";
+import type { Side, Turn } from "../conversation/Turn";
 import type { DialogueBlock } from "../conversation/DialogueTranscript";
 
 export interface ConversationScreenController {
@@ -65,30 +66,28 @@ export function ConversationScreen({
   const active = session.activeTurn;
   const sourceSpeaker = active?.speaker;
   const sourceActive = active !== undefined && active.sourceIdleAtMs === undefined;
-  const hasOutputText = (active?.translatedText ?? "").length > 0;
-  const audioOutputStarted = active?.audioOutputStarted === true;
+  const isPlaying = (turn: Turn) => turn.audioOutputStarted && !turn.audioOutputInterrupted && turn.playbackEndAtMs === undefined;
+  const hasTextActivity = (turn: Turn) => (turn.translatedText ?? "").length > 0 &&
+    ((turn.playbackEndAtMs === undefined && !turn.audioOutputInterrupted) || turn.outputTextAfterPlaybackEdge === true);
+  const outputs = [...(session.pendingTurns ?? []), ...(active ? [active] : [])].filter(turn =>
+    (turn.status === "streaming" || turn.status === "outputting") && turn.speaker !== undefined &&
+    (hasTextActivity(turn) || isPlaying(turn)));
+  const statusForSide = (side: Side) => {
+    const output = outputs.find(turn => turn.speaker !== side && isPlaying(turn))
+      ?? outputs.find(turn => turn.speaker !== side) ?? outputs[0];
+    return deriveParticipantStatus({
+      sessionState: session.state, inputReady: controller.inputReady, side, sourceSpeaker, sourceActive,
+      outputSpeaker: output?.speaker,
+      hasOutputText: (output?.translatedText ?? "").length > 0,
+      audioOutputStarted: output !== undefined && isPlaying(output),
+    });
+  };
   const terminalAlert =
     session.state === "error" || session.state === "ending"
       ? controller.ownerError === undefined ? undefined : t(controller.ownerError)
       : undefined;
-  const statusA = deriveParticipantStatus({
-    sessionState: session.state,
-    inputReady: controller.inputReady,
-    side: "A",
-    sourceSpeaker,
-    sourceActive,
-    hasOutputText,
-    audioOutputStarted,
-  });
-  const statusB = deriveParticipantStatus({
-    sessionState: session.state,
-    inputReady: controller.inputReady,
-    side: "B",
-    sourceSpeaker,
-    sourceActive,
-    hasOutputText,
-    audioOutputStarted,
-  });
+  const statusA = statusForSide("A");
+  const statusB = statusForSide("B");
 
   return (
     <section className="conversation-screen" lang={ownerLocale}>

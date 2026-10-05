@@ -22,6 +22,7 @@ export function deriveParticipantStatus(input: {
   inputReady: boolean;
   side: Side;
   sourceSpeaker?: Side;
+  outputSpeaker?: Side;
   sourceActive: boolean;
   hasOutputText: boolean;
   audioOutputStarted: boolean;
@@ -39,6 +40,7 @@ export function deriveParticipantStatus(input: {
   if (input.sourceActive && input.sourceSpeaker === undefined) return "DETECTING";
 
   const outputActive = input.hasOutputText || input.audioOutputStarted;
+  const outputSpeaker = input.outputSpeaker ?? input.sourceSpeaker;
   const recipientOutputLabel: ParticipantStatusLabel = input.audioOutputStarted
     ? "SPEAKING"
     : "TRANSLATING";
@@ -47,11 +49,11 @@ export function deriveParticipantStatus(input: {
     if (input.side === input.sourceSpeaker) {
       return "LISTENING";
     }
-    return outputActive ? recipientOutputLabel : "WAITING";
+    return outputActive && outputSpeaker !== input.side ? recipientOutputLabel : "WAITING";
   }
 
-  if (outputActive && input.sourceSpeaker !== undefined) {
-    if (input.side === input.sourceSpeaker) {
+  if (outputActive && outputSpeaker !== undefined) {
+    if (input.side === outputSpeaker) {
       return "WAITING";
     }
     return recipientOutputLabel;

@@ -4,6 +4,7 @@ import { fileURLToPath } from "node:url";
 import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import { Profiler } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { sessionReducer } from "../session/sessionReducer";
 import type { Side, Turn } from "../conversation/Turn";
 import type { DialogueBlock } from "../conversation/DialogueTranscript";
 import type { LifecycleSuspendReason, RecoveryPrompt } from "../session/SessionController";
@@ -540,6 +541,66 @@ describe("ConversationScreen actions", () => {
     render(<ConversationScreen controller={hidden} />);
     expect(screen.queryByTestId("rotate-overlay")).not.toBeInTheDocument();
   });
+});
+
+it.each([undefined, "idle", "speaking"])("shows pending A playback on B with newer source %s", state => {
+  const controller = new FakeConversationController(session({
+    state: "outputting",
+    pendingTurns: [turn({ id: "old-a", speaker: "A", sourceIdleAtMs: 1, audioOutputStarted: true })],
+    activeTurn: state === undefined ? undefined : turn({ id: "new-b", speaker: "B", sourceIdleAtMs: state === "idle" ? 2 : undefined }),
+  }));
+  render(<ConversationScreen controller={controller} />);
+  expect(screen.getByTestId("participant-status-B")).toHaveTextContent(state === "speaking" ? "Слушаю" : "Перевод");
+  expect(screen.getByTestId("participant-status-A")).toHaveTextContent("Ожидание");
+});
+it.each(["ended", "interrupted", "completed"])("does not show stale pending audio as playing when %s", state => {
+  const controller = new FakeConversationController(session({ pendingTurns: [turn({
+    id: "old-a", speaker: "A", sourceIdleAtMs: 1, audioOutputStarted: true, translatedText: "Hola.",
+    playbackEndAtMs: state === "ended" ? 10 : undefined,
+    audioOutputInterrupted: state === "interrupted", status: state === "completed" ? "completed" : "outputting",
+  })] }));
+  render(<ConversationScreen controller={controller} />);
+  expect(screen.getByTestId("participant-status-B")).toHaveTextContent("Говорите");
+});
+it("shows late pending translation text on its recipient while another source is idle", () => {
+  const controller = new FakeConversationController(session({
+    pendingTurns: [turn({ id: "old-a", speaker: "A", sourceIdleAtMs: 1, translatedText: "Hola." })],
+    activeTurn: turn({ id: "new-b", speaker: "B", sourceIdleAtMs: 2 }),
+  }));
+  render(<ConversationScreen controller={controller} />);
+  expect(screen.getByTestId("participant-status-B")).toHaveTextContent("Перевожу");
+  expect(screen.getByTestId("participant-status-A")).toHaveTextContent("Ожидание");
+});
+
+it("shows each recipient its own unfinished output when both sides have translations", () => {
+  const controller = new FakeConversationController(session({
+    pendingTurns: [turn({ id: "old-a", speaker: "A", sourceIdleAtMs: 1, translatedText: "Hola." })],
+    activeTurn: turn({ id: "new-b", speaker: "B", sourceIdleAtMs: 2, translatedText: "Hello.", audioOutputStarted: true }),
+  }));
+  render(<ConversationScreen controller={controller} />);
+  expect(screen.getByTestId("participant-status-A")).toHaveTextContent("Перевод");
+  expect(screen.getByTestId("participant-status-B")).toHaveTextContent("Перевожу");
+});
+
+
+it.each(["active", "pending"].flatMap(location => (["PLAYBACK_ENDED", "AUDIO_INTERRUPTED"] as const).flatMap(edge => [1000, 1050].map(nowMs => ({ location, edge, nowMs })))))("shows fresh text at $nowMs after $edge for a $location source", ({ location, edge, nowMs }) => {
+  const source = turn({ id: "a", speaker: "A", translatedText: "Hola.", audioOutputStarted: true,
+    outputTextEndAtMs: 900, sourceIdleAtMs: location === "pending" ? 1 : undefined });
+  const controller = new FakeConversationController(session(location === "active"
+    ? { activeTurn: source } : { pendingTurns: [source] }));
+  controller.session = sessionReducer(controller.session, { type: edge, turnId: "a", nowMs: 1000 });
+  const view = render(<ConversationScreen controller={controller} />);
+  expect(screen.getByTestId("participant-status-B")).toHaveTextContent(location === "active" ? "Ожидание" : "Говорите");
+  controller.session = sessionReducer(controller.session, { type: "OUTPUT_DELTA", turnId: "a", text: " Más.", nowMs });
+  view.rerender(<ConversationScreen controller={controller} />);
+  expect(screen.getByTestId("participant-status-B")).toHaveTextContent("Перевожу");
+  expect(screen.getByTestId("participant-status-A")).toHaveTextContent(location === "active" ? "Слушаю" : "Ожидание");
+  expect((controller.session.activeTurn ?? controller.session.pendingTurns![0])?.playbackEndAtMs).toBe(1000);
+  expect((controller.session.activeTurn ?? controller.session.pendingTurns![0])?.audioOutputInterrupted).toBe(edge === "AUDIO_INTERRUPTED" ? true : undefined);
+  controller.session = sessionReducer(controller.session, { type: edge, turnId: "a", nowMs });
+  view.rerender(<ConversationScreen controller={controller} />);
+  expect(screen.getByTestId("participant-status-B")).toHaveTextContent(location === "active" ? "Ожидание" : "Говорите");
+  expect((controller.session.activeTurn ?? controller.session.pendingTurns![0])?.translatedText).toBe("Hola. Más.");
 });
 
 describe("non-interrupting playback switch", () => {

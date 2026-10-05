@@ -1,7 +1,8 @@
 import type { ConversationLanguages } from "../side/SideResolver";
 import type { Side } from "./Turn";
 import { shortReplies } from "./shortReplies";
-import { isSentenceComplete } from "./sentenceBoundaries";
+import { isSentenceComplete, splitSentences } from "./sentenceBoundaries";
+import type { eld } from "eld/extrasmall";
 
 // Contemporary alternate orthographies from CLDR languageData (same pinned source/license as shortReplies).
 // Phonetic transliterations and historical orthographies are not inferred from a bare language code.
@@ -48,4 +49,80 @@ export function isExplicitShortReply(text: string, language: string): boolean {
   return words.length > 0 && words.every(word => shortReplies[language]?.includes(word) ||
     (language === "en" && /^(yes|no|hi|hey|bye|stop|wait|why|what|how|who|when|where|sure|fine)$/.test(word)) ||
     (language === "ru" && /^(да|нет|ага|угу|стой|стоп|как|что|кто|где|эй)$/.test(word)));
+}
+
+// A short-reply list is not a vocabulary: absence cannot prove another language.
+// These canonical answers have been checked for the listed same-script pairs.
+const pairReplies: Readonly<Record<string, Readonly<Record<string, readonly string[]>>>> = {
+  "en/es": { en: ["yes"], es: ["sí"] },
+  "en/fr": { en: ["yes", "no"], fr: ["oui", "non"] },
+};
+export function shortReplyEvidence(text: string, languages: ConversationLanguages): Side | "ambiguous" | undefined {
+  if (!isExplicitShortReply(text, languages.A) && !isExplicitShortReply(text, languages.B)) return undefined;
+  const scriptSide = completeScriptSide(text, languages);
+  if (scriptSide !== undefined) return scriptSide;
+  const replies = pairReplies[[languages.A, languages.B].sort().join("/")];
+  const words = text.normalize("NFC").toLowerCase().match(/[\p{L}\p{M}]+/gu) ?? [];
+  const a = words.length > 0 && words.every(word => replies?.[languages.A]?.includes(word));
+  const b = words.length > 0 && words.every(word => replies?.[languages.B]?.includes(word));
+  return a === b ? "ambiguous" : a ? "A" : "B";
+}
+
+/** Neutral leading syntax must not consume the bounded language sample. */
+export function languageDetectionSample(text: string): string {
+  const start = text.search(/\p{L}/u);
+  return start < 0 ? "" : text.slice(start, start + 2000);
+}
+
+/** A lowercase label can finish a dotted token, including its closing punctuation. */
+export function isDottedContinuation(before: string, after: string): boolean {
+  return /\p{Script_Extensions=Latin}\.$/u.test(before) &&
+    /^(?=\p{Ll})\p{Script_Extensions=Latin}[\p{Script_Extensions=Latin}\p{M}\p{Nd}./_-]*[\p{Pe}\p{Pf}"']*\.?[\p{Pe}\p{Pf}"']*\s*$/u.test(after);
+}
+
+/** Keep weak period prefixes and dotted tokens until language context is available. */
+export function splitLanguageSentences(text: string, languages: ConversationLanguages, detector: ReturnType<typeof eld.newInstance>): string[] {
+  detector.setLanguageSubset([languages.A, languages.B]);
+  const allowed = scriptPattern([...languageScripts(languages.A), ...languageScripts(languages.B)]);
+  const covered = (text: string) => (text.match(/\p{L}/gu) ?? []).every(letter => allowed?.test(letter));
+  const reliable = (text: string) => {
+    const result = detector.detect(languageDetectionSample(text));
+    return result.isReliable() && (result.language === languages.A || result.language === languages.B);
+  };
+  const candidates = splitSentences(text), sentences: string[] = [];
+  let prefix = "", prefixEvidence = "", prefixCovered = true;
+  let prefixScriptSide: Side | "ambiguous" | undefined;
+  for (const [index, sentence] of candidates.entries()) {
+    const next = candidates[index + 1];
+    // Opening quotes/brackets are neutral syntax; No. is a number label only before a number.
+    const continuation = /^[\s\p{Ps}\p{Pi}"']*(?:\p{Nd}+|Dr|Mr|Mrs|Ms|Prof|Sr|Jr)\.\s*$/iu.test(sentence) ||
+      /^[\s\p{Ps}\p{Pi}"']*\p{Lu}\.\s*$/u.test(sentence) ||
+      (/^[\s\p{Ps}\p{Pi}"']*No\.\s*$/iu.test(sentence) && /^\s*\p{Nd}/u.test(next ?? ""));
+    const reply = continuation || (prefix && isDottedContinuation(candidates[index - 1]!, sentence))
+      ? undefined : shortReplyEvidence(sentence, languages);
+    // Preserve standalone replies and leave room for new evidence in the detection sample.
+    if (prefix && (reply !== undefined || prefix.length + sentence.length > 2000)) {
+      sentences.push(prefix); prefix = ""; prefixEvidence = ""; prefixCovered = true; prefixScriptSide = undefined;
+    }
+    prefix += sentence;
+    // Inspect each piece once, retaining only the bounded sample used by ELD.
+    prefixCovered &&= covered(sentence);
+    if (/\p{L}/u.test(sentence)) {
+      const side = completeScriptSide(sentence, languages);
+      // All letters in the prefix must share exclusive evidence; shared letters cancel it.
+      prefixScriptSide = prefixScriptSide === undefined ? side ?? "ambiguous" : prefixScriptSide === side ? side : "ambiguous";
+    }
+    if (prefixEvidence.length < 2000) prefixEvidence += languageDetectionSample(sentence).slice(0, 2000 - prefixEvidence.length);
+    // ponytail: only common titles, numeric ordinals and initials defer a period;
+    // other abbreviations need explicit evidence or token-boundary metadata.
+    if (continuation && reply === undefined &&
+        (prefixScriptSide === undefined || prefixScriptSide === "ambiguous") && prefixCovered && !reliable(prefixEvidence)) continue;
+    // An unresolved contiguous suffix can finish a hostname, rather than start a source.
+    if (next && isDottedContinuation(sentence, next) &&
+        (shortReplyEvidence(next, languages) === undefined || shortReplyEvidence(next, languages) === "ambiguous") &&
+        covered(next) && !reliable(next)) continue;
+    sentences.push(prefix); prefix = ""; prefixEvidence = ""; prefixCovered = true; prefixScriptSide = undefined;
+  }
+  if (prefix) sentences.push(prefix);
+  return sentences;
 }

@@ -1,9 +1,9 @@
 import { eld } from "eld/extrasmall";
-import { hasSentenceTerminator, splitSentences } from "./sentenceBoundaries";
+import { hasSentenceTerminator } from "./sentenceBoundaries";
 import type { ConversationLanguages } from "../side/SideResolver";
 import { orderTranscriptFragments, type TranscriptFragment } from "./TranscriptFragment";
 import type { Side } from "./Turn";
-import { completeScriptSide, isExplicitShortReply, languageScripts, scriptPattern } from "./languageScripts";
+import { completeScriptSide, shortReplyEvidence, isExplicitShortReply, languageScripts, scriptPattern, splitLanguageSentences, languageDetectionSample, isDottedContinuation } from "./languageScripts";
 
 export interface DialogueBlock {
   id: string;
@@ -109,7 +109,7 @@ export class DialogueTranscript {
       // A name or borrowed word inside a sentence is not a speaker change.
       // Use the neighbouring sentence context, while preserving complete replies.
       const sentences = runs.flatMap(run => run.side === undefined ? [run]
-        : splitSentences(run.text).map(text => ({ text, side: run.side })));
+        : splitLanguageSentences(run.text, languages, this.detector).map(text => ({ text, side: run.side })));
       const sentenceContexts: string[] = [];
       let contextStart = 0, contextText = "";
       for (let index = 0; index < sentences.length; index++) {
@@ -131,10 +131,14 @@ export class DialogueTranscript {
         if (run.side !== undefined &&
             surroundingSide !== undefined && surroundingSide !== run.side &&
             (nextSide === undefined || previousSide === undefined || nextSide === previousSide)) {
-          const standalone = this.detector.detect(run.text.slice(0, 2000));
+          const standalone = this.detector.detect(languageDetectionSample(run.text));
           const embedded = previousSide !== undefined && previousSide === nextSide;
-          if (!embedded && standalone.isReliable() && standalone.language === languages[run.side]) return run;
-          const context = this.detector.detect(sentenceContexts[index]!.slice(0, 2000));
+          const dot = run.text.indexOf(".");
+          const dottedToken = !/\s/u.test(run.text.trim()) && dot >= 0 &&
+            isDottedContinuation(run.text.slice(0, dot + 1), run.text.slice(dot + 1));
+          // A domain label's Latin spelling is not evidence of an English speaker.
+          if (!embedded && !dottedToken && standalone.isReliable() && standalone.language === languages[run.side]) return run;
+          const context = this.detector.detect(languageDetectionSample(sentenceContexts[index]!));
           if (context.isReliable() && context.language === languages[surroundingSide]) {
             return { ...run, side: surroundingSide };
           }
@@ -168,11 +172,13 @@ export class DialogueTranscript {
     }
     // ponytail: same-script switches require sentence evidence in this prototype;
     // no reliable diarization can be inferred from a bare ambiguous word.
-    for (const sentence of splitSentences(text)) {
-      const scriptSide = completeScriptSide(sentence, languages);
+    for (const sentence of splitLanguageSentences(text, languages, this.detector)) {
+      const reply = shortReplyEvidence(sentence, languages);
+      if (reply === "ambiguous") { append(sentence); continue; }
+      const scriptSide = reply ?? completeScriptSide(sentence, languages);
       if (scriptSide !== undefined) { append(sentence, scriptSide); continue; }
       const evidence = sentence.replace(/\p{L}+$/u, "");
-      const result = this.detector.detect(evidence.slice(0, 2000));
+      const result = this.detector.detect(languageDetectionSample(evidence));
       const side = languages.A === languages.B || !result.isReliable() ? undefined
         : result.language === languages.A ? "A" : result.language === languages.B ? "B" : undefined;
       append(sentence, side);

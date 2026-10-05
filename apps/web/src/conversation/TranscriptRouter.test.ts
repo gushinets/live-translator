@@ -160,3 +160,95 @@ it.each([["sr", "Да."], ["pa", "ਹਾਂ।"], ["ms", "يا."]])("routes uniq
 it.each(["I would like to visit Москва tomorrow.", "I use Гугл every day.", "Please ask Иван to call me tomorrow."])("routes English with embedded Cyrillic names in an en/sr pair: %s", text => {
   expect(new TranscriptRouter().push(fragment(text), { A: "en", B: "sr" })[0]?.side).toBe("A");
 });
+
+it.each([["es", "Sí."], ["fr", "Oui."]])("routes an exclusive short %s reply despite shared script", (language, text) => {
+  const router = new TranscriptRouter();
+  expect(router.push(fragment(text), { A: "en", B: language }, "A", "Where is ")[0]?.side).toBe("B");
+});
+it("keeps shared No ambiguous in an English/Spanish pair", () => {
+  const router = new TranscriptRouter();
+  expect(router.push(fragment("No."), { A: "en", B: "es" }, "A")).toEqual([]);
+  expect(router.flush({ A: "en", B: "es" }, true)[0]).toMatchObject({ side: undefined });
+});
+
+it.each([{ chunks: ["No.", " Sí."] }, { chunks: ["No. Sí."] }])("does not reassign a buffered ambiguous sentence: $chunks", ({ chunks }) => {
+  const router = new TranscriptRouter();
+  const routed = chunks.flatMap(text => router.push(fragment(text), { A: "en", B: "es" }, "A"));
+  routed.push(...router.flush({ A: "en", B: "es" }, true));
+  expect(routed.map(group => ({ side: group.side, text: group.fragments.map(part => part.text).join("").trim() }))).toEqual([
+    { side: undefined, text: "No." }, { side: "B", text: "Sí." },
+  ]);
+  expect(routed.flatMap(group => group.fragments).map(part => part.text).join("")).toBe(chunks.join(""));
+});
+it.each([["en", "it", "Fine."], ["ru", "uk", "Стоп."]])("does not mistake a partial lexicon for exclusive evidence in %s/%s", (A, B, text) => {
+  const router = new TranscriptRouter();
+  const routed = [...router.push(fragment(text), { A, B }), ...router.flush({ A, B }, true)];
+  expect(routed).toEqual([{ side: undefined, fragments: [fragment(text)] }]);
+});
+
+it("does not reuse old Russian context after an English sentence in the same packet", () => {
+  const router = new TranscriptRouter();
+  const routed = router.push(fragment("The station is straight ahead. Google."), { A: "ru", B: "en" }, "A", "Я использую ");
+  expect(routed.map(group => group.side)).toEqual(["B", "B"]);
+});
+it("preserves timing when one packet contains an ambiguous reply and an interruption", () => {
+  const part = { id: "mixed", text: "No. Sí.", receivedAtMs: 1000, startMs: 42, endMs: 500 };
+  const routed = new TranscriptRouter().push(part, { A: "en", B: "es" }, "A");
+  expect(routed.map(group => ({ side: group.side, text: group.fragments.map(fragment => fragment.text).join("") }))).toEqual([
+    { side: undefined, text: "No. " }, { side: "B", text: "Sí." },
+  ]);
+  expect(routed.flatMap(group => group.fragments).map(({ receivedAtMs, startMs, endMs }) => [receivedAtMs, startMs, endMs]))
+    .toEqual([[1000, 42, 500], [1000, 42, 500]]);
+});
+
+it("retains closing quote ownership across sentences routed from one packet", () => {
+  const text = '"Where is the station? The station is straight ahead."';
+  const routed = new TranscriptRouter().push(fragment(text), { A: "en", B: "es" }, "B");
+  expect(routed.map(group => group.side)).toEqual(["A", "A"]);
+  expect(routed.flatMap(group => group.fragments).map(part => part.text).join("")).toBe(text);
+});
+
+it.each(["OK.", "Uh."])("keeps an unlisted weak utterance separate from the next language: %s", weak => {
+  const pair = { A: "en", B: "es" }, reply = "La estación está cerca del supermercado.";
+  for (const chunks of [[weak, " " + reply], [weak + " " + reply]]) {
+    const router = new TranscriptRouter();
+    const groups = chunks.flatMap(text => router.push(fragment(text), pair, "A"));
+    groups.push(...router.flush(pair, true));
+    expect(groups.map(group => ({ side: group.side, text: group.fragments.map(part => part.text).join("").trim() })))
+      .toEqual([{ side: undefined, text: weak }, { side: "B", text: reply }]);
+    expect(groups.flatMap(group => group.fragments).map(part => part.text).join("")).toBe(chunks.join(""));
+  }
+});
+
+it("routes new language evidence after an exhausted detection prefix", () => {
+  for (const count of [399, 400]) {
+    const router = new TranscriptRouter(), pair = { A: "en", B: "es" };
+    const prefix = "123. ".repeat(count), text = "Where is the station?";
+    const groups = [...router.push(fragment(prefix), pair), ...router.push(fragment(text), pair), ...router.flush(pair, true)];
+    expect(groups.map(group => ({ side: group.side, text: group.fragments.map(part => part.text).join("") })))
+      .toEqual([{ side: undefined, text: prefix }, { side: "A", text }]);
+  }
+});
+
+it("samples language after a single oversized neutral prefix", () => {
+  const router = new TranscriptRouter(), pair = { A: "en", B: "es" };
+  const part = fragment("123 ".repeat(600) + "Where is the station?");
+  expect(router.push(part, pair)).toEqual([{ side: "A", fragments: [part] }]);
+});
+
+it.each(["Visit example.com","Visit \"example.com\"","Visit (example.com)"])("keeps a hostname without a final sentence terminal on one source: %s", text => {
+  const router = new TranscriptRouter(), pair = { A: "en", B: "es" }, part = fragment(text);
+  const groups = [...router.push(part, pair), ...router.flush(pair, true)];
+  expect(groups).toEqual([{ side: "A", fragments: [part] }]);
+});
+
+it.each([
+  { prefix: "Visit example.", suffix: "com" },
+  { prefix: 'Visit "example.', suffix: 'com"' },
+  { prefix: "Visit (example.", suffix: "com)" },
+])("keeps an unfinished hostname suffix on its source after idle: $prefix$suffix", ({ prefix, suffix }) => {
+  const router = new TranscriptRouter(), pair = { A: "en", B: "es" };
+  const first = fragment(prefix), last = fragment(suffix);
+  const groups = [...router.push(first, pair), ...router.push(last, pair, "A", prefix), ...router.flush(pair, true)];
+  expect(groups).toEqual([{ side: "A", fragments: [first] }, { side: "A", fragments: [last] }]);
+});

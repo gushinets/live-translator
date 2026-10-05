@@ -293,3 +293,174 @@ it.each(["I would like to visit Москва tomorrow.", "I use Гугл every d
   transcript.push("input", fragment(text), { A: "en", B: "sr" });
   expect(content(transcript)).toEqual([{ kind: "input", side: "A", text }]);
 });
+
+it.each(["input", "output"] as const)("keeps same-script short replies visible in %s", kind => {
+  const transcript = new DialogueTranscript();
+  for (const character of "Sí.") transcript.push(kind, fragment(character), { A: "en", B: "es" });
+  expect(content(transcript)).toEqual([{ kind, side: "B", text: "Sí." }]);
+});
+it.each(["“Where is the station?”", "«Where is the station?»", "(Where is the station?)", '"Where is the station?"'])("retains closing punctuation: %s", text => {
+  for (const kind of ["input", "output"] as const) for (const size of [1, 1000]) {
+    const transcript = new DialogueTranscript();
+    for (let i = 0; i < text.length; i += size) transcript.push(kind, fragment(text.slice(i, i + size)), { A: "en", B: "es" });
+    expect(content(transcript)).toEqual([{ kind, side: "A", text }]);
+    transcript.push(kind, fragment(" “La estación está cerca del supermercado.”"), { A: "en", B: "es" });
+    expect(content(transcript)).toEqual([{ kind, side: "A", text }, { kind, side: "B", text: "“La estación está cerca del supermercado.”" }]);
+  }
+});
+
+it("does not turn shared No into exclusive English or Spanish evidence", () => {
+  const transcript = new DialogueTranscript();
+  transcript.push("input", fragment("No."), { A: "en", B: "es" });
+  expect(content(transcript)).toEqual([{ kind: "input", side: undefined, text: "No." }]);
+});
+
+it.each(['"', "'"])("keeps the next sentence's unmatched opening %s on its language pane", quote => {
+  const opening = "Where is the station?", reply = quote + "La estación está cerca del supermercado." + quote;
+  for (const kind of ["input", "output"] as const) for (const size of [1, 1000]) {
+    const transcript = new DialogueTranscript();
+    const text = opening + reply;
+    for (let i = 0; i < text.length; i += size) transcript.push(kind, fragment(text.slice(i, i + size)), { A: "en", B: "es" });
+    expect(content(transcript)).toEqual([{ kind, side: "A", text: opening }, { kind, side: "B", text: reply }]);
+  }
+});
+it.each([["en", "it", "Fine."], ["ru", "uk", "Стоп."]])("keeps lexical overlap unassigned in %s/%s captions", (A, B, text) => {
+  for (const kind of ["input", "output"] as const) {
+    const transcript = new DialogueTranscript();
+    transcript.push(kind, fragment(text), { A, B });
+    expect(content(transcript)).toEqual([{ kind, side: undefined, text }]);
+  }
+});
+
+it.each(['"Where is the station?"', '"Where is the station?".', "I don't know. Where is the station?"])("keeps matched quotes and apostrophes before adjacent quoted speech: %s", opening => {
+  const reply = '"La estación está cerca del supermercado."';
+  const transcript = new DialogueTranscript();
+  transcript.push("input", fragment(opening + reply), { A: "en", B: "es" });
+  expect(content(transcript)).toEqual([{ kind: "input", side: "A", text: opening }, { kind: "input", side: "B", text: reply }]);
+});
+
+
+it.each(["input", "output"] as const)("retains quoted replies after measurement marks in %s", kind => {
+  const opening = 'He is 6\'2" tall.', reply = '"Sí."';
+  for (const size of [1, 1000]) {
+    const transcript = new DialogueTranscript();
+    const text = opening + " " + reply;
+    for (let i = 0; i < text.length; i += size) transcript.push(kind, fragment(text.slice(i, i + size)), { A: "en", B: "es" });
+    expect(content(transcript)).toEqual([{ kind, side: "A", text: opening }, { kind, side: "B", text: reply }]);
+  }
+});
+
+
+it.each([
+  { text: '"He is 6\'2" tall."' },
+  { text: '"It is 12" long."' },
+  { text: "'The board is 6' long.'" },
+  { text: "'The dogs' owner is here.'" },
+  { text: "\"It is 12\", not 10.\"" },
+  { text: "\"The board is 12\".\"" },
+  { text: "'It is 6', not 5.'" },
+  { text: "\"The board is 12\" x 6\" long.\"" },
+  { text: "'The dogs' collars and cats' toys are here.'" },
+].flatMap(example => (["input", "output"] as const).map(kind => ({ ...example, kind }))))("retains outer quotes around measurement/possessive marks in $kind: $text", ({ text, kind }) => {
+  for (const size of [1, 1000]) {
+    const transcript = new DialogueTranscript();
+    const reply = '"Sí."', source = text + " " + reply;
+    for (let i = 0; i < source.length; i += size) transcript.push(kind, fragment(source.slice(i, i + size)), { A: "en", B: "es" });
+    expect(content(transcript)).toEqual([{ kind, side: "A", text }, { kind, side: "B", text: reply }]);
+  }
+});
+
+
+it.each(["input", "output"] as const)("keeps a hostname separate from a following Spanish sentence in %s", kind => {
+  const transcript = new DialogueTranscript();
+  const first = "Visit example.com.", second = "La estación está cerca del supermercado.";
+  transcript.push(kind, fragment(first + " " + second), { A: "en", B: "es" });
+  expect(content(transcript)).toEqual([{ kind, side: "A", text: first }, { kind, side: "B", text: second }]);
+});
+
+
+it("retains both panes' quotes after a quoted noun and adjacent reply", () => {
+  const transcript = new DialogueTranscript();
+  transcript.push("input", fragment("'Dogs' owner is here.'Sí.'"), { A: "en", B: "es" });
+  expect(content(transcript)).toEqual([
+    { kind: "input", side: "A", text: "'Dogs' owner is here." }, { kind: "input", side: "B", text: "'Sí.'" },
+  ]);
+});
+
+
+it("retains an outer possessive quote before an unquoted other-language sentence", () => {
+  const transcript = new DialogueTranscript();
+  const first = "'The dogs' owner is here.'", second = "La estación está cerca del supermercado.";
+  transcript.push("input", fragment(first + second), { A: "en", B: "es" });
+  expect(content(transcript)).toEqual([{ kind: "input", side: "A", text: first }, { kind: "input", side: "B", text: second }]);
+});
+
+it.each(["input", "output"] as const)("keeps an unlisted weak utterance unassigned before another language in %s", kind => {
+  const reply = "La estación está cerca del supermercado.";
+  for (const weak of ["OK.", "Uh."]) for (const chunks of [[weak, " " + reply], [weak + " " + reply]]) {
+    const transcript = new DialogueTranscript();
+    for (const text of chunks) transcript.push(kind, fragment(text), { A: "en", B: "es" });
+    expect(content(transcript)).toEqual([{ kind, side: undefined, text: weak }, { kind, side: "B", text: reply }]);
+    expect(transcript.blocks.map(block => block.text).join("")).toBe(chunks.join(""));
+  }
+});
+
+it.each(["input", "output"] as const)("shows new language evidence after an exhausted detection prefix in %s", kind => {
+  for (const count of [399, 400]) {
+    const transcript = new DialogueTranscript();
+    const prefix = "123. ".repeat(count), text = "Where is the station?";
+    transcript.push(kind, fragment(prefix), { A: "en", B: "es" });
+    transcript.push(kind, fragment(text), { A: "en", B: "es" });
+    expect(content(transcript)).toEqual([{ kind, side: undefined, text: prefix.trim() }, { kind, side: "A", text }]);
+    expect(transcript.blocks.map(block => block.text).join("")).toBe(prefix + text);
+  }
+});
+
+it.each(['"2 personas están aquí."', '"¿Dónde está la estación?"', '"(2 personas están aquí.)"'])("keeps a numeric quotation separate from the next quoted reply in both streams: %s", reply => {
+  const source = 'He said "123" and left.';
+  for (const kind of ["input", "output"] as const) for (const size of [1, 1000]) {
+    const transcript = new DialogueTranscript(), text = source + reply;
+    for (let i = 0; i < text.length; i += size) transcript.push(kind, fragment(text.slice(i, i + size)), { A: "en", B: "es" });
+    expect(content(transcript)).toEqual([{ kind, side: "A", text: source }, { kind, side: "B", text: reply }]);
+    expect(transcript.blocks.map(block => block.text).join("")).toBe(text);
+  }
+});
+
+it.each(["input", "output"] as const)("samples language after a single oversized neutral prefix in %s", kind => {
+  const prefix = "123 ".repeat(600), text = "Where is the station?";
+  for (const chunks of [[prefix + text], [prefix, text]]) {
+    const transcript = new DialogueTranscript();
+    for (const chunk of chunks) transcript.push(kind, fragment(chunk), { A: "en", B: "es" });
+    expect(content(transcript)).toEqual([{ kind, side: "A", text: prefix + text }]);
+    expect(transcript.blocks.map(block => block.text).join("")).toBe(prefix + text);
+  }
+});
+
+it.each(["Visit example.com","Visit \"example.com\"","Visit (example.com)"])("keeps a hostname without a final sentence terminal in both streams: %s", text => {
+  for (const kind of ["input", "output"] as const) for (const size of [1, 1000]) {
+    const transcript = new DialogueTranscript();
+    for (let i = 0; i < text.length; i += size) transcript.push(kind, fragment(text.slice(i, i + size)), { A: "en", B: "es" });
+    expect(content(transcript)).toEqual([{ kind, side: "A", text }]);
+  }
+});
+
+it.each(["I loved the '90s.","I left 'cause it was late.","'90s were great. Music was better.'","'cause it was late. I left early.'","'cause I don't know. I left early.'","'cause 'twas late. I left early.'"])("keeps leading lexical apostrophes in both caption streams: %s", source => {
+  for (const kind of ["input", "output"] as const) for (const size of [1, 1000]) {
+    const transcript = new DialogueTranscript(), text = source + " 'Sí.'";
+    for (let i = 0; i < text.length; i += size) transcript.push(kind, fragment(text.slice(i, i + size)), { A: "en", B: "es" });
+    expect(content(transcript)).toEqual([{ kind, side: "A", text: source }, { kind, side: "B", text: "'Sí.'" }]);
+    expect(transcript.blocks.map(block => block.text).join("")).toBe(text);
+  }
+});
+
+it.each(['"La estación está cerca del supermercado', '"La estación está cerca del supermercado"'])("preserves an unpunctuated quoted tail in both caption streams: %s", reply => {
+  const source = 'He said "123" and left.';
+  for (const kind of ["input", "output"] as const) for (const size of [1, 1000]) {
+    const transcript = new DialogueTranscript(), text = source + reply;
+    for (let i = 0; i < text.length; i += size) {
+      transcript.push(kind, fragment(text.slice(i, i + size)), { A: "en", B: "es" });
+      if (i + size > source.length + 1) expect(content(transcript)[0]).toEqual({ kind, side: "A", text: source });
+    }
+    expect(content(transcript)).toEqual([{ kind, side: "A", text: source }, { kind, side: "B", text: reply }]);
+  }
+});
