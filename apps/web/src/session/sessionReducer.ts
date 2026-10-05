@@ -381,7 +381,7 @@ export function sessionReducer(session: TranslationSession, action: SessionActio
       return { ...updated, state: session.state === "listening" ? "outputting" : session.state };
     }
     case "AUDIO_INTERRUPTED":
-      return updateSessionTurn(session, action.turnId, turn => ({ ...turn, audioOutputInterrupted: true, playbackEndAtMs: action.nowMs }));
+      return updateSessionTurn(session, action.turnId, turn => markPlaybackEnded({ ...turn, audioOutputInterrupted: true }, action.nowMs));
     case "PLAYBACK_ENDED":
       assertOutputEventAllowed(session);
       return updateSessionTurn(session, action.turnId ?? requireActiveTurn(session).id, turn => markPlaybackEnded(turn, action.nowMs));

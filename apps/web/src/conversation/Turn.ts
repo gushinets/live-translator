@@ -41,6 +41,8 @@ export interface Turn {
   firstOutputTextAtMs?: number;
   firstAudibleOutputAtMs?: number;
   outputTextEndAtMs?: number;
+  /** An output delta arrived after the latest playback-end or interruption event. */
+  outputTextAfterPlaybackEdge?: boolean;
   audioOutputStarted: boolean;
   audioOutputInterrupted?: boolean;
   playbackEndAtMs?: number;

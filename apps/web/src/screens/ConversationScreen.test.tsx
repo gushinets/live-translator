@@ -583,7 +583,7 @@ it("shows each recipient its own unfinished output when both sides have translat
 });
 
 
-it.each(["active", "pending"].flatMap(location => (["PLAYBACK_ENDED", "AUDIO_INTERRUPTED"] as const).map(edge => ({ location, edge }))))("shows fresh text after $edge for a $location source", ({ location, edge }) => {
+it.each(["active", "pending"].flatMap(location => (["PLAYBACK_ENDED", "AUDIO_INTERRUPTED"] as const).flatMap(edge => [1000, 1050].map(nowMs => ({ location, edge, nowMs })))))("shows fresh text at $nowMs after $edge for a $location source", ({ location, edge, nowMs }) => {
   const source = turn({ id: "a", speaker: "A", translatedText: "Hola.", audioOutputStarted: true,
     outputTextEndAtMs: 900, sourceIdleAtMs: location === "pending" ? 1 : undefined });
   const controller = new FakeConversationController(session(location === "active"
@@ -591,9 +591,14 @@ it.each(["active", "pending"].flatMap(location => (["PLAYBACK_ENDED", "AUDIO_INT
   controller.session = sessionReducer(controller.session, { type: edge, turnId: "a", nowMs: 1000 });
   const view = render(<ConversationScreen controller={controller} />);
   expect(screen.getByTestId("participant-status-B")).toHaveTextContent(location === "active" ? "Ожидание" : "Говорите");
-  controller.session = sessionReducer(controller.session, { type: "OUTPUT_DELTA", turnId: "a", text: " Más.", nowMs: 1050 });
+  controller.session = sessionReducer(controller.session, { type: "OUTPUT_DELTA", turnId: "a", text: " Más.", nowMs });
   view.rerender(<ConversationScreen controller={controller} />);
   expect(screen.getByTestId("participant-status-B")).toHaveTextContent("Перевожу");
   expect(screen.getByTestId("participant-status-A")).toHaveTextContent(location === "active" ? "Слушаю" : "Ожидание");
   expect((controller.session.activeTurn ?? controller.session.pendingTurns![0])?.playbackEndAtMs).toBe(1000);
+  expect((controller.session.activeTurn ?? controller.session.pendingTurns![0])?.audioOutputInterrupted).toBe(edge === "AUDIO_INTERRUPTED" ? true : undefined);
+  controller.session = sessionReducer(controller.session, { type: edge, turnId: "a", nowMs });
+  view.rerender(<ConversationScreen controller={controller} />);
+  expect(screen.getByTestId("participant-status-B")).toHaveTextContent(location === "active" ? "Ожидание" : "Говорите");
+  expect((controller.session.activeTurn ?? controller.session.pendingTurns![0])?.translatedText).toBe("Hola. Más.");
 });
