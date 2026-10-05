@@ -1,7 +1,8 @@
 import type { ConversationLanguages } from "../side/SideResolver";
 import type { Side } from "./Turn";
 import { shortReplies } from "./shortReplies";
-import { isSentenceComplete } from "./sentenceBoundaries";
+import { isSentenceComplete, splitSentences } from "./sentenceBoundaries";
+import type { eld } from "eld/extrasmall";
 
 // Contemporary alternate orthographies from CLDR languageData (same pinned source/license as shortReplies).
 // Phonetic transliterations and historical orthographies are not inferred from a bare language code.
@@ -65,4 +66,44 @@ export function shortReplyEvidence(text: string, languages: ConversationLanguage
   const a = words.length > 0 && words.every(word => replies?.[languages.A]?.includes(word));
   const b = words.length > 0 && words.every(word => replies?.[languages.B]?.includes(word));
   return a === b ? "ambiguous" : a ? "A" : "B";
+}
+
+/** Keep weak period prefixes and dotted tokens until language context is available. */
+export function splitLanguageSentences(text: string, languages: ConversationLanguages, detector: ReturnType<typeof eld.newInstance>): string[] {
+  detector.setLanguageSubset([languages.A, languages.B]);
+  const allowed = scriptPattern([...languageScripts(languages.A), ...languageScripts(languages.B)]);
+  const covered = (text: string) => (text.match(/\p{L}/gu) ?? []).every(letter => allowed?.test(letter));
+  const reliable = (text: string) => {
+    const result = detector.detect(text.slice(0, 2000));
+    return result.isReliable() && (result.language === languages.A || result.language === languages.B);
+  };
+  const candidates = splitSentences(text), sentences: string[] = [];
+  let prefix = "", prefixEvidence = "", prefixCovered = true;
+  let prefixScriptSide: Side | "ambiguous" | undefined;
+  for (const [index, sentence] of candidates.entries()) {
+    const reply = shortReplyEvidence(sentence, languages);
+    // A recognised or ambiguous standalone reply must keep its own boundary.
+    if (prefix && reply !== undefined) {
+      sentences.push(prefix); prefix = ""; prefixEvidence = ""; prefixCovered = true; prefixScriptSide = undefined;
+    }
+    prefix += sentence;
+    // Inspect each piece once, retaining only the bounded sample used by ELD.
+    prefixCovered &&= covered(sentence);
+    if (/\p{L}/u.test(sentence)) {
+      const side = completeScriptSide(sentence, languages);
+      // All letters in the prefix must share exclusive evidence; shared letters cancel it.
+      prefixScriptSide = prefixScriptSide === undefined ? side ?? "ambiguous" : prefixScriptSide === side ? side : "ambiguous";
+    }
+    if (prefixEvidence.length < 2000) prefixEvidence += sentence.slice(0, 2000 - prefixEvidence.length);
+    if (/^\s*[\p{L}\p{M}\p{Nd}]+\.\s*$/u.test(sentence) && reply === undefined &&
+        (prefixScriptSide === undefined || prefixScriptSide === "ambiguous") && prefixCovered && !reliable(prefixEvidence)) continue;
+    const next = candidates[index + 1];
+    // An unresolved contiguous suffix can finish a hostname, rather than start a source.
+    if (next && /[\p{L}\p{Nd}]\.$/u.test(sentence) && /^[\p{L}\p{Nd}]\S*\s*$/u.test(next) &&
+        shortReplyEvidence(next, languages) === undefined && completeScriptSide(next, languages) === undefined &&
+        covered(next) && !reliable(next)) continue;
+    sentences.push(prefix); prefix = ""; prefixEvidence = ""; prefixCovered = true; prefixScriptSide = undefined;
+  }
+  if (prefix) sentences.push(prefix);
+  return sentences;
 }

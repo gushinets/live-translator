@@ -3,7 +3,7 @@ import { isSentenceComplete, splitSentences } from "./sentenceBoundaries";
 import type { ConversationLanguages } from "../side/SideResolver";
 import type { Side } from "./Turn";
 import type { TranscriptFragment } from "./TranscriptFragment";
-import { completeScriptSide, shortReplyEvidence, isExplicitShortReply, languageScripts } from "./languageScripts";
+import { completeScriptSide, shortReplyEvidence, isExplicitShortReply, languageScripts, splitLanguageSentences } from "./languageScripts";
 
 export interface RoutedTranscript {
   side: Side | undefined;
@@ -36,7 +36,19 @@ export class TranscriptRouter {
   private drain(languages: ConversationLanguages, flush: boolean, force: boolean): RoutedTranscript[] {
     const routed: RoutedTranscript[] = [];
     const text = this.pending.map(part => part.text).join("");
-    const sentences = splitSentences(text);
+    let consumed = 0;
+    // ponytail: dotted Latin-token continuation uses syntax and reliable context;
+    // explicit token/speaker metadata would remove ambiguous no-space cases.
+    for (const sentence of splitSentences(text)) {
+      if (this.currentSide === undefined || !/\p{Script_Extensions=Latin}\.$/u.test(this.sourceText) ||
+          !/^(?=\p{Ll})\p{Script_Extensions=Latin}[\p{Script_Extensions=Latin}\p{M}\p{Nd}./_-]*\.\s*$/u.test(sentence) ||
+          shortReplyEvidence(sentence, languages) !== undefined || this.resolve(sentence, languages) !== undefined ||
+          this.resolve(this.sourceText + sentence, languages) !== this.currentSide) break;
+      routed.push(...this.take(this.currentSide, sentence.length));
+      consumed += sentence.length;
+      this.sourceText += sentence;
+    }
+    const sentences = splitLanguageSentences(text.slice(consumed), languages, this.detector);
     for (const [index, sentence] of sentences.entries()) {
       const bounded = index < sentences.length - 1;
       const result = this.resolveSentence(sentence, languages, flush || bounded, force || bounded);

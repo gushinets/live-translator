@@ -1,9 +1,9 @@
 import { eld } from "eld/extrasmall";
-import { hasSentenceTerminator, splitSentences } from "./sentenceBoundaries";
+import { hasSentenceTerminator } from "./sentenceBoundaries";
 import type { ConversationLanguages } from "../side/SideResolver";
 import { orderTranscriptFragments, type TranscriptFragment } from "./TranscriptFragment";
 import type { Side } from "./Turn";
-import { completeScriptSide, shortReplyEvidence, isExplicitShortReply, languageScripts, scriptPattern } from "./languageScripts";
+import { completeScriptSide, shortReplyEvidence, isExplicitShortReply, languageScripts, scriptPattern, splitLanguageSentences } from "./languageScripts";
 
 export interface DialogueBlock {
   id: string;
@@ -109,7 +109,7 @@ export class DialogueTranscript {
       // A name or borrowed word inside a sentence is not a speaker change.
       // Use the neighbouring sentence context, while preserving complete replies.
       const sentences = runs.flatMap(run => run.side === undefined ? [run]
-        : splitSentences(run.text).map(text => ({ text, side: run.side })));
+        : splitLanguageSentences(run.text, languages, this.detector).map(text => ({ text, side: run.side })));
       const sentenceContexts: string[] = [];
       let contextStart = 0, contextText = "";
       for (let index = 0; index < sentences.length; index++) {
@@ -168,7 +168,7 @@ export class DialogueTranscript {
     }
     // ponytail: same-script switches require sentence evidence in this prototype;
     // no reliable diarization can be inferred from a bare ambiguous word.
-    for (const sentence of splitSentences(text)) {
+    for (const sentence of splitLanguageSentences(text, languages, this.detector)) {
       const reply = shortReplyEvidence(sentence, languages);
       if (reply === "ambiguous") { append(sentence); continue; }
       const scriptSide = reply ?? completeScriptSide(sentence, languages);

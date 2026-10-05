@@ -349,3 +349,41 @@ it.each(["input", "output"] as const)("retains quoted replies after measurement 
     expect(content(transcript)).toEqual([{ kind, side: "A", text: opening }, { kind, side: "B", text: reply }]);
   }
 });
+
+
+it.each([
+  { text: '"He is 6\'2" tall."' },
+  { text: "'The dogs' owner is here.'" },
+].flatMap(example => (["input", "output"] as const).map(kind => ({ ...example, kind }))))("retains outer quotes around measurement/possessive marks in $kind: $text", ({ text, kind }) => {
+  for (const size of [1, 1000]) {
+    const transcript = new DialogueTranscript();
+    const reply = '"Sí."', source = text + " " + reply;
+    for (let i = 0; i < source.length; i += size) transcript.push(kind, fragment(source.slice(i, i + size)), { A: "en", B: "es" });
+    expect(content(transcript)).toEqual([{ kind, side: "A", text }, { kind, side: "B", text: reply }]);
+  }
+});
+
+
+it.each(["input", "output"] as const)("keeps a hostname separate from a following Spanish sentence in %s", kind => {
+  const transcript = new DialogueTranscript();
+  const first = "Visit example.com.", second = "La estación está cerca del supermercado.";
+  transcript.push(kind, fragment(first + " " + second), { A: "en", B: "es" });
+  expect(content(transcript)).toEqual([{ kind, side: "A", text: first }, { kind, side: "B", text: second }]);
+});
+
+
+it("retains both panes' quotes after a quoted noun and adjacent reply", () => {
+  const transcript = new DialogueTranscript();
+  transcript.push("input", fragment("'Dogs' owner is here.'Sí.'"), { A: "en", B: "es" });
+  expect(content(transcript)).toEqual([
+    { kind: "input", side: "A", text: "'Dogs' owner is here." }, { kind: "input", side: "B", text: "'Sí.'" },
+  ]);
+});
+
+
+it("retains an outer possessive quote before an unquoted other-language sentence", () => {
+  const transcript = new DialogueTranscript();
+  const first = "'The dogs' owner is here.'", second = "La estación está cerca del supermercado.";
+  transcript.push("input", fragment(first + second), { A: "en", B: "es" });
+  expect(content(transcript)).toEqual([{ kind: "input", side: "A", text: first }, { kind: "input", side: "B", text: second }]);
+});

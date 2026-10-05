@@ -16,8 +16,22 @@ export function splitSentences(text: string): string[] {
     let end = terminal.lastIndex;
     for (let i = start; i < end; i++) {
       const char = text[i]!;
-      // An apostrophe within a word does not open or close quoted speech.
-      if (char === "'" && /\p{L}/u.test(text[i - 1] ?? "") && /\p{L}/u.test(text[i + 1] ?? "")) continue;
+      const before = text[i - 1] ?? "", after = text[i + 1] ?? "";
+      // Apostrophes within words and feet marks stay literal inside quotes too.
+      if (char === "'" && /[\p{L}\p{Nd}]/u.test(before) && /[\p{L}\p{Nd}]/u.test(after)) continue;
+      if (char === '"' && /\p{Nd}/u.test(before)) {
+        let numberStart = i - 1;
+        while (/\p{Nd}/u.test(text[numberStart - 1] ?? "")) numberStart--;
+        if (/['′]/u.test(text[numberStart - 1] ?? "") && /\p{Nd}/u.test(text[numberStart - 2] ?? "")) continue;
+      }
+      // Distinguish an outer closing quote from an adjacent quoted reply's opener.
+      if (char === "'" && /[sS]/u.test(before) && /\s/u.test(after) && openQuotes[char]) {
+        const nextQuote = text.indexOf(char, i + 1);
+        const followingQuote = nextQuote < 0 ? -1 : text.indexOf(char, nextQuote + 1);
+        const startsNextQuote = /\p{L}/u.test(text[nextQuote + 1] ?? "") &&
+          /\p{Sentence_Terminal}/u.test(text[followingQuote - 1] ?? "");
+        if (/\p{Sentence_Terminal}/u.test(text[nextQuote - 1] ?? "") && !startsNextQuote) continue;
+      }
       // Marks after a number or word do not open quoted speech (6'2", dogs').
       if (char in openQuotes && (openQuotes[char] || !/[\p{L}\p{N}]/u.test(text[i - 1] ?? ""))) openQuotes[char] = !openQuotes[char];
     }
