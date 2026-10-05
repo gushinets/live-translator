@@ -678,7 +678,7 @@ describe("buffered audio output", () => {
     controller.setOutputAudible(true);
     stale({ data: { type: "turn", turnId: "retired", value: true } } as MessageEvent);
     expect(activity).toHaveBeenCalledTimes(4); // Gate closure explicitly retires played activity.
-    expect(activity).toHaveBeenLastCalledWith(expect.objectContaining({ active: false }));
+    expect(activity).toHaveBeenLastCalledWith(expect.objectContaining({ active: false, retired: true }));
     controller.dispose();
   });
   it("reports raw audio samples independently of held playback and only from a running context", async () => {

@@ -7,7 +7,7 @@ import {
 } from "./VoiceActivityMonitor";
 
 /** `owned` events identify the PCM currently leaving the queue, including an unknown owner. */
-export type PlaybackActivityEvent = AudioActivityEvent & { owned?: boolean; turnId?: string };
+export type PlaybackActivityEvent = AudioActivityEvent & { owned?: boolean; turnId?: string; retired?: boolean };
 
 export interface MicrophoneSettingsDiagnostics {
   echoCancellation: boolean | undefined;
@@ -299,8 +299,8 @@ export class AudioController {
     if (!audible) {
       this.queuedPlayback = false;
       this.playbackDetector.reset();
-      // Played activity can come from the worklet even when sampled RMS stayed below its floor.
-      this.onPlaybackActivity?.({ active: false, atMs: this.nowMs() });
+      // Retire worklet activity even if sampled RMS stayed quiet; this is not normal playback completion.
+      this.onPlaybackActivity?.({ active: false, atMs: this.nowMs(), retired: true });
     }
   }
 

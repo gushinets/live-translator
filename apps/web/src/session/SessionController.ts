@@ -1628,6 +1628,11 @@ export class SessionController {
       return;
     }
     this.playbackActive = event.active;
+    if (event.retired) {
+      this.playbackTurnId = undefined;
+      this.maybeFinishLeftoverOutputDrain();
+      return;
+    }
     if (this.leftoverOutputDraining) {
       if (!event.active) {
         this.maybeFinishLeftoverOutputDrain();

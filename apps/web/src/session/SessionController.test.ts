@@ -929,13 +929,14 @@ describe("SessionController", () => {
     } finally { await controller.cancel(); audio.dispose(); }
   });
 
-  it.each(["unexpected-close", "mic-ended", "transport"])("releases the real buffered pipeline on terminal %s", async reason => {
+  it.each(["unexpected-close", "mic-ended", "transport"])("records terminal %s as failure and releases the real buffered pipeline", async reason => {
+    vi.useFakeTimers();
     vi.spyOn(HTMLMediaElement.prototype, "play").mockResolvedValue(undefined);
     vi.spyOn(HTMLMediaElement.prototype, "pause").mockImplementation(() => {});
     vi.spyOn(HTMLMediaElement.prototype, "load").mockImplementation(() => {});
     vi.spyOn(console, "error").mockImplementation(() => {});
     const node = Object.assign(new DispatchableAudioNode(), {
-      port: { postMessage: vi.fn(), close: vi.fn(), onmessage: null }, onprocessorerror: null,
+      port: { postMessage: vi.fn(), close: vi.fn(), onmessage: null as ((event: MessageEvent) => void) | null }, onprocessorerror: null,
     });
     const { audio, audioContext, track } = createDispatchableAudio(undefined, () => node as unknown as AudioWorkletNode);
     Object.assign(audioContext, {
@@ -948,11 +949,28 @@ describe("SessionController", () => {
       controller.handleRemoteStream(audio.getCaptureStream()!, live as unknown as LiveClient);
       await flushMicrotasks();
       const decoder = vi.mocked(HTMLMediaElement.prototype.play).mock.contexts[0] as HTMLAudioElement;
+      emitVoice(audio, true);
+      const turnId = controller.session.activeTurn!.id;
+      // PCM before its caption has no known owner, but still blocks text-only completion.
+      node.port.onmessage!({ data: { type: "turn", value: true } } as MessageEvent);
+      live.emit({ type: "session.input_transcript.delta", delta: "Подскажите, где находится вокзал?" });
+      live.emit({ type: "session.output_transcript.delta", delta: "Could you tell me where the train station is?" });
+      emitVoice(audio, false);
+      await vi.advanceTimersByTimeAsync(runtime.audioStartGraceMs + runtime.captionIdleMs);
+      expect(controller.session.activeTurn).toMatchObject({ id: turnId, audioOutputStarted: false,
+        translatedText: "Could you tell me where the train station is?" });
+      expect((controller as unknown as { playbackActive: boolean }).playbackActive).toBe(true);
+      expect(controller.metrics.snapshot().completedTurnCount).toBe(0);
       const clearInterval = vi.spyOn(window, "clearInterval");
       if (reason === "unexpected-close") live.emitSessionClosed("server_shutdown");
       else if (reason === "mic-ended") track.end();
       else live.onError?.({ type: "error", error: { message: "transport failed" }, transportFailure: true });
       expect(controller.session.state).toBe("error");
+      expect(controller.session.activeTurn?.id).toBe(turnId);
+      expect(controller.session.activeTurn?.turnCompletedAtMs).toBeUndefined();
+      expect(controller.session.recentTurns.some(turn => turn.id === turnId && turn.status === "completed")).toBe(false);
+      expect(controller.metrics.snapshot()).toMatchObject({ completedTurnCount: 0, audioCompletedTurnCount: 0,
+        textOnlyCompletedTurnCount: 0, textOnlyCompletionCount: 0, failedTurnCount: 1 });
       expect(controller.ownerError).toBe(reason === "mic-ended" ? MICROPHONE_CAPTURE_ENDED_MESSAGE : CONNECTION_ERROR_MESSAGE);
       expect(audio.audioElement.muted).toBe(true);
       expect(audio.audioElement.srcObject).toBeNull();
