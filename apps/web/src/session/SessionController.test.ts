@@ -5272,3 +5272,24 @@ it.each(["input", "output"] as const)("does not merge ambiguous No with Spanish 
   if (kind === "input") expect(controller.session.activeTurn).toMatchObject({ speaker: "B", originalText: "Sí." });
   else expect(controller.session.activeTurn?.translatedText).toBe("Sí.");
 });
+
+
+it.each([
+  ["3.14 liters.", "3.14 литра."],
+  ["1.5 kilograms.", "1.5 килограмма."],
+])("keeps decimal replies on one source and attaches their translation: %s", async (source, translation) => {
+  vi.useFakeTimers(); vi.setSystemTime(0);
+  const { controller, live, audio } = createController();
+  await controller.startWithLanguages({ A: "ru", B: "en" });
+  emitVoice(audio, true);
+  live.emit({ type: "session.input_transcript.delta", delta: source });
+  const id = controller.session.activeTurn!.id;
+  expect(controller.session.activeTurn).toMatchObject({ speaker: "B", originalText: source });
+  expect(controller.session.pendingTurns ?? []).toHaveLength(0);
+  live.emit({ type: "session.output_transcript.delta", delta: translation });
+  expect(controller.session.activeTurn).toMatchObject({ id, speaker: "B", originalText: source, translatedText: translation });
+  expect(controller.session.pendingTurns ?? []).toHaveLength(0);
+  expect(controller.captionBlocks.map(block => [block.kind, block.side, block.text])).toEqual([
+    ["input", "B", source], ["output", "A", translation],
+  ]);
+});

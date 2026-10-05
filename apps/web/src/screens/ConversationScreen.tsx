@@ -64,9 +64,11 @@ export function ConversationScreen({
   const sourceSpeaker = active?.speaker;
   const sourceActive = active !== undefined && active.sourceIdleAtMs === undefined;
   const isPlaying = (turn: Turn) => turn.audioOutputStarted && !turn.audioOutputInterrupted && turn.playbackEndAtMs === undefined;
+  const hasTextActivity = (turn: Turn) => (turn.translatedText ?? "").length > 0 && !turn.audioOutputInterrupted &&
+    (turn.playbackEndAtMs === undefined || (turn.outputTextEndAtMs ?? -Infinity) > turn.playbackEndAtMs);
   const outputs = [...(session.pendingTurns ?? []), ...(active ? [active] : [])].filter(turn =>
     (turn.status === "streaming" || turn.status === "outputting") && turn.speaker !== undefined &&
-    (((turn.translatedText ?? "").length > 0 && !turn.audioOutputInterrupted && turn.playbackEndAtMs === undefined) || isPlaying(turn)));
+    (hasTextActivity(turn) || isPlaying(turn)));
   const statusForSide = (side: Side) => {
     const output = outputs.find(turn => turn.speaker !== side && isPlaying(turn))
       ?? outputs.find(turn => turn.speaker !== side) ?? outputs[0];

@@ -338,3 +338,14 @@ it.each(['"Where is the station?"', '"Where is the station?".', "I don't know. W
   transcript.push("input", fragment(opening + reply), { A: "en", B: "es" });
   expect(content(transcript)).toEqual([{ kind: "input", side: "A", text: opening }, { kind: "input", side: "B", text: reply }]);
 });
+
+
+it.each(["input", "output"] as const)("retains quoted replies after measurement marks in %s", kind => {
+  const opening = 'He is 6\'2" tall.', reply = '"Sí."';
+  for (const size of [1, 1000]) {
+    const transcript = new DialogueTranscript();
+    const text = opening + " " + reply;
+    for (let i = 0; i < text.length; i += size) transcript.push(kind, fragment(text.slice(i, i + size)), { A: "en", B: "es" });
+    expect(content(transcript)).toEqual([{ kind, side: "A", text: opening }, { kind, side: "B", text: reply }]);
+  }
+});

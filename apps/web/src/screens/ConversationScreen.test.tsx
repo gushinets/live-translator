@@ -4,6 +4,7 @@ import { fileURLToPath } from "node:url";
 import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import { Profiler } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { sessionReducer } from "../session/sessionReducer";
 import type { Side, Turn } from "../conversation/Turn";
 import type { DialogueBlock } from "../conversation/DialogueTranscript";
 import type { LifecycleSuspendReason, RecoveryPrompt } from "../session/SessionController";
@@ -579,4 +580,20 @@ it("shows each recipient its own unfinished output when both sides have translat
   render(<ConversationScreen controller={controller} />);
   expect(screen.getByTestId("participant-status-A")).toHaveTextContent("Перевод");
   expect(screen.getByTestId("participant-status-B")).toHaveTextContent("Перевожу");
+});
+
+
+it.each(["active", "pending"])("shows fresh text after playback ended for an %s source", location => {
+  const source = turn({ id: "a", speaker: "A", translatedText: "Hola.", audioOutputStarted: true,
+    outputTextEndAtMs: 900, sourceIdleAtMs: location === "pending" ? 1 : undefined });
+  const controller = new FakeConversationController(session(location === "active"
+    ? { activeTurn: source } : { pendingTurns: [source] }));
+  controller.session = sessionReducer(controller.session, { type: "PLAYBACK_ENDED", turnId: "a", nowMs: 1000 });
+  const view = render(<ConversationScreen controller={controller} />);
+  expect(screen.getByTestId("participant-status-B")).toHaveTextContent(location === "active" ? "Ожидание" : "Говорите");
+  controller.session = sessionReducer(controller.session, { type: "OUTPUT_DELTA", turnId: "a", text: " Más.", nowMs: 1050 });
+  view.rerender(<ConversationScreen controller={controller} />);
+  expect(screen.getByTestId("participant-status-B")).toHaveTextContent("Перевожу");
+  expect(screen.getByTestId("participant-status-A")).toHaveTextContent(location === "active" ? "Слушаю" : "Ожидание");
+  expect((controller.session.activeTurn ?? controller.session.pendingTurns![0])?.playbackEndAtMs).toBe(1000);
 });

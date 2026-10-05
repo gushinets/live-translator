@@ -7,16 +7,19 @@ export function hasSentenceTerminator(text: string): boolean {
 }
 export function splitSentences(text: string): string[] {
   const sentences: string[] = [];
-  const terminal = /\P{Sentence_Terminal}*\p{Sentence_Terminal}+/gu;
+  const terminal = /\p{Sentence_Terminal}/gu;
   const openQuotes: Record<string, boolean> = { '"': false, "'": false };
   let start = 0;
   for (let match = terminal.exec(text); match; match = terminal.exec(text)) {
+    // Decimal points are part of a value, not a speaker/sentence boundary.
+    if (match[0] === "." && /\p{Nd}/u.test(text[match.index - 1] ?? "") && /\p{Nd}/u.test(text[match.index + 1] ?? "")) continue;
     let end = terminal.lastIndex;
     for (let i = start; i < end; i++) {
       const char = text[i]!;
       // An apostrophe within a word does not open or close quoted speech.
       if (char === "'" && /\p{L}/u.test(text[i - 1] ?? "") && /\p{L}/u.test(text[i + 1] ?? "")) continue;
-      if (char in openQuotes) openQuotes[char] = !openQuotes[char];
+      // Marks after a number or word do not open quoted speech (6'2", dogs').
+      if (char in openQuotes && (openQuotes[char] || !/[\p{L}\p{N}]/u.test(text[i - 1] ?? ""))) openQuotes[char] = !openQuotes[char];
     }
     while (end < text.length) {
       const char = text[end]!;
