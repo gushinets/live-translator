@@ -51,7 +51,7 @@ describe("buffered playback processor lifetime", () => {
     expect(processor.port.postMessage).toHaveBeenCalledWith({ type: "pending", value: false });
     expect(processor.port.close).not.toHaveBeenCalled();
   });
-  it.each([[false, 1000], [true, 1000], [false, 300], [true, 300]] as const)("sends FIFO owner transitions despite caption continuation, second delayed=%s, gap=%s ms", (captionDelayed, gapMs) => {
+  it.each([[false, 1000], [true, 1000], [false, 300], [true, 300]] as const)("sends conservative FIFO owner transitions despite caption continuation, second delayed=%s, gap=%s ms", (captionDelayed, gapMs) => {
     const processor = new ProcessorClass();
     const turn = (turnId: string) => processor.port.onmessage?.({ data: { type: "turn", turnId } } as MessageEvent);
     send(processor, "audible"); send(processor, "enabled"); send(processor, "speaking");
@@ -63,11 +63,18 @@ describe("buffered playback processor lifetime", () => {
     expect(processor.port.postMessage.mock.calls.filter(([message]) => message.type === "turn")).toEqual([]);
     send(processor, "enabled", false);
     const output = new Float32Array(128);
-    for (let quantum = 0; quantum < 10; quantum++) processor.process([[]], [[output]]);
+    const played: number[] = [];
+    for (let quantum = 0; quantum < 10; quantum++) {
+      processor.process([[]], [[output]]);
+      played.push(...output);
+    }
+    expect(played[0]).toBe(.5);
+    expect(played.findIndex(sample => sample > .6)).toBe(gapMs === 300 ? 301 : 311);
+    expect(played.filter(sample => sample > .1)).toEqual(Array.from(Float32Array.of(.5, .7)));
     expect(processor.port.postMessage.mock.calls.filter(([message]) => message.type === "turn").map(([message]) => message)).toEqual([
       { type: "turn", turnId: "A", value: true },
-      { type: "turn", turnId: "B", value: true },
-      { type: "turn", turnId: "B", value: false },
+      { type: "turn", turnId: captionDelayed ? undefined : "B", value: true },
+      { type: "turn", turnId: captionDelayed ? undefined : "B", value: false },
     ]);
   });
   it("stays alive during ordinary input silence and temporary muting", () => {

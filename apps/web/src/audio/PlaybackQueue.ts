@@ -1,9 +1,8 @@
 import { runtime } from "../config/runtime";
-import { VAM_ACTIVE_FLOOR } from "./VoiceActivityEstimator";
-
-// -60 dBFS peak gate; the existing 60 ms preroll / 250 ms tail retain quieter phonemes.
-// ponytail: a fixed decoder-noise floor; calibrate from recorded PCM if receivers exceed it.
-const CAPTURE_NOISE_FLOOR = .001;
+import {
+  VAM_ACTIVE_FLOOR, VAM_ACTIVE_NOISE_MULTIPLIER, VAM_QUIET_FLOOR,
+  VAM_QUIET_NOISE_MULTIPLIER, VAM_WARMUP_RMS_MAX,
+} from "./VoiceActivityEstimator";
 
 /** PCM stays in memory for this media generation only. No transcript-based timing. */
 export class PlaybackQueue {
@@ -20,6 +19,12 @@ export class PlaybackQueue {
   private readonly samples: Float32Array;
   private readonly preroll: Float32Array;
   private readonly tailSamples: number;
+  private readonly energyFrameSamples: number;
+  private readonly noiseRiseAlpha: number;
+  private energy = 0;
+  private energySamples = 0;
+  private noiseFloor = VAM_WARMUP_RMS_MAX;
+  private quietSpeech = false;
   private read = 0;
   private count = 0;
   private prerollWrite = 0;
@@ -35,6 +40,8 @@ export class PlaybackQueue {
     this.samples = new Float32Array(capacity);
     this.preroll = new Float32Array(Math.ceil(sampleRate * .06));
     this.tailSamples = Math.ceil(sampleRate * .25);
+    this.energyFrameSamples = Math.ceil(sampleRate * .01);
+    this.noiseRiseAlpha = 1 - Math.exp(-this.energyFrameSamples / (sampleRate * 5));
   }
 
   get pending(): boolean { return this.count > 0; }
@@ -77,6 +84,9 @@ export class PlaybackQueue {
     this.playing = false;
     this.playedQuiet = this.incomingQuiet = this.inputSpan = 0;
     this.lastIncomingSpan = undefined;
+    this.energy = this.energySamples = 0;
+    this.noiseFloor = VAM_WARMUP_RMS_MAX;
+    this.quietSpeech = false;
   }
 
   process(input: Float32Array | undefined, output: Float32Array = new Float32Array(input?.length ?? 0)): Float32Array {
@@ -84,7 +94,7 @@ export class PlaybackQueue {
     if (!this.audible || this.failed) return output;
     for (let i = 0; i < output.length; i++) {
       const value = input?.[i] ?? 0;
-      const voiced = Math.abs(value) >= CAPTURE_NOISE_FLOOR;
+      const voiced = this.observeEnergy(value);
       this.observeIncoming(voiced);
       const held = this.enabled && (this.speaking || this.quiet < this.sampleRate * .3);
       if (!this.speaking) this.quiet++;
@@ -123,6 +133,28 @@ export class PlaybackQueue {
       if (!dequeued) this.observePlayed(0, undefined);
     }
     return output;
+  }
+
+  private observeEnergy(value: number): boolean {
+    this.energy += value * value;
+    if (++this.energySamples === this.energyFrameSamples) {
+      const rms = Math.sqrt(this.energy / this.energySamples);
+      this.energy = this.energySamples = 0;
+      if (rms < VAM_ACTIVE_FLOOR) {
+        // Track quiet minima quickly; learn a rising receiver floor over seconds,
+        // including while capturing, so a noise step cannot hold the gate forever.
+        // ponytail: stationary low-energy audio is treated as noise; semantic VAD
+        // would be needed to distinguish it from sustained, equally quiet tones.
+        const floor = Math.max(VAM_WARMUP_RMS_MAX, Math.min(rms, VAM_QUIET_FLOOR));
+        this.noiseFloor = floor < this.noiseFloor ? floor
+          : this.noiseFloor + this.noiseRiseAlpha * (floor - this.noiseFloor);
+      }
+      const multiplier = this.quietSpeech ? VAM_QUIET_NOISE_MULTIPLIER : VAM_ACTIVE_NOISE_MULTIPLIER;
+      this.quietSpeech = rms < VAM_ACTIVE_FLOOR && rms > this.noiseFloor * multiplier;
+    }
+    // Strong samples retain their immediate path. Quiet speech is frame-based;
+    // preroll recovers its onset and the tail keeps low-energy phonemes intact.
+    return Math.abs(value) >= VAM_ACTIVE_FLOOR || this.quietSpeech;
   }
 
   private observeIncoming(voiced: boolean): void {

@@ -71,6 +71,26 @@ describe("PlaybackQueue", () => {
     q.process(noise);
     expect(q.pending).toBe(false);
   });
+  it.each([1000, 48000])("adapts to decoder noise above the old cutoff at %s Hz", rate => {
+    const q = new PlaybackQueue(rate, rate * 20);
+    q.setAudible(true); q.setEnabled(true); q.setSpeaking(true);
+    const noise = new Float32Array(rate).fill(.002);
+    q.process(noise);
+    q.setSpeaking(false);
+    for (let i = 0; i < 15; i++) q.process(noise);
+    expect(q.pending).toBe(false);
+    // A receiver's noise floor can also rise after a quieter baseline.
+    q.setAudible(false); q.setAudible(true); q.setSpeaking(true);
+    q.process(new Float32Array(rate).fill(.0002));
+    q.process(noise);
+    q.setSpeaking(false);
+    for (let i = 0; i < 15; i++) q.process(noise);
+    expect(q.pending).toBe(false);
+    // Low-level alternating samples must not re-open the gate at each peak.
+    const varyingNoise = Float32Array.from({ length: rate }, (_, i) => i % 2 ? -.003 : .001);
+    for (let i = 0; i < 15; i++) q.process(varyingNoise);
+    expect(q.pending).toBe(false);
+  });
   it.each([false, true])("does not give a paused continuation to the next caption, buffered=%s", buffered => {
     const q = new PlaybackQueue(1000);
     q.setAudible(true); q.setEnabled(buffered); q.setSpeaking(true);
