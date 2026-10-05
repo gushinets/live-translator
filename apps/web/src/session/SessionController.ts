@@ -1359,7 +1359,7 @@ export class SessionController {
         continue;
       }
       let active = this.currentSession.activeTurn;
-      if (!active?.sourceFragments.length) this.closePreviousSourceInterval(first);
+      if (earliestFragmentStart(active?.sourceFragments) === undefined) this.closePreviousSourceInterval(first);
       const playback = this.playbackTurnId ? findSessionTurn(this.currentSession, this.playbackTurnId) : undefined;
       if (side !== undefined && playback?.speaker !== undefined && side !== playback.speaker &&
           !playback.audioOutputInterrupted && !["completed", "failed", "discarded"].includes(playback.status)) {

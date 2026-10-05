@@ -1,4 +1,5 @@
 import { eld } from "eld/extrasmall";
+import { hasSentenceTerminator, splitSentences } from "./sentenceBoundaries";
 import type { ConversationLanguages } from "../side/SideResolver";
 import { orderTranscriptFragments, type TranscriptFragment } from "./TranscriptFragment";
 import type { Side } from "./Turn";
@@ -108,12 +109,12 @@ export class DialogueTranscript {
       // A name or borrowed word inside a sentence is not a speaker change.
       // Use the neighbouring sentence context, while preserving complete replies.
       const sentences = runs.flatMap(run => run.side === undefined ? [run]
-        : (run.text.match(/[^.!?。！？]*[.!?。！？]+\s*|[^.!?。！？]+$/gu) ?? []).map(text => ({ text, side: run.side })));
+        : splitSentences(run.text).map(text => ({ text, side: run.side })));
       const sentenceContexts: string[] = [];
       let contextStart = 0, contextText = "";
       for (let index = 0; index < sentences.length; index++) {
         contextText += sentences[index]!.text;
-        if (/[.!?。！？]/u.test(sentences[index]!.text) || index === sentences.length - 1) {
+        if (hasSentenceTerminator(sentences[index]!.text) || index === sentences.length - 1) {
           for (let part = contextStart; part <= index; part++) sentenceContexts[part] = contextText;
           contextStart = index + 1;
           contextText = "";
@@ -122,10 +123,10 @@ export class DialogueTranscript {
       const contextual = sentences.map((run, index) => {
         if (run.side !== undefined && isExplicitShortReply(run.text, languages[run.side])) return run;
         const previous = sentences[index - 1], next = sentences[index + 1];
-        const before = previous?.text.match(/[^.!?。！？]*$/u)?.[0] ?? "";
-        const after = next?.text.match(/^[^.!?。！？]*/u)?.[0] ?? "";
+        const before = previous?.text.match(/\P{Sentence_Terminal}*$/u)?.[0] ?? "";
+        const after = next?.text.match(/^\P{Sentence_Terminal}*/u)?.[0] ?? "";
         const previousSide = /\p{L}/u.test(before) ? previous?.side : undefined;
-        const nextSide = !/[.!?。！？]/u.test(run.text) && /\p{L}/u.test(after) ? next?.side : undefined;
+        const nextSide = !hasSentenceTerminator(run.text) && /\p{L}/u.test(after) ? next?.side : undefined;
         const surroundingSide = previousSide ?? nextSide;
         if (run.side !== undefined &&
             surroundingSide !== undefined && surroundingSide !== run.side &&
@@ -167,7 +168,9 @@ export class DialogueTranscript {
     }
     // ponytail: same-script switches require sentence evidence in this prototype;
     // no reliable diarization can be inferred from a bare ambiguous word.
-    for (const sentence of text.match(/[^.!?。！？]*[.!?。！？]+|[^.!?。！？]+$/gu) ?? []) {
+    for (const sentence of splitSentences(text)) {
+      const scriptSide = completeScriptSide(sentence, languages);
+      if (scriptSide !== undefined) { append(sentence, scriptSide); continue; }
       const evidence = sentence.replace(/\p{L}+$/u, "");
       const result = this.detector.detect(evidence.slice(0, 2000));
       const side = languages.A === languages.B || !result.isReliable() ? undefined

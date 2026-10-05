@@ -162,3 +162,20 @@ test("Japanese prolonged marks retain complete originals and translations", asyn
   await harness.outputDelta("スーパーで待っています。");
   await expect(page.getByTestId("participant-pane-B").locator("li")).toHaveText(["Me: コーヒー。", "Him: スーパーで待っています。"]);
 });
+
+for (const [language, text] of [["hi", "हाँ।"], ["ar", "نعم؟"], ["ur", "جی۔"]] as const) {
+  test("native " + language + " sentence endings retain short originals and translations", async ({ page }) => {
+    const harness = await MockLiveHarness.attach(page);
+    await page.addInitScript(language => {
+      localStorage.setItem("live-translator-owner-language", "ru");
+      localStorage.setItem("live-translator-interlocutor-language", language);
+    }, language);
+    await page.goto("/");
+    await page.getByRole("button", { name: "Начать перевод", exact: true }).click();
+    await expect(page.getByRole("button", { name: "Завершить", exact: true })).toBeVisible();
+    for (const character of text) await harness.inputDelta(character);
+    await harness.outputDelta(text);
+    await expect(page.getByTestId("participant-pane-B").locator("li")).toHaveText(["Me: " + text, "Him: " + text]);
+    await expect(page.getByTestId("participant-pane-A").locator("li")).toHaveCount(0);
+  });
+}

@@ -5214,3 +5214,31 @@ describe("PR32 buffered output boundaries", () => {
     expect(controller.session.pendingTurns?.some(turn => turn.translationOnly)).toBe(false);
   });
 });
+
+it.each(["", "12, "])("bounds a completed predecessor when a new source has untimed prefix %j", async prefix => {
+  vi.useFakeTimers(); vi.setSystemTime(0);
+  const { controller, live, audio } = createController();
+  await controller.startWithLanguages({ A: "ru", B: "en" });
+  emitVoice(audio, true);
+  live.emit({ type: "session.input_transcript.delta", delta: "The station is straight ahead.", start_ms: 0, end_ms: 500 });
+  const b1 = controller.session.activeTurn!.id;
+  live.emit({ type: "session.output_transcript.delta", delta: "Вокзал находится прямо впереди." });
+  emitVoice(audio, false);
+  await vi.advanceTimersByTimeAsync(runtime.audioStartGraceMs + runtime.captionIdleMs);
+  expect(controller.session.recentTurns.find(turn => turn.id === b1)?.status).toBe("completed");
+  emitVoice(audio, true);
+  if (prefix) live.emit({ type: "session.input_transcript.delta", delta: prefix });
+  live.emit({ type: "session.input_transcript.delta", delta: "где находится вокзал?", start_ms: 2200, end_ms: 2700 });
+  const a1 = controller.session.activeTurn!.id;
+  live.emit({ type: "session.input_transcript.delta", delta: "Please continue walking straight ahead.", start_ms: 3000, end_ms: 3500 });
+  const b2 = controller.session.activeTurn!.id;
+  live.emit({ type: "session.output_transcript.delta", delta: "Продолжайте идти прямо вперед." });
+  emitPlayback(audio, true);
+  live.emit({ type: "session.input_transcript.delta", delta: "Подскажите, пожалуйста, ", start_ms: 1000, end_ms: 1800 });
+  expect(controller.session.activeTurn).toMatchObject({ id: b2, speaker: "B" });
+  expect(controller.session.activeTurn?.audioOutputInterrupted).not.toBe(true);
+  expect(controller.session.pendingTurns?.find(turn => turn.id === a1)).toMatchObject({
+    originalText: prefix + "Подскажите, пожалуйста, где находится вокзал?", sourceEndMs: 3000,
+  });
+  expect(controller.session.recentTurns.find(turn => turn.id === b1)?.sourceEndMs).toBe(1000);
+});

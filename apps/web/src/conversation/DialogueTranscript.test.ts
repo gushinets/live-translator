@@ -262,3 +262,34 @@ it.each([
   for (const character of text) transcript.push("input", fragment(character), { A, B });
   expect(content(transcript)).toEqual([{ kind: "input", side: "B", text }]);
 });
+
+it.each([
+  ["hi", "हाँ।"], ["ar", "نعم؟"], ["ur", "جی۔"],
+])("retains native sentence terminators in %s captions: %s", (language, text) => {
+  for (const kind of ["input", "output"] as const) for (const size of [1, 1000]) {
+    const transcript = new DialogueTranscript();
+    for (let i = 0; i < text.length; i += size) transcript.push(kind, fragment(text.slice(i, i + size)), { A: language, B: "en" });
+    expect(content(transcript)).toEqual([{ kind, side: "A", text }]);
+    transcript.push(kind, fragment(" 12 Please continue speaking."), { A: language, B: "en" });
+    expect(content(transcript)).toEqual([{ kind, side: "A", text }, { kind, side: "B", text: "12 Please continue speaking." }]);
+  }
+});
+it.each(["Dobar dan.", "Ovo je moja kuća i želim da razgovaram sa vama."])("does not label Latin Serbian as English: %s", text => {
+  const transcript = new DialogueTranscript();
+  transcript.push("input", fragment(text), { A: "en", B: "sr" });
+  expect(content(transcript)).toEqual([{ kind: "input", side: undefined, text }]);
+});
+
+it.each([["sr", "Да."], ["pa", "ਹਾਂ।"], ["ms", "يا."]])("retains unique-script replies for multiscript %s", (language, text) => {
+  for (const kind of ["input", "output"] as const) {
+    const transcript = new DialogueTranscript();
+    for (const character of text) transcript.push(kind, fragment(character), { A: "en", B: language });
+    expect(content(transcript)).toEqual([{ kind, side: "B", text }]);
+  }
+});
+
+it.each(["I would like to visit Москва tomorrow.", "I use Гугл every day.", "Please ask Иван to call me tomorrow."])("keeps English with embedded Cyrillic names in an en/sr pair: %s", text => {
+  const transcript = new DialogueTranscript();
+  transcript.push("input", fragment(text), { A: "en", B: "sr" });
+  expect(content(transcript)).toEqual([{ kind: "input", side: "A", text }]);
+});

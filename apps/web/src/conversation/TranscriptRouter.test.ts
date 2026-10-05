@@ -142,3 +142,21 @@ it.each([
 it.each(["IBM.", "Google.", "OpenAI."])("retains a foreign brand with Russian speech in a German pair: %s", text => {
   expect(new TranscriptRouter().push(fragment(text), { A: "ru", B: "de" }, "A", "Я работаю в ")[0]?.side).toBe("A");
 });
+
+it.each([["hi", "हाँ।"], ["ar", "نعم؟"], ["ur", "جی۔"]])("routes complete %s speech with its native terminator", (language, text) => {
+  const router = new TranscriptRouter();
+  expect(router.push(fragment(text), { A: language, B: "en" }, "B")[0]?.side).toBe("A");
+});
+it.each(["Dobar dan.", "Ovo je moja kuća i želim da razgovaram sa vama."])("uses language evidence for Latin Serbian: %s", text => {
+  const router = new TranscriptRouter();
+  expect(router.push(fragment(text), { A: "en", B: "sr" })).toEqual([]);
+  expect(router.flush({ A: "en", B: "sr" }, true)).toEqual([{ side: undefined, fragments: [fragment(text)] }]);
+});
+
+it.each([["sr", "Да."], ["pa", "ਹਾਂ।"], ["ms", "يا."]])("routes unique-script replies for multiscript %s", (language, text) => {
+  expect(new TranscriptRouter().push(fragment(text), { A: "en", B: language }, "A")[0]?.side).toBe("B");
+});
+
+it.each(["I would like to visit Москва tomorrow.", "I use Гугл every day.", "Please ask Иван to call me tomorrow."])("routes English with embedded Cyrillic names in an en/sr pair: %s", text => {
+  expect(new TranscriptRouter().push(fragment(text), { A: "en", B: "sr" })[0]?.side).toBe("A");
+});

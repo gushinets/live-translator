@@ -1,8 +1,9 @@
 import { eld } from "eld/extrasmall";
+import { isSentenceComplete } from "./sentenceBoundaries";
 import type { ConversationLanguages } from "../side/SideResolver";
 import type { Side } from "./Turn";
 import type { TranscriptFragment } from "./TranscriptFragment";
-import { completeScriptSide, isExplicitShortReply } from "./languageScripts";
+import { completeScriptSide, isExplicitShortReply, languageScripts } from "./languageScripts";
 
 export interface RoutedTranscript {
   side: Side | undefined;
@@ -52,7 +53,7 @@ export class TranscriptRouter {
         this.hasEvidence(text, text, fullSide, this.currentSide)) return this.take(fullSide);
     // A script distinction can identify a language even before the last word is
     // complete. A pause cannot make an unfinished Latin word Spanish or English.
-    const distinctScripts = new Intl.Locale(languages.A).maximize().script !== new Intl.Locale(languages.B).maximize().script;
+    const distinctScripts = !languageScripts(languages.A).some(script => languageScripts(languages.B).includes(script));
     if (distinctScripts && fullSide !== undefined && this.hasEvidence(text, text, fullSide, this.currentSide)) return this.take(fullSide);
     if (!force && fullSide !== undefined && /\p{L}$/u.test(text)) return [];
     return this.take(undefined);
@@ -62,7 +63,7 @@ export class TranscriptRouter {
     const side = completeScriptSide(text, languages);
     if (side === undefined || this.currentSide === undefined || side === this.currentSide) return side;
     if (isExplicitShortReply(text, languages[side])) return side;
-    const before = this.sourceText.match(/[^.!?。！？]*$/u)?.[0] ?? "";
+    const before = this.sourceText.match(/\P{Sentence_Terminal}*$/u)?.[0] ?? "";
     // A packet ending in a period may finish the source's sentence ("Google.").
     // Reliable standalone replies still establish a handoff, even mid-sentence.
     if (/\p{L}/u.test(before) && this.resolve(text, languages) === undefined &&
@@ -74,7 +75,7 @@ export class TranscriptRouter {
     const letters = (evidence.match(/\p{L}/gu) ?? []).length;
     const words = (evidence.match(/\p{L}+/gu) ?? []).length;
     return currentSide !== undefined && side !== currentSide
-      ? letters >= 8 && (words >= 2 || /[.!?。！？]\s*$/u.test(text))
+      ? letters >= 8 && (words >= 2 || isSentenceComplete(text))
       : letters >= 4;
   }
 
