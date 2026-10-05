@@ -201,14 +201,18 @@ body,
 .conversation-playback-switch[aria-checked="true"] .conversation-switch-track { justify-content: flex-end; }
 @media (max-width: 32rem) {
   .conversation-center { gap: 0.375rem; padding-inline: 0.5rem; }
-  .conversation-center button { padding: 0.25rem 0.375rem; font-size: 0.875rem; }
+  .conversation-center button { padding: 0.25rem; font-size: 0.875rem; }
   .conversation-center .conversation-language-action { flex: 0 0 44px; min-width: 44px; }
   .conversation-language-action span {
     position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
     overflow: hidden; clip-path: inset(50%); white-space: nowrap;
   }
-  .conversation-center .conversation-playback-switch { gap: 0.375rem; }
-  .conversation-playback-switch > span:last-child { max-width: 5.25rem; }
-  .conversation-switch-track { flex-basis: 1.5rem; width: 1.5rem; height: 1rem; }
+  .conversation-center .conversation-end-action,
+  .conversation-center .conversation-playback-switch { flex: 1 1 0; min-width: 0; }
+  .conversation-end-label i { display: none; }
+  .conversation-end-size { padding-left: 0; white-space: nowrap; }
+  .conversation-center .conversation-playback-switch { flex-grow: 1.15; gap: 0.25rem; }
+  .conversation-playback-switch > span:last-child { min-width: 0; overflow-wrap: normal; }
+  .conversation-switch-track { flex-basis: 1.25rem; width: 1.25rem; height: 1rem; }
   .conversation-switch-track i { width: 0.625rem; height: 0.625rem; }
 }
