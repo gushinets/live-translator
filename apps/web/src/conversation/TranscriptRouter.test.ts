@@ -252,3 +252,28 @@ it.each([
   const groups = [...router.push(first, pair), ...router.push(last, pair, "A", prefix), ...router.flush(pair, true)];
   expect(groups).toEqual([{ side: "A", fragments: [first] }, { side: "A", fragments: [last] }]);
 });
+
+it.each([
+  { prefix: "Veuillez ouvrir le site example.", suffix: "no." },
+  { prefix: 'Veuillez ouvrir le site "example.', suffix: 'no".' },
+  { prefix: "Veuillez ouvrir le site (example.", suffix: "no)." },
+])("keeps a canonical reply suffix on its hostname source: $prefix$suffix", ({ prefix, suffix }) => {
+  const pair = { A: "en", B: "fr" };
+  for (const chunks of [[prefix + suffix], [prefix, suffix]]) {
+    const router = new TranscriptRouter();
+    const groups = chunks.flatMap((text, index) => router.push(fragment(text), pair, index ? "B" : undefined, index ? prefix : ""));
+    groups.push(...router.flush(pair, true));
+    expect(groups.map(group => ({ side: group.side, text: group.fragments.map(part => part.text).join("") })))
+      .toEqual(chunks.map(text => ({ side: "B", text })));
+  }
+});
+
+it.each([
+  { text: "No.", expected: [{ side: "A", text: "No." }] },
+  { text: "Veuillez ouvrir le site. no.", expected: [{ side: "B", text: "Veuillez ouvrir le site. " }, { side: "A", text: "no." }] },
+  { text: "Veuillez ouvrir le site.No.", expected: [{ side: "B", text: "Veuillez ouvrir le site." }, { side: "A", text: "No." }] },
+])("preserves a standalone canonical reply outside a dotted token: $text", ({ text, expected }) => {
+  const router = new TranscriptRouter(), pair = { A: "en", B: "fr" };
+  const groups = [...router.push(fragment(text), pair), ...router.flush(pair, true)];
+  expect(groups.map(group => ({ side: group.side, text: group.fragments.map(part => part.text).join("") }))).toEqual(expected);
+});

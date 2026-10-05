@@ -71,6 +71,71 @@ describe("PlaybackQueue", () => {
     q.process(noise);
     expect(q.pending).toBe(false);
   });
+  it.each([[1000, false], [48000, false], [1000, true], [48000, true]] as const)("does not queue a raised receiver floor while speaking at %s Hz, alternating=%s", (rate, alternating) => {
+    const q = new PlaybackQueue(rate);
+    q.setAudible(true); q.setEnabled(true); q.setSpeaking(true);
+    const noise = Float32Array.from({ length: rate }, (_, i) => alternating && i % 2 ? -.002 : .002);
+    for (const reset of ["fresh", "mute", "silence"]) {
+      if (reset === "mute") { q.setAudible(false); q.setAudible(true); }
+      if (reset === "silence") q.process(new Float32Array(rate));
+      for (let seconds = 0; seconds < 6; seconds++) q.process(noise);
+      expect(q.pending).toBe(false);
+      const speech = new Float32Array(rate / 10).fill(.1);
+      q.process(speech);
+      q.setSpeaking(false);
+      const output = q.process(undefined, new Float32Array(rate));
+      const start = output.findIndex(value => value > .05);
+      expect(start).toBeGreaterThanOrEqual(rate * .3);
+      expect(start).toBeLessThanOrEqual(rate * .36);
+      expect(output.slice(start, start + speech.length).every((sample, i) => sample === speech[i])).toBe(true);
+      expect(q.pending).toBe(false);
+      q.setSpeaking(true);
+    }
+  });
+  it.each([1000, 48000])("preserves a long quiet utterance immediately after reset at %s Hz", rate => {
+    const q = new PlaybackQueue(rate);
+    q.setAudible(true); q.setEnabled(true); q.setSpeaking(true);
+    q.setAudible(false); q.setAudible(true);
+    const speech = Float32Array.from({ length: rate * 3 }, (_, i) => .004 * Math.sin(i * 2 * Math.PI * 125 / rate + Math.PI / 6));
+    q.process(speech);
+    q.setSpeaking(false);
+    const output = q.process(undefined, new Float32Array(rate * 4));
+    const start = output.findIndex(value => value !== 0);
+    expect(start).toBe(rate * .3);
+    expect(output.slice(start, start + speech.length).every((sample, i) => sample === speech[i])).toBe(true);
+    expect(q.pending).toBe(false);
+  });
+  it.each([[1000, false], [48000, false], [1000, true], [48000, true]] as const)("trims broadband receiver noise and retains consonants at %s Hz, strong=%s", (rate, strong) => {
+    const q = new PlaybackQueue(rate);
+    q.setAudible(true); q.setEnabled(true); q.setSpeaking(true);
+    let seed = 17;
+    const noise = Float32Array.from({ length: rate }, () => {
+      seed = (Math.imul(seed, 1664525) + 1013904223) >>> 0;
+      return (seed / 0x100000000 - .5) * .006;
+    });
+    for (let seconds = 0; seconds < 6; seconds++) q.process(noise);
+    expect(q.pending).toBe(false);
+    q.clear();
+    const onset = noise.slice(0, rate * .03);
+    const speech = Float32Array.from({ length: rate / 2 }, (_, i) => (strong ? .1 : 0) + .004 * Math.sin(i * 2 * Math.PI * 125 / rate + Math.PI / 6));
+    const consonant = noise.slice(0, rate * .2);
+    q.process(onset); q.process(speech); q.process(consonant); q.process(speech); q.process(onset);
+    q.setSpeaking(false);
+    const output = q.process(undefined, new Float32Array(rate * 2));
+    const received = Float32Array.from([...onset, ...speech, ...consonant, ...speech, ...onset]);
+    const start = output.findIndex(value => value !== 0);
+    expect(output.slice(start, start + received.length).every((sample, i) => sample === received[i])).toBe(true);
+    expect(q.pending).toBe(false);
+  });
+  it.each([1000, 48000])("eventually drains correlated low-energy receiver noise at %s Hz", rate => {
+    const q = new PlaybackQueue(rate);
+    q.setAudible(true); q.setEnabled(true); q.setSpeaking(true);
+    const noise = Float32Array.from({ length: rate }, (_, i) => .002 * Math.sin(i * 2 * Math.PI * 125 / rate));
+    for (let seconds = 0; seconds < 6; seconds++) q.process(noise);
+    q.setSpeaking(false);
+    for (let seconds = 0; seconds < 10; seconds++) q.process(noise);
+    expect(q.pending).toBe(false);
+  });
   it.each([1000, 48000])("adapts to decoder noise above the old cutoff at %s Hz", rate => {
     const q = new PlaybackQueue(rate, rate * 20);
     q.setAudible(true); q.setEnabled(true); q.setSpeaking(true);

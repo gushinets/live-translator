@@ -12,7 +12,7 @@ export function splitSentences(text: string): string[] {
   const quoteBoundaries: Record<string, number | undefined> = {};
   // ponytail: common English elisions/abbreviated years use lexical evidence;
   // other languages need their own evidence or explicit token metadata.
-  const leadingApostrophe = /^'(?:\p{Nd}{2}s?|cause|em|tis|twas|til)(?![\p{L}\p{N}])/iu;
+  const leadingApostrophe = /^'(?:\p{Nd}{2}s?|cause|em|tis|twas|til|round|bout)(?![\p{L}\p{N}])/iu;
   const nextQuoteBoundary = (char: string, index: number): number => {
     let next = quoteBoundaries[char];
     if (next === undefined || (next >= 0 && next <= index)) {

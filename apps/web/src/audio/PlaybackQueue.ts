@@ -22,6 +22,9 @@ export class PlaybackQueue {
   private readonly energyFrameSamples: number;
   private readonly noiseRiseAlpha: number;
   private energy = 0;
+  private energySum = 0;
+  private differenceEnergy = 0;
+  private previousSample = 0;
   private energySamples = 0;
   private noiseFloor = VAM_WARMUP_RMS_MAX;
   private quietSpeech = false;
@@ -84,7 +87,7 @@ export class PlaybackQueue {
     this.playing = false;
     this.playedQuiet = this.incomingQuiet = this.inputSpan = 0;
     this.lastIncomingSpan = undefined;
-    this.energy = this.energySamples = 0;
+    this.energy = this.energySum = this.differenceEnergy = this.previousSample = this.energySamples = 0;
     this.noiseFloor = VAM_WARMUP_RMS_MAX;
     this.quietSpeech = false;
   }
@@ -137,20 +140,28 @@ export class PlaybackQueue {
 
   private observeEnergy(value: number): boolean {
     this.energy += value * value;
+    this.energySum += value;
+    this.differenceEnergy += (value - this.previousSample) ** 2;
+    this.previousSample = value;
     if (++this.energySamples === this.energyFrameSamples) {
       const rms = Math.sqrt(this.energy / this.energySamples);
-      this.energy = this.energySamples = 0;
+      const centeredEnergy = this.energy - this.energySum ** 2 / this.energySamples;
+      // Voiced quiet audio has strong adjacent-sample correlation; DC and
+      // broadband/alternating decoder noise must not open the gate for seconds.
+      const quietVoice = centeredEnergy > this.energy * .1 && this.differenceEnergy < centeredEnergy;
+      this.energy = this.energySum = this.differenceEnergy = this.energySamples = 0;
       if (rms < VAM_ACTIVE_FLOOR) {
-        // Track quiet minima quickly; learn a rising receiver floor over seconds,
-        // including while capturing, so a noise step cannot hold the gate forever.
-        // ponytail: stationary low-energy audio is treated as noise; semantic VAD
-        // would be needed to distinguish it from sustained, equally quiet tones.
         const floor = Math.max(VAM_WARMUP_RMS_MAX, Math.min(rms, VAM_QUIET_FLOOR));
-        this.noiseFloor = floor < this.noiseFloor ? floor
-          : this.noiseFloor + this.noiseRiseAlpha * (floor - this.noiseFloor);
+        if (floor < this.noiseFloor) this.noiseFloor = floor;
+        else if (quietVoice) this.noiseFloor += this.noiseRiseAlpha * (floor - this.noiseFloor);
+        // Leave the adaptive entry threshold at this observed noise level. Do not
+        // recalibrate during the captured tail: quiet consonants belong to speech.
+        else if (this.tail === 0) this.noiseFloor = Math.max(VAM_WARMUP_RMS_MAX, floor / VAM_ACTIVE_NOISE_MULTIPLIER);
+        // ponytail: correlated noise and equally quiet sustained tones still share
+        // the slow EMA; isolated broadband speech also needs provider/semantic VAD.
       }
       const multiplier = this.quietSpeech ? VAM_QUIET_NOISE_MULTIPLIER : VAM_ACTIVE_NOISE_MULTIPLIER;
-      this.quietSpeech = rms < VAM_ACTIVE_FLOOR && rms > this.noiseFloor * multiplier;
+      this.quietSpeech = quietVoice && rms < VAM_ACTIVE_FLOOR && rms > this.noiseFloor * multiplier;
     }
     // Strong samples retain their immediate path. Quiet speech is frame-based;
     // preroll recovers its onset and the tail keeps low-energy phonemes intact.

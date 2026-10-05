@@ -444,7 +444,7 @@ it.each(["Visit example.com","Visit \"example.com\"","Visit (example.com)"])("ke
   }
 });
 
-it.each(["I loved the '90s.","I left 'cause it was late.","'90s were great. Music was better.'","'cause it was late. I left early.'","'cause I don't know. I left early.'","'cause 'twas late. I left early.'"])("keeps leading lexical apostrophes in both caption streams: %s", source => {
+it.each(["I loved the '90s.","I left 'cause it was late.","I looked 'round.","I asked 'bout.","'90s were great. Music was better.'","'cause it was late. I left early.'","'cause I don't know. I left early.'","'cause 'twas late. I left early.'"])("keeps leading lexical apostrophes in both caption streams: %s", source => {
   for (const kind of ["input", "output"] as const) for (const size of [1, 1000]) {
     const transcript = new DialogueTranscript(), text = source + " 'Sí.'";
     for (let i = 0; i < text.length; i += size) transcript.push(kind, fragment(text.slice(i, i + size)), { A: "en", B: "es" });
@@ -462,5 +462,17 @@ it.each(['"La estación está cerca del supermercado', '"La estación está cerc
       if (i + size > source.length + 1) expect(content(transcript)[0]).toEqual({ kind, side: "A", text: source });
     }
     expect(content(transcript)).toEqual([{ kind, side: "A", text: source }, { kind, side: "B", text: reply }]);
+  }
+});
+
+it.each([
+  { languages: { A: "en", B: "fr" }, side: "B", text: "Veuillez ouvrir le site example.no." },
+  { languages: { A: "fr", B: "en" }, side: "A", text: 'Veuillez ouvrir le site "example.no".' },
+])("keeps a canonical hostname suffix in both caption streams: $text", ({ languages, side, text }) => {
+  for (const kind of ["input", "output"] as const) for (const size of [1, 1000]) {
+    const transcript = new DialogueTranscript();
+    for (let i = 0; i < text.length; i += size) transcript.push(kind, fragment(text.slice(i, i + size)), languages);
+    expect(content(transcript)).toEqual([{ kind, side, text }]);
+    expect(transcript.blocks.map(block => block.text).join("")).toBe(text);
   }
 });

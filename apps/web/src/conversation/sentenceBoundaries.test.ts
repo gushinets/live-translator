@@ -65,7 +65,7 @@ it("bounds repeated measurement lookahead in a long outer quote", () => {
   expect(elapsed).toBeLessThan(1000);
 });
 
-it.each(["I loved the '90s.","I left 'cause it was late."])("keeps leading lexical apostrophes outside quote state: %s", source => {
+it.each(["I loved the '90s.","I left 'cause it was late.","I looked 'round.","I asked 'bout."])("keeps leading lexical apostrophes outside quote state: %s", source => {
   expect(splitSentences(source + " 'Sí.'")).toEqual([source + " ", "'Sí.'"]);
 });
 
@@ -76,7 +76,7 @@ it.each(['"La estación está cerca del supermercado', '"La estación está cerc
   }
 });
 
-it.each(["He said '90s' and left.", "'90s were great.'", "'cause it was late.'", "'I left 'cause it was late.'"])("preserves real single quotes around elision-shaped words: %s", source => {
+it.each(["He said '90s' and left.", "'90s were great.'", "'cause it was late.'", "'I left 'cause it was late.'", "He said 'round' and left.", "'round here is quiet.'", "'I looked 'round.'"])("preserves real single quotes around elision-shaped words: %s", source => {
   expect(splitSentences(source + " 'Sí.'")).toEqual([source + " ", "'Sí.'"]);
 });
 
@@ -84,4 +84,8 @@ it.each(["'90s were great. Music was better.'", "'cause it was late. I left earl
   const sentences = splitSentences(source + " 'Sí.'");
   expect(sentences.at(-1)).toBe("'Sí.'");
   expect(sentences.slice(0, -1).join("")).toBe(source + " ");
+});
+
+it.each(["Veuillez ouvrir le site example.no.", 'Veuillez ouvrir le site "example.no".'])("keeps a canonical reply inside a contiguous hostname: %s", text => {
+  expect(splitLanguageSentences(text, { A: "en", B: "fr" }, eld.newInstance())).toEqual([text]);
 });

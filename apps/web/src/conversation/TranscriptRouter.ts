@@ -40,9 +40,8 @@ export class TranscriptRouter {
     // ponytail: dotted Latin-token continuation uses syntax and reliable context;
     // explicit token/speaker metadata would remove ambiguous no-space cases.
     for (const sentence of splitSentences(text)) {
-      const reply = shortReplyEvidence(sentence, languages);
       if (this.currentSide === undefined || (!flush && !isSentenceComplete(sentence)) || !isDottedContinuation(this.sourceText, sentence) ||
-          (reply !== undefined && reply !== "ambiguous") || this.resolve(sentence, languages) !== undefined ||
+          this.resolve(sentence, languages) !== undefined ||
           this.resolve(this.sourceText + sentence, languages) !== this.currentSide) break;
       routed.push(...this.take(this.currentSide, sentence.length));
       consumed += sentence.length;

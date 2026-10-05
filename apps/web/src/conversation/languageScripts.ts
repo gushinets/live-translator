@@ -117,9 +117,8 @@ export function splitLanguageSentences(text: string, languages: ConversationLang
     // other abbreviations need explicit evidence or token-boundary metadata.
     if (continuation && reply === undefined &&
         (prefixScriptSide === undefined || prefixScriptSide === "ambiguous") && prefixCovered && !reliable(prefixEvidence)) continue;
-    // An unresolved contiguous suffix can finish a hostname, rather than start a source.
+    // Contiguous lowercase labels (including .no) belong to the dotted token before reply evidence.
     if (next && isDottedContinuation(sentence, next) &&
-        (shortReplyEvidence(next, languages) === undefined || shortReplyEvidence(next, languages) === "ambiguous") &&
         covered(next) && !reliable(next)) continue;
     sentences.push(prefix); prefix = ""; prefixEvidence = ""; prefixCovered = true; prefixScriptSide = undefined;
   }
