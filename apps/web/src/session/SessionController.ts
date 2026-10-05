@@ -1644,8 +1644,11 @@ export class SessionController {
     }
     if (event.active) {
       const turns = [...(this.currentSession.pendingTurns ?? []), ...(this.currentSession.activeTurn ? [this.currentSession.activeTurn] : [])];
+      // Unknown worklet ownership is still real playback. Credit it only when one source is eligible.
+      const soleTurn = turns.length === 1 &&
+        (this.outputTurnId === undefined || this.outputSourceTurnId === this.latestSourceTurnId) ? turns[0] : undefined;
       const target = event.owned
-        ? (event.turnId ? findSessionTurn(this.currentSession, event.turnId) : undefined)
+        ? (event.turnId === undefined ? soleTurn : findSessionTurn(this.currentSession, event.turnId))
         : (this.outputTurnId ? findSessionTurn(this.currentSession, this.outputTurnId) : undefined) ?? (turns.length === 1 ? turns[0] : undefined);
       const previous = this.playbackTurnId ? findSessionTurn(this.currentSession, this.playbackTurnId) : undefined;
       if (event.owned && previous && previous.id !== target?.id && !["completed", "failed", "discarded"].includes(previous.status)) {

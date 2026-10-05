@@ -84,11 +84,17 @@ describe("PlaybackQueue", () => {
     expect(played.mock.calls.filter(([, active]) => active).map(([turnId]) => turnId)).toEqual(["A", "B", "A"]); // A fresh media generation may reuse an ID.
   });
   it.each([
-    [false, 1000, 48000], [true, 1000, 48000], [false, 300, 1000], [true, 300, 1000],
-  ] as const)("ignores repeated captions without losing the next PCM owner, first delayed=%s, gap=%s ms, rate=%s", (firstDelayed, gapMs, rate) => {
+    [false, 1000, 48000, 19680], [true, 1000, 48000, 19680], [false, 300, 1000, 400], [true, 300, 1000, 400],
+  ] as const)("ignores repeated captions without losing the next PCM owner, first delayed=%s, gap=%s ms, rate=%s", (firstDelayed, gapMs, rate, bStart) => {
     const q = new PlaybackQueue(rate, rate * 3);
     const played = vi.fn();
-    q.onPlaybackTurn = played;
+    let owner: string | undefined;
+    let position = 0;
+    const starts: Array<[string | undefined, number]> = [];
+    q.onPlaybackTurn = (turnId, active) => {
+      played(turnId, active);
+      if (active) { owner = turnId; starts.push([turnId, position]); }
+    };
     q.setAudible(true); q.setEnabled(true); q.setSpeaking(true);
     if (!firstDelayed) q.setTurn("A");
     q.process(new Float32Array(rate / 10).fill(.5));
@@ -98,11 +104,19 @@ describe("PlaybackQueue", () => {
     q.setTurn("A"); q.setTurn("A"); // Caption deltas must not consume B's unowned PCM.
     q.setTurn("B");
     q.setEnabled(false);
-    const output = q.process(new Float32Array(rate * 2));
+    const output = new Float32Array(rate * 2), sample = new Float32Array(1);
+    const owners: Array<string | undefined> = [];
+    for (; position < output.length; position++) {
+      q.process(undefined, sample);
+      output[position] = sample[0]!;
+      if (sample[0]! > .1) owners.push(owner);
+    }
     expect(output.filter(value => value > .1)).toEqual(Float32Array.from([
       ...new Array(rate / 10).fill(.5), ...new Array(rate / 10).fill(.7),
     ]));
     expect(played.mock.calls.filter(([, active]) => active).map(([turnId]) => turnId)).toEqual(["A", "B"]);
+    expect(owners).toEqual([...new Array(rate / 10).fill("A"), ...new Array(rate / 10).fill("B")]);
+    expect(starts).toEqual([["A", 0], ["B", bStart]]);
   });
   it("does not let a previously claimed caption steal a later unowned span", () => {
     const q = new PlaybackQueue(1000);

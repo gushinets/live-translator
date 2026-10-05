@@ -951,13 +951,13 @@ describe("SessionController", () => {
       const decoder = vi.mocked(HTMLMediaElement.prototype.play).mock.contexts[0] as HTMLAudioElement;
       emitVoice(audio, true);
       const turnId = controller.session.activeTurn!.id;
-      // PCM before its caption has no known owner, but still blocks text-only completion.
+      // The sole source turn can own PCM before its caption; retirement must not forge an idle edge.
       node.port.onmessage!({ data: { type: "turn", value: true } } as MessageEvent);
       live.emit({ type: "session.input_transcript.delta", delta: "Подскажите, где находится вокзал?" });
       live.emit({ type: "session.output_transcript.delta", delta: "Could you tell me where the train station is?" });
       emitVoice(audio, false);
       await vi.advanceTimersByTimeAsync(runtime.audioStartGraceMs + runtime.captionIdleMs);
-      expect(controller.session.activeTurn).toMatchObject({ id: turnId, audioOutputStarted: false,
+      expect(controller.session.activeTurn).toMatchObject({ id: turnId, audioOutputStarted: true,
         translatedText: "Could you tell me where the train station is?" });
       expect((controller as unknown as { playbackActive: boolean }).playbackActive).toBe(true);
       expect(controller.metrics.snapshot().completedTurnCount).toBe(0);
@@ -968,6 +968,7 @@ describe("SessionController", () => {
       expect(controller.session.state).toBe("error");
       expect(controller.session.activeTurn?.id).toBe(turnId);
       expect(controller.session.activeTurn?.turnCompletedAtMs).toBeUndefined();
+      expect(controller.session.activeTurn?.playbackEndAtMs).toBeUndefined();
       expect(controller.session.recentTurns.some(turn => turn.id === turnId && turn.status === "completed")).toBe(false);
       expect(controller.metrics.snapshot()).toMatchObject({ completedTurnCount: 0, audioCompletedTurnCount: 0,
         textOnlyCompletedTurnCount: 0, textOnlyCompletionCount: 0, failedTurnCount: 1 });
@@ -1736,6 +1737,57 @@ async function enterOutputtingTurn(
 }
 
 describe("SessionController turn engine", () => {
+  it.each([false, true])("records a sole turn's fully played PCM before its first caption, draining=%s", async draining => {
+    const rate = 48000;
+    const queue = new PlaybackQueue(rate);
+    const audio = Object.assign(createFakeAudio(), { setPlaybackTurn: vi.fn((id: string | undefined) => queue.setTurn(id)) });
+    Object.defineProperty(audio, "hasPendingPlayback", { get: () => queue.pending });
+    audio.setOutputAudible.mockImplementation(audible => {
+      audio.audioElement.muted = !audible;
+      queue.setAudible(audible);
+    });
+    const { controller, live } = createController({ audio });
+    await controller.startWithLanguages({ A: "ru", B: "en" });
+    queue.setEnabled(draining); queue.setSpeaking(false);
+    if (draining) queue.process(new Float32Array(rate * .3));
+    emitVoice(audio, true);
+    live.emit({ type: "session.input_transcript.delta", delta: "Подскажите, где находится вокзал?" });
+    const id = controller.session.activeTurn!.id;
+    emitVoice(audio, false);
+    const origin = Date.now();
+    let position = 0;
+    const edges: Array<{ active: boolean; atMs: number; position: number }> = [];
+    queue.onPlaybackTurn = (turnId, active) => {
+      const event = { active, atMs: origin + Math.floor(position * 1000 / rate), turnId, owned: true };
+      edges.push({ ...event, position });
+      audio.onPlaybackActivity?.(event);
+    };
+    const input = new Float32Array(1), output = new Float32Array(1);
+    const played: number[] = [];
+    // Clock the actual queue one sample at a time, including its complete played-idle interval.
+    for (; position < rate * .8; position++) {
+      input[0] = position < 4800 ? .5 : 0;
+      queue.process(input, output);
+      if (output[0]! > .1) played.push(output[0]!);
+    }
+    expect(played).toEqual(new Array(4800).fill(.5));
+    expect(queue.pending).toBe(false);
+    expect(edges.map(edge => edge.active)).toEqual([true, false]);
+    expect(edges[0]!.atMs).toBe(origin + (draining ? 60 : 0));
+    expect(edges[1]!.position - edges[0]!.position).toBe(28799);
+    expect(edges[1]!.atMs - edges[0]!.atMs).toBe(599);
+    await vi.advanceTimersByTimeAsync(800);
+    const findTurn = () => [controller.session.activeTurn, ...(controller.session.pendingTurns ?? []),
+      ...controller.session.recentTurns].find(turn => turn?.id === id)!;
+    expect(findTurn()).toMatchObject({ audioOutputStarted: true, firstAudibleOutputAtMs: edges[0]!.atMs,
+      playbackEndAtMs: edges[1]!.atMs });
+    live.emit({ type: "session.output_transcript.delta", delta: "Where is the train station?" });
+    await vi.advanceTimersByTimeAsync(runtime.outputSettleGraceMs + runtime.captionIdleMs);
+    expect(findTurn()).toMatchObject({ status: "completed", translatedText: "Where is the train station?",
+      audioOutputStarted: true, firstAudibleOutputAtMs: edges[0]!.atMs, playbackEndAtMs: edges[1]!.atMs });
+    expect(controller.metrics.snapshot()).toMatchObject({ audioCompletedTurnCount: 1, textOnlyCompletedTurnCount: 0 });
+    await controller.endConversation();
+  });
   it.each([
     [false, false, 1000, false], [false, true, 1000, false],
     [true, false, 1000, false], [true, true, 1000, false],
@@ -5502,7 +5554,7 @@ describe("PR32 pending-source ownership", () => {
     expect(controller.session.pendingTurns?.find(turn => turn.id === b)?.translatedText).toBe(
       timestamp === "late correction" ? "Я использую Каждый день я использую " : "Я использую ");
   });
-  it("keeps audio before B's caption unattributed when A is still pending", async () => {
+  it.each([false, true])("keeps audio before B's caption unattributed when A is still pending, owned=%s", async owned => {
     const { controller, live, audio } = createController();
     await controller.startWithLanguages({ A: "ru", B: "en" });
     emitVoice(audio, true);
@@ -5511,11 +5563,13 @@ describe("PR32 pending-source ownership", () => {
     live.emit({ type: "session.output_transcript.delta", delta: "Where is the train station?" });
     live.emit({ type: "session.input_transcript.delta", delta: "The station is straight ahead." });
     const b = controller.session.activeTurn!.id;
-    emitPlayback(audio, true);
+    const activity = { active: true, atMs: Date.now(), owned };
+    audio.onPlaybackActivity?.(activity);
     live.emit({ type: "session.output_transcript.delta", delta: "Вокзал находится прямо впереди." });
     emitVoice(audio, false);
     await vi.advanceTimersByTimeAsync(runtime.audioStartGraceMs + runtime.captionIdleMs);
     expect(controller.session.activeTurn?.id).toBe(b);
+    expect(controller.session.activeTurn?.audioOutputStarted).toBe(false);
     expect(controller.session.pendingTurns?.find(turn => turn.id === a)?.audioOutputStarted).toBe(false);
     expect(controller.session.pendingTurns?.find(turn => turn.id === a)?.firstAudibleOutputAtMs).toBeUndefined();
     emitPlayback(audio, false);
