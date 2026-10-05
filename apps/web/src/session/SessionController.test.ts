@@ -5258,3 +5258,17 @@ it("routes exclusive Spanish short replies in source and output streams", async 
     ["output", "Sí."], ["input", "Sí."],
   ]);
 });
+
+it.each(["input", "output"] as const)("does not merge ambiguous No with Spanish %s reply before caption idle", async kind => {
+  vi.useFakeTimers(); vi.setSystemTime(0);
+  const { controller, live, audio } = createController();
+  await controller.startWithLanguages({ A: "en", B: "es" });
+  emitVoice(audio, true);
+  live.emit({ type: "session.input_transcript.delta", delta: "Where is the train station?" });
+  live.emit({ type: kind === "input" ? "session.input_transcript.delta" : "session.output_transcript.delta", delta: "No." });
+  live.emit({ type: kind === "input" ? "session.input_transcript.delta" : "session.output_transcript.delta", delta: " Sí." });
+  expect(controller.captionBlocks.filter(block => block.side === "B").map(block => block.text.trim())).toEqual(["Sí."]);
+  expect(controller.captionBlocks.filter(block => block.side === undefined).map(block => block.text.trim())).toEqual(["No."]);
+  if (kind === "input") expect(controller.session.activeTurn).toMatchObject({ speaker: "B", originalText: "Sí." });
+  else expect(controller.session.activeTurn?.translatedText).toBe("Sí.");
+});

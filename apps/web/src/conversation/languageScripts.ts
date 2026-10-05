@@ -50,8 +50,19 @@ export function isExplicitShortReply(text: string, language: string): boolean {
     (language === "ru" && /^(да|нет|ага|угу|стой|стоп|как|что|кто|где|эй)$/.test(word)));
 }
 
-/** A full reply is decisive only when exactly one configured language accepts it. */
-export function exclusiveShortReplySide(text: string, languages: ConversationLanguages): Side | undefined {
-  const a = isExplicitShortReply(text, languages.A), b = isExplicitShortReply(text, languages.B);
-  return a === b ? undefined : a ? "A" : "B";
+// A short-reply list is not a vocabulary: absence cannot prove another language.
+// These canonical answers have been checked for the listed same-script pairs.
+const pairReplies: Readonly<Record<string, Readonly<Record<string, readonly string[]>>>> = {
+  "en/es": { en: ["yes"], es: ["sí"] },
+  "en/fr": { en: ["yes", "no"], fr: ["oui", "non"] },
+};
+export function shortReplyEvidence(text: string, languages: ConversationLanguages): Side | "ambiguous" | undefined {
+  if (!isExplicitShortReply(text, languages.A) && !isExplicitShortReply(text, languages.B)) return undefined;
+  const scriptSide = completeScriptSide(text, languages);
+  if (scriptSide !== undefined) return scriptSide;
+  const replies = pairReplies[[languages.A, languages.B].sort().join("/")];
+  const words = text.normalize("NFC").toLowerCase().match(/[\p{L}\p{M}]+/gu) ?? [];
+  const a = words.length > 0 && words.every(word => replies?.[languages.A]?.includes(word));
+  const b = words.length > 0 && words.every(word => replies?.[languages.B]?.includes(word));
+  return a === b ? "ambiguous" : a ? "A" : "B";
 }

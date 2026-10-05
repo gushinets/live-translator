@@ -170,3 +170,40 @@ it("keeps shared No ambiguous in an English/Spanish pair", () => {
   expect(router.push(fragment("No."), { A: "en", B: "es" }, "A")).toEqual([]);
   expect(router.flush({ A: "en", B: "es" }, true)[0]).toMatchObject({ side: undefined });
 });
+
+it.each([{ chunks: ["No.", " Sí."] }, { chunks: ["No. Sí."] }])("does not reassign a buffered ambiguous sentence: $chunks", ({ chunks }) => {
+  const router = new TranscriptRouter();
+  const routed = chunks.flatMap(text => router.push(fragment(text), { A: "en", B: "es" }, "A"));
+  routed.push(...router.flush({ A: "en", B: "es" }, true));
+  expect(routed.map(group => ({ side: group.side, text: group.fragments.map(part => part.text).join("").trim() }))).toEqual([
+    { side: undefined, text: "No." }, { side: "B", text: "Sí." },
+  ]);
+  expect(routed.flatMap(group => group.fragments).map(part => part.text).join("")).toBe(chunks.join(""));
+});
+it.each([["en", "it", "Fine."], ["ru", "uk", "Стоп."]])("does not mistake a partial lexicon for exclusive evidence in %s/%s", (A, B, text) => {
+  const router = new TranscriptRouter();
+  const routed = [...router.push(fragment(text), { A, B }), ...router.flush({ A, B }, true)];
+  expect(routed).toEqual([{ side: undefined, fragments: [fragment(text)] }]);
+});
+
+it("does not reuse old Russian context after an English sentence in the same packet", () => {
+  const router = new TranscriptRouter();
+  const routed = router.push(fragment("The station is straight ahead. Google."), { A: "ru", B: "en" }, "A", "Я использую ");
+  expect(routed.map(group => group.side)).toEqual(["B", "B"]);
+});
+it("preserves timing when one packet contains an ambiguous reply and an interruption", () => {
+  const part = { id: "mixed", text: "No. Sí.", receivedAtMs: 1000, startMs: 42, endMs: 500 };
+  const routed = new TranscriptRouter().push(part, { A: "en", B: "es" }, "A");
+  expect(routed.map(group => ({ side: group.side, text: group.fragments.map(fragment => fragment.text).join("") }))).toEqual([
+    { side: undefined, text: "No. " }, { side: "B", text: "Sí." },
+  ]);
+  expect(routed.flatMap(group => group.fragments).map(({ receivedAtMs, startMs, endMs }) => [receivedAtMs, startMs, endMs]))
+    .toEqual([[1000, 42, 500], [1000, 42, 500]]);
+});
+
+it("retains closing quote ownership across sentences routed from one packet", () => {
+  const text = '"Where is the station? The station is straight ahead."';
+  const routed = new TranscriptRouter().push(fragment(text), { A: "en", B: "es" }, "B");
+  expect(routed.map(group => group.side)).toEqual(["A", "A"]);
+  expect(routed.flatMap(group => group.fragments).map(part => part.text).join("")).toBe(text);
+});

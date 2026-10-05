@@ -554,7 +554,7 @@ it.each([undefined, "idle", "speaking"])("shows pending A playback on B with new
 });
 it.each(["ended", "interrupted", "completed"])("does not show stale pending audio as playing when %s", state => {
   const controller = new FakeConversationController(session({ pendingTurns: [turn({
-    id: "old-a", speaker: "A", sourceIdleAtMs: 1, audioOutputStarted: true,
+    id: "old-a", speaker: "A", sourceIdleAtMs: 1, audioOutputStarted: true, translatedText: "Hola.",
     playbackEndAtMs: state === "ended" ? 10 : undefined,
     audioOutputInterrupted: state === "interrupted", status: state === "completed" ? "completed" : "outputting",
   })] }));

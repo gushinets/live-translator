@@ -314,3 +314,27 @@ it("does not turn shared No into exclusive English or Spanish evidence", () => {
   transcript.push("input", fragment("No."), { A: "en", B: "es" });
   expect(content(transcript)).toEqual([{ kind: "input", side: undefined, text: "No." }]);
 });
+
+it.each(['"', "'"])("keeps the next sentence's unmatched opening %s on its language pane", quote => {
+  const opening = "Where is the station?", reply = quote + "La estación está cerca del supermercado." + quote;
+  for (const kind of ["input", "output"] as const) for (const size of [1, 1000]) {
+    const transcript = new DialogueTranscript();
+    const text = opening + reply;
+    for (let i = 0; i < text.length; i += size) transcript.push(kind, fragment(text.slice(i, i + size)), { A: "en", B: "es" });
+    expect(content(transcript)).toEqual([{ kind, side: "A", text: opening }, { kind, side: "B", text: reply }]);
+  }
+});
+it.each([["en", "it", "Fine."], ["ru", "uk", "Стоп."]])("keeps lexical overlap unassigned in %s/%s captions", (A, B, text) => {
+  for (const kind of ["input", "output"] as const) {
+    const transcript = new DialogueTranscript();
+    transcript.push(kind, fragment(text), { A, B });
+    expect(content(transcript)).toEqual([{ kind, side: undefined, text }]);
+  }
+});
+
+it.each(['"Where is the station?"', '"Where is the station?".', "I don't know. Where is the station?"])("keeps matched quotes and apostrophes before adjacent quoted speech: %s", opening => {
+  const reply = '"La estación está cerca del supermercado."';
+  const transcript = new DialogueTranscript();
+  transcript.push("input", fragment(opening + reply), { A: "en", B: "es" });
+  expect(content(transcript)).toEqual([{ kind: "input", side: "A", text: opening }, { kind: "input", side: "B", text: reply }]);
+});

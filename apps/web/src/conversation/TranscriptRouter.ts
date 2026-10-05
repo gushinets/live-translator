@@ -1,9 +1,9 @@
 import { eld } from "eld/extrasmall";
-import { isSentenceComplete } from "./sentenceBoundaries";
+import { isSentenceComplete, splitSentences } from "./sentenceBoundaries";
 import type { ConversationLanguages } from "../side/SideResolver";
 import type { Side } from "./Turn";
 import type { TranscriptFragment } from "./TranscriptFragment";
-import { completeScriptSide, exclusiveShortReplySide, isExplicitShortReply, languageScripts } from "./languageScripts";
+import { completeScriptSide, shortReplyEvidence, isExplicitShortReply, languageScripts } from "./languageScripts";
 
 export interface RoutedTranscript {
   side: Side | undefined;
@@ -26,42 +26,54 @@ export class TranscriptRouter {
     this.pending.push(fragment);
     this.currentSide = currentSide;
     this.sourceText = sourceText;
-    const text = this.pending.map(part => part.text).join("");
-    if (/^[\p{P}\s]+$/u.test(text) && currentSide !== undefined) return this.take(currentSide);
-    const scriptSide = this.resolveScript(text, languages);
-    if (scriptSide !== undefined) return this.take(scriptSide);
-    // Only complete words are evidence: "Thank y" can otherwise be classified as Spanish.
-    const evidence = text.replace(/\p{L}+$/u, "");
-    const side = this.resolve(evidence, languages);
-    if (side !== undefined && this.hasEvidence(evidence, text, side, currentSide)) return this.take(side);
-    if (text.length >= 512) return this.take(undefined);
-    return [];
+    return this.drain(languages, false, false);
   }
 
   flush(languages: ConversationLanguages, force = false): RoutedTranscript[] {
-    if (!this.pending.length) return [];
+    return this.drain(languages, true, force);
+  }
+
+  private drain(languages: ConversationLanguages, flush: boolean, force: boolean): RoutedTranscript[] {
+    const routed: RoutedTranscript[] = [];
     const text = this.pending.map(part => part.text).join("");
+    const sentences = splitSentences(text);
+    for (const [index, sentence] of sentences.entries()) {
+      const bounded = index < sentences.length - 1;
+      const result = this.resolveSentence(sentence, languages, flush || bounded, force || bounded);
+      if (result === undefined) break;
+      routed.push(...this.take(result.side, sentence.length));
+      this.currentSide = result.side;
+      this.sourceText = sentence;
+    }
+    return routed;
+  }
+
+  private resolveSentence(text: string, languages: ConversationLanguages, flush: boolean, force: boolean): { side?: Side } | undefined {
+    if (/^[\p{P}\s]+$/u.test(text) && this.currentSide !== undefined) return { side: this.currentSide };
     const scriptSide = this.resolveScript(text, languages);
-    if (scriptSide !== undefined) return this.take(scriptSide);
+    if (scriptSide !== undefined) return { side: scriptSide };
+    if (shortReplyEvidence(text, languages) === "ambiguous") return flush ? {} : undefined;
+    // Only complete words are evidence: "Thank y" can otherwise be classified as Spanish.
     const evidence = text.replace(/\p{L}+$/u, "");
     const side = this.resolve(evidence, languages);
-    if (side !== undefined && this.hasEvidence(evidence, text, side, this.currentSide)) return this.take(side);
+    if (side !== undefined && this.hasEvidence(evidence, text, side, this.currentSide)) return { side };
+    if (!flush) return text.length >= 512 ? {} : undefined;
     const fullSide = this.resolve(text, languages);
     // An unreliable prefix is only a consistency check for a reliable full phrase;
     // it never establishes an author by itself. "Thank y" fails that check.
     if (fullSide !== undefined && this.resolve(evidence, languages, false) === fullSide &&
-        this.hasEvidence(text, text, fullSide, this.currentSide)) return this.take(fullSide);
+        this.hasEvidence(text, text, fullSide, this.currentSide)) return { side: fullSide };
     // A script distinction can identify a language even before the last word is
     // complete. A pause cannot make an unfinished Latin word Spanish or English.
     const distinctScripts = !languageScripts(languages.A).some(script => languageScripts(languages.B).includes(script));
-    if (distinctScripts && fullSide !== undefined && this.hasEvidence(text, text, fullSide, this.currentSide)) return this.take(fullSide);
-    if (!force && fullSide !== undefined && /\p{L}$/u.test(text)) return [];
-    return this.take(undefined);
+    if (distinctScripts && fullSide !== undefined && this.hasEvidence(text, text, fullSide, this.currentSide)) return { side: fullSide };
+    if (!force && fullSide !== undefined && /\p{L}$/u.test(text)) return undefined;
+    return {};
   }
 
   private resolveScript(text: string, languages: ConversationLanguages): Side | undefined {
-    const replySide = exclusiveShortReplySide(text, languages);
-    if (replySide !== undefined) return replySide;
+    const replySide = shortReplyEvidence(text, languages);
+    if (replySide === "A" || replySide === "B") return replySide;
     const side = completeScriptSide(text, languages);
     if (side === undefined || this.currentSide === undefined || side === this.currentSide) return side;
     if (isExplicitShortReply(text, languages[side])) return side;
@@ -92,9 +104,20 @@ export class TranscriptRouter {
     return result.language === languages.A ? "A" : result.language === languages.B ? "B" : undefined;
   }
 
-  private take(side: Side | undefined): RoutedTranscript[] {
-    const fragments = this.pending;
-    this.pending = [];
+  private take(side: Side | undefined, length: number): RoutedTranscript[] {
+    const fragments: TranscriptFragment[] = [];
+    const pending: TranscriptFragment[] = [];
+    for (const part of this.pending) {
+      if (length >= part.text.length) { fragments.push(part); length -= part.text.length; }
+      else if (length > 0) {
+        // The service timestamps cover the whole packet. Preserve them rather than
+        // inventing sub-packet timing when a packet contains two speakers' sentences.
+        fragments.push({ ...part, id: part.id + ":head", text: part.text.slice(0, length) });
+        pending.push({ ...part, id: part.id + ":tail", text: part.text.slice(length) });
+        length = 0;
+      } else pending.push(part);
+    }
+    this.pending = pending;
     return [{ side, fragments }];
   }
 }

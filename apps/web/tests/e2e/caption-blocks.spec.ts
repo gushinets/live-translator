@@ -204,3 +204,50 @@ test("same-script replies retain quoted captions and pending translation status"
   await harness.advance(1000);
   await expect(page.getByTestId("participant-status-B")).not.toHaveText("Traduciendo");
 });
+
+test("adjacent quotes and buffered ambiguous replies stay in their own caption blocks", async ({ page }) => {
+  const harness = await MockLiveHarness.attach(page);
+  await page.addInitScript(() => {
+    localStorage.setItem("live-translator-owner-language", "en");
+    localStorage.setItem("live-translator-interlocutor-language", "es");
+  });
+  await page.goto("/");
+  await page.getByRole("button", { name: "Start translation", exact: true }).click();
+  await expect(page.getByRole("button", { name: "End", exact: true })).toBeVisible();
+  await harness.sourceActive();
+  await harness.inputDelta("Where is the station?");
+  await harness.inputDelta('"La estación está cerca del supermercado."');
+  const a = page.getByTestId("participant-pane-A"), b = page.getByTestId("participant-pane-B");
+  await expect(a.locator("li")).toHaveText("Me: Where is the station?");
+  await expect(b.locator("li")).toHaveText('Yo: "La estación está cerca del supermercado."');
+  await harness.advance(1);
+  await harness.outputDelta("No.");
+  await harness.outputDelta(" Sí.");
+  await harness.advance(1);
+  await harness.inputDelta("No.");
+  await harness.inputDelta(" Sí.");
+  await expect(b.locator("li")).toHaveText(['Yo: "La estación está cerca del supermercado."', "Él: Sí.", "Yo: Sí."]);
+  await expect(page.locator(".participant-pane li")).toHaveCount(4);
+});
+
+test("stopped playback with retained translated text does not keep an output indicator", async ({ page }) => {
+  const harness = await MockLiveHarness.attach(page);
+  await page.addInitScript(() => {
+    localStorage.setItem("live-translator-owner-language", "en");
+    localStorage.setItem("live-translator-interlocutor-language", "es");
+  });
+  await page.goto("/");
+  await page.getByRole("button", { name: "Start translation", exact: true }).click();
+  await expect(page.getByRole("button", { name: "End", exact: true })).toBeVisible();
+  await harness.sourceActive();
+  await harness.inputDelta("Where is the train station?");
+  await harness.outputDelta("Sí.");
+  await harness.sourceQuiet();
+  await harness.playbackActive();
+  const status = page.getByTestId("participant-status-B");
+  await expect(status).toHaveText("Traducción");
+  await harness.playbackIdle();
+  await expect(status).not.toHaveText("Traducción");
+  await expect(status).not.toHaveText("Traduciendo");
+  await expect(page.getByTestId("participant-pane-B").locator("li")).toHaveText("Él: Sí.");
+});
