@@ -5299,6 +5299,8 @@ it.each([
   { pair: { A: "ru", B: "de" }, speaker: "B", source: "5. Oktober.", translation: "Пятое октября." },
   { pair: { A: "ru", B: "de" }, speaker: "B", source: "1. Stock.", translation: "Первый этаж." },
   { pair: { A: "en", B: "es" }, speaker: "A", source: "Dr. Smith is here.", translation: "El doctor Smith está aquí." },
+  { pair: { A: "en", B: "es" }, speaker: "A", source: "J. Smith is here.", translation: "El señor Smith está aquí." },
+  { pair: { A: "en", B: "es" }, speaker: "A", source: "J. R. Smith is here.", translation: "El señor Smith está aquí." },
   { pair: { A: "en", B: "sr" }, speaker: "B", source: "Dr. Ј. Петровић.", translation: "Doctor Petrovic is here." },
   { pair: { A: "en", B: "es" }, speaker: "A", source: "Visit example.com.", translation: "Visite la página example.com." },
 ].flatMap(example => [false, true].map(chunked => ({ ...example,

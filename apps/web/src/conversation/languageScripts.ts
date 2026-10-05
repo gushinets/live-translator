@@ -82,8 +82,8 @@ export function splitLanguageSentences(text: string, languages: ConversationLang
   let prefixScriptSide: Side | "ambiguous" | undefined;
   for (const [index, sentence] of candidates.entries()) {
     const reply = shortReplyEvidence(sentence, languages);
-    // A recognised or ambiguous standalone reply must keep its own boundary.
-    if (prefix && reply !== undefined) {
+    // Preserve standalone replies and leave room for new evidence in the detection sample.
+    if (prefix && (reply !== undefined || prefix.length + sentence.length > 2000)) {
       sentences.push(prefix); prefix = ""; prefixEvidence = ""; prefixCovered = true; prefixScriptSide = undefined;
     }
     prefix += sentence;
@@ -95,7 +95,11 @@ export function splitLanguageSentences(text: string, languages: ConversationLang
       prefixScriptSide = prefixScriptSide === undefined ? side ?? "ambiguous" : prefixScriptSide === side ? side : "ambiguous";
     }
     if (prefixEvidence.length < 2000) prefixEvidence += sentence.slice(0, 2000 - prefixEvidence.length);
-    if (/^\s*[\p{L}\p{M}\p{Nd}]+\.\s*$/u.test(sentence) && reply === undefined &&
+    // ponytail: only common titles, numeric ordinals and initials defer a period;
+    // other abbreviations need explicit evidence or token-boundary metadata.
+    const continuation = /^\s*(?:\p{Nd}+|Dr|Mr|Mrs|Ms|Prof|Sr|Jr)\.\s*$/iu.test(sentence) ||
+      /^\s*\p{Lu}\.\s*$/u.test(sentence);
+    if (continuation && reply === undefined &&
         (prefixScriptSide === undefined || prefixScriptSide === "ambiguous") && prefixCovered && !reliable(prefixEvidence)) continue;
     const next = candidates[index + 1];
     // An unresolved contiguous suffix can finish a hostname, rather than start a source.

@@ -207,3 +207,25 @@ it("retains closing quote ownership across sentences routed from one packet", ()
   expect(routed.map(group => group.side)).toEqual(["A", "A"]);
   expect(routed.flatMap(group => group.fragments).map(part => part.text).join("")).toBe(text);
 });
+
+it.each(["OK.", "Uh."])("keeps an unlisted weak utterance separate from the next language: %s", weak => {
+  const pair = { A: "en", B: "es" }, reply = "La estación está cerca del supermercado.";
+  for (const chunks of [[weak, " " + reply], [weak + " " + reply]]) {
+    const router = new TranscriptRouter();
+    const groups = chunks.flatMap(text => router.push(fragment(text), pair, "A"));
+    groups.push(...router.flush(pair, true));
+    expect(groups.map(group => ({ side: group.side, text: group.fragments.map(part => part.text).join("").trim() })))
+      .toEqual([{ side: undefined, text: weak }, { side: "B", text: reply }]);
+    expect(groups.flatMap(group => group.fragments).map(part => part.text).join("")).toBe(chunks.join(""));
+  }
+});
+
+it("routes new language evidence after an exhausted detection prefix", () => {
+  for (const count of [399, 400]) {
+    const router = new TranscriptRouter(), pair = { A: "en", B: "es" };
+    const prefix = "123. ".repeat(count), text = "Where is the station?";
+    const groups = [...router.push(fragment(prefix), pair), ...router.push(fragment(text), pair), ...router.flush(pair, true)];
+    expect(groups.map(group => ({ side: group.side, text: group.fragments.map(part => part.text).join("") })))
+      .toEqual([{ side: undefined, text: prefix }, { side: "A", text }]);
+  }
+});

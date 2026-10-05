@@ -353,6 +353,8 @@ it.each(["input", "output"] as const)("retains quoted replies after measurement 
 
 it.each([
   { text: '"He is 6\'2" tall."' },
+  { text: '"It is 12" long."' },
+  { text: "'The board is 6' long.'" },
   { text: "'The dogs' owner is here.'" },
 ].flatMap(example => (["input", "output"] as const).map(kind => ({ ...example, kind }))))("retains outer quotes around measurement/possessive marks in $kind: $text", ({ text, kind }) => {
   for (const size of [1, 1000]) {
@@ -386,4 +388,35 @@ it("retains an outer possessive quote before an unquoted other-language sentence
   const first = "'The dogs' owner is here.'", second = "La estación está cerca del supermercado.";
   transcript.push("input", fragment(first + second), { A: "en", B: "es" });
   expect(content(transcript)).toEqual([{ kind: "input", side: "A", text: first }, { kind: "input", side: "B", text: second }]);
+});
+
+it.each(["input", "output"] as const)("keeps an unlisted weak utterance unassigned before another language in %s", kind => {
+  const reply = "La estación está cerca del supermercado.";
+  for (const weak of ["OK.", "Uh."]) for (const chunks of [[weak, " " + reply], [weak + " " + reply]]) {
+    const transcript = new DialogueTranscript();
+    for (const text of chunks) transcript.push(kind, fragment(text), { A: "en", B: "es" });
+    expect(content(transcript)).toEqual([{ kind, side: undefined, text: weak }, { kind, side: "B", text: reply }]);
+    expect(transcript.blocks.map(block => block.text).join("")).toBe(chunks.join(""));
+  }
+});
+
+it.each(["input", "output"] as const)("shows new language evidence after an exhausted detection prefix in %s", kind => {
+  for (const count of [399, 400]) {
+    const transcript = new DialogueTranscript();
+    const prefix = "123. ".repeat(count), text = "Where is the station?";
+    transcript.push(kind, fragment(prefix), { A: "en", B: "es" });
+    transcript.push(kind, fragment(text), { A: "en", B: "es" });
+    expect(content(transcript)).toEqual([{ kind, side: undefined, text: prefix.trim() }, { kind, side: "A", text }]);
+    expect(transcript.blocks.map(block => block.text).join("")).toBe(prefix + text);
+  }
+});
+
+it.each(['"2 personas están aquí."', '"¿Dónde está la estación?"', '"(2 personas están aquí.)"'])("keeps a numeric quotation separate from the next quoted reply in both streams: %s", reply => {
+  const source = 'He said "123" and left.';
+  for (const kind of ["input", "output"] as const) for (const size of [1, 1000]) {
+    const transcript = new DialogueTranscript(), text = source + reply;
+    for (let i = 0; i < text.length; i += size) transcript.push(kind, fragment(text.slice(i, i + size)), { A: "en", B: "es" });
+    expect(content(transcript)).toEqual([{ kind, side: "A", text: source }, { kind, side: "B", text: reply }]);
+    expect(transcript.blocks.map(block => block.text).join("")).toBe(text);
+  }
 });

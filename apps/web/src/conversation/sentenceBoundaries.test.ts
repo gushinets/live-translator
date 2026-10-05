@@ -32,8 +32,21 @@ it.each(["Dogs", "Big dogs"])("preserves adjacent quoted replies after a quoted 
 });
 
 it("keeps a long weak prefix separate from a decisive reply", () => {
-  const prefix = "xxx. ".repeat(2000);
+  const prefix = "123. ".repeat(400);
   expect(splitLanguageSentences(prefix + "Sí.", { A: "en", B: "es" }, eld.newInstance())).toEqual([prefix, "Sí."]);
   expect(splitLanguageSentences("5. Oktober. Да.", { A: "ru", B: "de" }, eld.newInstance())).toEqual(["5. Oktober. ", "Да."]);
   expect(splitLanguageSentences("Dr. Ј. Петровић.", { A: "en", B: "sr" }, eld.newInstance())).toEqual(["Dr. Ј. Петровић."]);
+});
+
+it.each([
+  { text: '"It is 12" long."', expected: ['"It is 12" long."'] },
+  { text: "'The board is 6' long.'", expected: ["'The board is 6' long.'"] },
+  { text: 'He said "123" and left. "Sí."', expected: ['He said "123" and left. ', '"Sí."'] },
+])("preserves standalone measurements and numeric quotations: $text", ({ text, expected }) => {
+  expect(splitSentences(text)).toEqual(expected);
+});
+
+it.each(['"2 personas están aquí."', '"¿Dónde está la estación?"', '"(2 personas están aquí.)"'])("keeps a numeric quotation separate from the next quoted reply: %s", reply => {
+  const source = 'He said "123" and left.';
+  expect(splitSentences(source + reply)).toEqual([source, reply]);
 });

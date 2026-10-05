@@ -25,11 +25,12 @@ export function splitSentences(text: string): string[] {
         if (/['′]/u.test(text[numberStart - 1] ?? "") && /\p{Nd}/u.test(text[numberStart - 2] ?? "")) continue;
       }
       // Distinguish an outer closing quote from an adjacent quoted reply's opener.
-      if (char === "'" && /[sS]/u.test(before) && /\s/u.test(after) && openQuotes[char]) {
+      if (char in openQuotes && /\s/u.test(after) && openQuotes[char] &&
+          ((char === "'" && /[sS]/u.test(before)) || /\p{Nd}/u.test(before))) {
         const nextQuote = text.indexOf(char, i + 1);
         const followingQuote = nextQuote < 0 ? -1 : text.indexOf(char, nextQuote + 1);
-        const startsNextQuote = /\p{L}/u.test(text[nextQuote + 1] ?? "") &&
-          /\p{Sentence_Terminal}/u.test(text[followingQuote - 1] ?? "");
+        const quotedText = followingQuote < 0 ? "" : text.slice(nextQuote + 1, followingQuote);
+        const startsNextQuote = /^\S/u.test(quotedText) && /[\p{L}\p{Nd}]/u.test(quotedText) && isSentenceComplete(quotedText);
         if (/\p{Sentence_Terminal}/u.test(text[nextQuote - 1] ?? "") && !startsNextQuote) continue;
       }
       // Marks after a number or word do not open quoted speech (6'2", dogs').
