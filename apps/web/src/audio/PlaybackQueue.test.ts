@@ -80,26 +80,48 @@ describe("PlaybackQueue", () => {
     q.setEnabled(true); q.setSpeaking(true);
     q.setTurn("discarded"); q.process(Float32Array.of(.8));
     q.setAudible(false); q.setAudible(true); q.setEnabled(false);
-    q.setTurn("new"); q.process(Float32Array.of(.9));
-    expect(played.mock.calls.filter(([, active]) => active).map(([turnId]) => turnId)).toEqual(["A", "B", "new"]);
+    q.setTurn("A"); q.process(Float32Array.of(.9));
+    expect(played.mock.calls.filter(([, active]) => active).map(([turnId]) => turnId)).toEqual(["A", "B", "A"]); // A fresh media generation may reuse an ID.
   });
-  it.each([false, true])("reconciles later audio-before-caption spans, first caption also delayed=%s", firstDelayed => {
-    const q = new PlaybackQueue(1000);
+  it.each([
+    [false, 1000, 48000], [true, 1000, 48000], [false, 300, 1000], [true, 300, 1000],
+  ] as const)("ignores repeated captions without losing the next PCM owner, first delayed=%s, gap=%s ms, rate=%s", (firstDelayed, gapMs, rate) => {
+    const q = new PlaybackQueue(rate, rate * 3);
     const played = vi.fn();
     q.onPlaybackTurn = played;
     q.setAudible(true); q.setEnabled(true); q.setSpeaking(true);
     if (!firstDelayed) q.setTurn("A");
-    q.process(new Float32Array(100).fill(.5));
-    q.process(new Float32Array(1000));
-    q.process(new Float32Array(100).fill(.7));
+    q.process(new Float32Array(rate / 10).fill(.5));
+    q.process(new Float32Array(rate * gapMs / 1000));
+    q.process(new Float32Array(rate / 10).fill(.7));
     if (firstDelayed) q.setTurn("A");
+    q.setTurn("A"); q.setTurn("A"); // Caption deltas must not consume B's unowned PCM.
     q.setTurn("B");
+    q.setEnabled(false);
+    const output = q.process(new Float32Array(rate * 2));
+    expect(output.filter(value => value > .1)).toEqual(Float32Array.from([
+      ...new Array(rate / 10).fill(.5), ...new Array(rate / 10).fill(.7),
+    ]));
+    expect(played.mock.calls.filter(([, active]) => active).map(([turnId]) => turnId)).toEqual(["A", "B"]);
+  });
+  it("does not let a previously claimed caption steal a later unowned span", () => {
+    const q = new PlaybackQueue(1000);
+    const played = vi.fn();
+    q.onPlaybackTurn = played;
+    q.setAudible(true); q.setEnabled(true); q.setSpeaking(true);
+    q.setTurn("A"); q.process(new Float32Array(100).fill(.5));
+    q.process(new Float32Array(300));
+    q.process(new Float32Array(100).fill(.7)); q.setTurn("B");
+    q.process(new Float32Array(300));
+    q.process(new Float32Array(100).fill(.9));
+    q.setTurn("A"); // A late historical caption is not a new audio owner.
+    q.setTurn("C");
     q.setEnabled(false);
     const output = q.process(new Float32Array(2000));
     expect(output.filter(value => value > .1)).toEqual(Float32Array.from([
-      ...new Array(100).fill(.5), ...new Array(100).fill(.7),
+      ...new Array(100).fill(.5), ...new Array(100).fill(.7), ...new Array(100).fill(.9),
     ]));
-    expect(played.mock.calls.filter(([, active]) => active).map(([turnId]) => turnId)).toEqual(["A", "B"]);
+    expect(played.mock.calls.filter(([, active]) => active).map(([turnId]) => turnId)).toEqual(["A", "B", "C"]);
   });
   it("retains a caption-first next owner across the remaining raw silence", () => {
     const q = new PlaybackQueue(1000);
@@ -114,7 +136,7 @@ describe("PlaybackQueue", () => {
     q.setEnabled(false); q.process(new Float32Array(1000));
     expect(played.mock.calls.filter(([, active]) => active).map(([turnId]) => turnId)).toEqual(["A", "B"]);
   });
-  it("reports the same owner again after a long pause or a held playback interval", () => {
+  it("reports fresh activity after a long pause or a held playback interval", () => {
     const q = new PlaybackQueue(1000);
     const played = vi.fn();
     q.onPlaybackTurn = played;
@@ -122,14 +144,14 @@ describe("PlaybackQueue", () => {
     q.process(Float32Array.of(.5));
     q.process(new Float32Array(500));
     expect(played).toHaveBeenLastCalledWith("A", false); // A one-sample phrase must still produce an idle edge.
-    q.setTurn("A"); // Same-turn caption continuation identifies the next incoming span.
+    q.setTurn("B"); // A new caption identifies the next incoming span.
     q.process(Float32Array.of(.6));
     q.setEnabled(true); q.setSpeaking(true);
     q.process(Float32Array.of(.7));
     q.process(new Float32Array(500));
     q.setEnabled(false);
     q.process(new Float32Array(1));
-    expect(played.mock.calls.filter(([, active]) => active).map(([turnId]) => turnId)).toEqual(["A", "A", "A"]);
+    expect(played.mock.calls.filter(([, active]) => active).map(([turnId]) => turnId)).toEqual(["A", "B", "B"]);
   });
   it("drains a full FIFO after disabling buffering even when the input has no channels", () => {
     const q = new PlaybackQueue(1000, 128);

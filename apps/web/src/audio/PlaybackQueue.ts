@@ -5,6 +5,7 @@ import { VAM_ACTIVE_FLOOR } from "./VoiceActivityEstimator";
 export class PlaybackQueue {
   onPlaybackTurn: ((turnId: string | undefined, active: boolean) => void) | null = null;
   private readonly owners: Array<{ turnId: string | undefined; count: number; span: number }> = [];
+  private readonly captionTurns = new Set<string>();
   private inputTurnId: string | undefined;
   private inputSpan = 0;
   private lastIncomingSpan: number | undefined;
@@ -14,6 +15,7 @@ export class PlaybackQueue {
   private playedQuiet = 0;
   private readonly samples: Float32Array;
   private readonly preroll: Float32Array;
+  private readonly tailSamples: number;
   private read = 0;
   private count = 0;
   private prerollWrite = 0;
@@ -28,10 +30,16 @@ export class PlaybackQueue {
   constructor(private readonly sampleRate: number, capacity = sampleRate * 120) {
     this.samples = new Float32Array(capacity);
     this.preroll = new Float32Array(Math.ceil(sampleRate * .06));
+    this.tailSamples = Math.ceil(sampleRate * .25);
   }
 
   get pending(): boolean { return this.count > 0; }
   setTurn(turnId: string | undefined): void {
+    if (turnId !== undefined) {
+      // Caption continuations and historical corrections never claim another PCM span.
+      if (this.captionTurns.has(turnId)) return;
+      this.captionTurns.add(turnId);
+    }
     const pending = turnId === undefined ? undefined : this.owners.find(owner => owner.turnId === undefined);
     if (pending) {
       // Delayed captions claim one incoming span at a time, including later turns.
@@ -56,6 +64,7 @@ export class PlaybackQueue {
   clear(): void {
     this.read = this.count = this.prerollWrite = this.prerollCount = this.tail = this.quiet = 0;
     this.owners.length = 0;
+    this.captionTurns.clear();
     this.inputTurnId = this.playedTurnId = undefined;
     this.playing = false;
     this.playedQuiet = this.incomingQuiet = this.inputSpan = 0;
@@ -89,7 +98,7 @@ export class PlaybackQueue {
         for (let n = this.prerollCount; n > 0; n--)
           this.push(this.preroll[(this.prerollWrite - n + this.preroll.length) % this.preroll.length]!);
         this.prerollCount = 0;
-        this.tail = Math.ceil(this.sampleRate * .25);
+        this.tail = this.tailSamples;
         this.push(value);
       } else if (this.tail > 0) {
         this.tail--;
@@ -113,10 +122,10 @@ export class PlaybackQueue {
       this.incomingQuiet = 0;
       this.lastIncomingSpan = this.inputSpan;
     } else if (this.lastIncomingSpan !== undefined &&
-        ++this.incomingQuiet === Math.ceil(this.sampleRate * runtime.playbackIdleMs / 1000) &&
+        ++this.incomingQuiet === this.tailSamples &&
         this.lastIncomingSpan === this.inputSpan) {
-      // Preserve this boundary before trimming the gap; a later caption must not inherit the old owner.
-      // ponytail: raw gaps delimit provisional spans; exact gapless audio-before-caption mapping needs provider turn IDs.
+      // The captured tail ends here; played-idle timing must not join the next phrase to this owner.
+      // ponytail: raw gaps shorter than the capture tail need provider turn IDs for exact ownership.
       this.inputSpan++;
       this.inputTurnId = undefined;
     }

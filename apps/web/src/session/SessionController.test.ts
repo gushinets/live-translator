@@ -1737,8 +1737,10 @@ async function enterOutputtingTurn(
 
 describe("SessionController turn engine", () => {
   it.each([
-    [false, false], [false, true], [true, false], [true, true],
-  ] as const)("retains both PCM owners, decoder pending=%s, second caption delayed=%s", async (decoderPending, captionDelayed) => {
+    [false, false, 1000, false], [false, true, 1000, false],
+    [true, false, 1000, false], [true, true, 1000, false],
+    [false, true, 300, false], [true, true, 300, true],
+  ] as const)("retains both PCM owners, decoder pending=%s, second caption delayed=%s, gap=%s ms, first delayed=%s", async (decoderPending, captionDelayed, gapMs, firstDelayed) => {
     const queue = new PlaybackQueue(1000);
     const audio = Object.assign(createFakeAudio(), {
       setNonInterrupting: vi.fn((enabled: boolean) => queue.setEnabled(enabled)),
@@ -1768,12 +1770,14 @@ describe("SessionController turn engine", () => {
     emitVoice(audio, true);
     live.emit({ type: "session.input_transcript.delta", delta: "Подскажите, где находится вокзал?", start_ms: 0, end_ms: 500 });
     const a = controller.session.activeTurn!.id;
-    live.emit({ type: "session.output_transcript.delta", delta: "Where is the train station?", start_ms: 600, end_ms: 900 });
+    if (!firstDelayed) live.emit({ type: "session.output_transcript.delta", delta: "Where is the train station?", start_ms: 600, end_ms: 900 });
     queue.process(new Float32Array(128).fill(.5));
-    queue.process(new Float32Array(1000)); // The long incoming pause is trimmed below the playback idle threshold.
+    queue.process(new Float32Array(gapMs)); // Neither gap requires a played-idle edge to identify B.
     live.emit({ type: "session.input_transcript.delta", delta: "The station is straight ahead.", start_ms: 1000, end_ms: 1500 });
     const b = controller.session.activeTurn!.id;
     if (captionDelayed) queue.process(new Float32Array(128).fill(.7));
+    if (firstDelayed) live.emit({ type: "session.output_transcript.delta", delta: "Where is the train station?", start_ms: 600, end_ms: 900 });
+    live.emit({ type: "session.output_transcript.delta", delta: " Please show me the way.", start_ms: 910, end_ms: 980 });
     live.emit({ type: "session.output_transcript.delta", delta: "Вокзал находится прямо впереди.", start_ms: 1600, end_ms: 1900 });
     if (!captionDelayed) queue.process(new Float32Array(128).fill(.7));
     emitVoice(audio, false);
@@ -1811,6 +1815,7 @@ describe("SessionController turn engine", () => {
       expect(turn.firstAudibleOutputAtMs).toBeDefined();
       expect(turn.playbackEndAtMs).toBeDefined();
     }
+    expect(controller.metrics.snapshot()).toMatchObject({ audioCompletedTurnCount: 2, textOnlyCompletedTurnCount: 0 });
     await controller.endConversation();
   });
   it("does not close a caption-only-looking turn while received audio is still queued", async () => {
