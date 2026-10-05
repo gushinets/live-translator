@@ -13,7 +13,8 @@ class BufferedPlaybackProcessor extends AudioWorkletProcessor {
   private disposed = false;
   constructor() {
     super();
-    this.port.onmessage = ({ data }: MessageEvent<{ type: string; value: boolean }>) => {
+    this.queue.onPlaybackTurn = (turnId, active) => this.port.postMessage({ type: "turn", turnId, value: active });
+    this.port.onmessage = ({ data }: MessageEvent<{ type: string; value: boolean; turnId?: string }>) => {
       if (data.type === "dispose") {
         this.disposed = true;
         this.queue.clear();
@@ -21,6 +22,7 @@ class BufferedPlaybackProcessor extends AudioWorkletProcessor {
         this.port.close();
         return;
       }
+      if (data.type === "turn") this.queue.setTurn(data.turnId);
       if (data.type === "enabled") this.queue.setEnabled(data.value);
       if (data.type === "speaking") this.queue.setSpeaking(data.value);
       if (data.type === "audible") this.queue.setAudible(data.value);

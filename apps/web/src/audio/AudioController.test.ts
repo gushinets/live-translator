@@ -637,7 +637,7 @@ describe("buffered audio output", () => {
   });
   it("observes incoming audio while muted and played audio after reopening", async () => {
     vi.useFakeTimers();
-    const { controller, context } = setup();
+    const { controller, context, nodes } = setup();
     try {
       await controller.primeOutput();
       controller.attachRemoteStream(fakeStream(new FakeAudioTrack()));
@@ -649,11 +649,36 @@ describe("buffered audio output", () => {
       expect(observed).toHaveBeenLastCalledWith(expect.objectContaining({ active: true }));
       controller.setOutputAudible(true);
       await vi.advanceTimersByTimeAsync(600);
+      nodes[0]!.port.onmessage!({ data: { type: "turn", value: false } } as MessageEvent);
       expect(observed).toHaveBeenLastCalledWith(expect.objectContaining({ active: false }));
     } finally {
       controller.dispose();
       vi.useRealTimers();
     }
+  });
+  it("forwards queued playback ownership and ignores muted or retired owner messages", async () => {
+    const { controller, nodes } = setup();
+    await controller.primeOutput();
+    controller.attachRemoteStream(fakeStream(new FakeAudioTrack()));
+    const activity = vi.fn();
+    controller.onPlaybackActivity = activity;
+    controller.setOutputAudible(true);
+    controller.setPlaybackTurn("A");
+    expect(nodes[0]!.port.postMessage).toHaveBeenCalledWith({ type: "turn", turnId: "A" });
+    const stale = nodes[0]!.port.onmessage!;
+    stale({ data: { type: "turn", turnId: "A", value: true } } as MessageEvent);
+    stale({ data: { type: "turn", turnId: "B", value: true } } as MessageEvent);
+    stale({ data: { type: "turn", turnId: "B", value: false } } as MessageEvent);
+    expect(activity.mock.calls.map(([event]) => [event.turnId, event.active, event.owned])).toEqual([
+      ["A", true, true], ["B", true, true], ["B", false, true],
+    ]);
+    controller.setOutputAudible(false);
+    stale({ data: { type: "turn", turnId: "discarded", value: true } } as MessageEvent);
+    controller.attachRemoteStream(fakeStream(new FakeAudioTrack()));
+    controller.setOutputAudible(true);
+    stale({ data: { type: "turn", turnId: "retired", value: true } } as MessageEvent);
+    expect(activity).toHaveBeenCalledTimes(3);
+    controller.dispose();
   });
   it("reports raw audio samples independently of held playback and only from a running context", async () => {
     vi.useFakeTimers();

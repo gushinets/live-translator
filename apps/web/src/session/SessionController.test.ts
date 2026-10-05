@@ -1718,32 +1718,80 @@ async function enterOutputtingTurn(
 }
 
 describe("SessionController turn engine", () => {
-  it("retains both routed turns and streams captions while their playback is queued", async () => {
-    const audio = Object.assign(createFakeAudio(), { hasPendingPlayback: true, setNonInterrupting: vi.fn() });
+  it.each([false, true])("retains both PCM owners through continuous playback, decoder pending=%s", async decoderPending => {
+    const queue = new PlaybackQueue(1000);
+    const audio = Object.assign(createFakeAudio(), {
+      setNonInterrupting: vi.fn((enabled: boolean) => queue.setEnabled(enabled)),
+      setPlaybackTurn: vi.fn((turnId: string | undefined) => queue.setTurn(turnId)),
+      playOutput: vi.fn(async () => {}),
+    });
+    Object.defineProperty(audio, "hasPendingPlayback", { get: () => queue.pending });
+    audio.setOutputAudible.mockImplementation(audible => {
+      audio.audioElement.muted = !audible;
+      queue.setAudible(audible);
+    });
+    const played: string[] = [];
+    queue.onPlaybackTurn = (turnId, active) => {
+      if (turnId && active) played.push(turnId);
+      const event = { active, atMs: Date.now(), turnId, owned: true };
+      audio.onPlaybackActivity?.(event);
+    };
     const { controller, live } = createController({ audio });
     await controller.startWithLanguages({ A: "ru", B: "en" });
+    let ready!: () => void;
+    if (decoderPending) {
+      audio.playOutput.mockImplementationOnce(() => new Promise<void>(resolve => { ready = resolve; }));
+      controller.handleRemoteStream(fakeRemoteStream("remote"), live as unknown as LiveClient);
+    }
     controller.setNonInterrupting(true);
+    queue.setSpeaking(true);
     emitVoice(audio, true);
     live.emit({ type: "session.input_transcript.delta", delta: "Подскажите, где находится вокзал?", start_ms: 0, end_ms: 500 });
     const a = controller.session.activeTurn!.id;
     live.emit({ type: "session.output_transcript.delta", delta: "Where is the train station?", start_ms: 600, end_ms: 900 });
+    queue.process(new Float32Array(128).fill(.5));
+    queue.process(new Float32Array(1000)); // The long incoming pause is trimmed below the playback idle threshold.
     live.emit({ type: "session.input_transcript.delta", delta: "The station is straight ahead.", start_ms: 1000, end_ms: 1500 });
     const b = controller.session.activeTurn!.id;
     live.emit({ type: "session.output_transcript.delta", delta: "Вокзал находится прямо впереди.", start_ms: 1600, end_ms: 1900 });
+    queue.process(new Float32Array(128).fill(.7));
     emitVoice(audio, false);
     await flushMicrotasks();
     await vi.advanceTimersByTimeAsync(runtime.audioStartGraceMs + runtime.outputSettleGraceMs + 500);
     expect(controller.session.pendingTurns?.map(turn => turn.id)).toContain(a);
     expect(controller.session.activeTurn?.id).toBe(b);
     expect(controller.captionBlocks.map(block => block.text).join(" ")).toContain("Вокзал находится прямо впереди.");
-    audio.hasPendingPlayback = false;
-    await vi.advanceTimersByTimeAsync(100);
+    queue.setSpeaking(false);
+    queue.process(new Float32Array(300));
+    const output = queue.process(new Float32Array(1000));
+    expect(output.filter(sample => sample > .1)).toEqual(Float32Array.from([
+      ...new Array(128).fill(.5), ...new Array(128).fill(.7),
+    ]));
+    expect(played).toEqual([a, b]);
+    if (decoderPending) {
+      expect(controller.session.activeTurn?.audioOutputStarted).toBe(false);
+      ready();
+      await flushMicrotasks();
+    }
+    const first = controller.session.pendingTurns!.find(turn => turn.id === a)!;
+    expect(first.audioOutputStarted).toBe(true);
+    expect(first.firstAudibleOutputAtMs).toBeDefined();
+    expect(first.playbackEndAtMs).toBeDefined(); // Explicit owner transition, without an idle edge between A and B.
+    expect(controller.session.activeTurn?.audioOutputStarted).toBe(true);
+    expect(controller.session.activeTurn?.firstAudibleOutputAtMs).toBeGreaterThanOrEqual(first.playbackEndAtMs!);
+    emitPlayback(audio, false);
+    await vi.advanceTimersByTimeAsync(runtime.outputSettleGraceMs + 100);
     expect(controller.session.activeTurn).toBeUndefined();
     expect(controller.session.pendingTurns ?? []).toHaveLength(0);
-    expect(controller.session.recentTurns.map(turn => turn.id)).toEqual(expect.arrayContaining([a, b]));
+    for (const id of [a, b]) {
+      const turn = controller.session.recentTurns.find(turn => turn.id === id)!;
+      expect(turn.status).toBe("completed");
+      expect(turn.audioOutputStarted).toBe(true);
+      expect(turn.firstAudibleOutputAtMs).toBeDefined();
+      expect(turn.playbackEndAtMs).toBeDefined();
+    }
     await controller.endConversation();
   });
-
   it("does not close a caption-only-looking turn while received audio is still queued", async () => {
     vi.useFakeTimers();
     const audio = Object.assign(createFakeAudio(), { hasPendingPlayback: true });

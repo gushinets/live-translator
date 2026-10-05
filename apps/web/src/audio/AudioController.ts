@@ -6,6 +6,9 @@ import {
   type AudioActivityEvent,
 } from "./VoiceActivityMonitor";
 
+/** `owned` events identify the PCM currently leaving the queue, including an unknown owner. */
+export type PlaybackActivityEvent = AudioActivityEvent & { owned?: boolean; turnId?: string };
+
 export interface MicrophoneSettingsDiagnostics {
   echoCancellation: boolean | undefined;
   noiseSuppression: boolean | undefined;
@@ -70,7 +73,7 @@ function readMicrophoneSettings(track: MediaStreamTrack): MicrophoneSettingsDiag
 export class AudioController {
   onSourceSample: ((event: AudioActivityEvent & { reset?: boolean }) => void) | null = null;
   onVoiceActivity: ((event: AudioActivityEvent) => void) | null = null;
-  onPlaybackActivity: ((event: AudioActivityEvent) => void) | null = null;
+  onPlaybackActivity: ((event: PlaybackActivityEvent) => void) | null = null;
   onRemoteAudioSample: ((event: AudioActivityEvent) => void) | null = null;
   onAudioInterruption: (() => void) | null = null;
   onAudioRestored: (() => void) | null = null;
@@ -143,6 +146,8 @@ export class AudioController {
       this.onSourceSample?.({ active: event.active, atMs: performance.now() });
     };
     this.playbackDetector.onActivity = (event) => {
+      // The worklet reports played activity and FIFO ownership, including phrases shorter than a sampler tick.
+      if (this.playbackNode && !this.audioElement.muted) return;
       this.onPlaybackActivity?.(event);
     };
     this.installE2eAudioHooks();
@@ -294,6 +299,10 @@ export class AudioController {
     if (!audible) this.queuedPlayback = false;
   }
 
+  setPlaybackTurn(turnId: string | undefined): void {
+    this.playbackNode?.port.postMessage({ type: "turn", turnId });
+  }
+
   setNonInterrupting(enabled: boolean): void {
     if (enabled && !this.playbackNode) throw new Error("Buffered playback unavailable");
     this.nonInterrupting = enabled;
@@ -349,9 +358,13 @@ export class AudioController {
       this.onPlaybackBufferError?.();
     };
     node.onprocessorerror = fail;
-    node.port.onmessage = ({ data }: MessageEvent<{ type: string; value?: boolean }>) => {
+    node.port.onmessage = ({ data }: MessageEvent<{ type: string; value?: boolean; turnId?: string }>) => {
       if (this.playbackNode !== node) return;
       if (data.type === "pending") this.queuedPlayback = !this.audioElement.muted && data.value === true;
+      if (data.type === "turn" && !this.audioElement.muted) {
+        this.onPlaybackActivity?.({ active: data.value === true, atMs: this.nowMs(), owned: true,
+          turnId: typeof data.turnId === "string" ? data.turnId : undefined });
+      }
       if (data.type === "error") fail();
     };
     node.port.postMessage({ type: "enabled", value: this.nonInterrupting });

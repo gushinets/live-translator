@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { PlaybackQueue } from "./PlaybackQueue";
 
 describe("PlaybackQueue", () => {
@@ -59,6 +59,45 @@ describe("PlaybackQueue", () => {
     q.setAudible(true); q.setEnabled(false);
     expect(q.process(new Float32Array(1000)).every(v => v === 0)).toBe(true);
     expect(q.pending).toBe(false);
+  });
+  it("keeps owner boundaries with queued PCM across trimmed silence and mode changes", () => {
+    const q = new PlaybackQueue(1000);
+    const played = vi.fn();
+    q.onPlaybackTurn = played;
+    q.setAudible(true); q.setEnabled(true); q.setSpeaking(true);
+    q.process(Float32Array.of(.5)); // Audio can precede its first caption.
+    q.setTurn("A");
+    q.process(new Float32Array(1000));
+    q.setTurn("B");
+    q.process(Float32Array.of(.7));
+    expect(played).not.toHaveBeenCalled();
+    q.setEnabled(false);
+    const output = q.process(new Float32Array(1000));
+    expect(output[0]).toBe(.5);
+    expect(output.findIndex(value => value > .6)).toBeLessThan(400);
+    expect(played.mock.calls.filter(([, active]) => active).map(([turnId]) => turnId)).toEqual(["A", "B"]);
+    expect(q.pending).toBe(false);
+    q.setEnabled(true); q.setSpeaking(true);
+    q.setTurn("discarded"); q.process(Float32Array.of(.8));
+    q.setAudible(false); q.setAudible(true); q.setEnabled(false);
+    q.setTurn("new"); q.process(Float32Array.of(.9));
+    expect(played.mock.calls.filter(([, active]) => active).map(([turnId]) => turnId)).toEqual(["A", "B", "new"]);
+  });
+  it("reports the same owner again after a long pause or a held playback interval", () => {
+    const q = new PlaybackQueue(1000);
+    const played = vi.fn();
+    q.onPlaybackTurn = played;
+    q.setAudible(true); q.setTurn("A");
+    q.process(Float32Array.of(.5));
+    q.process(new Float32Array(500));
+    expect(played).toHaveBeenLastCalledWith("A", false); // A one-sample phrase must still produce an idle edge.
+    q.process(Float32Array.of(.6));
+    q.setEnabled(true); q.setSpeaking(true);
+    q.process(Float32Array.of(.7));
+    q.process(new Float32Array(500));
+    q.setEnabled(false);
+    q.process(new Float32Array(1));
+    expect(played.mock.calls.filter(([, active]) => active).map(([turnId]) => turnId)).toEqual(["A", "A", "A"]);
   });
   it("fails closed on overflow instead of silently dropping speech", () => {
     const q = new PlaybackQueue(1000, 10);

@@ -1,6 +1,6 @@
 import { COUNTER_NAMES, type MetricCounters } from "../metrics/UsageTypes";
 import { BackendClient } from "../api/BackendClient";
-import { AudioController } from "../audio/AudioController";
+import { AudioController, type PlaybackActivityEvent } from "../audio/AudioController";
 import type { AudioActivityEvent } from "../audio/VoiceActivityMonitor";
 import { runtime } from "../config/runtime";
 import {
@@ -71,6 +71,7 @@ export interface SessionControllerDeps {
     onSourceSample?: AudioController["onSourceSample"];
     meteringMediaReady?: boolean;
     setNonInterrupting?: AudioController["setNonInterrupting"];
+    setPlaybackTurn?: AudioController["setPlaybackTurn"];
     playOutput?: AudioController["playOutput"];
     detachRemoteStream?: AudioController["detachRemoteStream"];
     hasPendingPlayback?: boolean;
@@ -153,7 +154,7 @@ export class SessionController {
   private remoteTrackArrived: (() => void) | null = null;
   private retainedProductDeadlineAt: number | null = null;
   private retainedPlaybackCommitted = false;
-  private pendingRemotePlaybackActivity: AudioActivityEvent | null = null;
+  private pendingRemotePlaybackActivity: PlaybackActivityEvent[] = [];
   private turnClosing = false;
   private speechInputReady = false;
   private recoveryPromptKind: RecoveryPrompt | undefined;
@@ -703,11 +704,12 @@ export class SessionController {
         new Error("Remote audio track ended"));
     }, { once: true });
     this.audio.attachRemoteStream(stream);
+    this.audio.setPlaybackTurn?.(this.outputTurnId);
     let recovered = false;
     const startPlayback = () => {
       const playbackGeneration = ++this.remotePlaybackGeneration;
       this.remotePlaybackState = "pending";
-      this.pendingRemotePlaybackActivity = null;
+      this.pendingRemotePlaybackActivity = [];
       this.remotePlaybackWork = (this.audio.playOutput?.() ?? this.audio.audioElement.play())
       .then(() => {
         if (
@@ -722,10 +724,10 @@ export class SessionController {
         }
         this.remotePlaybackState = "ready";
         const pending = this.pendingRemotePlaybackActivity;
-        this.pendingRemotePlaybackActivity = null;
-        if (pending !== null) {
-          void this.handlePlaybackActivity(pending);
-        }
+        this.pendingRemotePlaybackActivity = [];
+        // Preserve every queued owner before deciding whether any turn was text-only.
+        for (const event of pending) void this.handlePlaybackActivity(event, false);
+        void this.considerTurnCompletion(Date.now());
       })
       .catch((error: unknown) => {
         if (
@@ -761,7 +763,7 @@ export class SessionController {
     if (source !== this.live || this.sessionGeneration !== sessionGeneration ||
       this.remotePlaybackGeneration !== playbackGeneration || this.remotePlaybackState === "failed") return;
     this.remotePlaybackState = "failed";
-    this.pendingRemotePlaybackActivity = null;
+    this.pendingRemotePlaybackActivity = [];
     this.playbackActive = false;
     console.error("Remote audio playback failed", { error });
     if (this.retainedPlaybackCommitted || (!this.retainedResumeInFlight && terminalFailure &&
@@ -779,12 +781,12 @@ export class SessionController {
     }
   }
 
-  private acceptRemotePlaybackActivity(event: AudioActivityEvent): boolean {
+  private acceptRemotePlaybackActivity(event: PlaybackActivityEvent): boolean {
     if (this.remotePlaybackState === "ready") {
       return true;
     }
     if (this.remotePlaybackState === "pending") {
-      this.pendingRemotePlaybackActivity = event;
+      this.pendingRemotePlaybackActivity.push(event);
     }
     return false;
   }
@@ -799,7 +801,7 @@ export class SessionController {
     this.remotePlaybackState = "ready";
     this.remotePlaybackWork = null;
     this.remotePlaybackTrack = null;
-    this.pendingRemotePlaybackActivity = null;
+    this.pendingRemotePlaybackActivity = [];
     this.playbackActive = false;
     this.playbackTurnId = undefined;
   }
@@ -1554,6 +1556,7 @@ export class SessionController {
       }
       if (target) {
         this.outputTurnId = target.id;
+        this.audio.setPlaybackTurn?.(target.id);
         this.outputSourceTurnId = target.translationOnly ? this.latestSourceTurnId : target.id;
       }
       this.lastOutputSide = side;
@@ -1619,7 +1622,7 @@ export class SessionController {
     await this.considerTurnCompletion(Date.now());
   }
 
-  private async handlePlaybackActivity(event: AudioActivityEvent): Promise<void> {
+  private async handlePlaybackActivity(event: PlaybackActivityEvent, considerCompletion = true): Promise<void> {
     if (this.backgroundPaused) return;
     if (!this.acceptRemotePlaybackActivity(event)) {
       return;
@@ -1636,15 +1639,22 @@ export class SessionController {
     }
     if (event.active) {
       const turns = [...(this.currentSession.pendingTurns ?? []), ...(this.currentSession.activeTurn ? [this.currentSession.activeTurn] : [])];
-      const target = (this.outputTurnId ? findSessionTurn(this.currentSession, this.outputTurnId) : undefined) ?? (turns.length === 1 ? turns[0] : undefined);
+      const target = event.owned
+        ? (event.turnId ? findSessionTurn(this.currentSession, event.turnId) : undefined)
+        : (this.outputTurnId ? findSessionTurn(this.currentSession, this.outputTurnId) : undefined) ?? (turns.length === 1 ? turns[0] : undefined);
+      const previous = this.playbackTurnId ? findSessionTurn(this.currentSession, this.playbackTurnId) : undefined;
+      if (event.owned && previous && previous.id !== target?.id && !["completed", "failed", "discarded"].includes(previous.status)) {
+        this.dispatch({ type: "PLAYBACK_ENDED", nowMs: event.atMs, turnId: previous.id });
+      }
       if (!target || ["completed", "failed", "discarded"].includes(target.status) ||
-          (this.outputTurnId !== undefined && this.outputSourceTurnId !== this.latestSourceTurnId)) {
+          (!event.owned && this.outputTurnId !== undefined && this.outputSourceTurnId !== this.latestSourceTurnId)) {
         // A previous source's caption does not identify newly starting audio.
         this.playbackTurnId = undefined;
         return;
       }
       this.playbackTurnId = target.id;
       this.dispatch({ type: "AUDIO_STARTED", nowMs: event.atMs, turnId: target.id });
+      if (considerCompletion && event.owned && previous?.id !== target.id) await this.considerTurnCompletion(Date.now());
       return;
     }
     const target = this.playbackTurnId ? findSessionTurn(this.currentSession, this.playbackTurnId) : undefined;
@@ -1652,7 +1662,7 @@ export class SessionController {
       this.dispatch({ type: "PLAYBACK_ENDED", nowMs: event.atMs, turnId: target.id });
     }
     this.playbackTurnId = undefined;
-    await this.considerTurnCompletion(Date.now());
+    if (considerCompletion) await this.considerTurnCompletion(Date.now());
   }
 
   private async considerTurnCompletion(nowMs: number): Promise<void> {
@@ -2006,6 +2016,7 @@ export class SessionController {
     this.outputRouter.reset();
     this.routingTurnIds.clear();
     this.outputTurnId = undefined;
+    this.audio.setPlaybackTurn?.(undefined);
     this.outputSourceTurnId = undefined;
     this.latestSourceTurnId = undefined;
     this.lastOutputSide = undefined;

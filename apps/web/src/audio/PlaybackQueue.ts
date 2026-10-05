@@ -1,5 +1,14 @@
+import { runtime } from "../config/runtime";
+import { VAM_ACTIVE_FLOOR } from "./VoiceActivityEstimator";
+
 /** PCM stays in memory for this media generation only. No transcript-based timing. */
 export class PlaybackQueue {
+  onPlaybackTurn: ((turnId: string | undefined, active: boolean) => void) | null = null;
+  private readonly owners: Array<{ turnId: string | undefined; count: number }> = [];
+  private inputTurnId: string | undefined;
+  private playedTurnId: string | undefined;
+  private playing = false;
+  private playedQuiet = 0;
   private readonly samples: Float32Array;
   private readonly preroll: Float32Array;
   private read = 0;
@@ -19,6 +28,13 @@ export class PlaybackQueue {
   }
 
   get pending(): boolean { return this.count > 0; }
+  setTurn(turnId: string | undefined): void {
+    // A first caption may arrive after PCM. Claim only the still-unowned prefix.
+    if (this.inputTurnId === undefined && turnId !== undefined) {
+      for (const owner of this.owners) if (owner.turnId === undefined) owner.turnId = turnId;
+    }
+    this.inputTurnId = turnId;
+  }
   setEnabled(enabled: boolean): void { this.enabled = enabled; }
   setSpeaking(speaking: boolean): void {
     this.speaking = speaking;
@@ -30,6 +46,10 @@ export class PlaybackQueue {
   }
   clear(): void {
     this.read = this.count = this.prerollWrite = this.prerollCount = this.tail = this.quiet = 0;
+    this.owners.length = 0;
+    this.inputTurnId = this.playedTurnId = undefined;
+    this.playing = false;
+    this.playedQuiet = 0;
   }
 
   process(input: Float32Array | undefined, output: Float32Array = new Float32Array(input?.length ?? 0)): Float32Array {
@@ -42,6 +62,7 @@ export class PlaybackQueue {
       if (!this.enabled && this.count === 0) {
         // Default streaming path: no noise gate or added delay.
         output[i] = value;
+        this.observePlayed(value, this.inputTurnId);
         this.prerollCount = this.tail = 0;
         continue;
       }
@@ -64,9 +85,28 @@ export class PlaybackQueue {
         output[i] = this.samples[this.read]!;
         this.read = (this.read + 1) % this.samples.length;
         this.count--;
+        const owner = this.owners[0]!;
+        this.observePlayed(output[i]!, owner.turnId);
+        if (--owner.count === 0) this.owners.shift();
+      } else {
+        this.observePlayed(0, undefined);
       }
     }
     return output;
+  }
+
+  private observePlayed(value: number, turnId: string | undefined): void {
+    if (Math.abs(value) >= VAM_ACTIVE_FLOOR) {
+      this.playedQuiet = 0;
+      if (!this.playing || this.playedTurnId !== turnId) {
+        this.playing = true;
+        this.playedTurnId = turnId;
+        this.onPlaybackTurn?.(turnId, true);
+      }
+    } else if (this.playing && ++this.playedQuiet >= this.sampleRate * runtime.playbackIdleMs / 1000) {
+      this.playing = false;
+      this.onPlaybackTurn?.(this.playedTurnId, false);
+    }
   }
 
   private push(value: number): void {
@@ -77,5 +117,8 @@ export class PlaybackQueue {
     }
     this.samples[(this.read + this.count) % this.samples.length] = value;
     this.count++;
+    const owner = this.owners.at(-1);
+    if (owner && owner.turnId === this.inputTurnId) owner.count++;
+    else this.owners.push({ turnId: this.inputTurnId, count: 1 });
   }
 }

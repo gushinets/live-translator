@@ -48,8 +48,24 @@ describe("buffered playback processor lifetime", () => {
       played.push(...output.filter(sample => sample !== 0));
     }
     expect(played).toEqual(new Array(128).fill(.5));
-    expect(processor.port.postMessage).toHaveBeenLastCalledWith({ type: "pending", value: false });
+    expect(processor.port.postMessage).toHaveBeenCalledWith({ type: "pending", value: false });
     expect(processor.port.close).not.toHaveBeenCalled();
+  });
+  it("sends FIFO owner transitions and idle even for sub-sampler-length phrases", () => {
+    const processor = new ProcessorClass();
+    const turn = (turnId: string) => processor.port.onmessage?.({ data: { type: "turn", turnId } } as MessageEvent);
+    send(processor, "audible"); send(processor, "enabled"); send(processor, "speaking");
+    turn("A"); processor.process([[Float32Array.of(.5)]], [[new Float32Array(1)]]);
+    turn("B"); processor.process([[Float32Array.of(.7)]], [[new Float32Array(1)]]);
+    expect(processor.port.postMessage.mock.calls.filter(([message]) => message.type === "turn")).toEqual([]);
+    send(processor, "enabled", false);
+    const output = new Float32Array(128);
+    for (let quantum = 0; quantum < 10; quantum++) processor.process([[]], [[output]]);
+    expect(processor.port.postMessage.mock.calls.filter(([message]) => message.type === "turn").map(([message]) => message)).toEqual([
+      { type: "turn", turnId: "A", value: true },
+      { type: "turn", turnId: "B", value: true },
+      { type: "turn", turnId: "B", value: false },
+    ]);
   });
   it("stays alive during ordinary input silence and temporary muting", () => {
     const processor = new ProcessorClass();
