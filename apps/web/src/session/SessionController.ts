@@ -2707,7 +2707,7 @@ export class SessionController {
       Boolean(this.currentSession.pendingTurns?.some(turn => !turn.translationOnly));
     this.clearTurnEngineTimersKeepingLeftoverDrain();
     this.turnClosing = false;
-    if ((this.playbackActive || this.audio.hasPendingPlayback || this.audio.rawPlaybackActive) && !this.leftoverOutputDraining) {
+    if ((this.audio.rawPlaybackActive !== undefined || this.playbackActive || this.audio.hasPendingPlayback) && !this.leftoverOutputDraining) {
       this.beginLeftoverOutputDrain();
     }
     try {

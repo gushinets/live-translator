@@ -4089,14 +4089,53 @@ describe("SessionController PWA lifecycle suspension (§11.3 / §19)", () => {
     expect(live.setInputMuted).toHaveBeenLastCalledWith(false);
   });
 
-  it.each(["steering", "unmute"])("waits for fresh raw idle and renewed stale output during resume %s", async phase => {
+  it("keeps fast resume gated until a fresh sample when the worklet pending message is still in flight", async () => {
+    const queue = new PlaybackQueue(1000);
+    const audio = Object.assign(createFakeAudio(), {
+      hasPendingPlayback: false, rawPlaybackActive: false,
+      onRemoteAudioSample: null as AudioController["onRemoteAudioSample"],
+      setNonInterrupting: vi.fn((enabled: boolean) => queue.setEnabled(enabled)),
+    });
+    audio.setOutputAudible.mockImplementation(audible => {
+      audio.audioElement.muted = !audible;
+      queue.setAudible(audible);
+    });
+    const orientation = new FakeOrientation();
+    const { controller, live } = createController({ audio, orientation });
+    await startSourceTurn(controller, live, audio);
+    controller.setNonInterrupting(true);
+    queue.setSpeaking(true);
+    queue.process(new Float32Array(128).fill(.5));
+    expect(queue.pending).toBe(true);
+    expect(audio.hasPendingPlayback).toBe(false); // Port message and first raw sample have not arrived.
+    orientation.emit("landscape");
+    await flushMicrotasks();
+    orientation.emit("portrait");
+    await flushLifecycle();
+    await vi.advanceTimersByTimeAsync(runtime.captionIdleMs);
+    expect(controller.session.state).toBe("suspended");
+    expect(audio.audioElement.muted).toBe(true);
+    audio.rawPlaybackActive = true;
+    audio.onRemoteAudioSample?.({ active: true, atMs: Date.now() });
+    expect(queue.process(Float32Array.of(.7))[0]).toBe(0);
+    expect(audio.captureTrack.enabled).toBe(false);
+    audio.rawPlaybackActive = false;
+    audio.onRemoteAudioSample?.({ active: false, atMs: Date.now() });
+    await flushLifecycle(); // Steering and unmute both acknowledge immediately.
+    expect(controller.session.state).toBe("listening");
+    expect(audio.audioElement.muted).toBe(false);
+    expect(queue.process(new Float32Array(128)).every(sample => sample === 0)).toBe(true);
+  });
+  it.each([
+    ["steering", true], ["unmute", true], ["steering", false], ["unmute", false],
+  ] as const)("waits for fresh raw idle during resume %s, pending message delivered=%s", async (phase, pendingDelivered) => {
     const queue = new PlaybackQueue(1000);
     const audio = Object.assign(createFakeAudio(), {
       rawPlaybackActive: false,
       onRemoteAudioSample: null as AudioController["onRemoteAudioSample"],
       setNonInterrupting: vi.fn((enabled: boolean) => queue.setEnabled(enabled)),
     });
-    Object.defineProperty(audio, "hasPendingPlayback", { get: () => queue.pending });
+    Object.defineProperty(audio, "hasPendingPlayback", { get: () => pendingDelivered && queue.pending });
     audio.setOutputAudible.mockImplementation(audible => {
       audio.audioElement.muted = !audible;
       queue.setAudible(audible);
