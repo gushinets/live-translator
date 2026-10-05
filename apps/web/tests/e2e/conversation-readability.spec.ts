@@ -27,6 +27,8 @@ test("compact participant headers leave room for four readable exchanges on each
     await harness.waitForGateBUnmuted();
     await harness.advance(runtime.captionIdleMs);
   }
+  // Wider fallback fonts must not wrap the conversation controls into a second row.
+  await page.addStyleTag({ content: ".conversation-center { font-family: Verdana, sans-serif; }" });
   for (const viewport of [page.viewportSize()!, { width: 320, height: 640 }]) {
     await page.setViewportSize(viewport);
     await page.screenshot({ path: testInfo.outputPath(`variant-four-dialogue-${viewport.width}.png`) });
@@ -40,6 +42,14 @@ test("compact participant headers leave room for four readable exchanges on each
         await expect(row).toHaveCSS("font-size", "22px");
       }
     }
+    const end = (await page.getByRole("button", { name: "Завершить", exact: true }).boundingBox())!;
+    const mode = (await page.getByRole("switch", { name: "Не перебивать" }).boundingBox())!;
+    expect(Math.abs(mode.y + mode.height / 2 - end.y - end.height / 2)).toBeLessThan(2);
+    expect(mode.width).toBeGreaterThanOrEqual(44);
+    expect(mode.height).toBeGreaterThanOrEqual(44);
+    const labelLines = await page.locator(".conversation-playback-switch > span:last-child").evaluate(element =>
+      element.getBoundingClientRect().height / parseFloat(getComputedStyle(element).lineHeight));
+    expect(labelLines).toBeLessThanOrEqual(2.01);
     for (const name of ["Язык собеседника", "Завершить"]) {
       const button = page.getByRole("button", { name });
       const box = (await button.boundingBox())!;

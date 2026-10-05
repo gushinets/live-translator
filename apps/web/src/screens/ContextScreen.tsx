@@ -396,7 +396,7 @@ export function ContextScreen({
           </header>
 
           <div className={`setup-card${showStartPicker ? " setup-card--picker" : ""}${showStartLayout ? " setup-card--start" : ""}`}>
-            {recovery === undefined && controller.ownerError !== undefined ? (
+            {controller.ownerError !== undefined ? (
               <ErrorOverlay message={controller.ownerError} language={ownerLocale} />
             ) : null}
             {recovery !== undefined ? (

@@ -16,6 +16,12 @@ export class PlaybackActivityDetector {
     return this.isActive;
   }
 
+  /** Retire activity without sending an edge into the previous media generation. */
+  reset(): void {
+    this.isActive = false;
+    this.lastAboveThresholdAtMs = null;
+  }
+
   pushRms(rms: number, atMs: number): void {
     if (!Number.isFinite(rms) || rms < 0) {
       throw new Error(`RMS must be a finite non-negative number, received ${String(rms)}`);

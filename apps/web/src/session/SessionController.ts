@@ -1,6 +1,6 @@
 import { COUNTER_NAMES, type MetricCounters } from "../metrics/UsageTypes";
 import { BackendClient } from "../api/BackendClient";
-import { AudioController } from "../audio/AudioController";
+import { AudioController, type PlaybackActivityEvent } from "../audio/AudioController";
 import type { AudioActivityEvent } from "../audio/VoiceActivityMonitor";
 import { runtime } from "../config/runtime";
 import {
@@ -70,6 +70,15 @@ export interface SessionControllerDeps {
   > & {
     onSourceSample?: AudioController["onSourceSample"];
     meteringMediaReady?: boolean;
+    setNonInterrupting?: AudioController["setNonInterrupting"];
+    setPlaybackTurn?: AudioController["setPlaybackTurn"];
+    playOutput?: AudioController["playOutput"];
+    detachRemoteStream?: AudioController["detachRemoteStream"];
+    hasPendingPlayback?: boolean;
+    rawPlaybackActive?: AudioController["rawPlaybackActive"];
+    onRemoteAudioSample?: AudioController["onRemoteAudioSample"];
+    onPlaybackBufferError?: AudioController["onPlaybackBufferError"];
+    onPlaybackDecoderError?: AudioController["onPlaybackDecoderError"];
     onVoiceActivity: AudioController["onVoiceActivity"];
     onPlaybackActivity: AudioController["onPlaybackActivity"];
     onAudioInterruption: AudioController["onAudioInterruption"];
@@ -116,6 +125,7 @@ export class SessionController {
   private leftoverDrainTimer: number | null = null;
   private leftoverOutputDraining = false;
   private leftoverCaptionIdle = true;
+  private leftoverRawIdleObserved = true;
   private leftoverDrainWaiters: Array<() => void> = [];
   private lifecycleEpoch = 0;
   private lifecycleQueue: Promise<void> = Promise.resolve();
@@ -144,7 +154,7 @@ export class SessionController {
   private remoteTrackArrived: (() => void) | null = null;
   private retainedProductDeadlineAt: number | null = null;
   private retainedPlaybackCommitted = false;
-  private pendingRemotePlaybackActivity: AudioActivityEvent | null = null;
+  private pendingRemotePlaybackActivity: PlaybackActivityEvent[] = [];
   private turnClosing = false;
   private speechInputReady = false;
   private recoveryPromptKind: RecoveryPrompt | undefined;
@@ -483,6 +493,21 @@ export class SessionController {
     return this.steeringDegradedFlag;
   }
 
+  private nonInterruptingEnabled = false;
+  get nonInterrupting(): boolean { return this.nonInterruptingEnabled; }
+  setNonInterrupting(enabled: boolean): void {
+    if (!["listening", "outputting"].includes(this.currentSession.state)) return;
+    try {
+      if (!this.audio.setNonInterrupting) throw new Error("Buffered playback unavailable");
+      this.audio.setNonInterrupting(enabled);
+      this.nonInterruptingEnabled = enabled;
+      this.ownerErrorMessage = undefined;
+    } catch {
+      this.ownerErrorMessage = "Режим «Не перебивать» недоступен в этом браузере.";
+    }
+    this.notify();
+  }
+
   get inputReady(): boolean {
     return (
       (this.currentSession.state === "listening" || this.currentSession.state === "outputting") &&
@@ -668,7 +693,8 @@ export class SessionController {
 
   handleRemoteStream(stream: MediaStream, source: LiveClient): void {
     // Validate origin BEFORE attaching. A generation captured after a stale callback is too late.
-    if (source !== this.live || this.liveProductGeneration !== this.sessionGeneration) return;
+    if (source !== this.live || this.liveProductGeneration !== this.sessionGeneration ||
+        ["ending", "ended", "error"].includes(this.currentSession.state)) return;
     const track = stream.getAudioTracks().find(track => track.readyState === "live");
     if (!track || this.remotePlaybackTrack) return;
     this.remotePlaybackTrack = track;
@@ -678,13 +704,13 @@ export class SessionController {
         new Error("Remote audio track ended"));
     }, { once: true });
     this.audio.attachRemoteStream(stream);
+    this.audio.setPlaybackTurn?.(this.outputTurnId);
     let recovered = false;
     const startPlayback = () => {
       const playbackGeneration = ++this.remotePlaybackGeneration;
       this.remotePlaybackState = "pending";
-      this.pendingRemotePlaybackActivity = null;
-      this.remotePlaybackWork = this.audio.audioElement
-      .play()
+      this.pendingRemotePlaybackActivity = [];
+      this.remotePlaybackWork = (this.audio.playOutput?.() ?? this.audio.audioElement.play())
       .then(() => {
         if (
           source !== this.live || this.sessionGeneration !== sessionGeneration ||
@@ -698,10 +724,10 @@ export class SessionController {
         }
         this.remotePlaybackState = "ready";
         const pending = this.pendingRemotePlaybackActivity;
-        this.pendingRemotePlaybackActivity = null;
-        if (pending !== null) {
-          void this.handlePlaybackActivity(pending);
-        }
+        this.pendingRemotePlaybackActivity = [];
+        // Preserve every queued owner before deciding whether any turn was text-only.
+        for (const event of pending) void this.handlePlaybackActivity(event, false);
+        void this.considerTurnCompletion(Date.now());
       })
       .catch((error: unknown) => {
         if (
@@ -714,10 +740,9 @@ export class SessionController {
         this.failRemotePlayback(source, sessionGeneration, playbackGeneration, error, recovered);
       });
     };
-    this.audio.audioElement.onerror = () => {
+    const handlePlaybackError = (error: MediaError | null) => {
       if (source !== this.live || this.sessionGeneration !== sessionGeneration || this.remotePlaybackTrack !== track ||
         (this.backgroundPaused && !this.retainedResumeInFlight) || this.remotePlaybackState === "failed") return;
-      const error = this.audio.audioElement.error;
       if (!error) return;
       if (error.code === 3 && !recovered) {
         recovered = true;
@@ -727,6 +752,8 @@ export class SessionController {
         this.failRemotePlayback(source, sessionGeneration, this.remotePlaybackGeneration, error);
       }
     };
+    this.audio.audioElement.onerror = () => handlePlaybackError(this.audio.audioElement.error);
+    this.audio.onPlaybackDecoderError = handlePlaybackError;
     startPlayback();
     this.remoteTrackArrived?.();
   }
@@ -736,7 +763,7 @@ export class SessionController {
     if (source !== this.live || this.sessionGeneration !== sessionGeneration ||
       this.remotePlaybackGeneration !== playbackGeneration || this.remotePlaybackState === "failed") return;
     this.remotePlaybackState = "failed";
-    this.pendingRemotePlaybackActivity = null;
+    this.pendingRemotePlaybackActivity = [];
     this.playbackActive = false;
     console.error("Remote audio playback failed", { error });
     if (this.retainedPlaybackCommitted || (!this.retainedResumeInFlight && terminalFailure &&
@@ -754,18 +781,19 @@ export class SessionController {
     }
   }
 
-  private acceptRemotePlaybackActivity(event: AudioActivityEvent): boolean {
+  private acceptRemotePlaybackActivity(event: PlaybackActivityEvent): boolean {
     if (this.remotePlaybackState === "ready") {
       return true;
     }
     if (this.remotePlaybackState === "pending") {
-      this.pendingRemotePlaybackActivity = event;
+      this.pendingRemotePlaybackActivity.push(event);
     }
     return false;
   }
 
   private resetRemotePlaybackTracking(): void {
     this.audio.audioElement.onerror = null;
+    this.audio.onPlaybackDecoderError = null;
     this.remoteTrackArrived?.();
     this.remoteTrackArrived = null;
     this.retainedPlaybackCommitted = false;
@@ -773,7 +801,7 @@ export class SessionController {
     this.remotePlaybackState = "ready";
     this.remotePlaybackWork = null;
     this.remotePlaybackTrack = null;
-    this.pendingRemotePlaybackActivity = null;
+    this.pendingRemotePlaybackActivity = [];
     this.playbackActive = false;
     this.playbackTurnId = undefined;
   }
@@ -1243,9 +1271,14 @@ export class SessionController {
   private stopLocalMedia(): void {
     if (this.audio.getCaptureStream() !== null) this.audio.setCaptureEnabled(false);
     this.audio.setOutputAudible(false);
-    this.resetRemotePlaybackTracking();
-    this.audio.audioElement.srcObject = null;
+    this.detachRemotePlayback();
     if (this.audio.getCaptureStream() !== null) this.audio.stopCapture();
+  }
+
+  private detachRemotePlayback(): void {
+    this.resetRemotePlaybackTracking();
+    this.audio.detachRemoteStream?.();
+    this.audio.audioElement.srcObject = null;
   }
 
   private get audio(): SessionControllerDeps["audio"] {
@@ -1284,12 +1317,28 @@ export class SessionController {
   }
 
   private bindAudio(): void {
+    this.audio.onPlaybackBufferError = () => {
+      this.audio.setOutputAudible(false);
+      const message = "Не удалось сохранить звук перевода. Начните новый разговор.";
+      void this.endConversation().catch(() => undefined).then(() => {
+        this.ownerErrorMessage = message;
+        this.notify();
+      });
+    };
     this.audio.onSourceSample = sample => this.observeMetrics(undefined, sample);
     this.audio.onVoiceActivity = (event) => {
       void this.handleVoiceActivity(event);
     };
     this.audio.onPlaybackActivity = (event) => {
       void this.handlePlaybackActivity(event);
+    };
+    this.audio.onRemoteAudioSample = event => {
+      if (this.backgroundPaused) return;
+      if (event.active && this.currentSession.state === "suspended" && this.lifecycleSuspendReason !== undefined &&
+          !this.leftoverOutputDraining) this.beginLeftoverOutputDrain();
+      if (!this.leftoverOutputDraining) return;
+      this.leftoverRawIdleObserved = !event.active;
+      this.maybeFinishLeftoverOutputDrain();
     };
     this.audio.onAudioInterruption = () => {
       void this.handleAudioInterruption();
@@ -1507,6 +1556,7 @@ export class SessionController {
       }
       if (target) {
         this.outputTurnId = target.id;
+        this.audio.setPlaybackTurn?.(target.id);
         this.outputSourceTurnId = target.translationOnly ? this.latestSourceTurnId : target.id;
       }
       this.lastOutputSide = side;
@@ -1572,12 +1622,17 @@ export class SessionController {
     await this.considerTurnCompletion(Date.now());
   }
 
-  private async handlePlaybackActivity(event: AudioActivityEvent): Promise<void> {
+  private async handlePlaybackActivity(event: PlaybackActivityEvent, considerCompletion = true): Promise<void> {
     if (this.backgroundPaused) return;
     if (!this.acceptRemotePlaybackActivity(event)) {
       return;
     }
     this.playbackActive = event.active;
+    if (event.retired) {
+      this.playbackTurnId = undefined;
+      this.maybeFinishLeftoverOutputDrain();
+      return;
+    }
     if (this.leftoverOutputDraining) {
       if (!event.active) {
         this.maybeFinishLeftoverOutputDrain();
@@ -1589,15 +1644,25 @@ export class SessionController {
     }
     if (event.active) {
       const turns = [...(this.currentSession.pendingTurns ?? []), ...(this.currentSession.activeTurn ? [this.currentSession.activeTurn] : [])];
-      const target = (this.outputTurnId ? findSessionTurn(this.currentSession, this.outputTurnId) : undefined) ?? (turns.length === 1 ? turns[0] : undefined);
+      // Unknown worklet ownership is still real playback. Credit it only when one source is eligible.
+      const soleTurn = turns.length === 1 &&
+        (this.outputTurnId === undefined || this.outputSourceTurnId === this.latestSourceTurnId) ? turns[0] : undefined;
+      const target = event.owned
+        ? (event.turnId === undefined ? soleTurn : findSessionTurn(this.currentSession, event.turnId))
+        : (this.outputTurnId ? findSessionTurn(this.currentSession, this.outputTurnId) : undefined) ?? (turns.length === 1 ? turns[0] : undefined);
+      const previous = this.playbackTurnId ? findSessionTurn(this.currentSession, this.playbackTurnId) : undefined;
+      if (event.owned && previous && previous.id !== target?.id && !["completed", "failed", "discarded"].includes(previous.status)) {
+        this.dispatch({ type: "PLAYBACK_ENDED", nowMs: event.atMs, turnId: previous.id });
+      }
       if (!target || ["completed", "failed", "discarded"].includes(target.status) ||
-          (this.outputTurnId !== undefined && this.outputSourceTurnId !== this.latestSourceTurnId)) {
+          (!event.owned && this.outputTurnId !== undefined && this.outputSourceTurnId !== this.latestSourceTurnId)) {
         // A previous source's caption does not identify newly starting audio.
         this.playbackTurnId = undefined;
         return;
       }
       this.playbackTurnId = target.id;
       this.dispatch({ type: "AUDIO_STARTED", nowMs: event.atMs, turnId: target.id });
+      if (considerCompletion && event.owned && previous?.id !== target.id) await this.considerTurnCompletion(Date.now());
       return;
     }
     const target = this.playbackTurnId ? findSessionTurn(this.currentSession, this.playbackTurnId) : undefined;
@@ -1605,7 +1670,7 @@ export class SessionController {
       this.dispatch({ type: "PLAYBACK_ENDED", nowMs: event.atMs, turnId: target.id });
     }
     this.playbackTurnId = undefined;
-    await this.considerTurnCompletion(Date.now());
+    if (considerCompletion) await this.considerTurnCompletion(Date.now());
   }
 
   private async considerTurnCompletion(nowMs: number): Promise<void> {
@@ -1615,6 +1680,10 @@ export class SessionController {
       // Audio before its caption is not silence. Wait for the idle edge rather
       // than inventing an owner or closing text-only turns under playing audio.
       this.clearCompletionTimer();
+      return;
+    }
+    if (this.audio.hasPendingPlayback) {
+      this.armCompletionTimer(nowMs + 50, nowMs);
       return;
     }
     const turns = [...(this.currentSession.pendingTurns ?? []), ...(this.currentSession.activeTurn ? [this.currentSession.activeTurn] : [])];
@@ -1870,6 +1939,8 @@ export class SessionController {
   private beginLeftoverOutputDrain(): void {
     this.leftoverOutputDraining = true;
     this.leftoverCaptionIdle = false;
+    // An attached raw analyser must confirm idle after the gate closes, even if played PCM was held.
+    this.leftoverRawIdleObserved = this.audio.rawPlaybackActive === undefined;
     this.armLeftoverDrainTimer();
   }
 
@@ -1887,7 +1958,8 @@ export class SessionController {
   }
 
   private maybeFinishLeftoverOutputDrain(): void {
-    if (!this.leftoverOutputDraining || !this.leftoverCaptionIdle || this.playbackActive) {
+    if (!this.leftoverOutputDraining || !this.leftoverCaptionIdle || this.playbackActive ||
+        this.audio.rawPlaybackActive || !this.leftoverRawIdleObserved) {
       return;
     }
     this.leftoverOutputDraining = false;
@@ -1906,6 +1978,7 @@ export class SessionController {
   private finishLeftoverOutputDrain(): void {
     this.leftoverOutputDraining = false;
     this.leftoverCaptionIdle = true;
+    this.leftoverRawIdleObserved = true;
     this.clearLeftoverDrainTimer();
     this.resolveLeftoverDrainWaiters();
   }
@@ -1919,7 +1992,7 @@ export class SessionController {
   }
 
   private waitForLeftoverOutputIdle(): Promise<void> {
-    if (!this.leftoverOutputDraining && !this.playbackActive) {
+    if (!this.leftoverOutputDraining && !this.playbackActive && !this.audio.rawPlaybackActive) {
       return Promise.resolve();
     }
     if (!this.leftoverOutputDraining) {
@@ -1927,7 +2000,7 @@ export class SessionController {
     }
     return new Promise((resolve) => {
       this.leftoverDrainWaiters.push(resolve);
-      if (!this.leftoverOutputDraining && !this.playbackActive) {
+      if (!this.leftoverOutputDraining && !this.playbackActive && !this.audio.rawPlaybackActive) {
         this.resolveLeftoverDrainWaiters();
       }
     });
@@ -1951,6 +2024,7 @@ export class SessionController {
     this.outputRouter.reset();
     this.routingTurnIds.clear();
     this.outputTurnId = undefined;
+    this.audio.setPlaybackTurn?.(undefined);
     this.outputSourceTurnId = undefined;
     this.latestSourceTurnId = undefined;
     this.lastOutputSide = undefined;
@@ -2003,6 +2077,7 @@ export class SessionController {
     this.audio.setOutputAudible(false);
     this.clearMaxSessionTimer();
     this.resetRemotePlaybackTracking();
+    this.audio.detachRemoteStream?.();
     this.audio.audioElement.srcObject = null;
 
     this.live = replacementLive;
@@ -2651,7 +2726,7 @@ export class SessionController {
       Boolean(this.currentSession.pendingTurns?.some(turn => !turn.translationOnly));
     this.clearTurnEngineTimersKeepingLeftoverDrain();
     this.turnClosing = false;
-    if (this.playbackActive && !this.leftoverOutputDraining) {
+    if ((this.audio.rawPlaybackActive !== undefined || this.playbackActive || this.audio.hasPendingPlayback) && !this.leftoverOutputDraining) {
       this.beginLeftoverOutputDrain();
     }
     try {
@@ -2775,7 +2850,8 @@ export class SessionController {
       this.failLifecycleResume(error);
       return;
     }
-    if (this.sessionGeneration !== generation || this.lifecycleEpoch !== epoch) {
+    await this.waitForLeftoverOutputIdle();
+    if (this.sessionGeneration !== generation || this.lifecycleEpoch !== epoch || this.currentSession.state !== "suspended") {
       return;
     }
 
@@ -2802,9 +2878,10 @@ export class SessionController {
       this.failLifecycleResume(error);
       return;
     }
-    if (this.sessionGeneration !== generation || this.lifecycleEpoch !== epoch) {
+    await this.waitForLeftoverOutputIdle();
+    if (this.sessionGeneration !== generation || this.lifecycleEpoch !== epoch || this.currentSession.state !== "suspended") {
       this.audio.setOutputAudible(false);
-      if (this.sessionGeneration !== generation) {
+      if (this.sessionGeneration !== generation || this.currentSession.state !== "suspended") {
         return;
       }
       try {
@@ -2875,10 +2952,13 @@ export class SessionController {
   }
 
   private resetToIdle(options: { preserveOwnerError?: boolean } = {}): void {
+    this.nonInterruptingEnabled = false;
+    this.audio.setNonInterrupting?.(false);
     this.retainedProductDeadlineAt = null;
     const preservedError =
       options.preserveOwnerError === true ? this.ownerErrorMessage : undefined;
     this.audio.setOutputAudible(false);
+    this.audio.detachRemoteStream?.();
     this.audio.audioElement.srcObject = null;
     this.hasConnected = false;
     this.backgroundPaused = false;
@@ -2930,6 +3010,12 @@ export class SessionController {
     const previousUnfinished = [...(this.currentSession.pendingTurns ?? []),
       ...(this.currentSession.activeTurn ? [this.currentSession.activeTurn] : [])];
     this.currentSession = sessionReducer(this.currentSession, action);
+    if (action.type === "SESSION_ERROR" && this.currentSession.state === "error") {
+      this.audio.setOutputAudible(false);
+      this.detachRemotePlayback();
+      if (this.audio.getCaptureStream() !== null) this.audio.stopCapture();
+      this.finishLeftoverOutputDrain();
+    }
     if (action.type === "SOURCE_ACTIVE" || action.type === "SOURCE_HANDOFF") this.latestSourceTurnId = action.turnId;
     let completedTurnId: string | undefined;
     if (previousTurn && !previousTurn.translationOnly && action.type === "TURN_CLOSED") {

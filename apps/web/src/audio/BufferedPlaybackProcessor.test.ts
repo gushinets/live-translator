@@ -1,0 +1,91 @@
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+
+class TestProcessorBase {
+  readonly port = {
+    onmessage: null as ((event: MessageEvent) => void) | null,
+    postMessage: vi.fn(), close: vi.fn(),
+  };
+}
+type Processor = TestProcessorBase & { process(inputs: Float32Array[][], outputs: Float32Array[][]): boolean };
+let ProcessorClass: new () => Processor;
+
+beforeEach(async () => {
+  vi.resetModules();
+  vi.stubGlobal("AudioWorkletProcessor", TestProcessorBase);
+  vi.stubGlobal("sampleRate", 1000);
+  vi.stubGlobal("registerProcessor", (_name: string, constructor: new () => Processor) => { ProcessorClass = constructor; });
+  await import("./BufferedPlaybackProcessor");
+});
+afterEach(() => { vi.unstubAllGlobals(); });
+function send(processor: Processor, type: string, value = true) {
+  processor.port.onmessage?.({ data: { type, value } } as MessageEvent);
+}
+
+describe("buffered playback processor lifetime", () => {
+  it.each([true, false])("terminates after disposal, with incoming audio=%s", incoming => {
+    const processor = new ProcessorClass();
+    send(processor, "audible"); send(processor, "enabled"); send(processor, "speaking");
+    processor.process([[Float32Array.of(.5)]], [[new Float32Array(1)]]);
+    send(processor, "dispose");
+    const output = Float32Array.of(1);
+    expect(processor.process(incoming ? [[Float32Array.of(.7)]] : [[]], [[output]])).toBe(false);
+    expect(output[0]).toBe(0);
+    expect(processor.process([], [])).toBe(false);
+    expect(processor.port.close).toHaveBeenCalledOnce();
+    expect(processor.port.onmessage).toBeNull();
+  });
+  it.each([false, true])("drains queued PCM without input channels, non-interrupting=%s", enabled => {
+    const processor = new ProcessorClass();
+    send(processor, "audible"); send(processor, "enabled"); send(processor, "speaking");
+    const output = new Float32Array(128);
+    processor.process([[new Float32Array(128).fill(.5)]], [[output]]);
+    expect(output.every(sample => sample === 0)).toBe(true);
+    expect(processor.port.postMessage).toHaveBeenLastCalledWith({ type: "pending", value: true });
+    send(processor, "speaking", false); send(processor, "enabled", enabled);
+    const played: number[] = [];
+    for (let quantum = 0; quantum < 100; quantum++) {
+      expect(processor.process([[]], [[output]])).toBe(true);
+      played.push(...output.filter(sample => sample !== 0));
+    }
+    expect(played).toEqual(new Array(128).fill(.5));
+    expect(processor.port.postMessage).toHaveBeenCalledWith({ type: "pending", value: false });
+    expect(processor.port.close).not.toHaveBeenCalled();
+  });
+  it.each([[false, 1000], [true, 1000], [false, 300], [true, 300]] as const)("sends conservative FIFO owner transitions despite caption continuation, second delayed=%s, gap=%s ms", (captionDelayed, gapMs) => {
+    const processor = new ProcessorClass();
+    const turn = (turnId: string) => processor.port.onmessage?.({ data: { type: "turn", turnId } } as MessageEvent);
+    send(processor, "audible"); send(processor, "enabled"); send(processor, "speaking");
+    turn("A"); processor.process([[Float32Array.of(.5)]], [[new Float32Array(1)]]);
+    processor.process([[new Float32Array(gapMs)]], [[new Float32Array(gapMs)]]);
+    if (!captionDelayed) turn("B");
+    processor.process([[Float32Array.of(.7)]], [[new Float32Array(1)]]);
+    if (captionDelayed) { turn("A"); turn("A"); turn("B"); }
+    expect(processor.port.postMessage.mock.calls.filter(([message]) => message.type === "turn")).toEqual([]);
+    send(processor, "enabled", false);
+    const output = new Float32Array(128);
+    const played: number[] = [];
+    for (let quantum = 0; quantum < 10; quantum++) {
+      processor.process([[]], [[output]]);
+      played.push(...output);
+    }
+    expect(played[0]).toBe(.5);
+    expect(played.findIndex(sample => sample > .6)).toBe(gapMs === 300 ? 301 : 311);
+    expect(played.filter(sample => sample > .1)).toEqual(Array.from(Float32Array.of(.5, .7)));
+    expect(processor.port.postMessage.mock.calls.filter(([message]) => message.type === "turn").map(([message]) => message)).toEqual([
+      { type: "turn", turnId: "A", value: true },
+      { type: "turn", turnId: captionDelayed ? undefined : "B", value: true },
+      { type: "turn", turnId: captionDelayed ? undefined : "B", value: false },
+    ]);
+  });
+  it("stays alive during ordinary input silence and temporary muting", () => {
+    const processor = new ProcessorClass();
+    const output = new Float32Array(1);
+    expect(processor.process([[]], [[output]])).toBe(true);
+    send(processor, "audible", false); send(processor, "clear");
+    expect(processor.process([[]], [[output]])).toBe(true);
+    send(processor, "audible");
+    expect(processor.process([[Float32Array.of(.5)]], [[output]])).toBe(true);
+    expect(output[0]).toBe(.5);
+    expect(processor.port.close).not.toHaveBeenCalled();
+  });
+});

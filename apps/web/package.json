@@ -6,6 +6,7 @@
     "dev": "vite --host 0.0.0.0 --port 5173",
     "build": "tsc --noEmit -p tsconfig.build.json && vite build",
     "test": "vitest run",
+    "test:audio": "playwright test --config=playwright.audio.config.ts --project=chromium",
     "lint": "eslint .",
     "typecheck": "tsc --noEmit"
   },
