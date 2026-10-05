@@ -3,7 +3,7 @@ import { hasSentenceTerminator } from "./sentenceBoundaries";
 import type { ConversationLanguages } from "../side/SideResolver";
 import { orderTranscriptFragments, type TranscriptFragment } from "./TranscriptFragment";
 import type { Side } from "./Turn";
-import { completeScriptSide, shortReplyEvidence, isExplicitShortReply, languageScripts, scriptPattern, splitLanguageSentences, languageDetectionSample } from "./languageScripts";
+import { completeScriptSide, shortReplyEvidence, isExplicitShortReply, languageScripts, scriptPattern, splitLanguageSentences, languageDetectionSample, isDottedContinuation } from "./languageScripts";
 
 export interface DialogueBlock {
   id: string;
@@ -133,7 +133,11 @@ export class DialogueTranscript {
             (nextSide === undefined || previousSide === undefined || nextSide === previousSide)) {
           const standalone = this.detector.detect(languageDetectionSample(run.text));
           const embedded = previousSide !== undefined && previousSide === nextSide;
-          if (!embedded && standalone.isReliable() && standalone.language === languages[run.side]) return run;
+          const dot = run.text.indexOf(".");
+          const dottedToken = !/\s/u.test(run.text.trim()) && dot >= 0 &&
+            isDottedContinuation(run.text.slice(0, dot + 1), run.text.slice(dot + 1));
+          // A domain label's Latin spelling is not evidence of an English speaker.
+          if (!embedded && !dottedToken && standalone.isReliable() && standalone.language === languages[run.side]) return run;
           const context = this.detector.detect(languageDetectionSample(sentenceContexts[index]!));
           if (context.isReliable() && context.language === languages[surroundingSide]) {
             return { ...run, side: surroundingSide };

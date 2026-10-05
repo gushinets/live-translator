@@ -443,3 +443,24 @@ it.each(["Visit example.com","Visit \"example.com\"","Visit (example.com)"])("ke
     expect(content(transcript)).toEqual([{ kind, side: "A", text }]);
   }
 });
+
+it.each(["I loved the '90s.","I left 'cause it was late.","'90s were great. Music was better.'","'cause it was late. I left early.'","'cause I don't know. I left early.'","'cause 'twas late. I left early.'"])("keeps leading lexical apostrophes in both caption streams: %s", source => {
+  for (const kind of ["input", "output"] as const) for (const size of [1, 1000]) {
+    const transcript = new DialogueTranscript(), text = source + " 'Sí.'";
+    for (let i = 0; i < text.length; i += size) transcript.push(kind, fragment(text.slice(i, i + size)), { A: "en", B: "es" });
+    expect(content(transcript)).toEqual([{ kind, side: "A", text: source }, { kind, side: "B", text: "'Sí.'" }]);
+    expect(transcript.blocks.map(block => block.text).join("")).toBe(text);
+  }
+});
+
+it.each(['"La estación está cerca del supermercado', '"La estación está cerca del supermercado"'])("preserves an unpunctuated quoted tail in both caption streams: %s", reply => {
+  const source = 'He said "123" and left.';
+  for (const kind of ["input", "output"] as const) for (const size of [1, 1000]) {
+    const transcript = new DialogueTranscript(), text = source + reply;
+    for (let i = 0; i < text.length; i += size) {
+      transcript.push(kind, fragment(text.slice(i, i + size)), { A: "en", B: "es" });
+      if (i + size > source.length + 1) expect(content(transcript)[0]).toEqual({ kind, side: "A", text: source });
+    }
+    expect(content(transcript)).toEqual([{ kind, side: "A", text: source }, { kind, side: "B", text: reply }]);
+  }
+});

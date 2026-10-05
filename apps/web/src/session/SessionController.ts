@@ -1490,7 +1490,11 @@ export class SessionController {
       const continuation = this.outputTurnId ? findSessionTurn(this.currentSession, this.outputTurnId) : undefined;
       const candidates = speaker === undefined ? [] : turns.filter(turn => !turn.translationOnly &&
         (turn.speaker === speaker || turn.speaker === undefined));
-      let target = candidates.length === 1 && candidates[0]?.status !== "failed" ? candidates[0] : undefined;
+      // Known language ownership takes precedence over unresolved-source fallback.
+      // Several exact matches still need independent output; recency cannot choose one.
+      const exact = candidates.filter(turn => turn.speaker === speaker);
+      const eligible = exact.length ? exact : candidates;
+      let target = eligible.length === 1 && eligible[0]?.status !== "failed" ? eligible[0] : undefined;
       if (fragments.every(fragment => /^[\p{P}\s]+$/u.test(fragment.text))) target = this.findOutputContinuation(fragments);
       if (!target && continuation?.translationOnly && continuation.status !== "completed" &&
           continuation.speaker === speaker && this.outputSourceTurnId === this.latestSourceTurnId) target = continuation;

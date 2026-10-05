@@ -64,3 +64,24 @@ it("bounds repeated measurement lookahead in a long outer quote", () => {
   expect(sentences).toEqual([source + " ", reply]);
   expect(elapsed).toBeLessThan(1000);
 });
+
+it.each(["I loved the '90s.","I left 'cause it was late."])("keeps leading lexical apostrophes outside quote state: %s", source => {
+  expect(splitSentences(source + " 'Sí.'")).toEqual([source + " ", "'Sí.'"]);
+});
+
+it.each(['"La estación está cerca del supermercado', '"La estación está cerca del supermercado"'])("preserves an unpunctuated quoted tail after numeric quotation: %s", reply => {
+  for (const number of ["123", "12.3", "-123"]) {
+    const source = 'He said "' + number + '" and left.';
+    expect(splitSentences(source + reply)).toEqual([source, reply]);
+  }
+});
+
+it.each(["He said '90s' and left.", "'90s were great.'", "'cause it was late.'", "'I left 'cause it was late.'"])("preserves real single quotes around elision-shaped words: %s", source => {
+  expect(splitSentences(source + " 'Sí.'")).toEqual([source + " ", "'Sí.'"]);
+});
+
+it.each(["'90s were great. Music was better.'", "'cause it was late. I left early.'", "'cause I don't know. I left early.'", "'cause 'twas late. I left early.'"])("preserves lexical-shaped openers across multiple quoted sentences: %s", source => {
+  const sentences = splitSentences(source + " 'Sí.'");
+  expect(sentences.at(-1)).toBe("'Sí.'");
+  expect(sentences.slice(0, -1).join("")).toBe(source + " ");
+});

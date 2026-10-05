@@ -120,7 +120,6 @@ export function splitLanguageSentences(text: string, languages: ConversationLang
     // An unresolved contiguous suffix can finish a hostname, rather than start a source.
     if (next && isDottedContinuation(sentence, next) &&
         (shortReplyEvidence(next, languages) === undefined || shortReplyEvidence(next, languages) === "ambiguous") &&
-        completeScriptSide(next, languages) === undefined &&
         covered(next) && !reliable(next)) continue;
     sentences.push(prefix); prefix = ""; prefixEvidence = ""; prefixCovered = true; prefixScriptSide = undefined;
   }
