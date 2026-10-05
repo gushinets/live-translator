@@ -677,7 +677,8 @@ describe("buffered audio output", () => {
     controller.attachRemoteStream(fakeStream(new FakeAudioTrack()));
     controller.setOutputAudible(true);
     stale({ data: { type: "turn", turnId: "retired", value: true } } as MessageEvent);
-    expect(activity).toHaveBeenCalledTimes(3);
+    expect(activity).toHaveBeenCalledTimes(4); // Gate closure explicitly retires played activity.
+    expect(activity).toHaveBeenLastCalledWith(expect.objectContaining({ active: false }));
     controller.dispose();
   });
   it("reports raw audio samples independently of held playback and only from a running context", async () => {

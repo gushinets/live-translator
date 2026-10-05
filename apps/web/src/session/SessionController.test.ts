@@ -4137,6 +4137,61 @@ describe("SessionController PWA lifecycle suspension (§11.3 / §19)", () => {
     expect(live.setInputMuted).toHaveBeenLastCalledWith(false);
   });
 
+  it.each([false, true])("retires owned playback on suspension when the RMS sampler stayed inactive, non-interrupting=%s", async enabled => {
+    vi.spyOn(HTMLMediaElement.prototype, "play").mockResolvedValue(undefined);
+    vi.spyOn(HTMLMediaElement.prototype, "pause").mockImplementation(() => {});
+    vi.spyOn(HTMLMediaElement.prototype, "load").mockImplementation(() => {});
+    const queue = new PlaybackQueue(48_000);
+    const node = Object.assign(new DispatchableAudioNode(), {
+      port: {
+        postMessage: vi.fn((data: { type: string; value?: boolean; turnId?: string }) => {
+          if (data.type === "audible") queue.setAudible(data.value === true);
+          if (data.type === "enabled") queue.setEnabled(data.value === true);
+          if (data.type === "speaking") queue.setSpeaking(data.value === true);
+          if (data.type === "turn") queue.setTurn(data.turnId);
+          if (data.type === "dispose") queue.clear();
+        }),
+        close: vi.fn(), onmessage: null as ((event: MessageEvent) => void) | null,
+      }, onprocessorerror: null,
+    });
+    queue.onPlaybackTurn = (turnId, active) => node.port.onmessage?.({
+      data: { type: "turn", turnId, value: active },
+    } as MessageEvent);
+    const { audio, audioContext } = createDispatchableAudio(undefined, () => node as unknown as AudioWorkletNode);
+    Object.assign(audioContext, {
+      audioWorklet: { addModule: vi.fn(async () => {}) },
+      createMediaStreamDestination: () => ({ stream: audio.getCaptureStream()! }),
+    });
+    const orientation = new FakeOrientation();
+    const { controller, live } = createController({ audio, orientation });
+    try {
+      await controller.startWithLanguages({ A: "en", B: "es" });
+      controller.handleRemoteStream(audio.getCaptureStream()!, live as unknown as LiveClient);
+      await flushMicrotasks();
+      controller.setNonInterrupting(enabled);
+      emitVoice(audio, true);
+      live.emit({ type: "session.input_transcript.delta", delta: "Where is the station?" });
+      live.emit({ type: "session.output_transcript.delta", delta: "Dónde está la estación?" });
+      emitVoice(audio, false);
+      queue.process(new Float32Array(14_400));
+      const quietSine = Float32Array.from({ length: 4_800 }, (_, index) => .018 * Math.sin(2 * Math.PI * 1000 * index / 48_000));
+      queue.process(quietSine);
+      expect(controller.session.activeTurn?.audioOutputStarted).toBe(true);
+      expect(audio.rawPlaybackActive).toBe(false); // Dispatchable analysers remain silent/inactive.
+      orientation.emit("landscape");
+      await flushMicrotasks();
+      expect((controller as unknown as { playbackActive: boolean }).playbackActive).toBe(false);
+      orientation.emit("portrait");
+      await flushLifecycle();
+      await vi.advanceTimersByTimeAsync(runtime.captionIdleMs - 1);
+      expect(controller.session.state).toBe("suspended");
+      await vi.advanceTimersByTimeAsync(1);
+      await flushLifecycle();
+      expect(controller.session.state).toBe("listening");
+      expect(audio.audioElement.muted).toBe(false);
+    } finally { await controller.cancel(); audio.dispose(); }
+  });
+
   it("keeps fast resume gated until a fresh sample when the worklet pending message is still in flight", async () => {
     const queue = new PlaybackQueue(1000);
     const audio = Object.assign(createFakeAudio(), {

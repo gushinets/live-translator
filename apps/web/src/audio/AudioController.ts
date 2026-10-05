@@ -296,7 +296,12 @@ export class AudioController {
   setOutputAudible(audible: boolean): void {
     this.audioElement.muted = !audible;
     this.playbackNode?.port.postMessage({ type: "audible", value: audible });
-    if (!audible) this.queuedPlayback = false;
+    if (!audible) {
+      this.queuedPlayback = false;
+      this.playbackDetector.reset();
+      // Played activity can come from the worklet even when sampled RMS stayed below its floor.
+      this.onPlaybackActivity?.({ active: false, atMs: this.nowMs() });
+    }
   }
 
   setPlaybackTurn(turnId: string | undefined): void {
