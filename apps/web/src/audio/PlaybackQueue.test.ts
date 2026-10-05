@@ -99,6 +99,20 @@ describe("PlaybackQueue", () => {
     q.process(new Float32Array(1));
     expect(played.mock.calls.filter(([, active]) => active).map(([turnId]) => turnId)).toEqual(["A", "A", "A"]);
   });
+  it("drains a full FIFO after disabling buffering even when the input has no channels", () => {
+    const q = new PlaybackQueue(1000, 128);
+    q.setAudible(true); q.setEnabled(true); q.setSpeaking(true); q.setTurn("A");
+    const received = new Float32Array(128).fill(.5);
+    q.process(received);
+    expect(q.pending).toBe(true);
+    q.setEnabled(false);
+    const output = new Float32Array(128);
+    expect(() => q.process(undefined, output)).not.toThrow();
+    expect(output).toEqual(received);
+    expect(q.process(undefined, new Float32Array(512)).every(value => value === 0)).toBe(true);
+    expect(q.pending).toBe(false);
+    expect(q.process(Float32Array.of(.7))[0]).toBeCloseTo(.7); // The queue did not latch terminal overflow.
+  });
   it("fails closed on overflow instead of silently dropping speech", () => {
     const q = new PlaybackQueue(1000, 10);
     q.setAudible(true); q.setEnabled(true); q.setSpeaking(true);

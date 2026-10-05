@@ -66,6 +66,12 @@ export class PlaybackQueue {
         this.prerollCount = this.tail = 0;
         continue;
       }
+      // Free the outgoing slot before receiving another sample, including a synthetic silent tail.
+      let dequeued = false;
+      if (!held && this.count > 0) {
+        output[i] = this.shift();
+        dequeued = true;
+      }
       // Keep quiet phonemes around speech, but don't queue minutes of dead air.
       if (Math.abs(value) >= .0001) {
         for (let n = this.prerollCount; n > 0; n--)
@@ -81,18 +87,23 @@ export class PlaybackQueue {
         this.prerollWrite = (this.prerollWrite + 1) % this.preroll.length;
         this.prerollCount = Math.min(this.prerollCount + 1, this.preroll.length);
       }
-      if (!held && this.count > 0) {
-        output[i] = this.samples[this.read]!;
-        this.read = (this.read + 1) % this.samples.length;
-        this.count--;
-        const owner = this.owners[0]!;
-        this.observePlayed(output[i]!, owner.turnId);
-        if (--owner.count === 0) this.owners.shift();
-      } else {
-        this.observePlayed(0, undefined);
+      if (!held && !dequeued && this.count > 0) {
+        output[i] = this.shift();
+        dequeued = true;
       }
+      if (!dequeued) this.observePlayed(0, undefined);
     }
     return output;
+  }
+
+  private shift(): number {
+    const value = this.samples[this.read]!;
+    this.read = (this.read + 1) % this.samples.length;
+    this.count--;
+    const owner = this.owners[0]!;
+    if (--owner.count === 0) this.owners.shift();
+    this.observePlayed(value, owner.turnId);
+    return value;
   }
 
   private observePlayed(value: number, turnId: string | undefined): void {
