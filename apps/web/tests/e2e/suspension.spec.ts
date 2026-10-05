@@ -298,7 +298,7 @@ test.describe("PWA suspension", () => {
     await installLiveStubs(page);
     await startListeningConversation(page);
     await emitSourceTranscript(page, "Hello from A");
-    await expect(page.getByTestId("current-primary-A")).toHaveText("Hello from A");
+    await expect(page.getByTestId("participant-pane-A").locator(".recent-turn-primary").last()).toHaveText("Hello from A");
 
     await page.evaluate(() => {
       window.__setVisibility?.("hidden");
@@ -317,7 +317,7 @@ test.describe("PWA suspension", () => {
     await installLiveStubs(page);
     await startListeningConversation(page);
     await emitSourceTranscript(page, "Where is apartment 12?");
-    await expect(page.getByTestId("current-primary-A")).toHaveText("Where is apartment 12?");
+    await expect(page.getByTestId("participant-pane-A").locator(".recent-turn-primary").last()).toHaveText("Where is apartment 12?");
 
     await page.evaluate(() => {
       window.__setOrientation?.("landscape-primary");

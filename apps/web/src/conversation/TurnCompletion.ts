@@ -137,7 +137,7 @@ export function buildTurnCompletionSnapshot(input: {
   return {
     sourceIdle: turn.sourceIdleAtMs !== undefined,
     sourceIdleAtMs: turn.sourceIdleAtMs,
-    audioStarted: turn.audioOutputStarted,
+    audioStarted: turn.audioOutputStarted && !turn.audioOutputInterrupted,
     playbackIdle: !playbackActive,
     playbackIdleAtMs: turn.playbackEndAtMs,
     captionIdle,

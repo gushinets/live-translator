@@ -62,7 +62,7 @@ test("long captions stay readable, retain their size in pauses, and respect manu
   await harness.inputDelta(original);
   await harness.outputDelta(translated);
   for (const side of ["A", "B"] as const) {
-    const message = page.getByTestId(`current-primary-${side}`);
+    const message = page.getByTestId(`participant-pane-${side}`).locator(".recent-turn-primary").last();
     const scroll = page.getByTestId(`participant-scroll-${side}`);
     await expect(message).toHaveCSS("font-size", "22px");
     const pane = page.getByTestId(`participant-pane-${side}`);
@@ -85,15 +85,15 @@ test("long captions stay readable, retain their size in pauses, and respect manu
     const gutter = await scroll.evaluate(el => (el as HTMLElement).offsetWidth - el.clientWidth);
     if (gutter > 0) {
       await page.mouse.click(side === "B" ? box.x + gutter / 2 : box.x + box.width - gutter / 2, box.y + box.height / 2);
-      await expect(page.getByTestId("current-author-A")).toHaveText("Me:");
-      await expect(page.getByTestId("current-author-B")).toHaveText("Él:");
+      await expect(page.getByTestId("participant-pane-A").locator(".turn-author").last()).toHaveText("Me:");
+      await expect(page.getByTestId("participant-pane-B").locator(".turn-author").last()).toHaveText("Él:");
     }
     await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
     await page.mouse.down();
     await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2 + 35, { steps: 5 });
     await page.mouse.up();
-    await expect(page.getByTestId("current-author-A")).toHaveText("Me:");
-    await expect(page.getByTestId("current-author-B")).toHaveText("Él:");
+    await expect(page.getByTestId("participant-pane-A").locator(".turn-author").last()).toHaveText("Me:");
+    await expect(page.getByTestId("participant-pane-B").locator(".turn-author").last()).toHaveText("Él:");
     await page.evaluate(() => getSelection()?.removeAllRanges());
     await scroll.evaluate(el => { el.scrollTop = 0; el.dispatchEvent(new Event("scroll")); });
   }
@@ -109,8 +109,8 @@ test("long captions stay readable, retain their size in pauses, and respect manu
   await harness.sourceQuiet();
   await harness.advance(runtime.audioStartGraceMs + runtime.captionIdleMs);
   for (const side of ["A", "B"] as const) {
-    await expect(page.getByTestId(`latest-primary-${side}`)).toHaveCSS("font-size", "22px");
-    expect(await page.getByTestId(`latest-primary-${side}`).evaluate(el => {
+    await expect(page.getByTestId(`participant-pane-${side}`).locator(".recent-turn-primary").last()).toHaveCSS("font-size", "22px");
+    expect(await page.getByTestId(`participant-pane-${side}`).locator(".recent-turn-primary").last().evaluate(el => {
       const author = el.previousElementSibling!.getBoundingClientRect();
       const firstLetter = document.createRange();
       firstLetter.setStart(el.firstChild!, 0);
@@ -128,7 +128,7 @@ test("long captions stay readable, retain their size in pauses, and respect manu
   // Text-only enlargement exercises reflow without shrinking the CSS viewport.
   await page.addStyleTag({ content: "html { font-size: 200% !important; }" });
   for (const side of ["A", "B"] as const) {
-    await expect(page.getByTestId(`latest-primary-${side}`)).toHaveCSS("font-size", "44px");
+    await expect(page.getByTestId(`participant-pane-${side}`).locator(".recent-turn-primary").last()).toHaveCSS("font-size", "44px");
     const scroll = page.getByTestId(`participant-scroll-${side}`);
     expect(await scroll.evaluate(el => el.clientHeight)).toBeGreaterThan(0);
     expect(await scroll.evaluate(el => el.scrollWidth <= el.clientWidth)).toBe(true);
@@ -148,16 +148,17 @@ test("long captions stay readable, retain their size in pauses, and respect manu
 test("keeps all history and the reading position when another turn arrives", async ({ page }) => {
   const harness = await MockLiveHarness.attach(page);
   await harness.startListeningConversation();
-  const captions = ["First", "Second", "Third", "Fourth"].map(word => ({
-    original: `${word}: ` + "Could you tell me where the train station is? ".repeat(10),
-    translation: `${word}: ` + "¿Podría decirme dónde está la estación de tren? ".repeat(10),
-  }));
+  const captions = ["First", "Second", "Third", "Fourth"].map((word, index) => {
+    const english = `${word}: ` + "Could you tell me where the train station is? ".repeat(10);
+    const spanish = `${word}: ` + "¿Podría decirme dónde está la estación de tren? ".repeat(10);
+    return index % 2 === 0 ? { original: english, translation: spanish } : { original: spanish, translation: english };
+  });
   for (const caption of captions.slice(0, 3)) {
     await harness.sourceActive();
     await harness.inputDelta(caption.original);
     await harness.outputDelta(caption.translation);
     await harness.sourceQuiet();
-    await harness.advance(runtime.audioStartGraceMs);
+    await harness.advance(runtime.noOutputTimeoutMs);
     await expect(page.getByTestId("participant-status-A")).toHaveText("Speak");
     await harness.waitForGateBUnmuted();
     await harness.advance(runtime.captionIdleMs);
@@ -176,7 +177,7 @@ test("keeps all history and the reading position when another turn arrives", asy
   await harness.inputDelta(captions[3]!.original);
   await harness.outputDelta(captions[3]!.translation);
   await harness.sourceQuiet();
-  await harness.advance(runtime.audioStartGraceMs + runtime.captionIdleMs);
+  await harness.advance(runtime.noOutputTimeoutMs + runtime.captionIdleMs);
   for (const [index, side] of (["A", "B"] as const).entries()) {
     const history = page.getByTestId(`participant-scroll-${side}`).locator(".recent-turn");
     await expect(history).toHaveCount(4);
@@ -187,31 +188,31 @@ test("keeps all history and the reading position when another turn arrives", asy
   }
 });
 
-test("a long dialogue keeps both languages, including short and translation-only turns", async ({ page }, testInfo) => {
+test("a long dialogue keeps all resolved captions and translation-only output while hiding unknown text", async ({ page }, testInfo) => {
   const harness = await MockLiveHarness.attach(page);
   await harness.startListeningConversation();
   for (let i = 0; i < 12; i++) {
     await harness.sourceActive();
     const spanishSource = i % 2 === 1;
     if (i !== 10) await harness.inputDelta(i === 11 ? "OK" : spanishSource
-      ? `¿Podría decirme dónde está la estación de tren? ${i}`
-      : `Could you tell me where the train station is? ${i}`);
-    await harness.outputDelta(spanishSource ? `Thank you very much. ${i}` : `¿Podría decirme dónde está la estación de tren? ${i}`);
+      ? `¿Podría decirme dónde está la estación de tren número ${i}?`
+      : `Could you tell me where the train station number ${i} is?`);
+    await harness.outputDelta(spanishSource ? `Thank you very much for helping me with question ${i}.` : `¿Podría decirme dónde está la estación de tren número ${i}?`);
     await harness.sourceQuiet();
-    await harness.advance(runtime.audioStartGraceMs + runtime.captionIdleMs);
+    await harness.advance(runtime.noOutputTimeoutMs + runtime.captionIdleMs);
     await harness.waitForGateBUnmuted();
-    // Let the prior output's drain window settle before delivering the next provider response.
-    await harness.advance(runtime.captionIdleMs);
     for (const side of ["A", "B"] as const) {
-      await expect(page.getByTestId(`participant-scroll-${side}`).locator("li")).toHaveCount(i + 1);
+      // Index 10 has output only; index 11 has an unresolved source retained internally.
+      const count = i < 10 ? i + 1 : i === 10 ? (side === "A" ? 10 : 11) : 11;
+      await expect(page.getByTestId(`participant-scroll-${side}`).locator("li")).toHaveCount(count);
     }
   }
   const a = page.getByTestId("participant-scroll-A");
   const b = page.getByTestId("participant-scroll-B");
   await expect(a.locator("li").first()).toContainText("Could you tell me");
   await expect(b.locator("li").first()).toContainText("¿Podría decirme");
-  await expect(a.locator("li").last()).toContainText("Thank you very much. 11");
-  await expect(b.locator("li").last()).toContainText("OK");
+  await expect(a.locator("li").last()).toContainText("Thank you very much for helping me with question 11.");
+  await expect(page.locator(".recent-turn-primary").filter({ hasText: "OK" })).toHaveCount(0);
   await expect(b.locator("li").nth(10)).toContainText("¿Podría decirme");
   for (const scroll of [a, b]) {
     expect(await scroll.evaluate(el => el.scrollHeight > el.clientHeight)).toBe(true);

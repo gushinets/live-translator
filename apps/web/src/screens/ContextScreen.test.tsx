@@ -19,6 +19,7 @@ function idleSession(): TranslationSession {
 }
 
 class FakeOwnerController implements ContextScreenController {
+  readonly captionBlocks = [];
   session: TranslationSession = idleSession();
   inputReady = true;
   contextText = "";

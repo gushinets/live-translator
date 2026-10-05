@@ -92,6 +92,38 @@ describe("sessionReducer: transcript routing", () => {
   });
 });
 
+describe("independent source and translation records", () => {
+  it("keeps A pending when B starts and routes a late translation to A explicitly", () => {
+    let state: TranslationSession = {
+      ...baseSession(), state: "listening",
+      participantA: { ...participant("A"), language: "ru" },
+      participantB: { ...participant("B"), language: "en" },
+    };
+    state = sessionReducer(state, { type: "SOURCE_ACTIVE", turnId: "a", speaker: "A", sideSource: "language",
+      fragment: { id: "fa", text: "Где находится вокзал?", receivedAtMs: 1000 } });
+    state = sessionReducer(state, { type: "SOURCE_HANDOFF", turnId: "b", speaker: "B", nowMs: 1200,
+      fragment: { id: "fb", text: "The station is straight ahead.", receivedAtMs: 1200 } });
+    state = sessionReducer(state, { type: "OUTPUT_DELTA", turnId: "a", text: "Where is the station?", nowMs: 1400 });
+    expect(state.activeTurn?.id).toBe("b");
+    expect(state.activeTurn?.originalText).toBe("The station is straight ahead.");
+    expect(state.activeTurn?.translatedText).toBeUndefined();
+    expect(state.pendingTurns?.[0]).toMatchObject({ id: "a", speaker: "A", originalText: "Где находится вокзал?", translatedText: "Where is the station?" });
+    state = sessionReducer(state, { type: "TURN_CLOSED", turnId: "a", speaker: "A" });
+    expect(state.activeTurn?.id).toBe("b");
+    expect(state.recentTurns[0]?.id).toBe("a");
+  });
+
+  it("discards every pending source at suspension so old captions cannot revive it", () => {
+    const active = createTurn({ id: "b", speaker: "B", sideSource: "language", nowMs: 1200 });
+    const pending = createTurn({ id: "a", speaker: "A", sideSource: "language", nowMs: 1000 });
+    const state = sessionReducer({ ...baseSession(), state: "outputting", activeTurn: active,
+      pendingTurns: [pending] }, { type: "SUSPEND" });
+    expect(state.activeTurn).toBeUndefined();
+    expect(state.pendingTurns ?? []).toHaveLength(0);
+    expect(state.recentTurns.map(t => [t.id, t.status])).toEqual([["a", "discarded"], ["b", "discarded"]]);
+  });
+});
+
 function sessionWithActiveTurnIn(state: (typeof TURN_CLOSE_BLOCKED_STATES)[number]): TranslationSession {
   if (state === "error") {
     return sessionReducer(stateWithCompletedTurn("A"), { type: "SESSION_ERROR", message: "boom" });

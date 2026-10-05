@@ -290,7 +290,7 @@ describe("stage-3 metadata observations", () => {
     expect(observe).toHaveBeenLastCalledWith(expect.objectContaining({ state: "listening", interpreterReady: true, mediaReady: true, speechEligible: true, sample: { active: true, atMs: performance.now() } }));
     expect(JSON.stringify(observe.mock.calls)).not.toContain("Private sentence");
   });
-  it("records audible completion before a subsequent steering failure", async () => {
+  it("records audible completion without sending a per-turn steering command", async () => {
     const { controller, live, audio } = createController(); await enterListening(controller);
     Object.defineProperty(audio.audioElement, "muted", { value: false, writable: true });
     emitVoice(audio, true); live.emit({ type: "session.input_transcript.delta", delta: "Hello, where is the nearest train station?" });
@@ -300,6 +300,7 @@ describe("stage-3 metadata observations", () => {
     emitPlayback(audio, false); await flushMicrotasks();
     await vi.advanceTimersByTimeAsync(2000);
     expect(controller.metrics.snapshot().audioCompletedTurnCount).toBe(1);
-    expect(controller.session.state).toBe("error");
+    expect(controller.session.state).toBe("listening");
+    expect(live.appendInstructions.mock.calls.filter(call => call[1]?.kind === "later_steering")).toHaveLength(0);
   });
 });

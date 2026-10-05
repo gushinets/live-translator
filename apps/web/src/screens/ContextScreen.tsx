@@ -12,6 +12,7 @@ import {
 } from "../session/SessionController";
 import type { TranslationSession } from "../session/SessionState";
 import type { Side } from "../conversation/Turn";
+import type { DialogueBlock } from "../conversation/DialogueTranscript";
 import { languageName, preferredLanguage, supportedLanguageCodes } from "../side/SideResolver";
 import {
   traceBootstrapAction,
@@ -27,6 +28,7 @@ import { translate, uiLocale } from "../i18n/messages";
  */
 export interface ContextScreenController {
   readonly session: TranslationSession;
+  readonly captionBlocks: readonly DialogueBlock[];
   readonly inputReady: boolean;
   readonly contextText: string;
   readonly bootstrapText: string;

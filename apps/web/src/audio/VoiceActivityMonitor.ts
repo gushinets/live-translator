@@ -12,8 +12,8 @@ export interface AudioActivityEvent {
  * (binding spec 1.2.1 §9.1).
  *
  * A local quiet decision is held for `sourceTailGraceMs` before the external
- * idle edge is emitted. This keeps Gate B open long enough for the final
- * source-audio tail to reach the Live session instead of racing input mute.
+ * idle edge is emitted. This stabilizes local source bookkeeping across
+ * short pauses; it does not close input to the Live session.
  */
 export class VoiceActivityMonitor {
   onSample: ((event: AudioActivityEvent) => void) | null = null;

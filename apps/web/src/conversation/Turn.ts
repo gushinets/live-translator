@@ -29,6 +29,11 @@ export interface Turn {
   sourceFragments: TranscriptFragment[];
   originalText: string;
   translatedText?: string;
+  outputFragments?: TranscriptFragment[];
+  /** Captions with a known author but no unambiguous source-turn association. */
+  translationOnly?: boolean;
+  /** Session-timeline boundary established by the next source speaker. */
+  sourceEndMs?: number;
   status: TurnStatus;
 
   speechStartAtMs?: number;
@@ -37,6 +42,7 @@ export interface Turn {
   firstAudibleOutputAtMs?: number;
   outputTextEndAtMs?: number;
   audioOutputStarted: boolean;
+  audioOutputInterrupted?: boolean;
   playbackEndAtMs?: number;
   turnCompletedAtMs?: number;
 }

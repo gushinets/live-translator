@@ -25,8 +25,8 @@ interface TurnSnapshot {
   statusB: string;
   primaryA: string;
   primaryB: string;
-  secondaryA: string;
-  secondaryB: string;
+  authorA: string;
+  authorB: string;
   recentA: number;
   recentB: number;
   remoteAudio: AudioElementState;
@@ -34,7 +34,7 @@ interface TurnSnapshot {
 
 interface RecentTurnText {
   primary: string;
-  secondary: string;
+  author: string;
 }
 
 interface RemoteRmsSummary {
@@ -320,14 +320,14 @@ async function testIdText(page: Page, testId: string): Promise<string> {
 }
 
 async function readTurnSnapshot(page: Page): Promise<TurnSnapshot> {
-  const [statusA, statusB, primaryA, primaryB, secondaryA, secondaryB, recentA, recentB] =
+  const [statusA, statusB, primaryA, primaryB, authorA, authorB, recentA, recentB] =
     await Promise.all([
       testIdText(page, "participant-status-A"),
       testIdText(page, "participant-status-B"),
-      testIdText(page, "current-primary-A"),
-      testIdText(page, "current-primary-B"),
-      testIdText(page, "current-secondary-A"),
-      testIdText(page, "current-secondary-B"),
+      readLatestRecentTurn(page, "A").then(caption => caption.primary),
+      readLatestRecentTurn(page, "B").then(caption => caption.primary),
+      readLatestRecentTurn(page, "A").then(caption => caption.author),
+      readLatestRecentTurn(page, "B").then(caption => caption.author),
       page.getByTestId("participant-pane-A").locator(".recent-turn").count(),
       page.getByTestId("participant-pane-B").locator(".recent-turn").count(),
     ]);
@@ -336,8 +336,8 @@ async function readTurnSnapshot(page: Page): Promise<TurnSnapshot> {
     statusB,
     primaryA,
     primaryB,
-    secondaryA,
-    secondaryB,
+    authorA,
+    authorB,
     recentA,
     recentB,
     remoteAudio: await readAudioElementState(page),
@@ -347,13 +347,11 @@ async function readTurnSnapshot(page: Page): Promise<TurnSnapshot> {
 async function readLatestRecentTurn(page: Page, side: "A" | "B"): Promise<RecentTurnText> {
   const latest = page.getByTestId(`participant-pane-${side}`).locator(".recent-turn").last();
   if ((await latest.count()) === 0) {
-    return { primary: "", secondary: "" };
+    return { primary: "", author: "" };
   }
   const primary = (await latest.locator(".recent-turn-primary").textContent()) ?? "";
-  const secondaryLocator = latest.locator(".recent-turn-secondary");
-  const secondary =
-    (await secondaryLocator.count()) === 0 ? "" : ((await secondaryLocator.textContent()) ?? "");
-  return { primary: primary.trim(), secondary: secondary.trim() };
+  const author = (await latest.locator(".turn-author").textContent()) ?? "";
+  return { primary: primary.trim(), author: author.trim() };
 }
 
 function expectDominantScript(text: string, expected: Script): void {
@@ -376,23 +374,14 @@ async function expectUsableLatestRecentTurn(
   const source = sourceSide === "A" ? turnA : turnB;
   const target = sourceSide === "A" ? turnB : turnA;
 
-  // Output transcription belongs to the Live model response and is required
-  // for a usable translated turn. Input transcription is a separate
-  // asynchronous ASR path and may be absent even when the model understood
-  // the audio and produced valid translated text/audio.
-  expect(source.secondary).not.toBe("");
+  // Each pane retains its own originals and the partner's translated speech.
+  // Validate the new rows and relative authors rather than removed mirrored text.
   expect(target.primary).not.toBe("");
-  expect(source.secondary).toBe(target.primary);
+  expect(target.author).toBe(sourceSide === "A" ? "Him:" : "Он:");
   expectDominantScript(target.primary, expectedTargetScript);
-
-  // When an input transcript is available, it must still mirror correctly on
-  // the opposite pane. If ASR produced no source text, both source copies may
-  // legitimately be empty while the translated turn remains usable.
-  if (source.primary.length > 0 || target.secondary.length > 0) {
-    expect(source.primary).not.toBe("");
-    expect(target.secondary).not.toBe("");
-    expect(source.primary).toBe(target.secondary);
-  }
+  expect(source.primary).not.toBe("");
+  expect(source.author).toBe(sourceSide === "A" ? "Я:" : "Me:");
+  expectDominantScript(source.primary, expectedTargetScript === "latin" ? "cyrillic" : "latin");
 }
 
 async function liveEventCount(page: Page): Promise<number> {
@@ -484,8 +473,8 @@ test.describe("real GPT-Live desktop conversation", () => {
     await page.getByRole("button", { name: "Сохранить образец" }).click();
     await page.getByRole("button", { name: "Начать разговор" }).click();
     await expect(page.getByRole("button", { name: "Завершить" })).toBeVisible();
-    await expect(page.getByTestId("participant-status-A")).toHaveText("ГОВОРИТЕ");
-    await expect(page.getByTestId("participant-status-B")).toHaveText("ГОВОРИТЕ");
+    await expect(page.getByTestId("participant-status-A")).toHaveText("Говорите");
+    await expect(page.getByTestId("participant-status-B")).toHaveText("Speak");
     expect(liveSessionStatuses).toEqual([201]);
     safeStage("interpreter_ready");
 
@@ -493,7 +482,7 @@ test.describe("real GPT-Live desktop conversation", () => {
     const outboundBytesBeforeA = await outboundAudioBytesSent(page);
     const inboundBytesBeforeA = await inboundAudioBytesReceived(page);
     await startMicrophoneFixture(page, PARTICIPANT_A_AUDIO);
-    await expect(page.getByTestId("participant-status-A")).toHaveText("СЛУШАЮ");
+    await expect(page.getByTestId("participant-status-A")).toHaveText("Слушаю");
     await waitForMicrophoneFixture(page);
     await expect
       .poll(() => outboundAudioBytesSent(page), { timeout: 5_000 })
@@ -510,11 +499,11 @@ test.describe("real GPT-Live desktop conversation", () => {
       if (!(await repeat.isVisible())) {
         throw error;
       }
-      await expect(page.getByTestId("participant-status-A")).toHaveText("ГОВОРИТЕ");
-      await expect(page.getByTestId("participant-status-B")).toHaveText("ГОВОРИТЕ");
+      await expect(page.getByTestId("participant-status-A")).toHaveText("Говорите");
+      await expect(page.getByTestId("participant-status-B")).toHaveText("Speak");
       safeStage("a_no_output_repeat");
       await startMicrophoneFixture(page, PARTICIPANT_A_AUDIO);
-      await expect(page.getByTestId("participant-status-A")).toHaveText("СЛУШАЮ");
+      await expect(page.getByTestId("participant-status-A")).toHaveText("Слушаю");
       await waitForMicrophoneFixture(page);
       await expect
         .poll(() => outboundAudioBytesSent(page), { timeout: 5_000 })
@@ -533,7 +522,7 @@ test.describe("real GPT-Live desktop conversation", () => {
     safeStage("a_to_b_text_and_audio");
 
     try {
-      await expect(page.getByTestId("participant-status-B")).toHaveText("ГОВОРИТЕ");
+      await expect(page.getByTestId("participant-status-B")).toHaveText("Speak");
     } catch (error) {
       const inboundBytesBeforeRmsSample = await inboundAudioBytesReceived(page);
       const rms = await remoteAudioRmsSummary(page, 2_000);
@@ -551,7 +540,7 @@ test.describe("real GPT-Live desktop conversation", () => {
       );
       throw error;
     }
-    await expect(page.getByTestId("participant-status-A")).toHaveText("ГОВОРИТЕ");
+    await expect(page.getByTestId("participant-status-A")).toHaveText("Говорите");
     await expect
       .poll(() => page.getByTestId("participant-pane-A").locator(".recent-turn").count())
       .toBeGreaterThanOrEqual(1);
@@ -580,7 +569,7 @@ test.describe("real GPT-Live desktop conversation", () => {
     const outboundBytesBeforeB = await outboundAudioBytesSent(page);
     const inboundBytesBeforeB = await inboundAudioBytesReceived(page);
     await startMicrophoneFixture(page, PARTICIPANT_B_AUDIO);
-    await expect(page.getByTestId("participant-status-B")).toHaveText("СЛУШАЮ");
+    await expect(page.getByTestId("participant-status-B")).toHaveText("Listening");
     await waitForMicrophoneFixture(page);
     await expect
       .poll(() => outboundAudioBytesSent(page), { timeout: 5_000 })
@@ -597,11 +586,11 @@ test.describe("real GPT-Live desktop conversation", () => {
       if (!(await repeat.isVisible())) {
         throw error;
       }
-      await expect(page.getByTestId("participant-status-B")).toHaveText("ГОВОРИТЕ");
-      await expect(page.getByTestId("participant-status-A")).toHaveText("ГОВОРИТЕ");
+      await expect(page.getByTestId("participant-status-B")).toHaveText("Speak");
+      await expect(page.getByTestId("participant-status-A")).toHaveText("Говорите");
       safeStage("b_no_output_repeat");
       await startMicrophoneFixture(page, PARTICIPANT_B_AUDIO);
-      await expect(page.getByTestId("participant-status-B")).toHaveText("СЛУШАЮ");
+      await expect(page.getByTestId("participant-status-B")).toHaveText("Listening");
       await waitForMicrophoneFixture(page);
       await expect
         .poll(() => outboundAudioBytesSent(page), { timeout: 5_000 })
@@ -619,8 +608,8 @@ test.describe("real GPT-Live desktop conversation", () => {
     await expect.poll(() => hasLiveAudibleRemoteAudio(page)).toBe(true);
     safeStage("b_to_a_text_and_audio");
 
-    await expect(page.getByTestId("participant-status-A")).toHaveText("ГОВОРИТЕ");
-    await expect(page.getByTestId("participant-status-B")).toHaveText("ГОВОРИТЕ");
+    await expect(page.getByTestId("participant-status-A")).toHaveText("Говорите");
+    await expect(page.getByTestId("participant-status-B")).toHaveText("Speak");
     await expect
       .poll(() => page.getByTestId("participant-pane-A").locator(".recent-turn").count())
       .toBeGreaterThanOrEqual(2);

@@ -10,7 +10,6 @@ body,
 .participant-pane ::-webkit-scrollbar-thumb { background: var(--participant-accent); border: 2px solid transparent; border-radius: 6px; background-clip: padding-box; }
 
 .conversation-screen {
-  --conversation-text-size: 1.375rem;
   --conversation-history-size: 1.375rem;
   --conversation-label-size: 0.9375rem;
   position: relative;
@@ -134,12 +133,8 @@ body,
 
 .participant-recent { list-style: none; margin: 0; padding: 0; }
 .recent-turn { margin: 0 0 0.625rem; padding: 0 0 0.625rem; border-bottom: 1px solid var(--participant-rule); font-size: var(--conversation-history-size); }
-.recent-turn--latest { color: inherit; }
 .turn-author { color: var(--participant-accent); font-size: inherit; font-weight: 650; white-space: nowrap; }
-.turn-waiting { margin: 0; font-size: var(--conversation-label-size); }
 .recent-turn-primary { white-space: pre-wrap; overflow-wrap: anywhere; }
-.current-turn { min-width: 0; font-size: var(--conversation-text-size); }
-.current-message { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; font-size: var(--conversation-text-size); line-height: 1.3; }
 
 .participant-alert,
 .conversation-screen .error-overlay { margin: 0 0 0.5rem; padding: 0.5rem 0.6rem; background: #7a2e1f; color: #fff8f5; overflow-wrap: anywhere; }

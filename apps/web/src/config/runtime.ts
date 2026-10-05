@@ -6,7 +6,7 @@
 export const runtime = {
   /** Application-level timeout waiting for ICE gathering to complete. */
   iceGatherTimeoutMs: 10_000,
-  /** §5.5: initial prototype default for per-turn/startup steering acknowledgment. */
+  /** §5.5: acknowledgment timeout for startup and explicit control updates. */
   steeringAckTimeoutMs: 3_000,
   /** §4.5: closes an abandoned CONTEXT-phase session. */
   contextIdleTimeoutMs: 120_000,
@@ -16,8 +16,8 @@ export const runtime = {
   maxSessionMs: 900_000,
   /** Maximum duration for a single uninterrupted source turn. */
   maxSourceMs: 30_000,
-  /** Keeps Gate B open briefly after local VAD goes quiet so the source tail reaches Live. */
-  sourceTailGraceMs: 1_000,
+  /** Additional quiet time before reporting source end; model input remains open. */
+  sourceTailGraceMs: 250,
   /** §10.2: local remote-audio inactivity window used to derive `playbackIdle`. */
   playbackIdleMs: 500,
   /** §10.2: output-transcript inactivity window used to derive `captionIdle`. */
@@ -27,7 +27,7 @@ export const runtime = {
   /** §10.1 branch A: grace period to wait for output continuation after early playback idle. */
   postSourceOutputGraceMs: 700,
   /** §10.1: grace period with no fresh output text/audio before a turn may close. */
-  outputSettleGraceMs: 350,
+  outputSettleGraceMs: 200,
   /** §10.1 branch C: deadlock escape when neither usable text nor audio ever appears. */
   noOutputTimeoutMs: 5_000,
 } as const;

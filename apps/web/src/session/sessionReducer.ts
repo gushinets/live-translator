@@ -1,4 +1,4 @@
-import type { TranscriptFragment } from "../conversation/TranscriptFragment";
+import { earliestFragmentStart, orderTranscriptFragments, type TranscriptFragment } from "../conversation/TranscriptFragment";
 import type { Side, Turn } from "../conversation/Turn";
 import {
   appendOutputTextToTurn,
@@ -31,16 +31,22 @@ export type SessionAction =
       speaker: Side | undefined;
       sideSource: Turn["sideSource"];
       fragment?: TranscriptFragment;
+      languageRouted?: boolean;
     }
-  | { type: "SOURCE_FRAGMENT"; fragment: TranscriptFragment }
+  | { type: "SOURCE_FRAGMENT"; fragment: TranscriptFragment; speaker?: Side; languageRouted?: boolean }
+  | { type: "SOURCE_HANDOFF"; turnId: string; speaker: Side | undefined; fragment?: TranscriptFragment; nowMs: number; previousIdleAtMs?: number; languageRouted?: boolean }
+  | { type: "SOURCE_TARGETED_FRAGMENT"; turnId: string; fragment: TranscriptFragment }
+  | { type: "SOURCE_BOUNDARY"; turnId: string; endMs: number }
   | { type: "SOURCE_IDLE" }
   | { type: "OUTPUT_ACTIVE" }
-  | { type: "OUTPUT_DELTA"; text: string; nowMs: number }
-  | { type: "AUDIO_STARTED"; nowMs: number }
-  | { type: "PLAYBACK_ENDED"; nowMs: number }
+  | { type: "OUTPUT_DELTA"; text: string; nowMs: number; turnId?: string; fragment?: TranscriptFragment; speaker?: Side; languageRouted?: boolean }
+  | { type: "OUTPUT_STANDALONE"; turnId: string; speaker: Side | undefined; text: string; nowMs: number; fragment?: TranscriptFragment }
+  | { type: "AUDIO_STARTED"; nowMs: number; turnId?: string }
+  | { type: "AUDIO_INTERRUPTED"; nowMs: number; turnId: string }
+  | { type: "PLAYBACK_ENDED"; nowMs: number; turnId?: string }
   | { type: "OUTPUT_IDLE" }
-  | { type: "TURN_CLOSED"; speaker: Side | undefined }
-  | { type: "TURN_FAILED" }
+  | { type: "TURN_CLOSED"; speaker: Side | undefined; turnId?: string }
+  | { type: "TURN_FAILED"; turnId?: string }
   // Suspension flow (§11.3).
   | { type: "SUSPEND" }
   | { type: "RESUME" }
@@ -58,6 +64,22 @@ function requireActiveTurn(session: TranslationSession): Turn {
     throw new Error("No active turn exists.");
   }
   return session.activeTurn;
+}
+
+export function findSessionTurn(session: TranslationSession, id?: string): Turn | undefined {
+  if (id === undefined || session.activeTurn?.id === id) return session.activeTurn;
+  return session.pendingTurns?.find(turn => turn.id === id) ?? session.recentTurns.find(turn => turn.id === id);
+}
+
+function updateSessionTurn(session: TranslationSession, id: string, update: (turn: Turn) => Turn): TranslationSession {
+  if (session.activeTurn?.id === id) return { ...session, activeTurn: update(session.activeTurn) };
+  if (session.pendingTurns?.some(turn => turn.id === id)) {
+    return { ...session, pendingTurns: session.pendingTurns.map(turn => turn.id === id ? update(turn) : turn) };
+  }
+  if (session.recentTurns.some(turn => turn.id === id)) {
+    return { ...session, recentTurns: session.recentTurns.map(turn => turn.id === id ? update(turn) : turn) };
+  }
+  throw new Error(`No turn exists with id "${id}".`);
 }
 
 const SOURCE_APPEND_BLOCKED_STATES: ReadonlySet<SessionState> = new Set([
@@ -135,7 +157,7 @@ function handleSourceActive(
     return { ...session, activeTurn: updated };
   }
 
-  if (session.state !== "listening") {
+  if (session.state !== "listening" && session.state !== "outputting") {
     throw new Error(`Cannot start a new source turn while session state is "${session.state}".`);
   }
 
@@ -149,7 +171,7 @@ function handleSourceActive(
   const B = session.participantB.language;
   if (A !== undefined && B !== undefined) created.languages = { A, B };
   const withFragment = action.fragment ? appendSourceFragmentToTurn(created, action.fragment) : created;
-  return { ...session, activeTurn: assignLanguageSide(session, withFragment) };
+  return { ...session, activeTurn: action.languageRouted ? withFragment : assignLanguageSide(session, withFragment) };
 }
 
 function assignLanguageSide(session: TranslationSession, turn: Turn): Turn {
@@ -170,7 +192,9 @@ function handleSourceFragment(
   action: Extract<SessionAction, { type: "SOURCE_FRAGMENT" }>,
 ): TranslationSession {
   assertSourceAppendAllowed(session);
-  return { ...session, activeTurn: assignLanguageSide(session, appendSourceFragmentToTurn(requireActiveTurn(session), action.fragment)) };
+  const appended = appendSourceFragmentToTurn(requireActiveTurn(session), action.fragment);
+  return { ...session, activeTurn: action.speaker ? { ...appended, speaker: action.speaker, sideSource: "language" }
+    : action.languageRouted ? appended : assignLanguageSide(session, appended) };
 }
 
 function withAcceptedSpeech(
@@ -195,7 +219,8 @@ function handleTurnClosed(
   action: Extract<SessionAction, { type: "TURN_CLOSED" }>,
 ): TranslationSession {
   assertTurnCloseAllowed(session);
-  const activeTurn = requireActiveTurn(session);
+  const activeTurn = findSessionTurn(session, action.turnId);
+  if (!activeTurn) throw new Error("No active turn exists.");
   if (activeTurn.speaker !== action.speaker) {
     throw new Error(
       `TURN_CLOSED speaker "${action.speaker}" does not match the active turn's speaker "${activeTurn.speaker}".`,
@@ -207,8 +232,10 @@ function handleTurnClosed(
     {
       ...session,
       // Drain while ending stays in ending; otherwise return to listening.
-      state: session.state === "ending" ? "ending" : "listening",
-      activeTurn: undefined,
+      state: session.state === "ending" ? "ending" : session.activeTurn?.id === activeTurn.id ||
+        (!session.activeTurn && !(session.pendingTurns?.some(turn => turn.id !== activeTurn.id))) ? "listening" : session.state,
+      activeTurn: session.activeTurn?.id === activeTurn.id ? undefined : session.activeTurn,
+      pendingTurns: session.pendingTurns?.filter(turn => turn.id !== activeTurn.id),
       recentTurns: pushRecentTurn(session.recentTurns, completed),
       lastSpeaker: action.speaker,
     },
@@ -216,14 +243,17 @@ function handleTurnClosed(
   );
 }
 
-function handleTurnFailed(session: TranslationSession): TranslationSession {
+function handleTurnFailed(session: TranslationSession, turnId?: string): TranslationSession {
   assertTurnCloseAllowed(session);
-  const activeTurn = requireActiveTurn(session);
+  const activeTurn = findSessionTurn(session, turnId);
+  if (!activeTurn) throw new Error("No active turn exists.");
   const failed = failTurn(activeTurn, Date.now());
   return {
     ...session,
-    state: session.state === "ending" ? "ending" : "listening",
-    activeTurn: undefined,
+    state: session.state === "ending" ? "ending" : session.activeTurn?.id === activeTurn.id ||
+      (!session.activeTurn && !(session.pendingTurns?.some(turn => turn.id !== activeTurn.id))) ? "listening" : session.state,
+    activeTurn: session.activeTurn?.id === activeTurn.id ? undefined : session.activeTurn,
+    pendingTurns: session.pendingTurns?.filter(turn => turn.id !== activeTurn.id),
     recentTurns: pushRecentTurn(session.recentTurns, failed),
   };
 }
@@ -237,6 +267,10 @@ function handleSuspend(session: TranslationSession): TranslationSession {
     session.state === "ending"
   ) {
     throw new Error(`Cannot suspend a session in state "${session.state}".`);
+  }
+  if (session.pendingTurns?.length) {
+    session = { ...session, pendingTurns: [], recentTurns: [...session.recentTurns,
+      ...session.pendingTurns.map(turn => discardTurn(turn, Date.now()))] };
   }
   if (session.activeTurn === undefined) {
     return { ...session, state: "suspended" };
@@ -275,6 +309,34 @@ export function sessionReducer(session: TranslationSession, action: SessionActio
       return handleSourceActive(session, action);
     case "SOURCE_FRAGMENT":
       return handleSourceFragment(session, action);
+    case "SOURCE_HANDOFF": {
+      assertSourceAppendAllowed(session);
+      const previous = session.activeTurn;
+      const pendingTurns = [...(session.pendingTurns ?? [])];
+      const boundary = action.fragment?.startMs;
+      const previousStart = earliestFragmentStart(previous?.sourceFragments);
+      if (previous) pendingTurns.push({ ...markSourceIdle(previous, action.previousIdleAtMs ?? previous.sourceIdleAtMs ?? action.nowMs),
+        sourceEndMs: boundary !== undefined && (previousStart === undefined || boundary >= previousStart)
+          ? boundary : previous.sourceEndMs });
+      const next = handleSourceActive({ ...session, state: "listening", activeTurn: undefined, pendingTurns }, {
+        type: "SOURCE_ACTIVE", turnId: action.turnId, speaker: action.speaker, sideSource: action.speaker ? "language" : "unresolved", fragment: action.fragment,
+        languageRouted: action.languageRouted,
+      });
+      return { ...next, state: session.state };
+    }
+    case "SOURCE_TARGETED_FRAGMENT": {
+      assertSourceAppendAllowed(session);
+      return updateSessionTurn(session, action.turnId, turn => {
+        if (turn.status === "completed" || turn.status === "failed") {
+          const sourceFragments = orderTranscriptFragments([...turn.sourceFragments, action.fragment]);
+          return { ...turn, sourceFragments, originalText: sourceFragments.map(fragment => fragment.text).join("") };
+        }
+        return appendSourceFragmentToTurn(turn, action.fragment);
+      });
+    }
+    case "SOURCE_BOUNDARY":
+      assertSourceAppendAllowed(session);
+      return updateSessionTurn(session, action.turnId, turn => ({ ...turn, sourceEndMs: action.endMs }));
     case "SOURCE_IDLE":
       if (session.activeTurn === undefined) {
         return session;
@@ -287,25 +349,49 @@ export function sessionReducer(session: TranslationSession, action: SessionActio
     }
     case "OUTPUT_DELTA": {
       assertOutputEventAllowed(session);
-      const updated = appendOutputTextToTurn(requireActiveTurn(session), action.text, action.nowMs);
-      return withOutputtingIfListening(session, assignLanguageSide(session, updated));
+      const target = findSessionTurn(session, action.turnId);
+      if (!target) throw new Error("No active turn exists.");
+      const updated = updateSessionTurn(session, target.id, turn => {
+        let output = turn.status === "completed"
+          ? { ...turn, translatedText: (turn.translatedText ?? "") + action.text, outputTextEndAtMs: action.nowMs }
+          : turn.sideSource === "language" || action.languageRouted ? appendOutputTextToTurn(turn, action.text, action.nowMs)
+          : assignLanguageSide(session, appendOutputTextToTurn(turn, action.text, action.nowMs));
+        if (action.speaker !== undefined) output = { ...output, speaker: action.speaker,
+          sideSource: turn.sideSource === "language" ? "language" : "translation" };
+        return action.fragment ? { ...output, outputFragments: [...(turn.outputFragments ?? []), action.fragment] } : output;
+      });
+      return { ...updated, state: session.state === "listening" && target.status !== "completed" ? "outputting" : session.state };
+    }
+    case "OUTPUT_STANDALONE": {
+      assertOutputEventAllowed(session);
+      const languages = session.participantA.language && session.participantB.language
+        ? { A: session.participantA.language, B: session.participantB.language } : undefined;
+      const created: Turn = { ...createTurn({ id: action.turnId, speaker: action.speaker, sideSource: "translation", nowMs: action.nowMs }),
+        translationOnly: true, languages, sourceIdleAtMs: action.nowMs };
+      const turn = appendOutputTextToTurn(created, action.text, action.nowMs);
+      if (action.fragment) turn.outputFragments = [action.fragment];
+      return { ...session, pendingTurns: [...(session.pendingTurns ?? []), turn],
+        state: session.state === "listening" ? "outputting" : session.state };
     }
     case "AUDIO_STARTED": {
       assertOutputEventAllowed(session);
-      const outputting = markOutputActive(requireActiveTurn(session));
-      const updated = markAudioOutputStarted(outputting, action.nowMs);
-      return withOutputtingIfListening(session, updated);
+      const target = findSessionTurn(session, action.turnId);
+      if (!target) throw new Error("No active turn exists.");
+      const updated = updateSessionTurn(session, target.id, turn => markAudioOutputStarted(markOutputActive(turn), action.nowMs));
+      return { ...updated, state: session.state === "listening" ? "outputting" : session.state };
     }
+    case "AUDIO_INTERRUPTED":
+      return updateSessionTurn(session, action.turnId, turn => ({ ...turn, audioOutputInterrupted: true, playbackEndAtMs: action.nowMs }));
     case "PLAYBACK_ENDED":
       assertOutputEventAllowed(session);
-      return { ...session, activeTurn: markPlaybackEnded(requireActiveTurn(session), action.nowMs) };
+      return updateSessionTurn(session, action.turnId ?? requireActiveTurn(session).id, turn => markPlaybackEnded(turn, action.nowMs));
     case "OUTPUT_IDLE":
       // Turn completion is handled separately from output inactivity.
       return session;
     case "TURN_CLOSED":
       return handleTurnClosed(session, action);
     case "TURN_FAILED":
-      return handleTurnFailed(session);
+      return handleTurnFailed(session, action.turnId);
 
     case "SUSPEND":
       return handleSuspend(session);
