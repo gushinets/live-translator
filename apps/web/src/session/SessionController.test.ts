@@ -5242,3 +5242,19 @@ it.each(["", "12, "])("bounds a completed predecessor when a new source has unti
   });
   expect(controller.session.recentTurns.find(turn => turn.id === b1)?.sourceEndMs).toBe(1000);
 });
+
+it("routes exclusive Spanish short replies in source and output streams", async () => {
+  vi.useFakeTimers(); vi.setSystemTime(0);
+  const { controller, live, audio } = createController();
+  await controller.startWithLanguages({ A: "en", B: "es" });
+  emitVoice(audio, true);
+  live.emit({ type: "session.input_transcript.delta", delta: "Where is the train station?" });
+  live.emit({ type: "session.output_transcript.delta", delta: "Sí." });
+  expect(controller.session.activeTurn?.translatedText).toBe("Sí.");
+  await vi.advanceTimersByTimeAsync(1);
+  live.emit({ type: "session.input_transcript.delta", delta: "Sí." });
+  expect(controller.session.activeTurn).toMatchObject({ speaker: "B", originalText: "Sí." });
+  expect(controller.captionBlocks.filter(block => block.side === "B").map(block => [block.kind, block.text])).toEqual([
+    ["output", "Sí."], ["input", "Sí."],
+  ]);
+});

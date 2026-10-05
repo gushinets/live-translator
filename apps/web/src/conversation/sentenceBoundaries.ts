@@ -6,5 +6,5 @@ export function hasSentenceTerminator(text: string): boolean {
   return /\p{Sentence_Terminal}/u.test(text);
 }
 export function splitSentences(text: string): string[] {
-  return text.match(/\P{Sentence_Terminal}*\p{Sentence_Terminal}+\s*|\P{Sentence_Terminal}+$/gu) ?? [];
+  return text.match(/\P{Sentence_Terminal}*(?:\p{Sentence_Terminal}[\p{Pe}\p{Pf}"']*)+\s*|\P{Sentence_Terminal}+$/gu) ?? [];
 }

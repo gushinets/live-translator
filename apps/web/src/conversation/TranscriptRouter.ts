@@ -3,7 +3,7 @@ import { isSentenceComplete } from "./sentenceBoundaries";
 import type { ConversationLanguages } from "../side/SideResolver";
 import type { Side } from "./Turn";
 import type { TranscriptFragment } from "./TranscriptFragment";
-import { completeScriptSide, isExplicitShortReply, languageScripts } from "./languageScripts";
+import { completeScriptSide, exclusiveShortReplySide, isExplicitShortReply, languageScripts } from "./languageScripts";
 
 export interface RoutedTranscript {
   side: Side | undefined;
@@ -60,6 +60,8 @@ export class TranscriptRouter {
   }
 
   private resolveScript(text: string, languages: ConversationLanguages): Side | undefined {
+    const replySide = exclusiveShortReplySide(text, languages);
+    if (replySide !== undefined) return replySide;
     const side = completeScriptSide(text, languages);
     if (side === undefined || this.currentSide === undefined || side === this.currentSide) return side;
     if (isExplicitShortReply(text, languages[side])) return side;

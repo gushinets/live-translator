@@ -541,3 +541,42 @@ describe("ConversationScreen actions", () => {
     expect(screen.queryByTestId("rotate-overlay")).not.toBeInTheDocument();
   });
 });
+
+it.each([undefined, "idle", "speaking"])("shows pending A playback on B with newer source %s", state => {
+  const controller = new FakeConversationController(session({
+    state: "outputting",
+    pendingTurns: [turn({ id: "old-a", speaker: "A", sourceIdleAtMs: 1, audioOutputStarted: true })],
+    activeTurn: state === undefined ? undefined : turn({ id: "new-b", speaker: "B", sourceIdleAtMs: state === "idle" ? 2 : undefined }),
+  }));
+  render(<ConversationScreen controller={controller} />);
+  expect(screen.getByTestId("participant-status-B")).toHaveTextContent(state === "speaking" ? "Слушаю" : "Перевод");
+  expect(screen.getByTestId("participant-status-A")).toHaveTextContent("Ожидание");
+});
+it.each(["ended", "interrupted", "completed"])("does not show stale pending audio as playing when %s", state => {
+  const controller = new FakeConversationController(session({ pendingTurns: [turn({
+    id: "old-a", speaker: "A", sourceIdleAtMs: 1, audioOutputStarted: true,
+    playbackEndAtMs: state === "ended" ? 10 : undefined,
+    audioOutputInterrupted: state === "interrupted", status: state === "completed" ? "completed" : "outputting",
+  })] }));
+  render(<ConversationScreen controller={controller} />);
+  expect(screen.getByTestId("participant-status-B")).toHaveTextContent("Говорите");
+});
+it("shows late pending translation text on its recipient while another source is idle", () => {
+  const controller = new FakeConversationController(session({
+    pendingTurns: [turn({ id: "old-a", speaker: "A", sourceIdleAtMs: 1, translatedText: "Hola." })],
+    activeTurn: turn({ id: "new-b", speaker: "B", sourceIdleAtMs: 2 }),
+  }));
+  render(<ConversationScreen controller={controller} />);
+  expect(screen.getByTestId("participant-status-B")).toHaveTextContent("Перевожу");
+  expect(screen.getByTestId("participant-status-A")).toHaveTextContent("Ожидание");
+});
+
+it("shows each recipient its own unfinished output when both sides have translations", () => {
+  const controller = new FakeConversationController(session({
+    pendingTurns: [turn({ id: "old-a", speaker: "A", sourceIdleAtMs: 1, translatedText: "Hola." })],
+    activeTurn: turn({ id: "new-b", speaker: "B", sourceIdleAtMs: 2, translatedText: "Hello.", audioOutputStarted: true }),
+  }));
+  render(<ConversationScreen controller={controller} />);
+  expect(screen.getByTestId("participant-status-A")).toHaveTextContent("Перевод");
+  expect(screen.getByTestId("participant-status-B")).toHaveTextContent("Перевожу");
+});

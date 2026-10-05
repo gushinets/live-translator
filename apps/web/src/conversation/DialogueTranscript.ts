@@ -3,7 +3,7 @@ import { hasSentenceTerminator, splitSentences } from "./sentenceBoundaries";
 import type { ConversationLanguages } from "../side/SideResolver";
 import { orderTranscriptFragments, type TranscriptFragment } from "./TranscriptFragment";
 import type { Side } from "./Turn";
-import { completeScriptSide, isExplicitShortReply, languageScripts, scriptPattern } from "./languageScripts";
+import { completeScriptSide, exclusiveShortReplySide, isExplicitShortReply, languageScripts, scriptPattern } from "./languageScripts";
 
 export interface DialogueBlock {
   id: string;
@@ -169,7 +169,7 @@ export class DialogueTranscript {
     // ponytail: same-script switches require sentence evidence in this prototype;
     // no reliable diarization can be inferred from a bare ambiguous word.
     for (const sentence of splitSentences(text)) {
-      const scriptSide = completeScriptSide(sentence, languages);
+      const scriptSide = exclusiveShortReplySide(sentence, languages) ?? completeScriptSide(sentence, languages);
       if (scriptSide !== undefined) { append(sentence, scriptSide); continue; }
       const evidence = sentence.replace(/\p{L}+$/u, "");
       const result = this.detector.detect(evidence.slice(0, 2000));

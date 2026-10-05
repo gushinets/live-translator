@@ -160,3 +160,13 @@ it.each([["sr", "Да."], ["pa", "ਹਾਂ।"], ["ms", "يا."]])("routes uniq
 it.each(["I would like to visit Москва tomorrow.", "I use Гугл every day.", "Please ask Иван to call me tomorrow."])("routes English with embedded Cyrillic names in an en/sr pair: %s", text => {
   expect(new TranscriptRouter().push(fragment(text), { A: "en", B: "sr" })[0]?.side).toBe("A");
 });
+
+it.each([["es", "Sí."], ["fr", "Oui."]])("routes an exclusive short %s reply despite shared script", (language, text) => {
+  const router = new TranscriptRouter();
+  expect(router.push(fragment(text), { A: "en", B: language }, "A", "Where is ")[0]?.side).toBe("B");
+});
+it("keeps shared No ambiguous in an English/Spanish pair", () => {
+  const router = new TranscriptRouter();
+  expect(router.push(fragment("No."), { A: "en", B: "es" }, "A")).toEqual([]);
+  expect(router.flush({ A: "en", B: "es" }, true)[0]).toMatchObject({ side: undefined });
+});

@@ -293,3 +293,24 @@ it.each(["I would like to visit Москва tomorrow.", "I use Гугл every d
   transcript.push("input", fragment(text), { A: "en", B: "sr" });
   expect(content(transcript)).toEqual([{ kind: "input", side: "A", text }]);
 });
+
+it.each(["input", "output"] as const)("keeps same-script short replies visible in %s", kind => {
+  const transcript = new DialogueTranscript();
+  for (const character of "Sí.") transcript.push(kind, fragment(character), { A: "en", B: "es" });
+  expect(content(transcript)).toEqual([{ kind, side: "B", text: "Sí." }]);
+});
+it.each(["“Where is the station?”", "«Where is the station?»", "(Where is the station?)", '"Where is the station?"'])("retains closing punctuation: %s", text => {
+  for (const kind of ["input", "output"] as const) for (const size of [1, 1000]) {
+    const transcript = new DialogueTranscript();
+    for (let i = 0; i < text.length; i += size) transcript.push(kind, fragment(text.slice(i, i + size)), { A: "en", B: "es" });
+    expect(content(transcript)).toEqual([{ kind, side: "A", text }]);
+    transcript.push(kind, fragment(" “La estación está cerca del supermercado.”"), { A: "en", B: "es" });
+    expect(content(transcript)).toEqual([{ kind, side: "A", text }, { kind, side: "B", text: "“La estación está cerca del supermercado.”" }]);
+  }
+});
+
+it("does not turn shared No into exclusive English or Spanish evidence", () => {
+  const transcript = new DialogueTranscript();
+  transcript.push("input", fragment("No."), { A: "en", B: "es" });
+  expect(content(transcript)).toEqual([{ kind: "input", side: undefined, text: "No." }]);
+});

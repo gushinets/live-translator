@@ -179,3 +179,28 @@ for (const [language, text] of [["hi", "हाँ।"], ["ar", "نعم؟"], ["ur
     await expect(page.getByTestId("participant-pane-A").locator("li")).toHaveCount(0);
   });
 }
+
+test("same-script replies retain quoted captions and pending translation status", async ({ page }) => {
+  const harness = await MockLiveHarness.attach(page);
+  await page.addInitScript(() => {
+    localStorage.setItem("live-translator-owner-language", "en");
+    localStorage.setItem("live-translator-interlocutor-language", "es");
+  });
+  await page.goto("/");
+  await page.getByRole("button", { name: "Start translation", exact: true }).click();
+  await expect(page.getByRole("button", { name: "End", exact: true })).toBeVisible();
+  await harness.sourceActive();
+  await harness.inputDelta("“Where is the station?");
+  await harness.inputDelta("”");
+  await expect(page.getByTestId("participant-pane-A").locator("li")).toHaveText("Me: “Where is the station?”");
+  await harness.inputDelta("La estación está cerca del supermercado.");
+  await harness.sourceQuiet();
+  await harness.outputDelta("Sí.");
+  await expect(page.getByTestId("participant-status-B")).toHaveText("Traduciendo");
+  await expect(page.getByTestId("participant-status-A")).toHaveText("Waiting");
+  await expect(page.getByTestId("participant-pane-B").locator("li")).toHaveText([
+    "Yo: La estación está cerca del supermercado.", "Él: Sí.",
+  ]);
+  await harness.advance(1000);
+  await expect(page.getByTestId("participant-status-B")).not.toHaveText("Traduciendo");
+});

@@ -49,3 +49,9 @@ export function isExplicitShortReply(text: string, language: string): boolean {
     (language === "en" && /^(yes|no|hi|hey|bye|stop|wait|why|what|how|who|when|where|sure|fine)$/.test(word)) ||
     (language === "ru" && /^(да|нет|ага|угу|стой|стоп|как|что|кто|где|эй)$/.test(word)));
 }
+
+/** A full reply is decisive only when exactly one configured language accepts it. */
+export function exclusiveShortReplySide(text: string, languages: ConversationLanguages): Side | undefined {
+  const a = isExplicitShortReply(text, languages.A), b = isExplicitShortReply(text, languages.B);
+  return a === b ? undefined : a ? "A" : "B";
+}
