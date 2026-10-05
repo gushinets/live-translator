@@ -71,6 +71,7 @@ export class AudioController {
   onSourceSample: ((event: AudioActivityEvent & { reset?: boolean }) => void) | null = null;
   onVoiceActivity: ((event: AudioActivityEvent) => void) | null = null;
   onPlaybackActivity: ((event: AudioActivityEvent) => void) | null = null;
+  onRemoteAudioSample: ((event: AudioActivityEvent) => void) | null = null;
   onAudioInterruption: (() => void) | null = null;
   onAudioRestored: (() => void) | null = null;
   onCaptureEnded: (() => void) | null = null;
@@ -86,6 +87,7 @@ export class AudioController {
   private readonly nowMs: () => number;
   private readonly voiceActivityMonitor = new VoiceActivityMonitor();
   private readonly playbackDetector = new PlaybackActivityDetector();
+  private readonly rawPlaybackDetector = new PlaybackActivityDetector();
 
   private audioContext: AudioContext | null = null;
   private captureStream: MediaStream | null = null;
@@ -110,6 +112,9 @@ export class AudioController {
   private sourceSpeaking = false;
   private lastSourceSpeaking: boolean | null = null;
   get hasPendingPlayback(): boolean { return this.queuedPlayback; }
+  get rawPlaybackActive(): boolean | undefined {
+    return this.remoteAnalyser === null ? undefined : this.rawPlaybackDetector.active;
+  }
 
 
   constructor(options: AudioControllerOptions = {}) {
@@ -380,6 +385,7 @@ export class AudioController {
     this.remoteAnalyser = null;
     this.remoteAnalysisStream = null;
     this.playbackDetector.reset();
+    this.rawPlaybackDetector.reset();
     this.audioElement.pause();
     this.audioElement.srcObject = null;
     this.syncSampler();
@@ -512,9 +518,13 @@ export class AudioController {
   private sample(): void {
     const atMs = this.nowMs();
     if (this.remoteAnalyser !== null) {
-      // Muted lifecycle draining must still see incoming provider audio.
-      const analyser = !this.audioElement.muted && this.playedAnalyser ? this.playedAnalyser : this.remoteAnalyser;
-      this.playbackDetector.pushRms(rmsFromAnalyser(analyser), atMs);
+      const rawRms = rmsFromAnalyser(this.remoteAnalyser);
+      const fresh = this.audioContext?.state === "running";
+      if (fresh) this.rawPlaybackDetector.pushRms(rawRms, atMs);
+      // Turn completion observes played PCM; lifecycle draining also observes incoming audio.
+      const playedRms = !this.audioElement.muted && this.playedAnalyser ? rmsFromAnalyser(this.playedAnalyser) : rawRms;
+      this.playbackDetector.pushRms(playedRms, atMs);
+      if (fresh) this.onRemoteAudioSample?.({ active: this.rawPlaybackDetector.active, atMs });
     }
     if (this.micAnalyser !== null) {
       this.voiceActivityMonitor.pushRms(

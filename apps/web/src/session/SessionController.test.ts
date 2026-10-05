@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { BackendClient } from "../api/BackendClient";
 import { AudioController, type AudioControllerOptions } from "../audio/AudioController";
 import { runtime } from "../config/runtime";
+import { PlaybackQueue } from "../audio/PlaybackQueue";
 import { AckTimeoutError } from "../live/AckRegistry";
 import { LiveClient } from "../live/LiveClient";
 import {
@@ -925,6 +926,48 @@ describe("SessionController", () => {
       expect(audio.audioElement.muted).toBe(true);
       expect(decoder.onerror).toBeNull();
       expect(audio.onPlaybackDecoderError).toBeNull();
+    } finally { await controller.cancel(); audio.dispose(); }
+  });
+
+  it.each(["unexpected-close", "mic-ended", "transport"])("releases the real buffered pipeline on terminal %s", async reason => {
+    vi.spyOn(HTMLMediaElement.prototype, "play").mockResolvedValue(undefined);
+    vi.spyOn(HTMLMediaElement.prototype, "pause").mockImplementation(() => {});
+    vi.spyOn(HTMLMediaElement.prototype, "load").mockImplementation(() => {});
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    const node = Object.assign(new DispatchableAudioNode(), {
+      port: { postMessage: vi.fn(), close: vi.fn(), onmessage: null }, onprocessorerror: null,
+    });
+    const { audio, audioContext, track } = createDispatchableAudio(undefined, () => node as unknown as AudioWorkletNode);
+    Object.assign(audioContext, {
+      audioWorklet: { addModule: vi.fn(async () => {}) },
+      createMediaStreamDestination: () => ({ stream: audio.getCaptureStream()! }),
+    });
+    const { controller, live } = createController({ audio });
+    try {
+      await controller.startWithLanguages({ A: "ru", B: "en" });
+      controller.handleRemoteStream(audio.getCaptureStream()!, live as unknown as LiveClient);
+      await flushMicrotasks();
+      const decoder = vi.mocked(HTMLMediaElement.prototype.play).mock.contexts[0] as HTMLAudioElement;
+      const clearInterval = vi.spyOn(window, "clearInterval");
+      if (reason === "unexpected-close") live.emitSessionClosed("server_shutdown");
+      else if (reason === "mic-ended") track.end();
+      else live.onError?.({ type: "error", error: { message: "transport failed" }, transportFailure: true });
+      expect(controller.session.state).toBe("error");
+      expect(controller.ownerError).toBe(reason === "mic-ended" ? MICROPHONE_CAPTURE_ENDED_MESSAGE : CONNECTION_ERROR_MESSAGE);
+      expect(audio.audioElement.muted).toBe(true);
+      expect(audio.audioElement.srcObject).toBeNull();
+      expect(audio.getCaptureStream()).toBeNull();
+      expect(decoder.srcObject).toBeNull();
+      expect(decoder.onerror).toBeNull();
+      expect(audio.onPlaybackDecoderError).toBeNull();
+      expect(node.port.postMessage).toHaveBeenCalledWith({ type: "dispose" });
+      expect(node.port.close).toHaveBeenCalledOnce();
+      expect(clearInterval).toHaveBeenCalledOnce();
+      expect(live.close).toHaveBeenCalledTimes(reason === "mic-ended" ? 1 : 0);
+      expect(live.disconnectImmediately).not.toHaveBeenCalled();
+      controller.handleRemoteStream(fakeRemoteStream("late-after-error"), live as unknown as LiveClient);
+      expect(audio.audioElement.srcObject).toBeNull();
+      expect(node.port.close).toHaveBeenCalledOnce();
     } finally { await controller.cancel(); audio.dispose(); }
   });
 
@@ -4044,6 +4087,69 @@ describe("SessionController PWA lifecycle suspension (§11.3 / §19)", () => {
     );
     expect(audio.setOutputAudible).toHaveBeenLastCalledWith(true);
     expect(live.setInputMuted).toHaveBeenLastCalledWith(false);
+  });
+
+  it.each(["steering", "unmute"])("waits for fresh raw idle and renewed stale output during resume %s", async phase => {
+    const queue = new PlaybackQueue(1000);
+    const audio = Object.assign(createFakeAudio(), {
+      rawPlaybackActive: false,
+      onRemoteAudioSample: null as AudioController["onRemoteAudioSample"],
+      setNonInterrupting: vi.fn((enabled: boolean) => queue.setEnabled(enabled)),
+    });
+    Object.defineProperty(audio, "hasPendingPlayback", { get: () => queue.pending });
+    audio.setOutputAudible.mockImplementation(audible => {
+      audio.audioElement.muted = !audible;
+      queue.setAudible(audible);
+    });
+    const orientation = new FakeOrientation();
+    const { controller, live } = createController({ audio, orientation });
+    await startSourceTurn(controller, live, audio);
+    controller.setNonInterrupting(true);
+    queue.setSpeaking(true);
+    queue.process(new Float32Array(128).fill(.5));
+    expect(queue.pending).toBe(true);
+    const steeringCount = live.appendInstructions.mock.calls.length;
+    let release!: () => void;
+    if (phase === "steering") {
+      live.appendInstructions.mockImplementationOnce(() => new Promise(resolve => {
+        release = () => resolve({ eventId: "resume-steering" });
+      }));
+    } else {
+      live.setInputMuted.mockImplementation(async muted => {
+        if (!muted) await new Promise<void>(resolve => { release = resolve; });
+      });
+    }
+    orientation.emit("landscape");
+    await flushMicrotasks();
+    expect(queue.pending).toBe(false); // Gate C discarded PCM, but not the incoming response.
+    orientation.emit("portrait");
+    await flushLifecycle();
+    await vi.advanceTimersByTimeAsync(runtime.captionIdleMs);
+    expect(controller.session.state).toBe("suspended");
+    expect(live.appendInstructions.mock.calls.length).toBe(steeringCount);
+    expect(audio.audioElement.muted).toBe(true);
+    const incoming = (active: boolean) => {
+      audio.rawPlaybackActive = active;
+      audio.onRemoteAudioSample?.({ active, atMs: Date.now() });
+      emitPlayback(audio, active);
+    };
+    incoming(true);
+    expect(queue.process(Float32Array.of(.7))[0]).toBe(0);
+    incoming(false);
+    await waitUntil(() => release !== undefined);
+    incoming(true); // More stale audio arrives while steering/unmute is awaiting its acknowledgement.
+    release();
+    await flushLifecycle();
+    await vi.advanceTimersByTimeAsync(runtime.captionIdleMs);
+    expect(controller.session.state).toBe("suspended");
+    expect(audio.audioElement.muted).toBe(true);
+    expect(audio.captureTrack.enabled).toBe(false);
+    expect(queue.process(Float32Array.of(.8))[0]).toBe(0);
+    incoming(false);
+    await flushLifecycle();
+    expect(controller.session.state).toBe("listening");
+    expect(audio.audioElement.muted).toBe(false);
+    expect(queue.process(new Float32Array(128)).every(sample => sample === 0)).toBe(true);
   });
 
   it("does not open gates when hidden arrives before an in-flight resume commits", async () => {

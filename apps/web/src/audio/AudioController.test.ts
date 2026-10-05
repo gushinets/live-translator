@@ -655,6 +655,39 @@ describe("buffered audio output", () => {
       vi.useRealTimers();
     }
   });
+  it("reports raw audio samples independently of held playback and only from a running context", async () => {
+    vi.useFakeTimers();
+    const { controller, context } = setup();
+    try {
+      await controller.primeOutput();
+      controller.attachRemoteStream(fakeStream(new FakeAudioTrack()));
+      controller.setOutputAudible(true);
+      controller.setNonInterrupting(true);
+      const raw = vi.fn(), played = vi.fn();
+      controller.onRemoteAudioSample = raw;
+      controller.onPlaybackActivity = played;
+      context.analysers[0]!.fill(.2);
+      context.analysers[1]!.fill(0);
+      await vi.advanceTimersByTimeAsync(50);
+      expect(controller.rawPlaybackActive).toBe(true);
+      expect(raw).toHaveBeenLastCalledWith(expect.objectContaining({ active: true }));
+      expect(played).not.toHaveBeenCalled();
+      controller.setOutputAudible(false);
+      context.analysers[0]!.fill(0);
+      context.state = "suspended";
+      raw.mockClear();
+      await vi.advanceTimersByTimeAsync(600);
+      expect(raw).not.toHaveBeenCalled();
+      expect(controller.rawPlaybackActive).toBe(true);
+      await controller.primeOutput();
+      await vi.advanceTimersByTimeAsync(100);
+      expect(controller.rawPlaybackActive).toBe(false);
+      expect(raw).toHaveBeenLastCalledWith(expect.objectContaining({ active: false }));
+      expect(raw).toHaveBeenCalledTimes(2); // Fresh idle is reported even without another activity edge.
+      controller.detachRemoteStream();
+      expect(controller.rawPlaybackActive).toBeUndefined();
+    } finally { controller.dispose(); vi.useRealTimers(); }
+  });
   it("fails closed when the worklet fails instead of switching to overlapping speech", async () => {
     const { controller, nodes, element } = setup();
     await controller.primeOutput();
