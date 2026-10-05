@@ -4,8 +4,11 @@ import { VAM_ACTIVE_FLOOR } from "./VoiceActivityEstimator";
 /** PCM stays in memory for this media generation only. No transcript-based timing. */
 export class PlaybackQueue {
   onPlaybackTurn: ((turnId: string | undefined, active: boolean) => void) | null = null;
-  private readonly owners: Array<{ turnId: string | undefined; count: number }> = [];
+  private readonly owners: Array<{ turnId: string | undefined; count: number; span: number }> = [];
   private inputTurnId: string | undefined;
+  private inputSpan = 0;
+  private lastIncomingSpan: number | undefined;
+  private incomingQuiet = 0;
   private playedTurnId: string | undefined;
   private playing = false;
   private playedQuiet = 0;
@@ -29,11 +32,17 @@ export class PlaybackQueue {
 
   get pending(): boolean { return this.count > 0; }
   setTurn(turnId: string | undefined): void {
-    // A first caption may arrive after PCM. Claim only the still-unowned prefix.
-    if (this.inputTurnId === undefined && turnId !== undefined) {
-      for (const owner of this.owners) if (owner.turnId === undefined) owner.turnId = turnId;
+    const pending = turnId === undefined ? undefined : this.owners.find(owner => owner.turnId === undefined);
+    if (pending) {
+      // Delayed captions claim one incoming span at a time, including later turns.
+      for (const owner of this.owners) if (owner.span === pending.span) owner.turnId = turnId;
+      if (pending.span === this.inputSpan) this.inputTurnId = turnId;
+      return;
     }
-    this.inputTurnId = turnId;
+    if (this.inputTurnId !== turnId) {
+      this.inputSpan++;
+      this.inputTurnId = turnId;
+    }
   }
   setEnabled(enabled: boolean): void { this.enabled = enabled; }
   setSpeaking(speaking: boolean): void {
@@ -49,7 +58,8 @@ export class PlaybackQueue {
     this.owners.length = 0;
     this.inputTurnId = this.playedTurnId = undefined;
     this.playing = false;
-    this.playedQuiet = 0;
+    this.playedQuiet = this.incomingQuiet = this.inputSpan = 0;
+    this.lastIncomingSpan = undefined;
   }
 
   process(input: Float32Array | undefined, output: Float32Array = new Float32Array(input?.length ?? 0)): Float32Array {
@@ -57,6 +67,8 @@ export class PlaybackQueue {
     if (!this.audible || this.failed) return output;
     for (let i = 0; i < output.length; i++) {
       const value = input?.[i] ?? 0;
+      const voiced = Math.abs(value) >= .0001;
+      this.observeIncoming(voiced);
       const held = this.enabled && (this.speaking || this.quiet < this.sampleRate * .3);
       if (!this.speaking) this.quiet++;
       if (!this.enabled && this.count === 0) {
@@ -73,7 +85,7 @@ export class PlaybackQueue {
         dequeued = true;
       }
       // Keep quiet phonemes around speech, but don't queue minutes of dead air.
-      if (Math.abs(value) >= .0001) {
+      if (voiced) {
         for (let n = this.prerollCount; n > 0; n--)
           this.push(this.preroll[(this.prerollWrite - n + this.preroll.length) % this.preroll.length]!);
         this.prerollCount = 0;
@@ -94,6 +106,20 @@ export class PlaybackQueue {
       if (!dequeued) this.observePlayed(0, undefined);
     }
     return output;
+  }
+
+  private observeIncoming(voiced: boolean): void {
+    if (voiced) {
+      this.incomingQuiet = 0;
+      this.lastIncomingSpan = this.inputSpan;
+    } else if (this.lastIncomingSpan !== undefined &&
+        ++this.incomingQuiet === Math.ceil(this.sampleRate * runtime.playbackIdleMs / 1000) &&
+        this.lastIncomingSpan === this.inputSpan) {
+      // Preserve this boundary before trimming the gap; a later caption must not inherit the old owner.
+      // ponytail: raw gaps delimit provisional spans; exact gapless audio-before-caption mapping needs provider turn IDs.
+      this.inputSpan++;
+      this.inputTurnId = undefined;
+    }
   }
 
   private shift(): number {
@@ -129,7 +155,7 @@ export class PlaybackQueue {
     this.samples[(this.read + this.count) % this.samples.length] = value;
     this.count++;
     const owner = this.owners.at(-1);
-    if (owner && owner.turnId === this.inputTurnId) owner.count++;
-    else this.owners.push({ turnId: this.inputTurnId, count: 1 });
+    if (owner && owner.span === this.inputSpan) owner.count++;
+    else this.owners.push({ turnId: this.inputTurnId, count: 1, span: this.inputSpan });
   }
 }

@@ -83,6 +83,37 @@ describe("PlaybackQueue", () => {
     q.setTurn("new"); q.process(Float32Array.of(.9));
     expect(played.mock.calls.filter(([, active]) => active).map(([turnId]) => turnId)).toEqual(["A", "B", "new"]);
   });
+  it.each([false, true])("reconciles later audio-before-caption spans, first caption also delayed=%s", firstDelayed => {
+    const q = new PlaybackQueue(1000);
+    const played = vi.fn();
+    q.onPlaybackTurn = played;
+    q.setAudible(true); q.setEnabled(true); q.setSpeaking(true);
+    if (!firstDelayed) q.setTurn("A");
+    q.process(new Float32Array(100).fill(.5));
+    q.process(new Float32Array(1000));
+    q.process(new Float32Array(100).fill(.7));
+    if (firstDelayed) q.setTurn("A");
+    q.setTurn("B");
+    q.setEnabled(false);
+    const output = q.process(new Float32Array(2000));
+    expect(output.filter(value => value > .1)).toEqual(Float32Array.from([
+      ...new Array(100).fill(.5), ...new Array(100).fill(.7),
+    ]));
+    expect(played.mock.calls.filter(([, active]) => active).map(([turnId]) => turnId)).toEqual(["A", "B"]);
+  });
+  it("retains a caption-first next owner across the remaining raw silence", () => {
+    const q = new PlaybackQueue(1000);
+    const played = vi.fn();
+    q.onPlaybackTurn = played;
+    q.setAudible(true); q.setEnabled(true); q.setSpeaking(true);
+    q.setTurn("A"); q.process(Float32Array.of(.5));
+    q.process(new Float32Array(100));
+    q.setTurn("B");
+    q.process(new Float32Array(1000));
+    q.process(Float32Array.of(.7));
+    q.setEnabled(false); q.process(new Float32Array(1000));
+    expect(played.mock.calls.filter(([, active]) => active).map(([turnId]) => turnId)).toEqual(["A", "B"]);
+  });
   it("reports the same owner again after a long pause or a held playback interval", () => {
     const q = new PlaybackQueue(1000);
     const played = vi.fn();
@@ -91,6 +122,7 @@ describe("PlaybackQueue", () => {
     q.process(Float32Array.of(.5));
     q.process(new Float32Array(500));
     expect(played).toHaveBeenLastCalledWith("A", false); // A one-sample phrase must still produce an idle edge.
+    q.setTurn("A"); // Same-turn caption continuation identifies the next incoming span.
     q.process(Float32Array.of(.6));
     q.setEnabled(true); q.setSpeaking(true);
     q.process(Float32Array.of(.7));

@@ -1718,7 +1718,9 @@ async function enterOutputtingTurn(
 }
 
 describe("SessionController turn engine", () => {
-  it.each([false, true])("retains both PCM owners through continuous playback, decoder pending=%s", async decoderPending => {
+  it.each([
+    [false, false], [false, true], [true, false], [true, true],
+  ] as const)("retains both PCM owners, decoder pending=%s, second caption delayed=%s", async (decoderPending, captionDelayed) => {
     const queue = new PlaybackQueue(1000);
     const audio = Object.assign(createFakeAudio(), {
       setNonInterrupting: vi.fn((enabled: boolean) => queue.setEnabled(enabled)),
@@ -1753,8 +1755,9 @@ describe("SessionController turn engine", () => {
     queue.process(new Float32Array(1000)); // The long incoming pause is trimmed below the playback idle threshold.
     live.emit({ type: "session.input_transcript.delta", delta: "The station is straight ahead.", start_ms: 1000, end_ms: 1500 });
     const b = controller.session.activeTurn!.id;
+    if (captionDelayed) queue.process(new Float32Array(128).fill(.7));
     live.emit({ type: "session.output_transcript.delta", delta: "Вокзал находится прямо впереди.", start_ms: 1600, end_ms: 1900 });
-    queue.process(new Float32Array(128).fill(.7));
+    if (!captionDelayed) queue.process(new Float32Array(128).fill(.7));
     emitVoice(audio, false);
     await flushMicrotasks();
     await vi.advanceTimersByTimeAsync(runtime.audioStartGraceMs + runtime.outputSettleGraceMs + 500);

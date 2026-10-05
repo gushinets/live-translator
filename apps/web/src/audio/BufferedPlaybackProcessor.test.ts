@@ -51,12 +51,15 @@ describe("buffered playback processor lifetime", () => {
     expect(processor.port.postMessage).toHaveBeenCalledWith({ type: "pending", value: false });
     expect(processor.port.close).not.toHaveBeenCalled();
   });
-  it("sends FIFO owner transitions and idle even for sub-sampler-length phrases", () => {
+  it.each([false, true])("sends FIFO owner transitions for short phrases, second caption delayed=%s", captionDelayed => {
     const processor = new ProcessorClass();
     const turn = (turnId: string) => processor.port.onmessage?.({ data: { type: "turn", turnId } } as MessageEvent);
     send(processor, "audible"); send(processor, "enabled"); send(processor, "speaking");
     turn("A"); processor.process([[Float32Array.of(.5)]], [[new Float32Array(1)]]);
-    turn("B"); processor.process([[Float32Array.of(.7)]], [[new Float32Array(1)]]);
+    processor.process([[new Float32Array(1000)]], [[new Float32Array(1000)]]);
+    if (!captionDelayed) turn("B");
+    processor.process([[Float32Array.of(.7)]], [[new Float32Array(1)]]);
+    if (captionDelayed) turn("B");
     expect(processor.port.postMessage.mock.calls.filter(([message]) => message.type === "turn")).toEqual([]);
     send(processor, "enabled", false);
     const output = new Float32Array(128);
