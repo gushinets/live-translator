@@ -32,7 +32,7 @@ document.querySelector("#start")!.addEventListener("click", async () => {
   controller.attachRemoteStream(remoteStream.stream);
   // Keep this automatic check silent on the host; measure the processed stream.
   controller.audioElement.volume = 0;
-  await controller.primeOutput();
+  await controller.playOutput();
   controller.setOutputAudible(true);
   const analyser = context.createAnalyser();
   function connectMeter() {
@@ -71,7 +71,7 @@ document.querySelector("#start")!.addEventListener("click", async () => {
       await sender.setRemoteDescription(await gather(receiver, await receiver.createAnswer()));
       controller.attachRemoteStream(await received);
       connectMeter();
-      await controller.primeOutput();
+      await controller.playOutput();
     },
     async receivedSamples() {
       const stats = await rtcReceiver!.getStats();
@@ -82,7 +82,7 @@ document.querySelector("#start")!.addEventListener("click", async () => {
     replaceRemote() {
       controller.attachRemoteStream(remoteStream.stream);
       connectMeter();
-      void controller.primeOutput();
+      void controller.playOutput();
     },
   };
   controller.onPlaybackBufferError = () => { window.audioHarness.errors++; };

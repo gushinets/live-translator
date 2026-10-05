@@ -10,9 +10,17 @@ class BufferedPlaybackProcessor extends AudioWorkletProcessor {
   private readonly queue = new PlaybackQueue(sampleRate);
   private pending = false;
   private failed = false;
+  private disposed = false;
   constructor() {
     super();
     this.port.onmessage = ({ data }: MessageEvent<{ type: string; value: boolean }>) => {
+      if (data.type === "dispose") {
+        this.disposed = true;
+        this.queue.clear();
+        this.port.onmessage = null;
+        this.port.close();
+        return;
+      }
       if (data.type === "enabled") this.queue.setEnabled(data.value);
       if (data.type === "speaking") this.queue.setSpeaking(data.value);
       if (data.type === "audible") this.queue.setAudible(data.value);
@@ -27,6 +35,7 @@ class BufferedPlaybackProcessor extends AudioWorkletProcessor {
   }
   process(inputs: Float32Array[][], outputs: Float32Array[][]): boolean {
     const output = outputs[0]?.[0];
+    if (this.disposed) { output?.fill(0); return false; }
     if (!output) return true;
     const input = inputs[0]?.[0];
     if (!input || this.failed) { output.fill(0); return true; }

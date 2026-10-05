@@ -824,6 +824,35 @@ describe("SessionController", () => {
     expect(controller.session.state).toBe("context");
   });
 
+  it("keeps remote playback pending until the decoder and audible path are both ready", async () => {
+    const audio = Object.assign(createFakeAudio(), { playOutput: vi.fn() });
+    let ready!: () => void;
+    audio.playOutput.mockImplementationOnce(() => new Promise<void>(resolve => { ready = resolve; }));
+    const { controller, live } = createController({ audio });
+    controller.handleRemoteStream(fakeRemoteStream("remote"), live as unknown as LiveClient);
+    expect(audio.playOutput).toHaveBeenCalledOnce();
+    expect((controller as unknown as { remotePlaybackState: string }).remotePlaybackState).toBe("pending");
+    ready(); await flushMicrotasks();
+    expect((controller as unknown as { remotePlaybackState: string }).remotePlaybackState).toBe("ready");
+  });
+  it.each(["cancel", "endConversation"] as const)("detaches remote playback on %s", async action => {
+    const audio = Object.assign(createFakeAudio(), { detachRemoteStream: vi.fn() });
+    const { controller, live } = createController({ audio });
+    await controller.startWithLanguages({ A: "en", B: "es" });
+    controller.handleRemoteStream(fakeRemoteStream("remote"), live as unknown as LiveClient);
+    await controller[action]();
+    expect(audio.detachRemoteStream).toHaveBeenCalled();
+    expect(controller.session.state).toBe("idle");
+  });
+  it("keeps remote media for draining during temporary orientation suspension", async () => {
+    const audio = Object.assign(createFakeAudio(), { detachRemoteStream: vi.fn() });
+    const { controller, orientation } = createController({ audio });
+    await controller.startWithLanguages({ A: "en", B: "es" });
+    orientation.emit("landscape"); await flushMicrotasks();
+    expect(controller.session.state).toBe("suspended");
+    expect(audio.detachRemoteStream).not.toHaveBeenCalled();
+    await controller.endConversation();
+  });
   it("plays the primed remote audio element when the stream attaches", async () => {
     const { controller, audio } = createController();
     const remoteStream = fakeRemoteStream("remote");

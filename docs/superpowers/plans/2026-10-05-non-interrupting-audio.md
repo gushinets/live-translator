@@ -75,3 +75,12 @@ then repeat the phone test before opening the new PR.
 - Actual Pixel 7a: visible setup-screen with dark CSS, secure context, microphone API and AudioWorklet available, /api/policy HTTP 200. Loaded index-DwYza0XD.js and index-DZp80mOV.css, matching the merged build. Screenshot/readiness: .data/pr32-merge-phone.png and .data/pr32-merge-phone.json.
 - Existing API health is ok and read-only OpenAI models.list returned 200 with gpt-live-1 visible. Preview remains isolated on host 5185, phone USB reverse 5173 -> 5185. No paid session started; real speech testing remains with the user.
 - Kept local branch/worktree; no push or new PR yet.
+
+
+## PR #33 review corrections
+- Wired `test:audio` into the Chromium CI job, including failure artifacts.
+- Added `AudioController.playOutput()` and used it in both remote-stream startup and the browser harness. The original decoder must resolve before processed playback is ready; a retired decoder cannot start a replacement stream.
+- Added `detachRemoteStream()` to retire the decoder, worklet/destination, cloned remote track and analysers. Session terminal/retirement paths invoke it; temporary orientation suspension preserves media for draining. The primed AudioContext can be reused without playing the previous conversation's stream.
+- Stream replacement/terminal detachment sends an explicit worklet dispose message and closes the main-thread port. The processor clears its queue, closes its port, and returns false, including without inputs/outputs. Ordinary silence, clear and temporary muting keep it alive.
+- Regression RED: eight failures confirmed the review issues. The targeted GREEN run passed 280 tests, including processor lifetime, decoder refusal, pending startup retirement and End/Cancel cleanup.
+- Full unit/integration run: 1410 tests across 62 files passed. Typecheck, lint and production build passed. The four real Chromium audio/WebRTC scenarios pass using the same startup method as production. Logs: .data/pr33-review-red.log, .data/pr33-review-green.log, .data/pr33-review-all-unit.log, .data/pr33-review-audio.log, .data/pr33-review-e2e.log.

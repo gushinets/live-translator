@@ -318,6 +318,8 @@ export class AudioController {
       this.remoteDecoder = null;
     }
     if (this.playbackNode) {
+      this.playbackNode.port.postMessage({ type: "dispose" });
+      this.playbackNode.port.close();
       this.playbackNode.port.onmessage = null;
       this.playbackNode.onprocessorerror = null;
       this.playbackNode.disconnect();
@@ -362,11 +364,22 @@ export class AudioController {
     this.audioElement.srcObject = this.playbackDestination.stream;
   }
 
-  attachRemoteStream(stream: MediaStream): void {
+  /** Retire remote resources while keeping the primed context for a new conversation. */
+  detachRemoteStream(): void {
     this.releasePlayback();
-    // Recreate the media pipeline after Android backgrounding or a replaced WebRTC stream.
     this.remoteSource?.disconnect();
     stopTracks(this.remoteAnalysisStream);
+    this.remoteSource = null;
+    this.remoteAnalyser = null;
+    this.remoteAnalysisStream = null;
+    this.audioElement.pause();
+    this.audioElement.srcObject = null;
+    this.syncSampler();
+  }
+
+  attachRemoteStream(stream: MediaStream): void {
+    // Recreate the media pipeline after Android backgrounding or a replaced WebRTC stream.
+    this.detachRemoteStream();
     const context = this.ensureAudioContext();
     const analysisStream = cloneStream(stream);
     this.remoteAnalysisStream = analysisStream;
@@ -396,29 +409,30 @@ export class AudioController {
     const context = this.ensureAudioContext();
     await context.resume();
     await this.preparePlayback();
-    if (this.remoteDecoder) {
-      if (this.remoteDecoder.error !== null) this.remoteDecoder.load();
-      await this.remoteDecoder.play();
+    await this.playOutput();
+  }
+
+  async playOutput(): Promise<void> {
+    const decoder = this.remoteDecoder;
+    const stream = this.audioElement.srcObject;
+    if (decoder) {
+      if (decoder.error !== null) decoder.load();
+      await decoder.play();
+      if (decoder !== this.remoteDecoder || stream !== this.audioElement.srcObject) return;
     }
-    if (this.audioElement.srcObject !== null) {
+    if (stream !== null) {
       if (this.audioElement.error !== null) this.audioElement.load();
       await this.audioElement.play();
     }
   }
 
   dispose(): void {
-    this.releasePlayback();
+    this.detachRemoteStream();
     this.workletReady = false;
     this.workletPreparation = null;
     if (this.captureTrack !== null) {
       this.stopCapture();
     }
-    this.remoteSource?.disconnect();
-    stopTracks(this.remoteAnalysisStream);
-    this.remoteSource = null;
-    this.remoteAnalyser = null;
-    this.remoteAnalysisStream = null;
-    this.audioElement.srcObject = null;
     this.stopSampler();
     if (this.audioContext !== null) {
       const context = this.audioContext;

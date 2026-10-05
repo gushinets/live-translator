@@ -116,6 +116,7 @@ describe("AudioController", () => {
     audioElement = document.createElement("audio");
     audioElement.play = vi.fn().mockResolvedValue(undefined);
     audioElement.load = vi.fn();
+    audioElement.pause = vi.fn();
     getUserMedia = vi.fn(async () => fakeStream(track));
     nowMs = 0;
     controller = new AudioController({
@@ -438,19 +439,20 @@ describe("buffered audio output", () => {
   function setup() {
     const context = new FakeAudioContext();
     const destinationStream = fakeStream(new FakeAudioTrack());
-    const nodes: Array<FakeAudioNode & { port: { postMessage: ReturnType<typeof vi.fn>; onmessage: ((event: MessageEvent) => void) | null }; onprocessorerror: (() => void) | null }> = [];
+    const nodes: Array<FakeAudioNode & { port: { postMessage: ReturnType<typeof vi.fn>; close: ReturnType<typeof vi.fn>; onmessage: ((event: MessageEvent) => void) | null }; onprocessorerror: (() => void) | null }> = [];
     Object.assign(context, {
       audioWorklet: { addModule: vi.fn(async () => {}) },
       createMediaStreamDestination: () => ({ stream: destinationStream }),
     });
     const element = document.createElement("audio");
-    element.load = vi.fn(); element.play = vi.fn(async () => {});
+    element.srcObject = null;
+    element.load = vi.fn(); element.play = vi.fn(async () => {}); element.pause = vi.fn();
     const controller = new AudioController({
       audioElement: element, createAudioContext: () => context as unknown as AudioContext,
       getUserMedia: async () => fakeStream(new FakeAudioTrack()),
       createPlaybackNode: () => {
         const node = Object.assign(new FakeAudioNode(), {
-          port: { postMessage: vi.fn(), onmessage: null as ((event: MessageEvent) => void) | null },
+          port: { postMessage: vi.fn(), close: vi.fn(), onmessage: null as ((event: MessageEvent) => void) | null },
           onprocessorerror: null as (() => void) | null,
         });
         nodes.push(node);
@@ -459,6 +461,73 @@ describe("buffered audio output", () => {
     });
     return { context, controller, element, nodes, destinationStream };
   }
+  it("awaits original decoder playback before declaring processed playback ready", async () => {
+    const { controller, element } = setup();
+    await controller.primeOutput();
+    controller.attachRemoteStream(fakeStream(new FakeAudioTrack()));
+    let ready!: () => void;
+    vi.mocked(HTMLMediaElement.prototype.play).mockImplementationOnce(() => new Promise<void>(resolve => { ready = resolve; }));
+    const playback = controller.playOutput();
+    expect(element.play).not.toHaveBeenCalled();
+    ready();
+    await playback;
+    expect(element.play).toHaveBeenCalledOnce();
+    controller.dispose();
+  });
+  it("does not play a replacement stream from a retired decoder's pending startup", async () => {
+    const { controller, element } = setup();
+    await controller.primeOutput();
+    controller.attachRemoteStream(fakeStream(new FakeAudioTrack()));
+    let ready!: () => void;
+    vi.mocked(HTMLMediaElement.prototype.play).mockImplementationOnce(() => new Promise<void>(resolve => { ready = resolve; }));
+    const stalePlayback = controller.playOutput();
+    controller.attachRemoteStream(fakeStream(new FakeAudioTrack()));
+    ready(); await stalePlayback;
+    expect(element.play).not.toHaveBeenCalled();
+    await controller.playOutput();
+    expect(element.play).toHaveBeenCalledOnce();
+    controller.dispose();
+  });
+  it("rejects decoder startup failure before audible playback starts", async () => {
+    const { controller, element } = setup();
+    await controller.primeOutput();
+    controller.attachRemoteStream(fakeStream(new FakeAudioTrack()));
+    vi.mocked(HTMLMediaElement.prototype.play).mockRejectedValueOnce(new Error("Decoder refused"));
+    await expect(controller.playOutput()).rejects.toThrow("Decoder refused");
+    expect(element.play).not.toHaveBeenCalled();
+    controller.dispose();
+  });
+  it("detaches terminal media, stops sampling and never primes a stale decoder in the next conversation", async () => {
+    vi.useFakeTimers();
+    const { controller, element, context, nodes, destinationStream } = setup();
+    try {
+      await controller.primeOutput();
+      controller.attachRemoteStream(fakeStream(new FakeAudioTrack()));
+      await controller.primeOutput();
+      const decoder = vi.mocked(HTMLMediaElement.prototype.play).mock.contexts[0] as HTMLMediaElement;
+      controller.detachRemoteStream();
+      expect(decoder.srcObject).toBeNull();
+      expect(element.srcObject).toBeNull();
+      expect(context.sources[0]!.connections).toEqual([]);
+      expect(destinationStream.getAudioTracks()[0]!.readyState).toBe("ended");
+      expect(nodes[0]!.port.postMessage).toHaveBeenCalledWith({ type: "dispose" });
+      expect(nodes[0]!.port.close).toHaveBeenCalledOnce();
+      expect(vi.getTimerCount()).toBe(0);
+      await controller.primeOutput();
+      expect(HTMLMediaElement.prototype.play).toHaveBeenCalledOnce();
+      expect(element.play).toHaveBeenCalledOnce();
+    } finally { controller.dispose(); vi.useRealTimers(); }
+  });
+  it("terminates a retired worklet on stream replacement", async () => {
+    const { controller, nodes } = setup();
+    await controller.primeOutput();
+    controller.attachRemoteStream(fakeStream(new FakeAudioTrack()));
+    controller.attachRemoteStream(fakeStream(new FakeAudioTrack()));
+    expect(nodes[0]!.port.postMessage).toHaveBeenCalledWith({ type: "dispose" });
+    expect(nodes[0]!.port.close).toHaveBeenCalledOnce();
+    expect(nodes[1]!.port.close).not.toHaveBeenCalled();
+    controller.dispose();
+  });
   it("plays processed PCM through the primed element and analyses played audio", async () => {
     const { controller, element, context, nodes, destinationStream } = setup();
     await controller.primeOutput();

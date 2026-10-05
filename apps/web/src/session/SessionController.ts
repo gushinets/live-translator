@@ -71,6 +71,8 @@ export interface SessionControllerDeps {
     onSourceSample?: AudioController["onSourceSample"];
     meteringMediaReady?: boolean;
     setNonInterrupting?: AudioController["setNonInterrupting"];
+    playOutput?: AudioController["playOutput"];
+    detachRemoteStream?: AudioController["detachRemoteStream"];
     hasPendingPlayback?: boolean;
     onPlaybackBufferError?: AudioController["onPlaybackBufferError"];
     onVoiceActivity: AudioController["onVoiceActivity"];
@@ -701,8 +703,7 @@ export class SessionController {
       const playbackGeneration = ++this.remotePlaybackGeneration;
       this.remotePlaybackState = "pending";
       this.pendingRemotePlaybackActivity = null;
-      this.remotePlaybackWork = this.audio.audioElement
-      .play()
+      this.remotePlaybackWork = (this.audio.playOutput?.() ?? this.audio.audioElement.play())
       .then(() => {
         if (
           source !== this.live || this.sessionGeneration !== sessionGeneration ||
@@ -1262,6 +1263,7 @@ export class SessionController {
     if (this.audio.getCaptureStream() !== null) this.audio.setCaptureEnabled(false);
     this.audio.setOutputAudible(false);
     this.resetRemotePlaybackTracking();
+    this.audio.detachRemoteStream?.();
     this.audio.audioElement.srcObject = null;
     if (this.audio.getCaptureStream() !== null) this.audio.stopCapture();
   }
@@ -2033,6 +2035,7 @@ export class SessionController {
     this.audio.setOutputAudible(false);
     this.clearMaxSessionTimer();
     this.resetRemotePlaybackTracking();
+    this.audio.detachRemoteStream?.();
     this.audio.audioElement.srcObject = null;
 
     this.live = replacementLive;
@@ -2911,6 +2914,7 @@ export class SessionController {
     const preservedError =
       options.preserveOwnerError === true ? this.ownerErrorMessage : undefined;
     this.audio.setOutputAudible(false);
+    this.audio.detachRemoteStream?.();
     this.audio.audioElement.srcObject = null;
     this.hasConnected = false;
     this.backgroundPaused = false;
