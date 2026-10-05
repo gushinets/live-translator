@@ -602,3 +602,33 @@ it.each(["active", "pending"].flatMap(location => (["PLAYBACK_ENDED", "AUDIO_INT
   expect(screen.getByTestId("participant-status-B")).toHaveTextContent(location === "active" ? "Ожидание" : "Говорите");
   expect((controller.session.activeTurn ?? controller.session.pendingTurns![0])?.translatedText).toBe("Hola. Más.");
 });
+
+describe("non-interrupting playback switch", () => {
+  it("is off by default, switches both ways, and keeps streamed captions visible", () => {
+    const controller = Object.assign(new FakeConversationController(session({
+      activeTurn: turn({ id: "a", speaker: "A", translatedText: "Hello" }),
+    })), {
+      nonInterrupting: false,
+      setNonInterrupting(enabled: boolean) { this.nonInterrupting = enabled; controller.notify(); },
+    });
+    controller.captionBlocks = [{ id: "translation", kind: "output", side: "B", language: "en", text: "Hello", receivedAtMs: 1 }];
+    render(<ConversationScreen controller={controller} />);
+    const toggle = screen.getByRole("switch", { name: "Не перебивать" });
+    expect(toggle).toHaveAttribute("aria-checked", "false");
+    fireEvent.click(toggle);
+    expect(toggle).toHaveAttribute("aria-checked", "true");
+    expect(screen.getAllByText(/Hello/).length).toBeGreaterThan(0);
+    fireEvent.click(toggle);
+    expect(toggle).toHaveAttribute("aria-checked", "false");
+  });
+  it("disables mode changes when suspended or ending", () => {
+    const controller = Object.assign(new FakeConversationController(session({ state: "suspended" })), {
+      nonInterrupting: true, setNonInterrupting: vi.fn(),
+    });
+    const view = render(<ConversationScreen controller={controller} />);
+    expect(screen.getByRole("switch", { name: "Не перебивать" })).toBeDisabled();
+    controller.session = session({ state: "ending" });
+    view.rerender(<ConversationScreen controller={controller} />);
+    expect(screen.getByRole("switch", { name: "Не перебивать" })).toBeDisabled();
+  });
+});

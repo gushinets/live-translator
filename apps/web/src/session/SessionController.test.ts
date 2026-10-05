@@ -1,7 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { BackendClient } from "../api/BackendClient";
-import { AudioController } from "../audio/AudioController";
+import { AudioController, type AudioControllerOptions } from "../audio/AudioController";
 import { runtime } from "../config/runtime";
+import { PlaybackQueue } from "../audio/PlaybackQueue";
 import { AckTimeoutError } from "../live/AckRegistry";
 import { LiveClient } from "../live/LiveClient";
 import {
@@ -252,7 +253,8 @@ class DispatchableAudioContext extends EventTarget {
   }
 }
 
-function createDispatchableAudio(getUserMedia?: () => Promise<MediaStream>): {
+function createDispatchableAudio(getUserMedia?: () => Promise<MediaStream>,
+  createPlaybackNode?: AudioControllerOptions["createPlaybackNode"]): {
   audio: AudioController;
   track: DispatchableMicTrack;
   audioContext: DispatchableAudioContext;
@@ -275,7 +277,7 @@ function createDispatchableAudio(getUserMedia?: () => Promise<MediaStream>): {
         }),
       }) as unknown as MediaStream),
     createAudioContext: () => audioContext as unknown as AudioContext,
-    audioElement,
+    audioElement, createPlaybackNode,
   });
   return { audio, track, audioContext };
 }
@@ -326,6 +328,25 @@ function createController<
 }
 
 describe("SessionController", () => {
+  it("switches local playback without changing Live instructions, then resets at end", async () => {
+    const audio = Object.assign(createFakeAudio(), { setNonInterrupting: vi.fn() });
+    const { controller, live, orientation } = createController({ audio });
+    expect(controller.nonInterrupting).toBe(false);
+    await controller.startWithLanguages({ A: "ru", B: "es" });
+    const instructionCount = live.appendInstructions.mock.calls.length;
+    controller.setNonInterrupting(true);
+    expect(controller.nonInterrupting).toBe(true);
+    expect(audio.setNonInterrupting).toHaveBeenLastCalledWith(true);
+    expect(live.appendInstructions).toHaveBeenCalledTimes(instructionCount);
+    orientation.emit("landscape");
+    await flushMicrotasks();
+    controller.setNonInterrupting(false);
+    expect(controller.nonInterrupting).toBe(true);
+    await controller.endConversation();
+    expect(controller.nonInterrupting).toBe(false);
+    expect(audio.setNonInterrupting).toHaveBeenLastCalledWith(false);
+  });
+
   beforeEach(() => {
     setDeviceLanguage("ru-RU");
   });
@@ -805,6 +826,35 @@ describe("SessionController", () => {
     expect(controller.session.state).toBe("context");
   });
 
+  it("keeps remote playback pending until the decoder and audible path are both ready", async () => {
+    const audio = Object.assign(createFakeAudio(), { playOutput: vi.fn() });
+    let ready!: () => void;
+    audio.playOutput.mockImplementationOnce(() => new Promise<void>(resolve => { ready = resolve; }));
+    const { controller, live } = createController({ audio });
+    controller.handleRemoteStream(fakeRemoteStream("remote"), live as unknown as LiveClient);
+    expect(audio.playOutput).toHaveBeenCalledOnce();
+    expect((controller as unknown as { remotePlaybackState: string }).remotePlaybackState).toBe("pending");
+    ready(); await flushMicrotasks();
+    expect((controller as unknown as { remotePlaybackState: string }).remotePlaybackState).toBe("ready");
+  });
+  it.each(["cancel", "endConversation"] as const)("detaches remote playback on %s", async action => {
+    const audio = Object.assign(createFakeAudio(), { detachRemoteStream: vi.fn() });
+    const { controller, live } = createController({ audio });
+    await controller.startWithLanguages({ A: "en", B: "es" });
+    controller.handleRemoteStream(fakeRemoteStream("remote"), live as unknown as LiveClient);
+    await controller[action]();
+    expect(audio.detachRemoteStream).toHaveBeenCalled();
+    expect(controller.session.state).toBe("idle");
+  });
+  it("keeps remote media for draining during temporary orientation suspension", async () => {
+    const audio = Object.assign(createFakeAudio(), { detachRemoteStream: vi.fn() });
+    const { controller, orientation } = createController({ audio });
+    await controller.startWithLanguages({ A: "en", B: "es" });
+    orientation.emit("landscape"); await flushMicrotasks();
+    expect(controller.session.state).toBe("suspended");
+    expect(audio.detachRemoteStream).not.toHaveBeenCalled();
+    await controller.endConversation();
+  });
   it("plays the primed remote audio element when the stream attaches", async () => {
     const { controller, audio } = createController();
     const remoteStream = fakeRemoteStream("remote");
@@ -836,6 +886,108 @@ describe("SessionController", () => {
     expect(element.play).toHaveBeenCalledTimes(2);
     expect((controller as unknown as { remotePlaybackState: string }).remotePlaybackState).toBe("failed");
     expect(logged).toHaveBeenCalled();
+  });
+
+  it.each([false, true])("recovers a hidden decoder error and retires on a second error, non-interrupting=%s", async enabled => {
+    vi.spyOn(HTMLMediaElement.prototype, "play").mockResolvedValue(undefined);
+    vi.spyOn(HTMLMediaElement.prototype, "pause").mockImplementation(() => {});
+    vi.spyOn(HTMLMediaElement.prototype, "load").mockImplementation(() => {});
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    const node = Object.assign(new DispatchableAudioNode(), {
+      port: { postMessage: vi.fn(), close: vi.fn(), onmessage: null }, onprocessorerror: null,
+    });
+    const { audio, audioContext } = createDispatchableAudio(undefined, () => node as unknown as AudioWorkletNode);
+    Object.assign(audioContext, {
+      audioWorklet: { addModule: vi.fn(async () => {}) },
+      createMediaStreamDestination: () => ({ stream: audio.getCaptureStream()! }),
+    });
+    const { controller, live } = createController({ audio });
+    try {
+      await controller.startWithLanguages({ A: "ru", B: "en" });
+      controller.handleRemoteStream(audio.getCaptureStream()!, live as unknown as LiveClient);
+      await flushMicrotasks();
+      const readiness = () => (controller as unknown as { remotePlaybackState: string }).remotePlaybackState;
+      expect(readiness()).toBe("ready");
+      controller.setNonInterrupting(enabled);
+      const decoder = vi.mocked(HTMLMediaElement.prototype.play).mock.contexts[0] as HTMLAudioElement;
+      let error: MediaError | null = { code: 3 } as MediaError;
+      Object.defineProperty(decoder, "error", { configurable: true, get: () => error });
+      decoder.load = vi.fn(() => { error = null; });
+      decoder.dispatchEvent(new Event("error"));
+      await flushMicrotasks();
+      expect(decoder.load).toHaveBeenCalledOnce();
+      expect(HTMLMediaElement.prototype.play).toHaveBeenCalledTimes(2);
+      expect(readiness()).toBe("ready");
+      expect(live.disconnectImmediately).not.toHaveBeenCalled();
+      error = { code: 3 } as MediaError;
+      decoder.dispatchEvent(new Event("error"));
+      await vi.waitFor(() => expect(controller.session.state).toBe("idle"));
+      expect(live.disconnectImmediately).toHaveBeenCalledExactlyOnceWith("abandoned_connect");
+      expect(audio.audioElement.muted).toBe(true);
+      expect(decoder.onerror).toBeNull();
+      expect(audio.onPlaybackDecoderError).toBeNull();
+    } finally { await controller.cancel(); audio.dispose(); }
+  });
+
+  it.each(["unexpected-close", "mic-ended", "transport"])("records terminal %s as failure and releases the real buffered pipeline", async reason => {
+    vi.useFakeTimers();
+    vi.spyOn(HTMLMediaElement.prototype, "play").mockResolvedValue(undefined);
+    vi.spyOn(HTMLMediaElement.prototype, "pause").mockImplementation(() => {});
+    vi.spyOn(HTMLMediaElement.prototype, "load").mockImplementation(() => {});
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    const node = Object.assign(new DispatchableAudioNode(), {
+      port: { postMessage: vi.fn(), close: vi.fn(), onmessage: null as ((event: MessageEvent) => void) | null }, onprocessorerror: null,
+    });
+    const { audio, audioContext, track } = createDispatchableAudio(undefined, () => node as unknown as AudioWorkletNode);
+    Object.assign(audioContext, {
+      audioWorklet: { addModule: vi.fn(async () => {}) },
+      createMediaStreamDestination: () => ({ stream: audio.getCaptureStream()! }),
+    });
+    const { controller, live } = createController({ audio });
+    try {
+      await controller.startWithLanguages({ A: "ru", B: "en" });
+      controller.handleRemoteStream(audio.getCaptureStream()!, live as unknown as LiveClient);
+      await flushMicrotasks();
+      const decoder = vi.mocked(HTMLMediaElement.prototype.play).mock.contexts[0] as HTMLAudioElement;
+      emitVoice(audio, true);
+      const turnId = controller.session.activeTurn!.id;
+      // The sole source turn can own PCM before its caption; retirement must not forge an idle edge.
+      node.port.onmessage!({ data: { type: "turn", value: true } } as MessageEvent);
+      live.emit({ type: "session.input_transcript.delta", delta: "Подскажите, где находится вокзал?" });
+      live.emit({ type: "session.output_transcript.delta", delta: "Could you tell me where the train station is?" });
+      emitVoice(audio, false);
+      await vi.advanceTimersByTimeAsync(runtime.audioStartGraceMs + runtime.captionIdleMs);
+      expect(controller.session.activeTurn).toMatchObject({ id: turnId, audioOutputStarted: true,
+        translatedText: "Could you tell me where the train station is?" });
+      expect((controller as unknown as { playbackActive: boolean }).playbackActive).toBe(true);
+      expect(controller.metrics.snapshot().completedTurnCount).toBe(0);
+      const clearInterval = vi.spyOn(window, "clearInterval");
+      if (reason === "unexpected-close") live.emitSessionClosed("server_shutdown");
+      else if (reason === "mic-ended") track.end();
+      else live.onError?.({ type: "error", error: { message: "transport failed" }, transportFailure: true });
+      expect(controller.session.state).toBe("error");
+      expect(controller.session.activeTurn?.id).toBe(turnId);
+      expect(controller.session.activeTurn?.turnCompletedAtMs).toBeUndefined();
+      expect(controller.session.activeTurn?.playbackEndAtMs).toBeUndefined();
+      expect(controller.session.recentTurns.some(turn => turn.id === turnId && turn.status === "completed")).toBe(false);
+      expect(controller.metrics.snapshot()).toMatchObject({ completedTurnCount: 0, audioCompletedTurnCount: 0,
+        textOnlyCompletedTurnCount: 0, textOnlyCompletionCount: 0, failedTurnCount: 1 });
+      expect(controller.ownerError).toBe(reason === "mic-ended" ? MICROPHONE_CAPTURE_ENDED_MESSAGE : CONNECTION_ERROR_MESSAGE);
+      expect(audio.audioElement.muted).toBe(true);
+      expect(audio.audioElement.srcObject).toBeNull();
+      expect(audio.getCaptureStream()).toBeNull();
+      expect(decoder.srcObject).toBeNull();
+      expect(decoder.onerror).toBeNull();
+      expect(audio.onPlaybackDecoderError).toBeNull();
+      expect(node.port.postMessage).toHaveBeenCalledWith({ type: "dispose" });
+      expect(node.port.close).toHaveBeenCalledOnce();
+      expect(clearInterval).toHaveBeenCalledOnce();
+      expect(live.close).toHaveBeenCalledTimes(reason === "mic-ended" ? 1 : 0);
+      expect(live.disconnectImmediately).not.toHaveBeenCalled();
+      controller.handleRemoteStream(fakeRemoteStream("late-after-error"), live as unknown as LiveClient);
+      expect(audio.audioElement.srcObject).toBeNull();
+      expect(node.port.close).toHaveBeenCalledOnce();
+    } finally { await controller.cancel(); audio.dispose(); }
   });
 
   it("preserves playback ending while decoder recovery is pending", async () => {
@@ -1585,6 +1737,171 @@ async function enterOutputtingTurn(
 }
 
 describe("SessionController turn engine", () => {
+  it.each([false, true])("records a sole turn's fully played PCM before its first caption, draining=%s", async draining => {
+    const rate = 48000;
+    const queue = new PlaybackQueue(rate);
+    const audio = Object.assign(createFakeAudio(), { setPlaybackTurn: vi.fn((id: string | undefined) => queue.setTurn(id)) });
+    Object.defineProperty(audio, "hasPendingPlayback", { get: () => queue.pending });
+    audio.setOutputAudible.mockImplementation(audible => {
+      audio.audioElement.muted = !audible;
+      queue.setAudible(audible);
+    });
+    const { controller, live } = createController({ audio });
+    await controller.startWithLanguages({ A: "ru", B: "en" });
+    queue.setEnabled(draining); queue.setSpeaking(false);
+    if (draining) queue.process(new Float32Array(rate * .3));
+    emitVoice(audio, true);
+    live.emit({ type: "session.input_transcript.delta", delta: "Подскажите, где находится вокзал?" });
+    const id = controller.session.activeTurn!.id;
+    emitVoice(audio, false);
+    const origin = Date.now();
+    let position = 0;
+    const edges: Array<{ active: boolean; atMs: number; position: number }> = [];
+    queue.onPlaybackTurn = (turnId, active) => {
+      const event = { active, atMs: origin + Math.floor(position * 1000 / rate), turnId, owned: true };
+      edges.push({ ...event, position });
+      audio.onPlaybackActivity?.(event);
+    };
+    const input = new Float32Array(1), output = new Float32Array(1);
+    const played: number[] = [];
+    // Clock the actual queue one sample at a time, including its complete played-idle interval.
+    for (; position < rate * .8; position++) {
+      input[0] = position < 4800 ? .5 : 0;
+      queue.process(input, output);
+      if (output[0]! > .1) played.push(output[0]!);
+    }
+    expect(played).toEqual(new Array(4800).fill(.5));
+    expect(queue.pending).toBe(false);
+    expect(edges.map(edge => edge.active)).toEqual([true, false]);
+    expect(edges[0]!.atMs).toBe(origin + (draining ? 60 : 0));
+    expect(edges[1]!.position - edges[0]!.position).toBe(28799);
+    expect(edges[1]!.atMs - edges[0]!.atMs).toBe(599);
+    await vi.advanceTimersByTimeAsync(800);
+    const findTurn = () => [controller.session.activeTurn, ...(controller.session.pendingTurns ?? []),
+      ...controller.session.recentTurns].find(turn => turn?.id === id)!;
+    expect(findTurn()).toMatchObject({ audioOutputStarted: true, firstAudibleOutputAtMs: edges[0]!.atMs,
+      playbackEndAtMs: edges[1]!.atMs });
+    live.emit({ type: "session.output_transcript.delta", delta: "Where is the train station?" });
+    await vi.advanceTimersByTimeAsync(runtime.outputSettleGraceMs + runtime.captionIdleMs);
+    expect(findTurn()).toMatchObject({ status: "completed", translatedText: "Where is the train station?",
+      audioOutputStarted: true, firstAudibleOutputAtMs: edges[0]!.atMs, playbackEndAtMs: edges[1]!.atMs });
+    expect(controller.metrics.snapshot()).toMatchObject({ audioCompletedTurnCount: 1, textOnlyCompletedTurnCount: 0 });
+    await controller.endConversation();
+  });
+  it.each([
+    [false, false, 1000, false], [false, true, 1000, false],
+    [true, false, 1000, false], [true, true, 1000, false],
+    [false, true, 300, false], [true, true, 300, true],
+  ] as const)("preserves PCM without inventing delayed ownership, decoder pending=%s, second caption delayed=%s, gap=%s ms, first delayed=%s", async (decoderPending, captionDelayed, gapMs, firstDelayed) => {
+    const queue = new PlaybackQueue(1000);
+    const audio = Object.assign(createFakeAudio(), {
+      setNonInterrupting: vi.fn((enabled: boolean) => queue.setEnabled(enabled)),
+      setPlaybackTurn: vi.fn((turnId: string | undefined) => queue.setTurn(turnId)),
+      playOutput: vi.fn(async () => {}),
+    });
+    Object.defineProperty(audio, "hasPendingPlayback", { get: () => queue.pending });
+    audio.setOutputAudible.mockImplementation(audible => {
+      audio.audioElement.muted = !audible;
+      queue.setAudible(audible);
+    });
+    const played: string[] = [];
+    queue.onPlaybackTurn = (turnId, active) => {
+      if (turnId && active) played.push(turnId);
+      const event = { active, atMs: Date.now(), turnId, owned: true };
+      audio.onPlaybackActivity?.(event);
+    };
+    const { controller, live } = createController({ audio });
+    await controller.startWithLanguages({ A: "ru", B: "en" });
+    let ready!: () => void;
+    if (decoderPending) {
+      audio.playOutput.mockImplementationOnce(() => new Promise<void>(resolve => { ready = resolve; }));
+      controller.handleRemoteStream(fakeRemoteStream("remote"), live as unknown as LiveClient);
+    }
+    controller.setNonInterrupting(true);
+    queue.setSpeaking(true);
+    emitVoice(audio, true);
+    live.emit({ type: "session.input_transcript.delta", delta: "Подскажите, где находится вокзал?", start_ms: 0, end_ms: 500 });
+    const a = controller.session.activeTurn!.id;
+    if (!firstDelayed) live.emit({ type: "session.output_transcript.delta", delta: "Where is the train station?", start_ms: 600, end_ms: 900 });
+    queue.process(new Float32Array(128).fill(.5));
+    queue.process(new Float32Array(gapMs)); // A gap alone cannot identify the next PCM owner.
+    live.emit({ type: "session.input_transcript.delta", delta: "The station is straight ahead.", start_ms: 1000, end_ms: 1500 });
+    const b = controller.session.activeTurn!.id;
+    if (captionDelayed) queue.process(new Float32Array(128).fill(.7));
+    if (firstDelayed) live.emit({ type: "session.output_transcript.delta", delta: "Where is the train station?", start_ms: 600, end_ms: 900 });
+    live.emit({ type: "session.output_transcript.delta", delta: " Please show me the way.", start_ms: 910, end_ms: 980 });
+    live.emit({ type: "session.output_transcript.delta", delta: "Вокзал находится прямо впереди.", start_ms: 1600, end_ms: 1900 });
+    if (!captionDelayed) queue.process(new Float32Array(128).fill(.7));
+    emitVoice(audio, false);
+    await flushMicrotasks();
+    await vi.advanceTimersByTimeAsync(runtime.audioStartGraceMs + runtime.outputSettleGraceMs + 500);
+    expect(controller.session.pendingTurns?.map(turn => turn.id)).toContain(a);
+    expect(controller.session.activeTurn?.id).toBe(b);
+    expect(controller.captionBlocks.map(block => block.text).join(" ")).toContain("Вокзал находится прямо впереди.");
+    queue.setSpeaking(false);
+    queue.process(new Float32Array(300));
+    const output = queue.process(new Float32Array(1000));
+    expect(output.filter(sample => sample > .1)).toEqual(Float32Array.from([
+      ...new Array(128).fill(.5), ...new Array(128).fill(.7),
+    ]));
+    expect(played).toEqual(captionDelayed ? [a] : [a, b]);
+    if (decoderPending) {
+      expect(controller.session.activeTurn?.audioOutputStarted).toBe(false);
+      ready();
+      await flushMicrotasks();
+    }
+    const first = controller.session.pendingTurns!.find(turn => turn.id === a)!;
+    expect(first.audioOutputStarted).toBe(true);
+    expect(first.firstAudibleOutputAtMs).toBeDefined();
+    expect(first.playbackEndAtMs).toBeDefined(); // Explicit owner transition, without an idle edge between A and B.
+    expect(controller.session.activeTurn?.audioOutputStarted).toBe(!captionDelayed);
+    if (captionDelayed) {
+      expect(controller.session.activeTurn?.firstAudibleOutputAtMs).toBeUndefined();
+      expect(controller.session.activeTurn?.playbackEndAtMs).toBeUndefined();
+    } else {
+      expect(controller.session.activeTurn?.firstAudibleOutputAtMs).toBeGreaterThanOrEqual(first.playbackEndAtMs!);
+    }
+    emitPlayback(audio, false);
+    await vi.advanceTimersByTimeAsync(runtime.outputSettleGraceMs + 100);
+    expect(controller.session.activeTurn).toBeUndefined();
+    expect(controller.session.pendingTurns ?? []).toHaveLength(0);
+    for (const id of [a, b]) {
+      const turn = controller.session.recentTurns.find(turn => turn.id === id)!;
+      expect(turn.status).toBe("completed");
+      const attributed = id === a || !captionDelayed;
+      expect(turn.audioOutputStarted).toBe(attributed);
+      if (attributed) {
+        expect(turn.firstAudibleOutputAtMs).toBeDefined();
+        expect(turn.playbackEndAtMs).toBeDefined();
+      } else {
+        expect(turn.firstAudibleOutputAtMs).toBeUndefined();
+        expect(turn.playbackEndAtMs).toBeUndefined();
+      }
+    }
+    expect(controller.metrics.snapshot()).toMatchObject({
+      audioCompletedTurnCount: captionDelayed ? 1 : 2, textOnlyCompletedTurnCount: captionDelayed ? 1 : 0,
+    });
+    await controller.endConversation();
+  });
+  it("does not close a caption-only-looking turn while received audio is still queued", async () => {
+    vi.useFakeTimers();
+    const audio = Object.assign(createFakeAudio(), { hasPendingPlayback: true });
+    const { controller, live } = createController({ audio });
+    await controller.startWithLanguages({ A: "en", B: "es" });
+    emitVoice(audio, true);
+    live.emit({ type: "session.input_transcript.delta", delta: "Where is the station?" });
+    live.emit({ type: "session.output_transcript.delta", delta: "Dónde está la estación?" });
+    emitVoice(audio, false);
+    await flushMicrotasks();
+    await vi.advanceTimersByTimeAsync(runtime.audioStartGraceMs + runtime.outputSettleGraceMs + 500);
+    expect(controller.session.activeTurn).toBeDefined();
+    audio.hasPendingPlayback = false;
+    await vi.advanceTimersByTimeAsync(100);
+    expect(controller.session.activeTurn).toBeUndefined();
+    await controller.endConversation();
+    vi.useRealTimers();
+  });
+
   beforeEach(() => {
     setDeviceLanguage("ru-RU");
     vi.useFakeTimers();
@@ -3911,6 +4228,163 @@ describe("SessionController PWA lifecycle suspension (§11.3 / §19)", () => {
     expect(live.setInputMuted).toHaveBeenLastCalledWith(false);
   });
 
+  it.each([false, true])("retires owned playback on suspension when the RMS sampler stayed inactive, non-interrupting=%s", async enabled => {
+    vi.spyOn(HTMLMediaElement.prototype, "play").mockResolvedValue(undefined);
+    vi.spyOn(HTMLMediaElement.prototype, "pause").mockImplementation(() => {});
+    vi.spyOn(HTMLMediaElement.prototype, "load").mockImplementation(() => {});
+    const queue = new PlaybackQueue(48_000);
+    const node = Object.assign(new DispatchableAudioNode(), {
+      port: {
+        postMessage: vi.fn((data: { type: string; value?: boolean; turnId?: string }) => {
+          if (data.type === "audible") queue.setAudible(data.value === true);
+          if (data.type === "enabled") queue.setEnabled(data.value === true);
+          if (data.type === "speaking") queue.setSpeaking(data.value === true);
+          if (data.type === "turn") queue.setTurn(data.turnId);
+          if (data.type === "dispose") queue.clear();
+        }),
+        close: vi.fn(), onmessage: null as ((event: MessageEvent) => void) | null,
+      }, onprocessorerror: null,
+    });
+    queue.onPlaybackTurn = (turnId, active) => node.port.onmessage?.({
+      data: { type: "turn", turnId, value: active },
+    } as MessageEvent);
+    const { audio, audioContext } = createDispatchableAudio(undefined, () => node as unknown as AudioWorkletNode);
+    Object.assign(audioContext, {
+      audioWorklet: { addModule: vi.fn(async () => {}) },
+      createMediaStreamDestination: () => ({ stream: audio.getCaptureStream()! }),
+    });
+    const orientation = new FakeOrientation();
+    const { controller, live } = createController({ audio, orientation });
+    try {
+      await controller.startWithLanguages({ A: "en", B: "es" });
+      controller.handleRemoteStream(audio.getCaptureStream()!, live as unknown as LiveClient);
+      await flushMicrotasks();
+      controller.setNonInterrupting(enabled);
+      emitVoice(audio, true);
+      live.emit({ type: "session.input_transcript.delta", delta: "Where is the station?" });
+      live.emit({ type: "session.output_transcript.delta", delta: "Dónde está la estación?" });
+      emitVoice(audio, false);
+      queue.process(new Float32Array(14_400));
+      const quietSine = Float32Array.from({ length: 4_800 }, (_, index) => .018 * Math.sin(2 * Math.PI * 1000 * index / 48_000));
+      queue.process(quietSine);
+      expect(controller.session.activeTurn?.audioOutputStarted).toBe(true);
+      expect(audio.rawPlaybackActive).toBe(false); // Dispatchable analysers remain silent/inactive.
+      orientation.emit("landscape");
+      await flushMicrotasks();
+      expect((controller as unknown as { playbackActive: boolean }).playbackActive).toBe(false);
+      orientation.emit("portrait");
+      await flushLifecycle();
+      await vi.advanceTimersByTimeAsync(runtime.captionIdleMs - 1);
+      expect(controller.session.state).toBe("suspended");
+      await vi.advanceTimersByTimeAsync(1);
+      await flushLifecycle();
+      expect(controller.session.state).toBe("listening");
+      expect(audio.audioElement.muted).toBe(false);
+    } finally { await controller.cancel(); audio.dispose(); }
+  });
+
+  it("keeps fast resume gated until a fresh sample when the worklet pending message is still in flight", async () => {
+    const queue = new PlaybackQueue(1000);
+    const audio = Object.assign(createFakeAudio(), {
+      hasPendingPlayback: false, rawPlaybackActive: false,
+      onRemoteAudioSample: null as AudioController["onRemoteAudioSample"],
+      setNonInterrupting: vi.fn((enabled: boolean) => queue.setEnabled(enabled)),
+    });
+    audio.setOutputAudible.mockImplementation(audible => {
+      audio.audioElement.muted = !audible;
+      queue.setAudible(audible);
+    });
+    const orientation = new FakeOrientation();
+    const { controller, live } = createController({ audio, orientation });
+    await startSourceTurn(controller, live, audio);
+    controller.setNonInterrupting(true);
+    queue.setSpeaking(true);
+    queue.process(new Float32Array(128).fill(.5));
+    expect(queue.pending).toBe(true);
+    expect(audio.hasPendingPlayback).toBe(false); // Port message and first raw sample have not arrived.
+    orientation.emit("landscape");
+    await flushMicrotasks();
+    orientation.emit("portrait");
+    await flushLifecycle();
+    await vi.advanceTimersByTimeAsync(runtime.captionIdleMs);
+    expect(controller.session.state).toBe("suspended");
+    expect(audio.audioElement.muted).toBe(true);
+    audio.rawPlaybackActive = true;
+    audio.onRemoteAudioSample?.({ active: true, atMs: Date.now() });
+    expect(queue.process(Float32Array.of(.7))[0]).toBe(0);
+    expect(audio.captureTrack.enabled).toBe(false);
+    audio.rawPlaybackActive = false;
+    audio.onRemoteAudioSample?.({ active: false, atMs: Date.now() });
+    await flushLifecycle(); // Steering and unmute both acknowledge immediately.
+    expect(controller.session.state).toBe("listening");
+    expect(audio.audioElement.muted).toBe(false);
+    expect(queue.process(new Float32Array(128)).every(sample => sample === 0)).toBe(true);
+  });
+  it.each([
+    ["steering", true], ["unmute", true], ["steering", false], ["unmute", false],
+  ] as const)("waits for fresh raw idle during resume %s, pending message delivered=%s", async (phase, pendingDelivered) => {
+    const queue = new PlaybackQueue(1000);
+    const audio = Object.assign(createFakeAudio(), {
+      rawPlaybackActive: false,
+      onRemoteAudioSample: null as AudioController["onRemoteAudioSample"],
+      setNonInterrupting: vi.fn((enabled: boolean) => queue.setEnabled(enabled)),
+    });
+    Object.defineProperty(audio, "hasPendingPlayback", { get: () => pendingDelivered && queue.pending });
+    audio.setOutputAudible.mockImplementation(audible => {
+      audio.audioElement.muted = !audible;
+      queue.setAudible(audible);
+    });
+    const orientation = new FakeOrientation();
+    const { controller, live } = createController({ audio, orientation });
+    await startSourceTurn(controller, live, audio);
+    controller.setNonInterrupting(true);
+    queue.setSpeaking(true);
+    queue.process(new Float32Array(128).fill(.5));
+    expect(queue.pending).toBe(true);
+    const steeringCount = live.appendInstructions.mock.calls.length;
+    let release!: () => void;
+    if (phase === "steering") {
+      live.appendInstructions.mockImplementationOnce(() => new Promise(resolve => {
+        release = () => resolve({ eventId: "resume-steering" });
+      }));
+    } else {
+      live.setInputMuted.mockImplementation(async muted => {
+        if (!muted) await new Promise<void>(resolve => { release = resolve; });
+      });
+    }
+    orientation.emit("landscape");
+    await flushMicrotasks();
+    expect(queue.pending).toBe(false); // Gate C discarded PCM, but not the incoming response.
+    orientation.emit("portrait");
+    await flushLifecycle();
+    await vi.advanceTimersByTimeAsync(runtime.captionIdleMs);
+    expect(controller.session.state).toBe("suspended");
+    expect(live.appendInstructions.mock.calls.length).toBe(steeringCount);
+    expect(audio.audioElement.muted).toBe(true);
+    const incoming = (active: boolean) => {
+      audio.rawPlaybackActive = active;
+      audio.onRemoteAudioSample?.({ active, atMs: Date.now() });
+      emitPlayback(audio, active);
+    };
+    incoming(true);
+    expect(queue.process(Float32Array.of(.7))[0]).toBe(0);
+    incoming(false);
+    await waitUntil(() => release !== undefined);
+    incoming(true); // More stale audio arrives while steering/unmute is awaiting its acknowledgement.
+    release();
+    await flushLifecycle();
+    await vi.advanceTimersByTimeAsync(runtime.captionIdleMs);
+    expect(controller.session.state).toBe("suspended");
+    expect(audio.audioElement.muted).toBe(true);
+    expect(audio.captureTrack.enabled).toBe(false);
+    expect(queue.process(Float32Array.of(.8))[0]).toBe(0);
+    incoming(false);
+    await flushLifecycle();
+    expect(controller.session.state).toBe("listening");
+    expect(audio.audioElement.muted).toBe(false);
+    expect(queue.process(new Float32Array(128)).every(sample => sample === 0)).toBe(true);
+  });
+
   it("does not open gates when hidden arrives before an in-flight resume commits", async () => {
     const visibility = new FakeVisibility();
     const live = new FakeLive();
@@ -5093,7 +5567,7 @@ describe("PR32 pending-source ownership", () => {
     expect(controller.session.pendingTurns?.find(turn => turn.id === b)?.translatedText).toBe(
       timestamp === "late correction" ? "Я использую Каждый день я использую " : "Я использую ");
   });
-  it("keeps audio before B's caption unattributed when A is still pending", async () => {
+  it.each([false, true])("keeps audio before B's caption unattributed when A is still pending, owned=%s", async owned => {
     const { controller, live, audio } = createController();
     await controller.startWithLanguages({ A: "ru", B: "en" });
     emitVoice(audio, true);
@@ -5102,11 +5576,13 @@ describe("PR32 pending-source ownership", () => {
     live.emit({ type: "session.output_transcript.delta", delta: "Where is the train station?" });
     live.emit({ type: "session.input_transcript.delta", delta: "The station is straight ahead." });
     const b = controller.session.activeTurn!.id;
-    emitPlayback(audio, true);
+    const activity = { active: true, atMs: Date.now(), owned };
+    audio.onPlaybackActivity?.(activity);
     live.emit({ type: "session.output_transcript.delta", delta: "Вокзал находится прямо впереди." });
     emitVoice(audio, false);
     await vi.advanceTimersByTimeAsync(runtime.audioStartGraceMs + runtime.captionIdleMs);
     expect(controller.session.activeTurn?.id).toBe(b);
+    expect(controller.session.activeTurn?.audioOutputStarted).toBe(false);
     expect(controller.session.pendingTurns?.find(turn => turn.id === a)?.audioOutputStarted).toBe(false);
     expect(controller.session.pendingTurns?.find(turn => turn.id === a)?.firstAudibleOutputAtMs).toBeUndefined();
     emitPlayback(audio, false);

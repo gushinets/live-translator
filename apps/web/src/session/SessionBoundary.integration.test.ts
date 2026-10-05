@@ -2822,6 +2822,25 @@ describe("stage 5 hidden boundary", () => {
     expect(sessionStorage.getItem("live-translator-retained-conversation-v1")).toBe(f.c.conversationId);
     await f.budget.close();
   });
+  it("keeps the playback buffer failure visible when retirement leaves a pending End", async () => {
+    const f = fixture(40, true);
+    await f.controller.startContextCapture();
+    f.api.end.mockRejectedValue(new Error("offline"));
+    f.audio.onPlaybackBufferError!();
+    f.clients[0]!.peer.channel.emit({ type: "session.closed" });
+    await vi.waitFor(() => {
+      expect(f.controller.session.state).toBe("idle");
+      expect(f.controller.ownerError).toBe("Не удалось сохранить звук перевода. Начните новый разговор.");
+    });
+    expect(f.controller.retainedRecoveryState).toBe("pending_end");
+    const view = render(jsx(ContextScreen, { controller: f.controller as ContextScreenController }));
+    expect(view.container.querySelector(".error-overlay")).toHaveTextContent(f.controller.ownerError!);
+    expect(view.container.querySelector(".retained-recovery")).toHaveTextContent("Завершение не подтверждено");
+    expect(screen.getByRole("button", { name: "Повторить проверку" })).toBeEnabled();
+    expect(screen.queryByRole("button", { name: "Начать перевод" })).not.toBeInTheDocument();
+    await expect(f.controller.dispose()).rejects.toThrow();
+    await f.budget.close();
+  });
   it("blocks reload after a crash with a pending IDB End", async () => {
     const f = fixture(40, true);
     await f.controller.startContextCapture();
