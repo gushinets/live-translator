@@ -408,6 +408,28 @@ describe("AudioController", () => {
     expect(onPlaybackActivity).toHaveBeenCalledWith({ active: true, atMs: 50 });
   });
 
+  it.each(["end", "reconnect"])("starts a fresh playback activity edge after %s during active output", async boundary => {
+    vi.useFakeTimers();
+    const observed = vi.fn();
+    controller.onPlaybackActivity = observed;
+    controller.attachRemoteStream(fakeStream(new FakeAudioTrack()));
+    audioContext.analysers[0]!.fill(.08);
+    nowMs = 50;
+    await vi.advanceTimersByTimeAsync(50);
+    expect(observed).toHaveBeenCalledExactlyOnceWith({ active: true, atMs: 50 });
+    if (boundary === "end") {
+      controller.detachRemoteStream();
+      expect(vi.getTimerCount()).toBe(0);
+    }
+    controller.attachRemoteStream(fakeStream(new FakeAudioTrack()));
+    expect(observed).toHaveBeenCalledOnce(); // Retirement must not emit into the previous session.
+    audioContext.analysers[1]!.fill(.08);
+    nowMs = 100;
+    await vi.advanceTimersByTimeAsync(50);
+    expect(observed).toHaveBeenCalledTimes(2);
+    expect(observed).toHaveBeenLastCalledWith({ active: true, atMs: 100 });
+  });
+
   it("emits VAM activity events from microphone analyser energy", async () => {
     vi.useFakeTimers();
     const onVoiceActivity = vi.fn();
@@ -487,6 +509,34 @@ describe("buffered audio output", () => {
     await controller.playOutput();
     expect(element.play).toHaveBeenCalledOnce();
     controller.dispose();
+  });
+  it("forwards hidden decoder errors and removes retired decoder handlers", async () => {
+    const { controller } = setup();
+    try {
+      await controller.primeOutput();
+      controller.attachRemoteStream(fakeStream(new FakeAudioTrack()));
+      await controller.playOutput();
+      const decoder = vi.mocked(HTMLMediaElement.prototype.play).mock.contexts[0] as HTMLAudioElement;
+      const observed = vi.fn();
+      controller.onPlaybackDecoderError = observed;
+      const error = { code: 3 } as MediaError;
+      Object.defineProperty(decoder, "error", { configurable: true, value: error });
+      decoder.dispatchEvent(new Event("error"));
+      expect(observed).toHaveBeenCalledExactlyOnceWith(error);
+      const stale = decoder.onerror!;
+      controller.attachRemoteStream(fakeStream(new FakeAudioTrack()));
+      expect(decoder.onerror).toBeNull();
+      decoder.dispatchEvent(new Event("error"));
+      stale.call(decoder, new Event("error"));
+      expect(observed).toHaveBeenCalledOnce();
+      await controller.playOutput();
+      const replacement = vi.mocked(HTMLMediaElement.prototype.play).mock.contexts[1] as HTMLAudioElement;
+      Object.defineProperty(replacement, "error", { configurable: true, value: error });
+      replacement.dispatchEvent(new Event("error"));
+      expect(observed).toHaveBeenCalledTimes(2);
+      controller.detachRemoteStream();
+      expect(replacement.onerror).toBeNull();
+    } finally { controller.dispose(); }
   });
   it("rejects decoder startup failure before audible playback starts", async () => {
     const { controller, element } = setup();

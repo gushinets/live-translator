@@ -75,6 +75,7 @@ export interface SessionControllerDeps {
     detachRemoteStream?: AudioController["detachRemoteStream"];
     hasPendingPlayback?: boolean;
     onPlaybackBufferError?: AudioController["onPlaybackBufferError"];
+    onPlaybackDecoderError?: AudioController["onPlaybackDecoderError"];
     onVoiceActivity: AudioController["onVoiceActivity"];
     onPlaybackActivity: AudioController["onPlaybackActivity"];
     onAudioInterruption: AudioController["onAudioInterruption"];
@@ -733,10 +734,9 @@ export class SessionController {
         this.failRemotePlayback(source, sessionGeneration, playbackGeneration, error, recovered);
       });
     };
-    this.audio.audioElement.onerror = () => {
+    const handlePlaybackError = (error: MediaError | null) => {
       if (source !== this.live || this.sessionGeneration !== sessionGeneration || this.remotePlaybackTrack !== track ||
         (this.backgroundPaused && !this.retainedResumeInFlight) || this.remotePlaybackState === "failed") return;
-      const error = this.audio.audioElement.error;
       if (!error) return;
       if (error.code === 3 && !recovered) {
         recovered = true;
@@ -746,6 +746,8 @@ export class SessionController {
         this.failRemotePlayback(source, sessionGeneration, this.remotePlaybackGeneration, error);
       }
     };
+    this.audio.audioElement.onerror = () => handlePlaybackError(this.audio.audioElement.error);
+    this.audio.onPlaybackDecoderError = handlePlaybackError;
     startPlayback();
     this.remoteTrackArrived?.();
   }
@@ -785,6 +787,7 @@ export class SessionController {
 
   private resetRemotePlaybackTracking(): void {
     this.audio.audioElement.onerror = null;
+    this.audio.onPlaybackDecoderError = null;
     this.remoteTrackArrived?.();
     this.remoteTrackArrived = null;
     this.retainedPlaybackCommitted = false;

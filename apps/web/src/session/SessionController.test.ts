@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { BackendClient } from "../api/BackendClient";
-import { AudioController } from "../audio/AudioController";
+import { AudioController, type AudioControllerOptions } from "../audio/AudioController";
 import { runtime } from "../config/runtime";
 import { AckTimeoutError } from "../live/AckRegistry";
 import { LiveClient } from "../live/LiveClient";
@@ -252,7 +252,8 @@ class DispatchableAudioContext extends EventTarget {
   }
 }
 
-function createDispatchableAudio(getUserMedia?: () => Promise<MediaStream>): {
+function createDispatchableAudio(getUserMedia?: () => Promise<MediaStream>,
+  createPlaybackNode?: AudioControllerOptions["createPlaybackNode"]): {
   audio: AudioController;
   track: DispatchableMicTrack;
   audioContext: DispatchableAudioContext;
@@ -275,7 +276,7 @@ function createDispatchableAudio(getUserMedia?: () => Promise<MediaStream>): {
         }),
       }) as unknown as MediaStream),
     createAudioContext: () => audioContext as unknown as AudioContext,
-    audioElement,
+    audioElement, createPlaybackNode,
   });
   return { audio, track, audioContext };
 }
@@ -884,6 +885,47 @@ describe("SessionController", () => {
     expect(element.play).toHaveBeenCalledTimes(2);
     expect((controller as unknown as { remotePlaybackState: string }).remotePlaybackState).toBe("failed");
     expect(logged).toHaveBeenCalled();
+  });
+
+  it.each([false, true])("recovers a hidden decoder error and retires on a second error, non-interrupting=%s", async enabled => {
+    vi.spyOn(HTMLMediaElement.prototype, "play").mockResolvedValue(undefined);
+    vi.spyOn(HTMLMediaElement.prototype, "pause").mockImplementation(() => {});
+    vi.spyOn(HTMLMediaElement.prototype, "load").mockImplementation(() => {});
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    const node = Object.assign(new DispatchableAudioNode(), {
+      port: { postMessage: vi.fn(), close: vi.fn(), onmessage: null }, onprocessorerror: null,
+    });
+    const { audio, audioContext } = createDispatchableAudio(undefined, () => node as unknown as AudioWorkletNode);
+    Object.assign(audioContext, {
+      audioWorklet: { addModule: vi.fn(async () => {}) },
+      createMediaStreamDestination: () => ({ stream: audio.getCaptureStream()! }),
+    });
+    const { controller, live } = createController({ audio });
+    try {
+      await controller.startWithLanguages({ A: "ru", B: "en" });
+      controller.handleRemoteStream(audio.getCaptureStream()!, live as unknown as LiveClient);
+      await flushMicrotasks();
+      const readiness = () => (controller as unknown as { remotePlaybackState: string }).remotePlaybackState;
+      expect(readiness()).toBe("ready");
+      controller.setNonInterrupting(enabled);
+      const decoder = vi.mocked(HTMLMediaElement.prototype.play).mock.contexts[0] as HTMLAudioElement;
+      let error: MediaError | null = { code: 3 } as MediaError;
+      Object.defineProperty(decoder, "error", { configurable: true, get: () => error });
+      decoder.load = vi.fn(() => { error = null; });
+      decoder.dispatchEvent(new Event("error"));
+      await flushMicrotasks();
+      expect(decoder.load).toHaveBeenCalledOnce();
+      expect(HTMLMediaElement.prototype.play).toHaveBeenCalledTimes(2);
+      expect(readiness()).toBe("ready");
+      expect(live.disconnectImmediately).not.toHaveBeenCalled();
+      error = { code: 3 } as MediaError;
+      decoder.dispatchEvent(new Event("error"));
+      await vi.waitFor(() => expect(controller.session.state).toBe("idle"));
+      expect(live.disconnectImmediately).toHaveBeenCalledExactlyOnceWith("abandoned_connect");
+      expect(audio.audioElement.muted).toBe(true);
+      expect(decoder.onerror).toBeNull();
+      expect(audio.onPlaybackDecoderError).toBeNull();
+    } finally { await controller.cancel(); audio.dispose(); }
   });
 
   it("preserves playback ending while decoder recovery is pending", async () => {

@@ -252,6 +252,16 @@ describe("ContextScreen", () => {
     fireEvent.click(screen.getByRole("button", { name: "Повторить проверку" }));
     expect(controller.verifyRetainedConversation).toHaveBeenCalledOnce();
   });
+  it.each(["pending_end", "blocked"] as const)("shows the audio buffer failure alongside %s recovery", recovery => {
+    const controller = new FakeOwnerController();
+    controller.retainedRecoveryState = recovery;
+    controller.ownerError = "Не удалось сохранить звук перевода. Начните новый разговор.";
+    const view = render(<ContextScreen controller={controller} />);
+    expect(view.container.querySelector(".error-overlay")).toHaveTextContent(controller.ownerError);
+    expect(view.container.querySelector(".retained-recovery")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Повторить проверку" })).toBeEnabled();
+    expect(screen.queryByRole("button", { name: "Начать перевод" })).not.toBeInTheDocument();
+  });
   it("prevents competing End while a verification request is pending", () => {
     const controller = new FakeOwnerController();
     controller.retainedRecoveryState = "pending_end";

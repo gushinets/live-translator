@@ -32,11 +32,11 @@ export class PlaybackQueue {
     this.read = this.count = this.prerollWrite = this.prerollCount = this.tail = this.quiet = 0;
   }
 
-  process(input: Float32Array, output: Float32Array = new Float32Array(input.length)): Float32Array {
+  process(input: Float32Array | undefined, output: Float32Array = new Float32Array(input?.length ?? 0)): Float32Array {
     output.fill(0);
     if (!this.audible || this.failed) return output;
     for (let i = 0; i < output.length; i++) {
-      const value = input[i] ?? 0;
+      const value = input?.[i] ?? 0;
       const held = this.enabled && (this.speaking || this.quiet < this.sampleRate * .3);
       if (!this.speaking) this.quiet++;
       if (!this.enabled && this.count === 0) {

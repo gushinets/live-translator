@@ -38,7 +38,8 @@ class BufferedPlaybackProcessor extends AudioWorkletProcessor {
     if (this.disposed) { output?.fill(0); return false; }
     if (!output) return true;
     const input = inputs[0]?.[0];
-    if (!input || this.failed) { output.fill(0); return true; }
+    if (this.failed) { output.fill(0); return true; }
+    // A muted receiver may supply no channels; queued PCM still advances through silence.
     try { this.queue.process(input, output); }
     catch {
       output.fill(0);

@@ -75,6 +75,7 @@ export class AudioController {
   onAudioRestored: (() => void) | null = null;
   onCaptureEnded: (() => void) | null = null;
   onPlaybackBufferError: (() => void) | null = null;
+  onPlaybackDecoderError: ((error: MediaError) => void) | null = null;
 
   readonly audioElement: HTMLAudioElement;
 
@@ -313,6 +314,7 @@ export class AudioController {
 
   private releasePlayback(): void {
     if (this.remoteDecoder) {
+      this.remoteDecoder.onerror = null;
       this.remoteDecoder.pause();
       this.remoteDecoder.srcObject = null;
       this.remoteDecoder = null;
@@ -356,11 +358,16 @@ export class AudioController {
     node.connect(this.playbackDestination);
     // Chrome does not pull/decode remote WebRTC audio through the cloned Web Audio
     // source alone. Keep the original stream playing silently; only queued PCM is audible.
-    this.remoteDecoder = document.createElement("audio");
-    this.remoteDecoder.muted = this.remoteDecoder.defaultMuted = true;
-    this.remoteDecoder.volume = 0;
-    this.remoteDecoder.autoplay = true;
-    this.remoteDecoder.srcObject = remoteStream;
+    const decoder = document.createElement("audio");
+    this.remoteDecoder = decoder;
+    decoder.onerror = () => {
+      const error = decoder.error;
+      if (this.remoteDecoder === decoder && error) this.onPlaybackDecoderError?.(error);
+    };
+    decoder.muted = decoder.defaultMuted = true;
+    decoder.volume = 0;
+    decoder.autoplay = true;
+    decoder.srcObject = remoteStream;
     this.audioElement.srcObject = this.playbackDestination.stream;
   }
 
@@ -372,6 +379,7 @@ export class AudioController {
     this.remoteSource = null;
     this.remoteAnalyser = null;
     this.remoteAnalysisStream = null;
+    this.playbackDetector.reset();
     this.audioElement.pause();
     this.audioElement.srcObject = null;
     this.syncSampler();

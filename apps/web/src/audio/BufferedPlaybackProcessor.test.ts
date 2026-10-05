@@ -34,6 +34,23 @@ describe("buffered playback processor lifetime", () => {
     expect(processor.port.close).toHaveBeenCalledOnce();
     expect(processor.port.onmessage).toBeNull();
   });
+  it.each([false, true])("drains queued PCM without input channels, non-interrupting=%s", enabled => {
+    const processor = new ProcessorClass();
+    send(processor, "audible"); send(processor, "enabled"); send(processor, "speaking");
+    const output = new Float32Array(128);
+    processor.process([[new Float32Array(128).fill(.5)]], [[output]]);
+    expect(output.every(sample => sample === 0)).toBe(true);
+    expect(processor.port.postMessage).toHaveBeenLastCalledWith({ type: "pending", value: true });
+    send(processor, "speaking", false); send(processor, "enabled", enabled);
+    const played: number[] = [];
+    for (let quantum = 0; quantum < 100; quantum++) {
+      expect(processor.process([[]], [[output]])).toBe(true);
+      played.push(...output.filter(sample => sample !== 0));
+    }
+    expect(played).toEqual(new Array(128).fill(.5));
+    expect(processor.port.postMessage).toHaveBeenLastCalledWith({ type: "pending", value: false });
+    expect(processor.port.close).not.toHaveBeenCalled();
+  });
   it("stays alive during ordinary input silence and temporary muting", () => {
     const processor = new ProcessorClass();
     const output = new Float32Array(1);
