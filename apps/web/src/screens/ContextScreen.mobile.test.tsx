@@ -14,6 +14,7 @@ function idleSession(): TranslationSession {
 }
 
 class MobileUiController implements ContextScreenController {
+  readonly captionBlocks = [];
   session: TranslationSession = idleSession();
   inputReady = true;
   contextText = "";

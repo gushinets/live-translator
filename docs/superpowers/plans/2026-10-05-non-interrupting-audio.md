@@ -65,3 +65,13 @@ then repeat the phone test before opening the new PR.
 - Added a real RTCPeerConnection loopback regression: before the fix its processed output RMS remained zero; after the fix decoding, default streaming, buffering and release pass. Previous oscillator-only tests did not exercise Chromium's remote receiver decoder activation.
 - Verification: 1200 tests in 58 files passed, all 4 Chromium audio/browser tests passed, TypeScript, ESLint and production build passed. Logs: .data/decoder-all-tests.log, .data/webrtc-decoder-red.log, .data/webrtc-decoder-green.log, .data/decoder-types.log, .data/decoder-lint.log, .data/decoder-build.log.
 - Production preview now serves index-CQ0tDTMC.js. The current phone conversation still uses the temporary live diagnostic fix; reload after ending the conversation to load the permanent fix. The user was still listening with non-interrupting mode enabled at the final check, so no reload was forced.
+
+
+## Integration after PR #32 merge
+- User requested synchronization after PR #32 merged. Fetched origin/main at 4fe888d3b03f0d515dd7f21ed47f165e4c0fd163 and merged into codex/non-interrupting-audio without rebasing its feature commits.
+- Resolved two conflicts: UI snapshot now tracks both independent captions/recovery and playback mode; completion keeps PR32 multi-turn routing and waits while received PCM remains queued.
+- Added an integration test preserving both routed turns and immediate independent captions until buffered audio drains. Updated the UI fixture and real-audio harness for PR32's captionBlocks contract.
+- Verification: 1398 tests across 61 files passed; 57 existing browser scenarios passed with 3 platform skips, plus 4 Chromium real audio/WebRTC tests. Typecheck, lint and production build passed. Logs: .data/pr32-merge-unit-final.log, .data/pr32-merge-browser.log, .data/pr32-merge-audio.log.
+- Actual Pixel 7a: visible setup-screen with dark CSS, secure context, microphone API and AudioWorklet available, /api/policy HTTP 200. Loaded index-DwYza0XD.js and index-DZp80mOV.css, matching the merged build. Screenshot/readiness: .data/pr32-merge-phone.png and .data/pr32-merge-phone.json.
+- Existing API health is ok and read-only OpenAI models.list returned 200 with gpt-live-1 visible. Preview remains isolated on host 5185, phone USB reverse 5173 -> 5185. No paid session started; real speech testing remains with the user.
+- Kept local branch/worktree; no push or new PR yet.

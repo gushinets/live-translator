@@ -201,3 +201,29 @@ Automated unit/e2e coverage does **not** close these. All remain **NOT RUN** on 
 6. Keep this gate **OPEN** until those rows are evidence, not inference.
 
 **MVP acceptance: not claimed.**
+
+## Rapid language turns — 2026-10-03
+
+Implementation checks (2026-10-04): 1222 workspace tests in 58 files pass; API/web type checks and lint pass; web production build passes. The complete Chromium/WebKit suite passes 72 cases, with 3 existing skips for mismatched device browser descriptors. GPT-Live and audio are mocked; these checks do not exercise real speech or model latency. All 10 actionable findings from the fresh review have regression coverage and fixes.
+
+New local defaults: 450 ms quiet hysteresis plus 250 ms source-tail grace (about 700 ms, sampled every 50 ms); 200 ms output-settle grace. Source end never closes normal model input. Startup, explicit language replacement, pause and recovery retain their control commands. Timing remains provisional until phone testing.
+
+| Real-phone scenario | Expected behavior | Result |
+| --- | --- | --- |
+| A asks, B replies after 100–300 ms | Distinct source records, fixed-language authors; A's later translation stays authored by A | NOT RUN |
+| A pauses and continues while translation is pending | Same unfinished source record; no repeated control-command delay | NOT RUN |
+| B interrupts model speech | Model stops and listens; B's source is accepted; interrupted A audio is not counted as B's delivery | NOT RUN |
+| A → B → A before translations finish | Preserve each source; ambiguous same-author output stays an independently authored translation | NOT RUN |
+| Short reply, partial word, numbers or borrowed word | Wait for language evidence; preserve content, avoid guessing an author | NOT RUN |
+| Hide/rotate, then resume | Discard unfinished source/buffer state; preserve earlier history and the selected pair; no old-event replay | NOT RUN |
+| Queue a partner-language change while earlier output or partial text remains pending | Keep accepting speech under the current pair; preserve undecidable text before replacement; apply the new pair at a safe boundary | NOT RUN |
+
+For the final Android check, use the current production build in Vite preview at `http://localhost:5173` via USB reverse, following `AGENTS.md`. Do not use the development transport spike. At the time of this rapid-language-turns check, real-phone UI/API verification and these individual speech scenarios remained pending.
+
+Local smoke check after integration and dependency restoration (2026-10-04): primary production build passes; the restarted preview at port 5173 serves `/assets/index-YWAsGe2U.js`. API health is `ok`, startup log shows the listening server with an empty stderr log, and `/api/policy` returns HTTP 200. A clean desktop Chrome session at a 390×844 viewport shows `.setup-screen` with applied dark styling; secure context and microphone API are available, and proxy policy returns 200. Its fresh screenshot is saved under `output/rapid-language-turns-2026-10-04/production-setup-repaired.png`. A read-only SDK `models.list()` request with the API's Node runtime, `.env` and proxy configuration returns HTTP 200 and includes `gpt-live-1`; no paid session was opened.
+
+Archiving the managed worktree affected the shared dependency directories through junctions. Dependencies were restored from the local cache with `pnpm install --force --offline --frozen-lockfile`; the lockfile is unchanged. Fresh type checks, lint, production compilation and all 1222 workspace tests pass. The primary drive's existing default `D:\data\live-translator.sqlite` activates retained-ledger protection in legacy API tests; the test rerun used a separate unused `USAGE_DB_PATH`, without altering the running API's `.env`, ledger or recovery flags. A WebKit metadata-delivery test timed out in the first browser rerun, then passed alone and in the complete suite with four workers: 72 pass, 3 existing skips. Both local services were restarted and verified after restoration; policy confirms ledger and background recovery remain enabled. Fresh logs are retained alongside the earlier evidence.
+
+`adb devices -l` found no connected device for this rapid-language-turns check. Actual phone assets, service-worker cache, microphone capture, audible delivery and speech interruptions were not verified in that check. The restored primary API and preview remain running for the final user test. Automated logs are saved under `output/rapid-language-turns-2026-10-04/`.
+
+Later verification (2026-10-04): the separate [caption-blocks phone check](../superpowers/plans/2026-10-04-caption-blocks-prototype.md) verified the Pixel 7a UI, secure microphone context, API policy, activated worker and precached assets. The user subsequently reported successful speech testing of that caption mode and approved making it the default. This does not mark each individual rapid-turn/interruption scenario in the table above as run. The final [default-mode checks](../superpowers/plans/2026-10-04-default-dialogue-captions.md) were automated; the open phone conversation was not reloaded.

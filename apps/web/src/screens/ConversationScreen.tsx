@@ -7,13 +7,16 @@ import { deriveParticipantStatus } from "../components/ParticipantStatus";
 import type { LifecycleSuspendReason, RecoveryPrompt } from "../session/SessionController";
 import type { TranslationSession } from "../session/SessionState";
 import { translate, uiLocale } from "../i18n/messages";
+import type { DialogueBlock } from "../conversation/DialogueTranscript";
 
 export interface ConversationScreenController {
   readonly session: TranslationSession;
+  readonly captionBlocks: readonly DialogueBlock[];
   readonly inputReady: boolean;
   readonly nonInterrupting?: boolean;
   setNonInterrupting?(enabled: boolean): void;
   readonly recoveryPrompt?: RecoveryPrompt;
+  readonly recoveryPromptIsTurnFailure?: boolean;
   readonly ownerError?: string;
   readonly suspendReason?: LifecycleSuspendReason;
   readonly retainedRecoveryState?: RetainedRecoveryState;
@@ -26,7 +29,8 @@ export interface ConversationScreenController {
 
 function uiSnapshot(controller: ConversationScreenController): unknown[] {
   return [controller.session, controller.inputReady, controller.recoveryPrompt, controller.ownerError,
-    controller.suspendReason, controller.retainedRecoveryState, controller.nonInterrupting];
+    controller.suspendReason, controller.retainedRecoveryState, controller.nonInterrupting,
+    controller.captionBlocks, controller.recoveryPromptIsTurnFailure];
 }
 
 export function ConversationScreen({
@@ -53,6 +57,7 @@ export function ConversationScreen({
   }, [controller.retainedRecoveryState]);
 
   const session = controller.session;
+  const captions = controller.captionBlocks;
   const ownerLocale = uiLocale(session.participantA.language);
   const t = (text: string) => translate(text, ownerLocale);
   const ending = session.state === "ending";
@@ -62,7 +67,6 @@ export function ConversationScreen({
   const sourceActive = active !== undefined && active.sourceIdleAtMs === undefined;
   const hasOutputText = (active?.translatedText ?? "").length > 0;
   const audioOutputStarted = active?.audioOutputStarted === true;
-  const recentTurns = session.recentTurns;
   const terminalAlert =
     session.state === "error" || session.state === "ending"
       ? controller.ownerError === undefined ? undefined : t(controller.ownerError)
@@ -104,8 +108,7 @@ export function ConversationScreen({
         language={session.participantB.language}
         rotated
         status={statusB}
-        activeTurn={active}
-        recentTurns={recentTurns}
+        captions={captions.filter(block => block.side === "B")}
         alertText={terminalAlert}
         alertLanguage={ownerLocale}
       />
@@ -168,7 +171,7 @@ export function ConversationScreen({
             {t("Продолжить / повторить")}
           </button>
         ) : null}
-        {controller.recoveryPrompt === "repeat" ? <p>{t("Повторите")}</p> : null}
+        {controller.recoveryPrompt === "repeat" && !controller.recoveryPromptIsTurnFailure ? <p>{t("Повторите")}</p> : null}
         {controller.retainedRecoveryState === undefined && terminalAlert === undefined && controller.ownerError !== undefined ? (
           <ErrorOverlay message={controller.ownerError} language={ownerLocale} />
         ) : null}
@@ -178,8 +181,7 @@ export function ConversationScreen({
         language={session.participantA.language}
         rotated={false}
         status={statusA}
-        activeTurn={active}
-        recentTurns={recentTurns}
+        captions={captions.filter(block => block.side === "A")}
         alertText={terminalAlert}
         alertLanguage={ownerLocale}
       />

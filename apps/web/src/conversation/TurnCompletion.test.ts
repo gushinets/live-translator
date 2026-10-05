@@ -164,6 +164,23 @@ describe("evaluateTurnCompletion", () => {
 });
 
 describe("buildTurnCompletionSnapshot", () => {
+  it("settles finished playback after 200 ms while source and captions are already quiet", () => {
+    const turn = { ...createTurn({ id: "settled", speaker: "A", sideSource: "language", nowMs: 1000 }),
+      sourceIdleAtMs: 4000, translatedText: "Where is the station?", outputTextEndAtMs: 4000,
+      audioOutputStarted: true, firstAudibleOutputAtMs: 4200, playbackEndAtMs: 5000 };
+    const snapshot = buildTurnCompletionSnapshot({ turn, playbackActive: false, nowMs: 5200 });
+    expect(evaluateTurnCompletion(snapshot, 5199).kind).toBe("continue");
+    expect(evaluateTurnCompletion(snapshot, 5200).kind).toBe("complete");
+  });
+
+  it("uses caption completion after an interruption even if the playback monitor is still active", () => {
+    const turn = { ...createTurn({ id: "interrupted", speaker: "A", sideSource: "language", nowMs: 1000 }),
+      sourceIdleAtMs: 2000, translatedText: "Where is the station?", outputTextEndAtMs: 2300,
+      audioOutputStarted: true, audioOutputInterrupted: true, firstAudibleOutputAtMs: 2200, playbackEndAtMs: 2400 };
+    const snapshot = buildTurnCompletionSnapshot({ turn, playbackActive: true, nowMs: 3500 });
+    expect(snapshot.audioStarted).toBe(false);
+    expect(evaluateTurnCompletion(snapshot, 3500).kind).toBe("complete");
+  });
   it("derives caption idle from output-transcript inactivity, not missing input deltas", () => {
     const turn = {
       ...createTurn({ id: "t1", speaker: "A" as const, sideSource: "language" as const, nowMs: 1_000 }),

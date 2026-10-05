@@ -1,4 +1,4 @@
-import type { TranscriptFragment } from "./TranscriptFragment";
+import { orderTranscriptFragments, type TranscriptFragment } from "./TranscriptFragment";
 import type { Side, Turn } from "./Turn";
 
 export interface StartTurnParams {
@@ -54,10 +54,11 @@ export function appendSourceFragmentToTurn(turn: Turn, fragment: TranscriptFragm
   if (TERMINAL_STATUSES.has(turn.status)) {
     throw new Error(`Cannot append a source fragment to a turn with terminal status "${turn.status}".`);
   }
+  const sourceFragments = orderTranscriptFragments([...turn.sourceFragments, fragment]);
   return {
     ...turn,
-    sourceFragments: [...turn.sourceFragments, fragment],
-    originalText: `${turn.originalText}${fragment.text}`,
+    sourceFragments,
+    originalText: sourceFragments.map(part => part.text).join(""),
   };
 }
 

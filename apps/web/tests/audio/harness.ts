@@ -90,7 +90,7 @@ document.querySelector("#start")!.addEventListener("click", async () => {
   const uiController = {
     session: { ...createInitialSession({ side: "A", language: "ru", hasAcceptedConversationSpeech: true },
       { side: "B", language: "en", hasAcceptedConversationSpeech: true }), state: "listening" as const },
-    inputReady: true, nonInterrupting: false,
+    captionBlocks: [], inputReady: true, nonInterrupting: false,
     setNonInterrupting(enabled: boolean) {
       controller.setNonInterrupting(enabled);
       this.nonInterrupting = enabled;
