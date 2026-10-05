@@ -50,6 +50,59 @@ describe("PlaybackQueue", () => {
     expect(out.findIndex(v => v > .55)).toBeLessThan(400);
     expect(q.pending).toBe(false);
   });
+  it.each([1000, 48000])("drains decoder noise while preserving quiet speech and its edges at %s Hz", rate => {
+    const q = new PlaybackQueue(rate, rate * 2);
+    q.setAudible(true); q.setEnabled(true); q.setSpeaking(true);
+    const noise = new Float32Array(rate).fill(.0002);
+    for (let i = 0; i < 10; i++) q.process(noise);
+    expect(q.pending).toBe(false);
+    // Quiet speech is below the playback VAD floor; softer onset/tail must survive too.
+    const speech = Float32Array.from({ length: rate / 2 }, (_, i) => .004 * Math.sin(i * Math.PI / 4));
+    const edge = new Float32Array(rate * .03).fill(.0003);
+    q.process(edge); q.process(speech); q.process(edge);
+    q.process(noise);
+    q.setSpeaking(false);
+    const output = q.process(new Float32Array(rate * 2).fill(.0002));
+    const start = output.findIndex(value => Math.abs(value) > .001);
+    expect(output.slice(start - 1, start - 1 + speech.length)).toEqual(speech);
+    expect(output.slice(start - 1 - edge.length, start - 1)).toEqual(edge);
+    expect(output.slice(start - 1 + speech.length, start - 1 + speech.length + edge.length)).toEqual(edge);
+    expect(q.pending).toBe(false);
+    q.process(noise);
+    expect(q.pending).toBe(false);
+  });
+  it.each([false, true])("does not give a paused continuation to the next caption, buffered=%s", buffered => {
+    const q = new PlaybackQueue(1000);
+    q.setAudible(true); q.setEnabled(buffered); q.setSpeaking(true);
+    let owner: string | undefined;
+    let position = 0;
+    const starts: Array<[string | undefined, number]> = [];
+    const samples: number[] = [], owners: Array<string | undefined> = [];
+    q.onPlaybackTurn = (turnId, active) => {
+      if (active) { owner = turnId; starts.push([turnId, position]); }
+    };
+    const input = new Float32Array(1), output = new Float32Array(1);
+    const feed = (value: number, count: number) => {
+      input[0] = value;
+      for (let i = 0; i < count; i++, position++) {
+        q.process(input, output);
+        if (output[0]! > .1) { samples.push(output[0]!); owners.push(owner); }
+      }
+    };
+    q.setTurn("A"); feed(.5, 100); feed(0, 300);
+    feed(.7, 100); // Indistinguishable from B audio whose first caption is delayed.
+    q.setTurn("A"); q.setTurn("B");
+    feed(.9, 100);
+    q.setEnabled(false);
+    feed(0, 1500);
+    expect(samples).toEqual(Array.from(Float32Array.from([
+      ...new Array(100).fill(.5), ...new Array(100).fill(.7), ...new Array(100).fill(.9),
+    ])));
+    expect(owners).toEqual([...new Array(100).fill("A"), ...new Array(100).fill(undefined), ...new Array(100).fill("B")]);
+    const offset = buffered ? 600 : 0;
+    expect(starts).toEqual([["A", offset], [undefined, offset + 400], ["B", offset + 500]]);
+    expect(q.pending).toBe(false);
+  });
   it("drops queued and arriving audio at lifecycle closure, keeping the mode", () => {
     const q = new PlaybackQueue(1000);
     q.setAudible(true); q.setEnabled(true); q.setSpeaking(true);
@@ -85,7 +138,7 @@ describe("PlaybackQueue", () => {
   });
   it.each([
     [false, 1000, 48000, 19680], [true, 1000, 48000, 19680], [false, 300, 1000, 400], [true, 300, 1000, 400],
-  ] as const)("ignores repeated captions without losing the next PCM owner, first delayed=%s, gap=%s ms, rate=%s", (firstDelayed, gapMs, rate, bStart) => {
+  ] as const)("leaves delayed post-pause PCM unattributed despite repeated captions, first delayed=%s, gap=%s ms, rate=%s", (firstDelayed, gapMs, rate, bStart) => {
     const q = new PlaybackQueue(rate, rate * 3);
     const played = vi.fn();
     let owner: string | undefined;
@@ -101,7 +154,7 @@ describe("PlaybackQueue", () => {
     q.process(new Float32Array(rate * gapMs / 1000));
     q.process(new Float32Array(rate / 10).fill(.7));
     if (firstDelayed) q.setTurn("A");
-    q.setTurn("A"); q.setTurn("A"); // Caption deltas must not consume B's unowned PCM.
+    q.setTurn("A"); q.setTurn("A"); // This could be A continuing or B arriving before its caption.
     q.setTurn("B");
     q.setEnabled(false);
     const output = new Float32Array(rate * 2), sample = new Float32Array(1);
@@ -114,9 +167,9 @@ describe("PlaybackQueue", () => {
     expect(output.filter(value => value > .1)).toEqual(Float32Array.from([
       ...new Array(rate / 10).fill(.5), ...new Array(rate / 10).fill(.7),
     ]));
-    expect(played.mock.calls.filter(([, active]) => active).map(([turnId]) => turnId)).toEqual(["A", "B"]);
-    expect(owners).toEqual([...new Array(rate / 10).fill("A"), ...new Array(rate / 10).fill("B")]);
-    expect(starts).toEqual([["A", 0], ["B", bStart]]);
+    expect(played.mock.calls.filter(([, active]) => active).map(([turnId]) => turnId)).toEqual(["A", undefined]);
+    expect(owners).toEqual([...new Array(rate / 10).fill("A"), ...new Array(rate / 10).fill(undefined)]);
+    expect(starts).toEqual([["A", 0], [undefined, bStart]]);
   });
   it("does not let a previously claimed caption steal a later unowned span", () => {
     const q = new PlaybackQueue(1000);
@@ -135,7 +188,7 @@ describe("PlaybackQueue", () => {
     expect(output.filter(value => value > .1)).toEqual(Float32Array.from([
       ...new Array(100).fill(.5), ...new Array(100).fill(.7), ...new Array(100).fill(.9),
     ]));
-    expect(played.mock.calls.filter(([, active]) => active).map(([turnId]) => turnId)).toEqual(["A", "B", "C"]);
+    expect(played.mock.calls.filter(([, active]) => active).map(([turnId]) => turnId)).toEqual(["A", undefined, "B"]); // B preceded the third span; C cannot claim it retroactively.
   });
   it("retains a caption-first next owner across the remaining raw silence", () => {
     const q = new PlaybackQueue(1000);

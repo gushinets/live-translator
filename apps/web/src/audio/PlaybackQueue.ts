@@ -1,6 +1,10 @@
 import { runtime } from "../config/runtime";
 import { VAM_ACTIVE_FLOOR } from "./VoiceActivityEstimator";
 
+// -60 dBFS peak gate; the existing 60 ms preroll / 250 ms tail retain quieter phonemes.
+// ponytail: a fixed decoder-noise floor; calibrate from recorded PCM if receivers exceed it.
+const CAPTURE_NOISE_FLOOR = .001;
+
 /** PCM stays in memory for this media generation only. No transcript-based timing. */
 export class PlaybackQueue {
   onPlaybackTurn: ((turnId: string | undefined, active: boolean) => void) | null = null;
@@ -40,9 +44,13 @@ export class PlaybackQueue {
       if (this.captionTurns.has(turnId)) return;
       this.captionTurns.add(turnId);
     }
-    const pending = turnId === undefined ? undefined : this.owners.find(owner => owner.turnId === undefined);
+    // Only the initial span can be recovered from a delayed first caption. After a
+    // pause, PCM may be this turn continuing OR the next turn arriving early.
+    // ponytail: keep that ambiguity unknown until provider audio boundaries exist.
+    const pending = turnId !== undefined && this.captionTurns.size === 1
+      ? this.owners.find(owner => owner.span === 0 && owner.turnId === undefined) : undefined;
     if (pending) {
-      // Delayed captions claim one incoming span at a time, including later turns.
+      // Never relabel a post-pause span using a later caption.
       for (const owner of this.owners) if (owner.span === pending.span) owner.turnId = turnId;
       if (pending.span === this.inputSpan) this.inputTurnId = turnId;
       return;
@@ -76,7 +84,7 @@ export class PlaybackQueue {
     if (!this.audible || this.failed) return output;
     for (let i = 0; i < output.length; i++) {
       const value = input?.[i] ?? 0;
-      const voiced = Math.abs(value) >= .0001;
+      const voiced = Math.abs(value) >= CAPTURE_NOISE_FLOOR;
       this.observeIncoming(voiced);
       const held = this.enabled && (this.speaking || this.quiet < this.sampleRate * .3);
       if (!this.speaking) this.quiet++;

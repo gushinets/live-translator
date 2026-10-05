@@ -1792,7 +1792,7 @@ describe("SessionController turn engine", () => {
     [false, false, 1000, false], [false, true, 1000, false],
     [true, false, 1000, false], [true, true, 1000, false],
     [false, true, 300, false], [true, true, 300, true],
-  ] as const)("retains both PCM owners, decoder pending=%s, second caption delayed=%s, gap=%s ms, first delayed=%s", async (decoderPending, captionDelayed, gapMs, firstDelayed) => {
+  ] as const)("preserves PCM without inventing delayed ownership, decoder pending=%s, second caption delayed=%s, gap=%s ms, first delayed=%s", async (decoderPending, captionDelayed, gapMs, firstDelayed) => {
     const queue = new PlaybackQueue(1000);
     const audio = Object.assign(createFakeAudio(), {
       setNonInterrupting: vi.fn((enabled: boolean) => queue.setEnabled(enabled)),
@@ -1824,7 +1824,7 @@ describe("SessionController turn engine", () => {
     const a = controller.session.activeTurn!.id;
     if (!firstDelayed) live.emit({ type: "session.output_transcript.delta", delta: "Where is the train station?", start_ms: 600, end_ms: 900 });
     queue.process(new Float32Array(128).fill(.5));
-    queue.process(new Float32Array(gapMs)); // Neither gap requires a played-idle edge to identify B.
+    queue.process(new Float32Array(gapMs)); // A gap alone cannot identify the next PCM owner.
     live.emit({ type: "session.input_transcript.delta", delta: "The station is straight ahead.", start_ms: 1000, end_ms: 1500 });
     const b = controller.session.activeTurn!.id;
     if (captionDelayed) queue.process(new Float32Array(128).fill(.7));
@@ -1844,7 +1844,7 @@ describe("SessionController turn engine", () => {
     expect(output.filter(sample => sample > .1)).toEqual(Float32Array.from([
       ...new Array(128).fill(.5), ...new Array(128).fill(.7),
     ]));
-    expect(played).toEqual([a, b]);
+    expect(played).toEqual(captionDelayed ? [a] : [a, b]);
     if (decoderPending) {
       expect(controller.session.activeTurn?.audioOutputStarted).toBe(false);
       ready();
@@ -1854,8 +1854,13 @@ describe("SessionController turn engine", () => {
     expect(first.audioOutputStarted).toBe(true);
     expect(first.firstAudibleOutputAtMs).toBeDefined();
     expect(first.playbackEndAtMs).toBeDefined(); // Explicit owner transition, without an idle edge between A and B.
-    expect(controller.session.activeTurn?.audioOutputStarted).toBe(true);
-    expect(controller.session.activeTurn?.firstAudibleOutputAtMs).toBeGreaterThanOrEqual(first.playbackEndAtMs!);
+    expect(controller.session.activeTurn?.audioOutputStarted).toBe(!captionDelayed);
+    if (captionDelayed) {
+      expect(controller.session.activeTurn?.firstAudibleOutputAtMs).toBeUndefined();
+      expect(controller.session.activeTurn?.playbackEndAtMs).toBeUndefined();
+    } else {
+      expect(controller.session.activeTurn?.firstAudibleOutputAtMs).toBeGreaterThanOrEqual(first.playbackEndAtMs!);
+    }
     emitPlayback(audio, false);
     await vi.advanceTimersByTimeAsync(runtime.outputSettleGraceMs + 100);
     expect(controller.session.activeTurn).toBeUndefined();
@@ -1863,11 +1868,19 @@ describe("SessionController turn engine", () => {
     for (const id of [a, b]) {
       const turn = controller.session.recentTurns.find(turn => turn.id === id)!;
       expect(turn.status).toBe("completed");
-      expect(turn.audioOutputStarted).toBe(true);
-      expect(turn.firstAudibleOutputAtMs).toBeDefined();
-      expect(turn.playbackEndAtMs).toBeDefined();
+      const attributed = id === a || !captionDelayed;
+      expect(turn.audioOutputStarted).toBe(attributed);
+      if (attributed) {
+        expect(turn.firstAudibleOutputAtMs).toBeDefined();
+        expect(turn.playbackEndAtMs).toBeDefined();
+      } else {
+        expect(turn.firstAudibleOutputAtMs).toBeUndefined();
+        expect(turn.playbackEndAtMs).toBeUndefined();
+      }
     }
-    expect(controller.metrics.snapshot()).toMatchObject({ audioCompletedTurnCount: 2, textOnlyCompletedTurnCount: 0 });
+    expect(controller.metrics.snapshot()).toMatchObject({
+      audioCompletedTurnCount: captionDelayed ? 1 : 2, textOnlyCompletedTurnCount: captionDelayed ? 1 : 0,
+    });
     await controller.endConversation();
   });
   it("does not close a caption-only-looking turn while received audio is still queued", async () => {
