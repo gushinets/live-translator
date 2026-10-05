@@ -129,3 +129,16 @@ it.each(["Stop.", "Wait.", "Why?", "Hi."])("preserves a brief English reply afte
   const router = new TranscriptRouter();
   expect(router.push(fragment(text), languages, "A", "Я хочу спросить вас ")[0]?.side).toBe("B");
 });
+
+it("preserves a German short interruption into unfinished Russian speech", () => {
+  expect(new TranscriptRouter().push(fragment("Ja."), { A: "ru", B: "de" }, "A", "Подскажите, пожалуйста, где находится ")[0]?.side).toBe("B");
+});
+
+it.each([
+  ["de", "Ja."], ["fr", "Oui."], ["es", "Sí."], ["ja", "はい。"], ["ar", "نعم."], ["hi", "हाँ."],
+])("routes a short %s interruption with localized evidence: %s", (language, reply) => {
+  expect(new TranscriptRouter().push(fragment(reply), { A: "ru", B: language }, "A", "Подскажите, пожалуйста, где находится ")[0]?.side).toBe("B");
+});
+it.each(["IBM.", "Google.", "OpenAI."])("retains a foreign brand with Russian speech in a German pair: %s", text => {
+  expect(new TranscriptRouter().push(fragment(text), { A: "ru", B: "de" }, "A", "Я работаю в ")[0]?.side).toBe("A");
+});

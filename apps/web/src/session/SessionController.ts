@@ -1351,7 +1351,7 @@ export class SessionController {
       const historical = this.findSourceTarget(first, side);
       if (historical) {
         if (historical.id === this.currentSession.activeTurn?.id && /\p{L}/u.test(first.text) &&
-            (this.resumedSourceIdle?.observedThroughMs === undefined || first.startMs === undefined || first.startMs > this.resumedSourceIdle.observedThroughMs)) {
+            (this.resumedSourceIdle?.observedThroughMs === undefined || first.startMs === undefined || (first.endMs ?? first.startMs) > this.resumedSourceIdle.observedThroughMs)) {
           this.resumedSourceIdle = undefined;
         }
         this.extendSourceOpening(historical, first);
@@ -1520,7 +1520,10 @@ export class SessionController {
     if (fragments.every(fragment => fragment.startMs !== undefined)) {
       const candidates = eligible.filter(turn => {
         const starts = (turn.outputFragments ?? []).flatMap(fragment => fragment.startMs === undefined ? [] : [fragment.startMs]);
-        const ends = (turn.outputFragments ?? []).flatMap(fragment => fragment.endMs === undefined ? [] : [fragment.endMs]);
+        const ends = (turn.outputFragments ?? []).flatMap(fragment => {
+          const timestamp = fragment.endMs ?? fragment.startMs;
+          return timestamp === undefined ? [] : [timestamp];
+        });
         return starts.length > 0 && ends.length > 0 && fragments.every(fragment =>
           fragment.startMs! >= Math.min(...starts) && fragment.startMs! <= Math.max(...ends));
       });
@@ -2918,6 +2921,11 @@ export class SessionController {
   }
 
   protected dispatch(action: SessionAction): void {
+    if ((action.type === "SOURCE_ACTIVE" || action.type === "SOURCE_HANDOFF") &&
+        action.turnId !== this.latestSourceTurnId && this.outputRouter.hasPending) {
+      // Seal old evidence before changing its source context. Ambiguity is retained.
+      this.routeOutput(this.outputRouter.flush(this.languages, true), false);
+    }
     const previousTurn = "turnId" in action ? findSessionTurn(this.currentSession, action.turnId) : this.currentSession.activeTurn;
     const previousUnfinished = [...(this.currentSession.pendingTurns ?? []),
       ...(this.currentSession.activeTurn ? [this.currentSession.activeTurn] : [])];

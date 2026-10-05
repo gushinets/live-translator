@@ -4722,7 +4722,7 @@ describe("PR32 source lifecycle regressions", () => {
     expect(controller.session.activeTurn?.originalText).toBe("Спасибо, я пойду туда пешком.");
     expect(controller.session.recentTurns.find(t=>t.id===a)?.originalText).toBe("Подскажите, где находится вокзал?");
   });
-  it("uses the new idle after a confirmed same-speaker continuation", async () => {
+  it.each([800, 90, 40])("uses the new idle after a confirmed same-speaker continuation starting at %i", async startMs => {
     const { controller, live, audio } = await setup();
     emitVoice(audio, true);
     live.emit({ type: "session.input_transcript.delta", delta: "Подскажите, где находится вокзал?", start_ms: 0, end_ms: 90 });
@@ -4731,7 +4731,7 @@ describe("PR32 source lifecycle regressions", () => {
     emitVoice(audio, false);
     await vi.advanceTimersByTimeAsync(700);
     emitVoice(audio, true);
-    live.emit({ type: "session.input_transcript.delta", delta: " Я хочу дойти туда пешком.", start_ms: 800, end_ms: 900 });
+    live.emit({ type: "session.input_transcript.delta", delta: " Я хочу дойти туда пешком.", start_ms: startMs, end_ms: 900 });
     await vi.advanceTimersByTimeAsync(200);
     emitVoice(audio, false);
     await vi.advanceTimersByTimeAsync(100);
@@ -5170,4 +5170,47 @@ it("does not join a new source's output to a stale standalone translation", asyn
   expect(controller.session.pendingTurns?.filter(turn => turn.translationOnly).map(turn => turn.translatedText)).toEqual([
     "Я использую ", "Вокзал находится прямо впереди.",
   ]);
+});
+
+describe("PR32 buffered output boundaries", () => {
+  beforeEach(() => { vi.useFakeTimers(); vi.setSystemTime(0); });
+  it("seals unresolved old output before a new speaker's translation", async () => {
+    const { controller, live, audio } = createController();
+    await controller.startWithLanguages({ A: "ru", B: "en" });
+    emitVoice(audio, true);
+    live.emit({ type: "session.input_transcript.delta", delta: "Yes, I understand you." });
+    live.emit({ type: "session.output_transcript.delta", delta: "Да" });
+    live.emit({ type: "session.input_transcript.delta", delta: "Подскажите, где находится вокзал?" });
+    const a = controller.session.activeTurn!.id;
+    live.emit({ type: "session.output_transcript.delta", delta: "Where is the train station?" });
+    await vi.advanceTimersByTimeAsync(runtime.captionIdleMs);
+    expect(controller.session.activeTurn).toMatchObject({ id: a, translatedText: "Where is the train station?" });
+    const old = [...controller.session.recentTurns, ...(controller.session.pendingTurns ?? [])];
+    expect(old.some(turn => turn.translatedText === "Да")).toBe(true);
+    expect(old.some(turn => turn.translatedText?.includes("Where"))).toBe(false);
+  });
+  it("keeps pending output through a same-source VAD reactivation", async () => {
+    const { controller, live, audio } = createController();
+    await controller.startWithLanguages({ A: "ru", B: "en" });
+    emitVoice(audio, true);
+    live.emit({ type: "session.input_transcript.delta", delta: "Спасибо за помощь." });
+    const a = controller.session.activeTurn!.id;
+    live.emit({ type: "session.output_transcript.delta", delta: "Thank y" });
+    emitVoice(audio, false); emitVoice(audio, true);
+    live.emit({ type: "session.output_transcript.delta", delta: "ou very much." });
+    expect(controller.session.activeTurn).toMatchObject({ id: a, translatedText: "Thank you very much." });
+  });
+  it("keeps equal-timestamp late punctuation with output missing end_ms", async () => {
+    const { controller, live, audio } = createController();
+    await controller.startWithLanguages({ A: "ru", B: "en" });
+    emitVoice(audio, true);
+    live.emit({ type: "session.input_transcript.delta", delta: "Подскажите, где находится вокзал?" });
+    const a = controller.session.activeTurn!.id;
+    live.emit({ type: "session.output_transcript.delta", delta: "Where is the train station", start_ms: 600 });
+    live.emit({ type: "session.input_transcript.delta", delta: "The station is straight ahead." });
+    live.emit({ type: "session.output_transcript.delta", delta: "Вокзал находится прямо впереди.", start_ms: 1600, end_ms: 1900 });
+    live.emit({ type: "session.output_transcript.delta", delta: "?", start_ms: 600 });
+    expect(controller.session.pendingTurns?.find(turn => turn.id === a)?.translatedText).toBe("Where is the train station?");
+    expect(controller.session.pendingTurns?.some(turn => turn.translationOnly)).toBe(false);
+  });
 });

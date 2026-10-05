@@ -222,3 +222,43 @@ it.each(["input", "output"] as const)("keeps explicit interruptions separate in 
     { kind, side: "A", text: "Я использую IBM." },
   ]);
 });
+
+it.each([1, 2, 1000])("preserves Japanese prolonged sound marks at packet size %i", size => {
+  for (const kind of ["input", "output"] as const) for (const text of ["コーヒー。", "タクシー。", "スーパーで待っています。"]) {
+    const transcript = new DialogueTranscript();
+    for (let i = 0; i < text.length; i += size) transcript.push(kind, fragment(text.slice(i, i + size)), { A: "en", B: "ja" });
+    expect(content(transcript)).toEqual([{ kind, side: "B", text }]);
+  }
+});
+it("preserves a German short interruption into unfinished Russian speech", () => {
+  const transcript = new DialogueTranscript();
+  transcript.push("input", fragment("Подскажите, пожалуйста, где находится "), { A: "ru", B: "de" });
+  transcript.push("input", fragment("Ja."), { A: "ru", B: "de" });
+  expect(content(transcript)).toEqual([
+    { kind: "input", side: "A", text: "Подскажите, пожалуйста, где находится" },
+    { kind: "input", side: "B", text: "Ja." },
+  ]);
+});
+
+it.each([
+  ["de", "Ja."], ["fr", "Oui."], ["es", "Sí."], ["es", "Si\u0301."], ["ja", "はい。"], ["ar", "نعم."], ["hi", "हाँ."],
+])("retains a short %s reply in both streams: %s", (language, reply) => {
+  for (const kind of ["input", "output"] as const) {
+    const transcript = new DialogueTranscript();
+    const languages = { A: "ru", B: language };
+    transcript.push(kind, fragment("Подскажите, пожалуйста, где находится "), languages);
+    transcript.push(kind, fragment(reply), languages);
+    expect(content(transcript)).toEqual([
+      { kind, side: "A", text: "Подскажите, пожалуйста, где находится" },
+      { kind, side: "B", text: reply },
+    ]);
+  }
+});
+
+it.each([
+  ["ru", "fr", "Cafe\u0301."], ["en", "ru", "Да\u0301."], ["ru", "el", "ο\u0301χι."],
+])("keeps shared combining marks with their base letters in %s/%s", (A, B, text) => {
+  const transcript = new DialogueTranscript();
+  for (const character of text) transcript.push("input", fragment(character), { A, B });
+  expect(content(transcript)).toEqual([{ kind: "input", side: "B", text }]);
+});

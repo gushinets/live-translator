@@ -1,5 +1,6 @@
 import type { ConversationLanguages } from "../side/SideResolver";
 import type { Side } from "./Turn";
+import { shortReplies } from "./shortReplies";
 
 export function languageScripts(language: string): string[] {
   const script = new Intl.Locale(language).maximize().script;
@@ -9,7 +10,7 @@ export function languageScripts(language: string): string[] {
 
 export function scriptPattern(scripts: string[]): RegExp | undefined {
   if (!scripts.length) return undefined;
-  try { return new RegExp(scripts.map(value => `\\p{Script=${value}}`).join("|"), "u"); }
+  try { return new RegExp(scripts.map(value => `\\p{Script_Extensions=${value}}`).join("|"), "u"); }
   catch { return undefined; }
 }
 
@@ -29,9 +30,9 @@ export function completeScriptSide(text: string, languages: ConversationLanguage
 /** Shared decisive reply evidence for routing and displayed sentence context. */
 export function isExplicitShortReply(text: string, language: string): boolean {
   if (!/[.!?。！？][\p{P}\s]*$/u.test(text)) return false;
-  const words = text.toLowerCase().match(/\p{L}+/gu) ?? [];
-  // ponytail: common short replies are explicit; broader vocabulary needs stronger language evidence.
-  return words.length > 0 && words.every(word =>
+  const words = text.normalize("NFC").toLowerCase().match(/[\p{L}\p{M}]+/gu) ?? [];
+  // Full localized replies protect short interruptions; keyboard abbreviations are not speech.
+  return words.length > 0 && words.every(word => shortReplies[language]?.includes(word) ||
     (language === "en" && /^(yes|no|hi|hey|bye|stop|wait|why|what|how|who|when|where|sure|fine)$/.test(word)) ||
     (language === "ru" && /^(да|нет|ага|угу|стой|стоп|как|что|кто|где|эй)$/.test(word)));
 }

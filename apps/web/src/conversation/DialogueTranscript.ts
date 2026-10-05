@@ -100,8 +100,9 @@ export class DialogueTranscript {
       // Re-read the accumulated stream, not individual packets: even a surname
       // arriving one character at a time stays in the same script run.
       for (const character of text) {
-        const side = a.test(character) ? "A" : b.test(character) ? "B"
-          : /\p{L}/u.test(character) ? undefined : runs.at(-1)?.side;
+        const side = /\p{L}/u.test(character)
+          ? a.test(character) ? "A" : b.test(character) ? "B" : undefined
+          : runs.at(-1)?.side;
         append(character, side);
       }
       // A name or borrowed word inside a sentence is not a speaker change.

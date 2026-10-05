@@ -148,3 +148,17 @@ test("short interruptions into unfinished speech appear on their own language pa
   await expect(a.locator("li")).toHaveText("Я: Подскажите, пожалуйста, где находится");
   await expect(b.locator("li")).toHaveText("Me: No.");
 });
+
+test("Japanese prolonged marks retain complete originals and translations", async ({ page }) => {
+  const harness = await MockLiveHarness.attach(page);
+  await page.addInitScript(() => {
+    localStorage.setItem("live-translator-owner-language", "ru");
+    localStorage.setItem("live-translator-interlocutor-language", "ja");
+  });
+  await page.goto("/");
+  await page.getByRole("button", { name: "Начать перевод", exact: true }).click();
+  await expect(page.getByRole("button", { name: "Завершить", exact: true })).toBeVisible();
+  await harness.inputDelta("コーヒー。");
+  await harness.outputDelta("スーパーで待っています。");
+  await expect(page.getByTestId("participant-pane-B").locator("li")).toHaveText(["Me: コーヒー。", "Him: スーパーで待っています。"]);
+});
