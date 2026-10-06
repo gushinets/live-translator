@@ -92,7 +92,14 @@ export function splitSentences(text: string): string[] {
         const nextQuote = nextQuoteBoundary(char, i);
         const followingQuote = nextQuote < 0 ? -1 : text.indexOf(char, nextQuote + 1);
         const quotedText = followingQuote < 0 ? "" : text.slice(nextQuote + 1, followingQuote);
-        const startsNextQuote = /[\p{L}\p{Nd}]/u.test(quotedText) && isSentenceComplete(quotedText);
+        const next = followingQuote < 0 ? -1 : nextQuoteBoundary(char, followingQuote, 2);
+        const followingText = next < 0 ? "" : text.slice(followingQuote + 1, next);
+        // A paired later reply leaves the intervening sentence outside quotes.
+        const followingStartsQuote = /[\p{L}\p{N}]/u.test(followingText) &&
+          (/\p{Sentence_Terminal}/u.test(text[next + 1] ?? "") ||
+           (/\p{Sentence_Terminal}/u.test(text[next - 1] ?? "") &&
+            !/[\p{L}\p{N}]/u.test(text[next + 1] ?? "") && isSentenceComplete(followingText)));
+        const startsNextQuote = !followingStartsQuote && /[\p{L}\p{Nd}]/u.test(quotedText) && isSentenceComplete(quotedText);
         if (/\p{Sentence_Terminal}/u.test(text[nextQuote - 1] ?? "") && !startsNextQuote) continue;
       }
       // Marks after a number or word do not open quoted speech (6'2", dogs').

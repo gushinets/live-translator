@@ -546,3 +546,17 @@ it("keeps a quoted-word possessive and the following reply intact in both captio
     expect(transcript.blocks.map(block => block.text).join("")).toBe(text);
   }
 });
+
+it.each(["'The dogs' owner is here.'", "'The board is 6' long.'", "'John's book is here.'"])(
+  "keeps outer quotes before intervening speech in both caption streams: %s", source => {
+    const unquoted = "La estación está cerca del supermercado.", reply = "' Yes.'";
+    const text = source + " " + unquoted + " " + reply;
+    for (const kind of ["input", "output"] as const) for (const size of [1, 1000]) {
+      const transcript = new DialogueTranscript();
+      for (let i = 0; i < text.length; i += size) transcript.push(kind, fragment(text.slice(i, i + size)), { A: "en", B: "es" });
+      expect(content(transcript)).toEqual([
+        { kind, side: "A", text: source }, { kind, side: "B", text: unquoted }, { kind, side: "A", text: reply },
+      ]);
+      expect(transcript.blocks.map(block => block.text).join("")).toBe(text);
+    }
+  });

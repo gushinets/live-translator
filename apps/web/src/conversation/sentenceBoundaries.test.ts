@@ -31,6 +31,19 @@ it.each(["Dogs", "Big dogs"])("preserves adjacent quoted replies after a quoted 
   expect(splitSentences("'" + noun + "' owner is here.'Sí.'")).toEqual(["'" + noun + "' owner is here.", "'Sí.'"]);
 });
 
+it.each([
+  "'The dogs' owner is here.'",
+  "'The board is 6' long.'",
+  "'John's book is here.'",
+  '"The board is 12" long."',
+])("keeps an outer closer before intervening unquoted speech: %s", source => {
+  const quote = source[0]!;
+  for (const reply of [quote + "Sí." + quote, quote + " Sí." + quote, quote + " yes" + quote + "."]) {
+    expect(splitSentences(source + " Unquoted text. " + reply))
+      .toEqual([source + " ", "Unquoted text. ", reply]);
+  }
+});
+
 it("keeps a long weak prefix separate from a decisive reply", () => {
   const prefix = "123. ".repeat(400);
   expect(splitLanguageSentences(prefix + "Sí.", { A: "en", B: "es" }, eld.newInstance())).toEqual([prefix, "Sí."]);
