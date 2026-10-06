@@ -164,3 +164,7 @@ it.each(["yes", "oui", "90", "two words", "I'm happy"])("keeps an earlier closer
   expect(splitSentences("'It was quiet.' Sí. ' " + word + "'."))
     .toEqual(["'It was quiet.' ", "Sí. ", "' " + word + "'."]);
 });
+
+it.each(["I said 'rock 'n' roll.'", "I loved 'the '90s' music.'"])("keeps paired lexical words inside an outer quote: %s", source => {
+  expect(splitSentences(source + " 'Sí.'")).toEqual([source + " ", "'Sí.'"]);
+});

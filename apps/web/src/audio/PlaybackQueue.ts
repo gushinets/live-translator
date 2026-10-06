@@ -177,7 +177,9 @@ export class PlaybackQueue {
         // recalibrate during the captured tail: quiet consonants belong to speech.
         else if (this.tail === 0) {
           const candidate = Math.max(VAM_WARMUP_RMS_MAX, floor / VAM_ACTIVE_NOISE_MULTIPLIER);
-          if (!this.broadbandPrefix) this.noiseFloor = candidate;
+          // One DC frame must not poison the following quiet vowel.
+          if (!this.broadbandPrefix) this.noiseFloor = candidate < this.noiseFloor ? candidate
+            : this.noiseFloor + this.noiseRiseAlpha * (candidate - this.noiseFloor);
           else {
             // Keep rising broadband levels provisional for the 250 ms prefix.
             // Its minimum retains the earlier floor when a louder consonant

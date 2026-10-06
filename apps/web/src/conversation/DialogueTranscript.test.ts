@@ -526,3 +526,13 @@ it("preserves a padded word quote with an external terminal in both caption stre
     expect(transcript.blocks.map(block => block.text).join("")).toBe(text);
   }
 });
+
+it("keeps both marks of a nested lexical word in both caption streams", () => {
+  const source = "I said 'rock 'n' roll.'", reply = "'Sí.'", text = source + " " + reply;
+  for (const kind of ["input", "output"] as const) for (const size of [1, 1000]) {
+    const transcript = new DialogueTranscript();
+    for (let i = 0; i < text.length; i += size) transcript.push(kind, fragment(text.slice(i, i + size)), { A: "en", B: "es" });
+    expect(content(transcript)).toEqual([{ kind, side: "A", text: source }, { kind, side: "B", text: reply }]);
+    expect(transcript.blocks.map(block => block.text).join("")).toBe(text);
+  }
+});

@@ -2,6 +2,7 @@
 export function isSentenceComplete(text: string): boolean {
   return /\p{Sentence_Terminal}[\p{P}\s]*$/u.test(text);
 }
+/** Detect a Unicode sentence terminal anywhere in a fragment. */
 export function hasSentenceTerminator(text: string): boolean {
   return /\p{Sentence_Terminal}/u.test(text);
 }
@@ -31,7 +32,12 @@ export function splitSentences(text: string): string[] {
           ((next !== wordClosing && /\p{Nd}/u.test(text[next - 1] ?? "")) || (char === "'" &&
           ((next !== wordClosing && /[sS]/u.test(text[next - 1] ?? "")) ||
            (/[\p{L}\p{Nd}]/u.test(text[next - 1] ?? "") && /[\p{L}\p{Nd}]/u.test(text[next + 1] ?? "")) ||
-           (leadingApostrophe.test(text.slice(next)) && !followsSentence(next)))))) next = text.indexOf(char, next + 1);
+           (leadingApostrophe.test(text.slice(next)) && !followsSentence(next)))))) {
+        const lexical = char === "'" && !followsSentence(next) ? leadingApostrophe.exec(text.slice(next)) : null;
+        // A paired lexical word inside speech contributes neither quote boundary.
+        if (lexical && text[next + lexical[0].length] === char) next += lexical[0].length;
+        next = text.indexOf(char, next + 1);
+      }
       quoteBoundaries[cacheKey] = next;
     }
     return next;
@@ -49,7 +55,10 @@ export function splitSentences(text: string): string[] {
       if (char === "'") {
         const lexical = leadingApostrophe.exec(text.slice(i));
         if (lexical) {
-          if (openQuotes[char]! >= 0) continue;
+          if (openQuotes[char]! >= 0) {
+            if (text[i + lexical[0].length] === char) i += lexical[0].length;
+            continue;
+          }
           const closing = nextQuoteBoundary(char, i);
           const following = closing < 0 ? -1 : nextQuoteBoundary(char, closing, 1);
           const quotedText = following < 0 ? "" : text.slice(closing + 1, following);
