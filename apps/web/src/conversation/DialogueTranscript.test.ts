@@ -444,7 +444,7 @@ it.each(["Visit example.com","Visit \"example.com\"","Visit (example.com)"])("ke
   }
 });
 
-it.each(["I loved the '90s.","I left 'cause it was late.","'90s were great. Music was better.'","'cause it was late. I left early.'","'cause I don't know. I left early.'","'cause 'twas late. I left early.'"])("keeps leading lexical apostrophes in both caption streams: %s", source => {
+it.each(["I loved the '90s.","I left 'cause it was late.","I looked 'round.","I asked 'bout.","'90s were great. Music was better.'","'cause it was late. I left early.'","'cause I don't know. I left early.'","'cause 'twas late. I left early.'"])("keeps leading lexical apostrophes in both caption streams: %s", source => {
   for (const kind of ["input", "output"] as const) for (const size of [1, 1000]) {
     const transcript = new DialogueTranscript(), text = source + " 'Sí.'";
     for (let i = 0; i < text.length; i += size) transcript.push(kind, fragment(text.slice(i, i + size)), { A: "en", B: "es" });
@@ -464,3 +464,110 @@ it.each(['"La estación está cerca del supermercado', '"La estación está cerc
     expect(content(transcript)).toEqual([{ kind, side: "A", text: source }, { kind, side: "B", text: reply }]);
   }
 });
+
+it.each([
+  { languages: { A: "en", B: "fr" }, side: "B", text: "Veuillez ouvrir le site example.no." },
+  { languages: { A: "en", B: "fr" }, side: "B", text: "Veuillez ouvrir le site www.documentation.no." },
+  { languages: { A: "fr", B: "en" }, side: "A", text: 'Veuillez ouvrir le site "example.no".' },
+])("keeps a canonical hostname suffix in both caption streams: $text", ({ languages, side, text }) => {
+  for (const kind of ["input", "output"] as const) for (const size of [1, 1000]) {
+    const transcript = new DialogueTranscript();
+    for (let i = 0; i < text.length; i += size) transcript.push(kind, fragment(text.slice(i, i + size)), languages);
+    expect(content(transcript)).toEqual([{ kind, side, text }]);
+    expect(transcript.blocks.map(block => block.text).join("")).toBe(text);
+  }
+});
+
+it.each(["I stayed 'cept.", "I waited 'neath.", "I said 'scuse.", "I left 'Cause it was late."])("keeps an unlisted leading elision's reply quoted in both caption streams: %s", source => {
+  for (const reply of ["'Sí.'", "'sí.'"]) for (const kind of ["input", "output"] as const) for (const size of [1, 1000]) {
+    const transcript = new DialogueTranscript(), text = source + " " + reply;
+    for (let i = 0; i < text.length; i += size) transcript.push(kind, fragment(text.slice(i, i + size)), { A: "en", B: "es" });
+    expect(content(transcript)).toEqual([{ kind, side: "A", text: source }, { kind, side: "B", text: reply }]);
+    expect(transcript.blocks.map(block => block.text).join("")).toBe(text);
+  }
+});
+
+it.each([
+  { text: "'It was quiet.' Sí. ' sí.'", reply: "Sí. ' sí.'" },
+  { text: "'It was quiet.' Sí.' sí.'", reply: "Sí.' sí.'" },
+  { text: "'It was quiet.'Sí.' sí.'", reply: "Sí.' sí.'" },
+])("preserves the earlier quote before unquoted and padded quoted captions: $text", ({ text, reply }) => {
+  for (const kind of ["input", "output"] as const) for (const size of [1, 1000]) {
+    const transcript = new DialogueTranscript();
+    for (let i = 0; i < text.length; i += size) transcript.push(kind, fragment(text.slice(i, i + size)), { A: "en", B: "es" });
+    expect(content(transcript)).toEqual([{ kind, side: "A", text: "'It was quiet.'" }, { kind, side: "B", text: reply }]);
+    expect(transcript.blocks.map(block => block.text).join("")).toBe(text);
+  }
+});
+
+it("preserves contracted padded replies in both caption streams", () => {
+  const text = "'It was quiet.' Sí. ' I'm happy.'";
+  for (const kind of ["input", "output"] as const) for (const size of [1, 1000]) {
+    const transcript = new DialogueTranscript();
+    for (let i = 0; i < text.length; i += size) transcript.push(kind, fragment(text.slice(i, i + size)), { A: "en", B: "es" });
+    expect(content(transcript)).toEqual([
+      { kind, side: "A", text: "'It was quiet.'" },
+      { kind, side: "B", text: "Sí." },
+      { kind, side: "A", text: "' I'm happy.'" },
+    ]);
+    expect(transcript.blocks.map(block => block.text).join("")).toBe(text);
+  }
+});
+
+it("preserves a padded word quote with an external terminal in both caption streams", () => {
+  const text = "'It was quiet.' Sí. ' yes'.";
+  for (const kind of ["input", "output"] as const) for (const size of [1, 1000]) {
+    const transcript = new DialogueTranscript();
+    for (let i = 0; i < text.length; i += size) transcript.push(kind, fragment(text.slice(i, i + size)), { A: "en", B: "es" });
+    expect(content(transcript)).toEqual([
+      { kind, side: "A", text: "'It was quiet.'" },
+      { kind, side: "B", text: "Sí." },
+      { kind, side: "A", text: "' yes'." },
+    ]);
+    expect(transcript.blocks.map(block => block.text).join("")).toBe(text);
+  }
+});
+
+it("keeps both marks of a nested lexical word in both caption streams", () => {
+  const source = "I said 'rock 'n' roll.'", reply = "'Sí.'", text = source + " " + reply;
+  for (const kind of ["input", "output"] as const) for (const size of [1, 1000]) {
+    const transcript = new DialogueTranscript();
+    for (let i = 0; i < text.length; i += size) transcript.push(kind, fragment(text.slice(i, i + size)), { A: "en", B: "es" });
+    expect(content(transcript)).toEqual([{ kind, side: "A", text: source }, { kind, side: "B", text: reply }]);
+    expect(transcript.blocks.map(block => block.text).join("")).toBe(text);
+  }
+});
+
+it("keeps a quoted-word possessive and the following reply intact in both caption streams", () => {
+  const source = "I explained 'foo's meaning.", reply = "' Sí.'", text = source + " " + reply;
+  for (const kind of ["input", "output"] as const) for (const size of [1, 1000]) {
+    const transcript = new DialogueTranscript();
+    for (let i = 0; i < text.length; i += size) transcript.push(kind, fragment(text.slice(i, i + size)), { A: "en", B: "es" });
+    expect(content(transcript)).toEqual([{ kind, side: "A", text: source }, { kind, side: "B", text: reply }]);
+    expect(transcript.blocks.map(block => block.text).join("")).toBe(text);
+  }
+});
+
+it.each(["'The dogs' owner is here.'", "'The board is 6' long.'", "'John's book is here.'"])(
+  "keeps outer quotes before intervening speech in both caption streams: %s", source => {
+    const unquoted = "La estación está cerca del supermercado.", reply = "' Yes.'";
+    const text = source + " " + unquoted + " " + reply;
+    for (const kind of ["input", "output"] as const) for (const size of [1, 1000]) {
+      const transcript = new DialogueTranscript();
+      for (let i = 0; i < text.length; i += size) transcript.push(kind, fragment(text.slice(i, i + size)), { A: "en", B: "es" });
+      expect(content(transcript)).toEqual([
+        { kind, side: "A", text: source }, { kind, side: "B", text: unquoted }, { kind, side: "A", text: reply },
+      ]);
+      expect(transcript.blocks.map(block => block.text).join("")).toBe(text);
+    }
+  });
+
+it.each(["He said 'Goodbye.'", "He said 'Are you sure (really?)'", "He said 'She said “hello.”'"])(
+  "keeps a closing quote on its caption before later speech: %s", source => {
+    const second = "La estación está cerca del supermercado, dijo 'Sí.'", text = source + " " + second;
+    for (const kind of ["input", "output"] as const) {
+      const transcript = new DialogueTranscript();
+      transcript.push(kind, fragment(text), { A: "en", B: "es" });
+      expect(content(transcript)).toEqual([{ kind, side: "A", text: source }, { kind, side: "B", text: second }]);
+    }
+  });

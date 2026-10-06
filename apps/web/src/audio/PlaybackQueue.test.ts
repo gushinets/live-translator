@@ -71,6 +71,252 @@ describe("PlaybackQueue", () => {
     q.process(noise);
     expect(q.pending).toBe(false);
   });
+  it.each([[1000, false], [48000, false], [1000, true], [48000, true]] as const)("does not queue a raised receiver floor while speaking at %s Hz, alternating=%s", (rate, alternating) => {
+    const q = new PlaybackQueue(rate);
+    q.setAudible(true); q.setEnabled(true); q.setSpeaking(true);
+    const noise = Float32Array.from({ length: rate }, (_, i) => alternating && i % 2 ? -.002 : .002);
+    for (const reset of ["fresh", "mute", "silence"]) {
+      if (reset === "mute") { q.setAudible(false); q.setAudible(true); }
+      if (reset === "silence") q.process(new Float32Array(rate));
+      for (let seconds = 0; seconds < 6; seconds++) q.process(noise);
+      expect(q.pending).toBe(false);
+      const speech = new Float32Array(rate / 10).fill(.1);
+      q.process(speech);
+      q.setSpeaking(false);
+      const output = q.process(undefined, new Float32Array(rate));
+      const start = output.findIndex(value => value > .05);
+      expect(start).toBeGreaterThanOrEqual(rate * .3);
+      expect(start).toBeLessThanOrEqual(Math.ceil(rate * (alternating ? .55 : .36)));
+      expect(output.slice(start, start + speech.length).every((sample, i) => sample === speech[i])).toBe(true);
+      expect(q.pending).toBe(false);
+      q.setSpeaking(true);
+    }
+  });
+  it.each([16000, 48000].flatMap(rate => ["fresh", "warm", "reset"].map(baseline => ({ rate, baseline }))))(
+    "preserves quiet vowel after a 10 ms DC burst at $rate Hz, baseline=$baseline", ({ rate, baseline }) => {
+      const q = new PlaybackQueue(rate);
+      q.setAudible(true); q.setEnabled(true); q.setSpeaking(true);
+      const feed = (samples: Float32Array) => {
+        for (let i = 0; i < samples.length; i += 128) q.process(samples.subarray(i, i + 128));
+      };
+      if (baseline !== "fresh") feed(new Float32Array(rate * 6).fill(.002));
+      if (baseline === "reset") { q.setAudible(false); q.setAudible(true); }
+      expect(q.pending).toBe(false);
+      const burst = new Float32Array(rate / 100).fill(.008);
+      const vowel = Float32Array.from({ length: rate / 4 }, (_, i) => .004 * Math.sin(i * 2 * Math.PI * 125 / rate + Math.PI / 5));
+      feed(Float32Array.from([...burst, ...vowel]));
+      q.setSpeaking(false);
+      const output = q.process(undefined, new Float32Array(rate * 2));
+      const vowelAt = output.findIndex((sample, i) => sample === vowel[0] && output[i + 1] === vowel[1]);
+      expect(vowelAt).toBeGreaterThanOrEqual(rate * .3 + burst.length);
+      expect(output.slice(vowelAt - burst.length, vowelAt).every((sample, i) => sample === burst[i])).toBe(true);
+      expect(output.slice(vowelAt, vowelAt + vowel.length).every((sample, i) => sample === vowel[i])).toBe(true);
+      expect(q.pending).toBe(false);
+    });
+  it.each([16000, 48000])("lowers a learned DC floor immediately before quieter speech at %s Hz", rate => {
+    const q = new PlaybackQueue(rate);
+    q.setAudible(true); q.setEnabled(true); q.setSpeaking(true);
+    const feed = (samples: Float32Array) => {
+      for (let i = 0; i < samples.length; i += 128) q.process(samples.subarray(i, i + 128));
+    };
+    feed(new Float32Array(rate * 6).fill(.01));
+    expect(q.pending).toBe(false);
+    const vowel = Float32Array.from({ length: rate / 4 }, (_, i) => .006 * Math.sin(i * 2 * Math.PI * 125 / rate + Math.PI / 5));
+    feed(Float32Array.from([...new Float32Array(rate / 100).fill(.004), ...vowel]));
+    q.setSpeaking(false);
+    const output = q.process(undefined, new Float32Array(rate * 2));
+    const start = output.findIndex((sample, i) => sample === vowel[0] && output[i + 1] === vowel[1]);
+    expect(start).toBeGreaterThanOrEqual(rate * .3);
+    expect(output.slice(start, start + vowel.length).every((sample, i) => sample === vowel[i])).toBe(true);
+    expect(q.pending).toBe(false);
+  });
+  it.each([1000, 48000])("preserves a long quiet utterance immediately after reset at %s Hz", rate => {
+    const q = new PlaybackQueue(rate);
+    q.setAudible(true); q.setEnabled(true); q.setSpeaking(true);
+    q.setAudible(false); q.setAudible(true);
+    const speech = Float32Array.from({ length: rate * 3 }, (_, i) => .004 * Math.sin(i * 2 * Math.PI * 125 / rate + Math.PI / 6));
+    q.process(speech);
+    q.setSpeaking(false);
+    const output = q.process(undefined, new Float32Array(rate * 4));
+    const start = output.findIndex(value => value !== 0);
+    expect(start).toBe(rate * .3);
+    expect(output.slice(start, start + speech.length).every((sample, i) => sample === speech[i])).toBe(true);
+    expect(q.pending).toBe(false);
+  });
+  // Correlation statistics use browser PCM rates (at least 80 samples/frame).
+  it.each([[8000, false], [48000, false], [8000, true], [48000, true]] as const)("trims broadband receiver noise and retains consonants at %s Hz, strong=%s", (rate, strong) => {
+    const q = new PlaybackQueue(rate);
+    q.setAudible(true); q.setEnabled(true); q.setSpeaking(true);
+    let seed = 17;
+    const noise = Float32Array.from({ length: rate }, () => {
+      seed = (Math.imul(seed, 1664525) + 1013904223) >>> 0;
+      return (seed / 0x100000000 - .5) * .006;
+    });
+    for (let seconds = 0; seconds < 6; seconds++) q.process(noise);
+    expect(q.pending).toBe(false);
+    q.clear();
+    const onset = noise.slice(0, rate * .03);
+    const speech = Float32Array.from({ length: rate / 2 }, (_, i) => (strong ? .1 : 0) + .004 * Math.sin(i * 2 * Math.PI * 125 / rate + Math.PI / 6));
+    const consonant = noise.slice(0, rate * .2);
+    q.process(onset); q.process(speech); q.process(consonant); q.process(speech); q.process(onset);
+    q.setSpeaking(false);
+    const output = q.process(undefined, new Float32Array(rate * 2));
+    const received = Float32Array.from([...onset, ...speech, ...consonant, ...speech, ...onset]);
+    const start = output.findIndex(value => value !== 0);
+    expect(output.slice(start, start + received.length).every((sample, i) => sample === received[i])).toBe(true);
+    expect(q.pending).toBe(false);
+  });
+  it.each([16000, 44100, 48000].flatMap(rate => [100, 200, 230].flatMap(onsetMs =>
+    [false, true].flatMap(warm => [.003, .008].map(amplitude => ({ rate, onsetMs, warm, amplitude }))))))(
+    "preserves $onsetMs ms broadband onset at $rate Hz, warm=$warm, amplitude=$amplitude", ({ rate, onsetMs, warm, amplitude }) => {
+      const q = new PlaybackQueue(rate);
+      q.setAudible(true); q.setEnabled(true); q.setSpeaking(true);
+      q.setAudible(false); q.setAudible(true);
+      const feed = (samples: Float32Array) => {
+        for (let i = 0; i < samples.length; i += 128) q.process(samples.subarray(i, i + 128));
+      };
+      let seed = 29;
+      const noise = (length: number, level: number) => Float32Array.from({ length }, () => {
+        seed = (Math.imul(seed, 1664525) + 1013904223) >>> 0;
+        return (seed / 0x100000000 - .5) * level * 2;
+      });
+      if (warm) feed(noise(rate * 6 + 128, .003));
+      expect(q.pending).toBe(false);
+      const onset = noise(rate * onsetMs / 1000, amplitude);
+      const vowel = Float32Array.from({ length: rate / 4 }, (_, i) => .004 * Math.sin(i * 2 * Math.PI * 125 / rate + Math.PI / 5));
+      feed(onset); feed(vowel);
+      q.setSpeaking(false);
+      const output = q.process(undefined, new Float32Array(rate * 2));
+      const vowelAt = output.findIndex((sample, i) => sample === vowel[0] && output[i + 1] === vowel[1]);
+      expect(vowelAt).toBeGreaterThanOrEqual(onset.length + rate * .3);
+      expect(output.slice(vowelAt - onset.length, vowelAt).every((sample, i) => sample === onset[i])).toBe(true);
+      expect(output.slice(vowelAt, vowelAt + vowel.length).every((sample, i) => sample === vowel[i])).toBe(true);
+      expect(q.pending).toBe(false);
+    });
+  it.each([[16000, 100], [48000, 100], [16000, 200], [48000, 200]] as const)("preserves high-pass fricative onset at %s Hz, onset=%s ms", (rate, onsetMs) => {
+    const q = new PlaybackQueue(rate);
+    q.setAudible(true); q.setEnabled(true); q.setSpeaking(true);
+    let seed = 29;
+    const random = () => {
+      seed = (Math.imul(seed, 1664525) + 1013904223) >>> 0;
+      return (seed / 0x100000000 - .5) * .006;
+    };
+    const feed = (samples: Float32Array) => {
+      for (let i = 0; i < samples.length; i += 128) q.process(samples.subarray(i, i + 128));
+    };
+    feed(Float32Array.from({ length: rate * 6 }, random));
+    expect(q.pending).toBe(false);
+    let previous = 0;
+    const onset = Float32Array.from({ length: rate * onsetMs / 1000 }, () => {
+      const next = random(), value = next - previous;
+      previous = next;
+      return value;
+    });
+    const vowel = Float32Array.from({ length: rate / 4 }, (_, i) => .004 * Math.sin(i * 2 * Math.PI * 125 / rate + Math.PI / 5));
+    feed(onset); feed(vowel);
+    q.setSpeaking(false);
+    const output = q.process(undefined, new Float32Array(rate * 2));
+    const vowelAt = output.findIndex((sample, i) => sample === vowel[0] && output[i + 1] === vowel[1]);
+    expect(vowelAt).toBeGreaterThanOrEqual(onset.length + rate * .3);
+    expect(output.slice(vowelAt - onset.length, vowelAt).every((sample, i) => sample === onset[i])).toBe(true);
+    expect(output.slice(vowelAt, vowelAt + vowel.length).every((sample, i) => sample === vowel[i])).toBe(true);
+    expect(q.pending).toBe(false);
+  });
+  it.each([8000, 16000, 44100, 48000].flatMap(rate => [100, 200].flatMap(onsetMs =>
+    [10, 20].map(gapMs => ({ rate, onsetMs, gapMs })))))(
+    "retains $onsetMs ms broadband onset across $gapMs ms closure at $rate Hz", ({ rate, onsetMs, gapMs }) => {
+      const q = new PlaybackQueue(rate);
+      q.setAudible(true); q.setEnabled(true); q.setSpeaking(true);
+      let seed = 29;
+      const onset = Float32Array.from({ length: rate * onsetMs / 1000 }, () => {
+        seed = (Math.imul(seed, 1664525) + 1013904223) >>> 0;
+        return (seed / 0x100000000 - .5) * .006;
+      });
+      const gap = new Float32Array(rate * gapMs / 1000);
+      const vowel = Float32Array.from({ length: rate / 4 }, (_, i) => .004 * Math.sin(i * 2 * Math.PI * 125 / rate + Math.PI / 5));
+      const received = Float32Array.from([...onset, ...gap, ...vowel]);
+      for (let i = 0; i < received.length; i += 128) q.process(received.subarray(i, i + 128));
+      q.setSpeaking(false);
+      const output = q.process(undefined, new Float32Array(rate * 2));
+      const vowelAt = output.findIndex((sample, i) => sample === vowel[0] && output[i + 1] === vowel[1]);
+      const start = vowelAt - onset.length - gap.length;
+      expect(start).toBeGreaterThanOrEqual(rate * .3);
+      expect(output.slice(start, start + received.length).every((sample, i) => sample === received[i])).toBe(true);
+      expect(q.pending).toBe(false);
+    });
+  it.each([8000, 16000, 44100, 48000].flatMap(rate => [0, .002].map(level => ({ rate, level }))))(
+    "expires a provisional onset after long quiet/DC at $rate Hz, level=$level", ({ rate, level }) => {
+      const q = new PlaybackQueue(rate);
+      q.setAudible(true); q.setEnabled(true); q.setSpeaking(true);
+      let seed = 29;
+      const onset = Float32Array.from({ length: rate / 10 }, () => {
+        seed = (Math.imul(seed, 1664525) + 1013904223) >>> 0;
+        return (seed / 0x100000000 - .5) * .006;
+      });
+      const received = Float32Array.from([...onset, ...new Float32Array(rate / 2).fill(level)]);
+      for (let i = 0; i < received.length; i += 128) q.process(received.subarray(i, i + 128));
+      expect(q.pending).toBe(false);
+      const speech = new Float32Array(128).fill(.1);
+      q.process(speech); q.setSpeaking(false);
+      const output = q.process(undefined, new Float32Array(rate));
+      const start = output.findIndex(sample => sample > .05);
+      expect(start).toBe(Math.ceil(rate * .3) + Math.ceil(rate * .06));
+      expect(output.slice(start, start + speech.length).every((sample, i) => sample === speech[i])).toBe(true);
+      expect(q.pending).toBe(false);
+    });
+  it.each([16000, 44100, 48000])("bounds provisional broadband noise to 250 ms at %s Hz", rate => {
+    const q = new PlaybackQueue(rate);
+    q.setAudible(true); q.setEnabled(true); q.setSpeaking(true);
+    let seed = 29;
+    const noise = Float32Array.from({ length: rate * 6 }, () => {
+      seed = (Math.imul(seed, 1664525) + 1013904223) >>> 0;
+      return (seed / 0x100000000 - .5) * .006;
+    });
+    for (let i = 0; i < noise.length; i += 128) q.process(noise.subarray(i, i + 128));
+    expect(q.pending).toBe(false);
+    const speech = new Float32Array(128).fill(.1);
+    q.process(speech);
+    q.setSpeaking(false);
+    const output = q.process(undefined, new Float32Array(rate));
+    const start = output.findIndex(value => value > .05);
+    expect(start).toBe(Math.ceil(rate * .3) + Math.ceil(rate * .25));
+    expect(output.slice(start, start + speech.length).every((sample, i) => sample === speech[i])).toBe(true);
+    expect(q.pending).toBe(false);
+  });
+  it("keeps a claimed owner when the next caption arrives during a broadband onset", () => {
+    const rate = 48000;
+    const q = new PlaybackQueue(rate);
+    const played = vi.fn();
+    q.onPlaybackTurn = played;
+    q.setAudible(true); q.setEnabled(true); q.setSpeaking(true);
+    q.setTurn("A"); q.process(new Float32Array(rate / 10).fill(.1));
+    q.process(new Float32Array(rate));
+    let seed = 29;
+    const onset = Float32Array.from({ length: rate / 5 }, () => {
+      seed = (Math.imul(seed, 1664525) + 1013904223) >>> 0;
+      return (seed / 0x100000000 - .5) * .006;
+    });
+    for (let i = 0; i < onset.length; i += 128) {
+      if (i === 128 * 20) q.setTurn("B");
+      q.process(onset.subarray(i, i + 128));
+    }
+    q.process(new Float32Array(rate / 10).fill(.2));
+    q.setEnabled(false);
+    const output = q.process(undefined, new Float32Array(rate * 2));
+    const bAt = output.findIndex(sample => sample > .15);
+    expect(output.slice(bAt - onset.length, bAt).every((sample, i) => sample === onset[i])).toBe(true);
+    expect(played.mock.calls.filter(([, active]) => active).map(([turnId]) => turnId)).toEqual(["A", "B"]);
+    expect(q.pending).toBe(false);
+  });
+  it.each([1000, 48000])("eventually drains correlated low-energy receiver noise at %s Hz", rate => {
+    const q = new PlaybackQueue(rate);
+    q.setAudible(true); q.setEnabled(true); q.setSpeaking(true);
+    const noise = Float32Array.from({ length: rate }, (_, i) => .002 * Math.sin(i * 2 * Math.PI * 125 / rate));
+    for (let seconds = 0; seconds < 6; seconds++) q.process(noise);
+    q.setSpeaking(false);
+    for (let seconds = 0; seconds < 10; seconds++) q.process(noise);
+    expect(q.pending).toBe(false);
+  });
   it.each([1000, 48000])("adapts to decoder noise above the old cutoff at %s Hz", rate => {
     const q = new PlaybackQueue(rate, rate * 20);
     q.setAudible(true); q.setEnabled(true); q.setSpeaking(true);

@@ -1542,9 +1542,18 @@ export class SessionController {
       // Known language ownership takes precedence over unresolved-source fallback.
       // Several exact matches still need independent output; recency cannot choose one.
       const exact = candidates.filter(turn => turn.speaker === speaker);
-      const eligible = exact.length ? exact : candidates;
+      // The latest unresolved source competes with older matches even after its no-output timeout.
+      const hasCompetingUnresolvedSource = candidates.some(turn => turn.speaker === undefined &&
+        (turn.id === this.latestSourceTurnId || ((turn.status === "streaming" || turn.status === "outputting") &&
+        exact.every(match => match.status === "completed"))));
+      const eligible = exact.length && !hasCompetingUnresolvedSource
+        ? exact : candidates;
       let target = eligible.length === 1 && eligible[0]?.status !== "failed" ? eligible[0] : undefined;
       if (fragments.every(fragment => /^[\p{P}\s]+$/u.test(fragment.text))) target = this.findOutputContinuation(fragments);
+      else if (!target && fragments.every(fragment => fragment.startMs !== undefined)) {
+        const timed = this.findOutputContinuation(fragments);
+        if (timed?.speaker === speaker) target = timed;
+      }
       if (!target && continuation?.translationOnly && continuation.status !== "completed" &&
           continuation.speaker === speaker && this.outputSourceTurnId === this.latestSourceTurnId) target = continuation;
       for (const fragment of fragments) {
@@ -1572,6 +1581,8 @@ export class SessionController {
   private findOutputContinuation(fragments: TranscriptFragment[]): Turn | undefined {
     const eligible = this.routingTurns().filter(turn => turn.speaker !== undefined && turn.status !== "failed");
     if (fragments.every(fragment => fragment.startMs !== undefined)) {
+      // Text needs its full observed interval; standalone punctuation uses a point anchor.
+      const punctuation = fragments.every(fragment => /^[\p{P}\s]+$/u.test(fragment.text));
       const candidates = eligible.filter(turn => {
         const starts = (turn.outputFragments ?? []).flatMap(fragment => fragment.startMs === undefined ? [] : [fragment.startMs]);
         const ends = (turn.outputFragments ?? []).flatMap(fragment => {
@@ -1579,7 +1590,9 @@ export class SessionController {
           return timestamp === undefined ? [] : [timestamp];
         });
         return starts.length > 0 && ends.length > 0 && fragments.every(fragment =>
-          fragment.startMs! >= Math.min(...starts) && fragment.startMs! <= Math.max(...ends));
+          fragment.startMs! >= Math.min(...starts) && fragment.startMs! <= Math.max(...ends) &&
+          (punctuation || (fragment.endMs !== undefined && fragment.endMs >= fragment.startMs! &&
+            fragment.endMs <= Math.max(...ends))));
       });
       return candidates.length === 1 ? candidates[0] : undefined;
     }
