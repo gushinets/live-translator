@@ -1,5 +1,5 @@
 import { waitForIceComplete } from "../live/waitForIceComplete";
-import { acceptsConfiguration,parseRealtimeEvent,type RealtimeEvent,type RealtimePolicy } from "./RealtimeEvents";
+import { acceptsConfiguration,parseRealtimeEvent,type RealtimeEvent,type RealtimePolicy,type RealtimeUsageObservation } from "./RealtimeEvents";
 
 export class RealtimeBackend {
   async request<T>(path:string,method:string,body?:unknown,signal?:AbortSignal,keepalive=false):Promise<T> {
@@ -12,12 +12,12 @@ export class RealtimeBackend {
     }
     return (response.status === 204 ? undefined : await response.json()) as T;
   }
-  identity(signal:AbortSignal) { return this.request<void>("/identity","POST",{},signal); }
-  create(body:{attemptId:string;generation:number;sdp:string;languages:{A:string;B:string}},signal:AbortSignal) {
+  identity(attemptId:string,generation:number,signal:AbortSignal) { return this.request<{admissionToken:string}>("/identity","POST",{attemptId,generation},signal); }
+  create(body:{attemptId:string;generation:number;admissionToken:string;sdp:string;languages:{A:string;B:string}},signal:AbortSignal) {
     return this.request<{attemptId:string;sdp:string;expiresAt:number}>("/session","POST",body,signal);
   }
   cleanup(id:string) { return this.request<{state:string;closeConfirmed:boolean}>(`/session/${encodeURIComponent(id)}/cleanup`,"POST",{},undefined,true); }
-  usage(id:string,responseId:string,usage:object) { return this.request<void>(`/session/${encodeURIComponent(id)}/usage`,"PUT",{responseId,usage},undefined,true); }
+  usage(id:string,observation:RealtimeUsageObservation) { return this.request<void>(`/session/${encodeURIComponent(id)}/usage`,"PUT",observation,undefined,true); }
   handoff(id:string,signal:AbortSignal) {return this.request<void>(`/session/${encodeURIComponent(id)}/handoff`,"POST",{},signal);}
 }
 export interface RealtimeTransport {
@@ -26,7 +26,7 @@ export interface RealtimeTransport {
   connect(stream:MediaStream,languages:{A:string;B:string}):Promise<void>;
   send(event:object):void;
   close():Promise<{closeConfirmed:boolean;state:string}>;
-  reportUsage(responseId:string,usage:object):Promise<void>;
+  reportUsage(observation:RealtimeUsageObservation):Promise<void>;
 }
 
 /** One immutable attempt owns all callbacks, SDP, peer and server cleanup. */
@@ -38,7 +38,7 @@ export class RealtimeClient implements RealtimeTransport {
   private readonly abort = new AbortController();
   private started = false;
   private closed = false;
-  private identity:Promise<void>|undefined;
+  private identity:Promise<{admissionToken:string}>|undefined;
   private closeWork:Promise<{closeConfirmed:boolean;state:string}>|undefined;
   constructor(readonly attemptId:string,readonly generation:number,private readonly policy:RealtimePolicy,
     private readonly onRemote:(stream:MediaStream)=>Promise<void>,private readonly backend = new RealtimeBackend(),
@@ -62,7 +62,7 @@ export class RealtimeClient implements RealtimeTransport {
     void aborted.catch(() => undefined);
     const wait = <T>(work:Promise<T>) => Promise.race([work,aborted]);
     try {
-      this.identity = this.backend.identity(this.abort.signal); await wait(this.identity);
+      this.identity = this.backend.identity(this.attemptId,this.generation,this.abort.signal); const prepared=await wait(this.identity);
       const peer = this.peerFactory(); this.peer=peer;
       peer.onconnectionstatechange=()=> {
         if (!this.closed && ["failed","disconnected","closed"].includes(peer.connectionState)) {
@@ -95,7 +95,7 @@ export class RealtimeClient implements RealtimeTransport {
       await wait(peer.setLocalDescription(await wait(peer.createOffer())));
       await wait(waitForIceComplete(peer,10000));
       const sdp=peer.localDescription?.sdp; if (!sdp) throw new Error("offer_missing");
-      const result=await wait(this.backend.create({attemptId:this.attemptId,generation:this.generation,sdp,languages},this.abort.signal));
+      const result=await wait(this.backend.create({attemptId:this.attemptId,generation:this.generation,admissionToken:prepared.admissionToken,sdp,languages},this.abort.signal));
       if (result.attemptId !== this.attemptId) throw new Error("attempt_mismatch");
       await wait(peer.setRemoteDescription({type:"answer",sdp:result.sdp}));
       await wait(Promise.all([configured,media]));
@@ -107,7 +107,7 @@ export class RealtimeClient implements RealtimeTransport {
     if (this.closed || this.channel?.readyState !== "open") throw new Error("channel_not_ready");
     this.channel.send(JSON.stringify(event));
   }
-  reportUsage(responseId:string,usage:object) { return this.backend.usage(this.attemptId,responseId,usage); }
+  reportUsage(observation:RealtimeUsageObservation) { return this.backend.usage(this.attemptId,observation); }
   close():Promise<{closeConfirmed:boolean;state:string}> {
     if (this.closeWork) return this.closeWork;
     this.closed=true; this.abort.abort(); this.onEvent=this.onFailure=null;

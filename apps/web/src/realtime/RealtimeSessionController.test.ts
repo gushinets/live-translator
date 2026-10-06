@@ -4,12 +4,13 @@ import type { RealtimeEvent,RealtimePolicy } from "./RealtimeEvents";
 import type { RealtimeTransport } from "./RealtimeClient";
 import type { RealtimeAudioOutput } from "./RealtimePlayback";
 const policy:RealtimePolicy={enabled:true,model:"gpt-realtime-2.1",transcriptionModel:"gpt-4o-transcribe",promptVersion:"v1",schemaVersion:1,maxSessionMs:900000,
+  instructions:"Translate only",transcriptionPrompt:"Russian and English",maxOutputTokens:4096,
   vad:{type:"server_vad",threshold:.5,prefix_padding_ms:300,silence_duration_ms:700,create_response:false,interrupt_response:false}};
 function harness(options:{connect?:()=>Promise<void>;capture?:()=>Promise<void>}={}) {
   vi.useFakeTimers();
   const transport:RealtimeTransport={onEvent:null,onFailure:null,connect:vi.fn(options.connect??(async()=>{})),send:vi.fn(),
     close:vi.fn(async()=>({state:"closed",closeConfirmed:true})),reportUsage:vi.fn(async()=>{})};
-  const output:RealtimeAudioOutput={onStarted:null,onDrained:null,onFailure:null,pendingSamples:100,
+  const output:RealtimeAudioOutput={onPcmRendered:null,onDrained:null,onFailure:null,pendingSamples:100,
     prime:vi.fn(async()=>{}),attach:vi.fn(async()=>{}),begin:vi.fn(),hold:vi.fn(),seal:vi.fn(),dispose:vi.fn()};
   const track={enabled:true,stop:vi.fn()};
   const capture={onCaptureEnded:null,startCapture:vi.fn(options.capture??(async()=>{})),getCaptureStream:()=>({getAudioTracks:()=>[track]}) as unknown as MediaStream,
@@ -35,6 +36,39 @@ function harness(options:{connect?:()=>Promise<void>;capture?:()=>Promise<void>}
 }
 afterEach(()=>{vi.clearAllTimers();vi.useRealTimers();});
 describe("Realtime serialized conversation",()=> {
+  it("records ASR usage independently before translation, deduplicates and reports failed delivery honestly",async()=> {
+    const h=harness();await h.start();vi.mocked(h.transport.reportUsage).mockRejectedValue(new Error("offline"));
+    const event:RealtimeEvent={type:"conversation.item.input_audio_transcription.completed",item_id:"asr_only",content_index:0,transcript:"SECRET",
+      usage:{type:"tokens",total_tokens:9,input_tokens:6,output_tokens:3,input_token_details:{audio_tokens:6,text_tokens:0},private:"SECRET"}};
+    h.emit(event);h.emit(event);await Promise.resolve();await Promise.resolve();
+    expect(h.transport.send).not.toHaveBeenCalled();expect(h.transport.reportUsage).toHaveBeenCalledOnce();
+    expect(h.controller.exportDiagnostics().usage).toEqual([expect.objectContaining({operation:"transcription",itemId:"asr_only",contentIndex:0,
+      model:"gpt-4o-transcribe",delivery:"failed_best_effort",source:"provider_data_channel_via_browser",usage:{type:"tokens",total_tokens:9,input_tokens:6,output_tokens:3,input_token_details:{audio_tokens:6,text_tokens:0}}})]);
+    expect(JSON.stringify(h.controller.exportDiagnostics())).not.toContain("SECRET");
+    h.commit("asr_only");await h.tick();h.response("r1");await Promise.resolve();await Promise.resolve();
+    expect(h.controller.exportDiagnostics().usage.map(u=>[u.operation,u.model])).toEqual([["transcription","gpt-4o-transcribe"],["response","gpt-realtime-2.1"]]);
+    const old=h.transport.onEvent;await h.controller.endConversation();await h.start();old?.(event);
+    expect(h.controller.exportDiagnostics().usage).toEqual([]);await h.controller.endConversation();
+  });
+  it("keeps absent usage unknown and isolates a late upload failure from the next generation",async()=> {
+    const h=harness();await h.start();let reject!:(error:Error)=>void;
+    vi.mocked(h.transport.reportUsage).mockImplementationOnce(()=>new Promise((_resolve,r)=>{reject=r;}));
+    h.text("unknown","Hello");expect(h.controller.exportDiagnostics().usage).toEqual([]);
+    h.commit("a");await h.tick();h.response("r1");await h.controller.endConversation();await h.start();
+    reject(new Error("late offline"));await Promise.resolve();await Promise.resolve();
+    expect(h.controller.exportDiagnostics().usage).toEqual([]);expect(h.controller.exportDiagnostics().events.some(e=>e.name.includes("usage_delivery"))).toBe(false);
+    await h.controller.endConversation();
+  });
+  it("keeps acoustic playback unknown and estimates output only for an acknowledged current request",async()=> {
+    const h=harness();await h.start();h.commit("a");await h.tick();const id=h.controller.items.get("a")!.requestId!;
+    h.output.onPcmRendered?.(id);expect(h.controller.items.get("a")!.firstNonzeroPcmAtMs).toBeUndefined();
+    h.response("r1");h.output.onPcmRendered?.("old");expect(h.controller.items.get("a")!.firstNonzeroPcmAtMs).toBeUndefined();
+    h.output.onPcmRendered?.(id);expect(h.controller.activityLabel).toContain("оценка");
+    expect(h.controller.items.get("a")!.turn.audioOutputStarted).toBe(false);
+    expect(h.controller.exportDiagnostics().items[0]).toMatchObject({acousticPlaybackStart:"unknown"});
+    expect(h.controller.exportDiagnostics().events.some(e=>e.name==="local_playback_started")).toBe(false);
+    await h.controller.endConversation();
+  });
   it("never reports an active attempt closed, records final-only output and terminal interruption",async()=> {
     const h=harness();await h.start();expect(h.controller.exportDiagnostics().cleanup).toEqual({state:"active",closeConfirmed:false});
     h.commit("a");await h.tick();
@@ -84,7 +118,7 @@ describe("Realtime serialized conversation",()=> {
   });
   it("preserves hold, waits for generation + buffer stopped + actual drain",async()=> {
     const h=harness();await h.start();h.commit("a");await h.tick();h.response("r1");
-    h.output.onStarted?.(h.controller.items.get("a")!.requestId!);
+    h.output.onPcmRendered?.(h.controller.items.get("a")!.requestId!);
     h.speech("b",true);expect(h.output.hold).toHaveBeenLastCalledWith(true);h.commit("b");await h.tick();expect(h.transport.send).toHaveBeenCalledTimes(1);
     h.speech("b",false);expect(h.output.hold).toHaveBeenLastCalledWith(false);
     expect(h.transport.send).toHaveBeenCalledTimes(1);expect(h.output.dispose).not.toHaveBeenCalled();

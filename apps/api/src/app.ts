@@ -17,7 +17,7 @@ import { createLiveSessionRouter } from "./routes/liveSession.js";
 import { createRealtimeRouter } from "./routes/realtime.js";
 import { RealtimeAttempts, openRealtimeDatabase } from "./accounting/RealtimeAttempts.js";
 import type { RealtimeCallCreator, RealtimeCallCloser } from "./openai/realtimeCall.js";
-import { REALTIME_VAD, REALTIME_PROMPT_VERSION } from "./openai/realtimeCall.js";
+import { REALTIME_VAD, REALTIME_PROMPT_VERSION, realtimeConfiguration } from "./openai/realtimeCall.js";
 import {
   SessionLeaseRegistry,
   type LeaseRegistry,
@@ -67,7 +67,9 @@ export function createApp(dependencies: AppDependencies = {}) {
   app.get("/api/policy", (_req, res) => res.json({ usageLedgerEnabled: enabled, backgroundSessionCloseEnabled: enabled && apiConfig.backgroundSessionCloseEnabled, creationPaused: !enabled && retainLedger, schemaVersion: 1,
     realtime: { enabled: realtimeEnabled && (enabled || !retainLedger), model: apiConfig.realtimeModel,
       transcriptionModel: apiConfig.realtimeTranscriptionModel, vad: REALTIME_VAD, promptVersion: REALTIME_PROMPT_VERSION,
-      schemaVersion: 1, maxSessionMs: Math.min(apiConfig.maxProviderSessionMs,apiConfig.maxConversationElapsedMs,apiConfig.leaseMs) } }));
+      instructions:realtimeConfiguration().instructions,transcriptionPrompt:realtimeConfiguration().audio?.input?.transcription?.prompt,
+      maxOutputTokens:realtimeConfiguration().max_output_tokens,
+      schemaVersion: 2, maxSessionMs: Math.min(apiConfig.maxProviderSessionMs,apiConfig.maxConversationElapsedMs,apiConfig.leaseMs) } }));
   if (retainLedger) {
     const ledger = dependencies.ledger ?? new UsageLedger(openUsageDatabase(apiConfig.usageDbPath), { policy: {
       ...DEFAULT_LEDGER_POLICY, conversationRetentionMs: apiConfig.conversationRetentionMs,

@@ -17,7 +17,8 @@ is loaded only after selection, ends on hidden/pagehide, and cannot resume.
 
 The server chooses gpt-realtime-2.1, gpt-4o-transcribe, marin and server_vad
 (0.5 / 300 ms / 700 ms, create_response=false, interrupt_response=false).
-The browser enables its sender only after checking the effective session.
+The browser enables its sender only after checking the effective session,
+including translate-only instructions, ASR prompt, empty tools and token ceiling.
 Responses use conversation=none, one committed item_reference and correlation
 metadata. No history is translated again, and no automatic retry creates a
 second response after an uncertain result.
@@ -25,8 +26,9 @@ second response after an uncertain result.
 A separate additive SQLite attempt table stores Realtime lifecycle and raw
 token usage. It shares admission with Live, identity, origin and creation rate
 limits, but never records tokens as Live seconds. Hangup success is recorded
-separately from unknown create/close outcomes. Known calls have bounded expiry
-and retrying cleanup; unknown calls without a returned ID cannot be hung up.
+separately from unknown create/close outcomes. Product expiry triggers cleanup;
+all unconfirmed dispatched calls retain admission until confirmed hangup,
+including unknown calls without an ID. Their registry reservations do not expire.
 
 Remote PCM uses an unfiltered bounded FIFO. Hold stops dequeue, not capture.
 Generation completion, provider output-buffer completion and local drain are
@@ -46,13 +48,26 @@ Realtime cannot resume after hidden/reload or change languages during a call.
 ELD is a local source-text estimate; short/mixed captions can remain unresolved.
 There is no diarization. Serial generation includes any held PCM drain and a
 one-second media tail. This bounds attribution but adds latency and cannot prove
-that arbitrary late RTP is retained. Local playback timestamps measure render
-quanta, including silence, rather than sound at the listener.
+that arbitrary late RTP is retained. First nonzero PCM rendered is an activity
+estimate; acoustic playback start and exact RTP attribution remain unknown.
+Zero/absent quanta never establish output activity. No samples are filtered.
 
-Unknown calls without a returned ID retain their uncertain record and bounded
-admission reservation. Known-call cleanup retries six times with ten-second
-backoff; failed hangup never becomes a confirmed close. Browser-reported usage
-is a provider observation, not server-verified billing. Cost is not calculated.
+Unknown calls without a returned ID retain their uncertain record and fail-closed
+admission reservation, requiring reconciliation before reuse. The documented
+60-minute provider limit does not identify the start of a lost creation, so it is
+not used to release a slot. Known-call cleanup retries six times with ten-second
+backoff; failed hangup never becomes a confirmed close. Response and ASR usage
+are separate idempotent observations with their own models and correlation IDs.
+Browser delivery is best effort, with explicit failure status, not verified billing.
+Cost is not calculated.
+
+Creation is preceded by bounded preparation with a random admission nonce.
+Cleanup never inserts unknown IDs. Expired un-dispatched rows are pruned after
+60 seconds; create requires an existing prepared row and its current nonce, so
+deleting a cancellation fence cannot reactivate a delayed request. Historical
+usage records and dispatched unknown outcomes are retained. Location call IDs
+are persisted before awaiting SDP. Shutdown drains creation before abort, within
+the server's absolute budget; late callbacks cannot touch a closed database.
 
 ## Implementation and evidence
 

@@ -89,6 +89,7 @@ jobs:
       WEB_ORIGIN: https://livetranslator.example.test
       API_BIND_PORT: 13001
       WEB_BIND_PORT: 18081
+      VITE_BUILD_SHA: ${{ github.sha }}
 
     steps:
       - name: Checkout
@@ -102,6 +103,9 @@ jobs:
 
       - name: Build deployment images
         run: docker compose -f infra/docker-compose.yml build
+
+      - name: Verify source SHA in production web assets
+        run: docker compose -f infra/docker-compose.yml run --rm --no-deps --entrypoint sh web -c "grep -r -q '$VITE_BUILD_SHA' /srv/web/assets"
 
       - name: Verify ledger persistence in recreated production containers
         run: python3 infra/tests/test_ledger_persistence.py

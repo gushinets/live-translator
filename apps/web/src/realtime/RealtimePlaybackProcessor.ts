@@ -27,8 +27,10 @@ class RealtimePlaybackProcessor extends AudioWorkletProcessor {
     const output=outputs[0]?.[0]; if (!output) return !this.disposed;
     if (this.disposed || this.failed) {output.fill(0);return !this.disposed;}
     try {this.queue.process(inputs[0]?.[0],output);} catch {output.fill(0);this.fail();}
-    if (!this.drained && !this.queue.held && !this.started && (this.queue.capturing || this.queue.pendingSamples)) {
-      this.started=true;this.port.postMessage({type:"started",responseId:this.responseId});
+    // Observation only, not a response boundary or proof of acoustic playback.
+    // Every sample still reaches the queue: this is not a silence/RMS filter.
+    if (!this.drained && !this.queue.held && !this.started && output.some(sample=>sample!==0)) {
+      this.started=true;this.port.postMessage({type:"nonzero_pcm_rendered",responseId:this.responseId});
     }
     if (!this.drained && !this.queue.capturing && !this.queue.pendingSamples) {
       this.drained=true;this.port.postMessage({type:"drained",responseId:this.responseId});

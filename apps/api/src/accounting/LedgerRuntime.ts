@@ -8,7 +8,7 @@ import { UsageLedger } from "./UsageLedger.js";
 import { LedgerError, type AttemptInput, type CleanupReason } from "./types.js";
 
 type Creation = { controller: AbortController; promise: Promise<LiveSessionResponse>; safe: boolean; settled: boolean };
-async function boundedWait(work: Promise<unknown>, ms: number) {
+export async function boundedWait(work: Promise<unknown>, ms: number) {
   if (ms <= 0) return;
   let timer: ReturnType<typeof setTimeout> | undefined;
   await Promise.race([work, new Promise<void>(r => { timer = setTimeout(r, ms); })]);

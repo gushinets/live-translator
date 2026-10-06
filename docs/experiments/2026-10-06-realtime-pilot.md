@@ -45,7 +45,7 @@ SDP, ключи и полные provider payload туда не входят. С�
 | VAD | `server_vad`, threshold 0.5, prefix padding 300 ms, silence 700 ms |
 | auto response / interrupt response | false / false |
 | idle auto response | не включён |
-| prompt / schema | `realtime-translation-v1` / 1 |
+| prompt / schema | `realtime-translation-v1` / 2 |
 | output token ceiling | 4096 |
 | очередь | 16 ожидающих, 128 items за разговор, PCM 120 seconds |
 | ожидания | startup 30 s, source 60 s, commit 30 s, response/drain 90 s, item 180 s |
@@ -88,13 +88,46 @@ WebRTC media/data channel не дают точной границы PCM. Пос�
 оставлен консервативный хвост 1 s. FIFO-тест доказывает сохранность принятой
 последовательности, но не доказывает сохранность произвольно запоздавшего RTP.
 Эту границу, echo cancellation, задержку hold и поведение на реальном устройстве
-ещё нужно проверить. Render timestamps включают silence и не измеряют звук у уха.
+ещё нужно проверить. First nonzero PCM rendered — оценка активности вывода,
+не точная граница RTP и не звук у уха. Нулевой или отсутствующий вход не создаёт
+такое событие. Все семплы сохраняются; акустический playback start остаётся unknown.
 Сериализация и held backlog увеличивают задержку следующей реплики.
 
-Unknown create без call ID нельзя адресно закрыть. Admission reservation имеет
-конечный срок; запись остаётся unknown. Known-call cleanup делает до шести
-попыток с backoff 10 s. Browser usage помечен своим источником и не заменяет
-provider billing. Неизвестный usage не означает нулевую стоимость.
+Unknown create без call ID нельзя адресно закрыть. Product deadline инициирует
+cleanup, но не освобождает reservation: любой dispatched call с неподтверждённым
+hangup занимает глобальную и owner-квоту без TTL, включая restart и shared Live.
+Known-call cleanup делает до шести попыток с backoff 10 s; дальше требуется
+reconciliation. Generic 404 не подтверждает закрытие. Документация
+[session lifecycle](https://developers.openai.com/api/docs/guides/realtime-conversations#session-lifecycle-events)
+по состоянию на 2026-10-07 указывает максимум 60 минут, но не даёт нам время
+начала неизвестной сессии. Автоматическое освобождение по этому числу не используется.
+
+Usage хранится отдельно по операциям response и transcription, с моделью,
+attempt ID, response ID либо input item/content index, источником
+`provider_data_channel_via_browser`. ASR completion может прийти независимо от
+перевода; его usage тарифицируется по ASR-модели согласно
+[официальному событию](https://developers.openai.com/api/reference/resources/realtime/server-events#conversation.item.input_audio_transcription.completed).
+Сохраняются только числовые поля официальных token/duration вариантов.
+Лимиты на попытку: 128 responses и 4096 ASR parts (128 items × 32 parts).
+Usage до известного provider call отклоняется. Отсутствующий usage остаётся
+неизвестным, модели не суммируются и стоимость не вычисляется.
+Upload best effort: `sending`, `delivered`, `failed_best_effort`; автоматического
+outbox/retry нет. Это наблюдения браузера, не подтверждённый provider billing.
+
+Перед create сервер регистрирует prepared attempt с nonce. Cleanup неизвестного
+UUID возвращает 404 и ничего не записывает. Un-dispatched prepared/failed записи
+удаляются через 60 s, кроме исторических записей с usage. Create требует
+существующую prepared запись, её nonce и совпадающую generation; старый запрос
+не активируется после prune, включая повторную регистрацию того же UUID.
+Prepared-буфер ограничен 2048 строками и одной попыткой на owner. Независимые
+IP-лимиты в минуту: preparation 60, неизвестный cleanup 1000, usage 8192.
+Owned cleanup обходит cleanup limiter и остаётся доступен после creation 429.
+Call ID из Location сохраняется до чтения SDP; сбой записи удерживает ID в
+памяти для адресного закрытия и повторного сохранения. Полная недоступность
+хранилища до завершения процесса не позволяет гарантировать запись нового ID;
+durable unknown reservation всё равно остаётся fail closed.
+Shutdown прекращает admission, ограниченно дожидается create, затем abort и
+cleanup в одном бюджете; поздние callbacks не обращаются к закрытой SQLite.
 
 ## Автоматические проверки и саморевью
 
@@ -102,7 +135,7 @@ Baseline: первый sandbox-прогон 1829 passed / 26 failed из-за re
 DB `/data/...` вне workspace. С локальным **не существующим** USAGE_DB_PATH:
 1855 tests / 63 files passed. Это отдельный сбой окружения.
 
-После реализации и исправлений:
+Первоначальная реализация, HEAD `49a2bb1f`:
 
 - Unit: 1893 passed / 69 files.
 - Lint, typecheck, полный web/API build: passed.
@@ -140,6 +173,54 @@ DB `/data/...` вне workspace. С локальным **не существую
 baseline warnings: Vite chunk >500 kB, Vitest workspace deprecation, Node SQLite
 experimental warning. Новых зависимостей нет.
 
+## Исправления PR #36 от 2026-10-07
+
+Исходный HEAD: `49a2bb1f800902b15394be8218484a9a01b662e8`; baseline 1893/69 passed.
+Все 13 первоначальных inline threads актуальны и исправлены. Репродукционные
+вложения из задания отсутствовали: доступен только текст. Их hashes не менялись;
+контрпримеры перенесены в обычные тесты реальных adapter/SQLite/registry/worklet/
+controller классов с mocks только на внешних границах. До исправления четыре
+проверки ID/reservation/пустого PCM падали; журнал `.data/pr36-review-red.log`.
+
+| Замечание | Исправление и подтверждение |
+|---|---|
+| P1 Location ID | callback до `response.text`; реальный adapter + SQLite: rejected SDP, failed hangup/retry, Cancel после headers, transient DB failure |
+| P1 reservation | product expiry запускает cleanup; unconfirmed call удерживает owner/global slot; capacity=1, restart, unknown ID, реальный LedgerRuntime и legacy Live route |
+| P2 playback | событие nonzero PCM rendered и явная оценка; настоящий worklet под mock globals: absent/zero input, hold и тихий семпл `1e-9`; controller не ставит acoustic start |
+| P2 ASR usage | completion usage независимо от response; разные model/kind/key, duplicate/late generation, ASR без перевода, unknown usage и failed upload |
+| Anonymous writes / bounded storage | unknown cleanup без INSERT, подготовка с nonce/TTL/cap, запрет pre-dispatch usage, 128/4096 usage cap; prune не снимает fence старого create |
+| Shutdown | bounded drain до abort, один lifecycle budget, поздний create после SQLite close безопасен |
+| Unknown ASR subtype | segment игнорируется до проверки полей известных subtype; malformed completed по-прежнему отклоняется |
+| Semantic startup | type, instructions, tools, token ceiling, ASR prompt/no fixed language проверяются до handoff/mic |
+| Compose / build SHA | REALTIME_* передаются API; SHA передаётся в web build ARG/ENV, Dockerfile отклоняет unknown, CI проверяет SHA в готовых assets |
+| Команды | пути относительно корня репозитория; deployment экспортирует SHA текущего исходного коммита |
+| Upload status | явный `failed_best_effort`; нет фиктивного pending и обещания retry |
+
+Регрессии: `apps/api/test/realtimeReview.test.ts`, `apps/api/test/realtime.test.ts`,
+`apps/web/src/realtime/RealtimePlaybackProcessor.test.ts`, `RealtimeClient.test.ts`
+и `RealtimeSessionController.test.ts`. Пройдены lint, typecheck, full build,
+1922 unit tests / 71 files; full E2E 106 passed / 3 skipped; synthetic audio
+5 passed Chromium / 5 skipped Windows WebKit; Compose interpolation 4 passed.
+Production API smoke: health/policy 200, ledger + Realtime включены, fake key и
+временная база. Read-only models.list: 200, все три модели видимы.
+Local Docker image build/persistence не запускались: Docker daemon отсутствует;
+их проверяет deployment job CI. Текущий HEAD/checks и ответы по каждому thread
+фиксируются в самом [PR #36](https://github.com/gushinets/live-translator/pull/36)
+после push; зелёные проверки исходного HEAD не используются как подтверждение.
+
+Саморевью выявило дополнительно: временный lease legacy-режима не освобождался
+после восстановления storage и успешного emergency hangup; исправлен release
+обоих возможных lease bindings и добавлен assert activeLeases=0. Старые usage
+строки могли блокировать prune по foreign key; они сохранены, migration additive
+проверена `foreign_key_check`/`integrity_check`. Закрытая/истёкшая попытка не
+возвращает late SDP; первый PCM timestamp не меняется при повторном callback.
+
+Docstring coverage warning CodeRabbit рассмотрен как рекомендация по оформлению:
+контрпримера поведения он не содержит. Ownership, admission, usage и PCM
+инварианты описаны в коде и ADR; шаблонные docstrings ради процента не добавлены.
+Warning не объявляется исправленным. Платный voice smoke, реальный микрофон и
+физический телефон не проверены: разрешения/бюджета нет, adb devices пуст.
+
 ## Команды Windows / PowerShell
 
 Из корня репозитория, Node 24 и pnpm 10.34.1:
@@ -153,7 +234,7 @@ API — отдельное окно/процесс. Используется с�
 только процессу, ledger и recovery не выключаются:
 
 ```powershell
-Set-Location D:\Work\AI\AnytoolAI\LiveTranslator\apps\api
+Set-Location apps/api # из корня репозитория
 $env:REALTIME_PILOT_ENABLED='true'
 node --env-file-if-exists=../../.env ./node_modules/tsx/dist/cli.mjs watch src/server.ts
 ```
@@ -161,7 +242,7 @@ node --env-file-if-exists=../../.env ./node_modules/tsx/dist/cli.mjs watch src/s
 Preview — другое окно/процесс:
 
 ```powershell
-Set-Location D:\Work\AI\AnytoolAI\LiveTranslator\apps\web
+Set-Location apps/web # из корня репозитория, в другом окне
 node node_modules/vite/bin/vite.js preview --host 127.0.0.1 --port 5173 --strictPort
 ```
 
@@ -178,7 +259,7 @@ ledger/recovery/proxy переменные. Секреты сюда не коп�
 При отсутствии pnpm CLI binaries сборка web:
 
 ```powershell
-Set-Location D:\Work\AI\AnytoolAI\LiveTranslator\apps\web
+Set-Location apps/web # из корня репозитория
 node ../../node_modules/typescript/bin/tsc --noEmit -p tsconfig.build.json
 node node_modules/vite/bin/vite.js build
 ```

@@ -6,7 +6,7 @@ import type { Side,Turn } from "../conversation/Turn";
 import { detectLanguage } from "../side/SideResolver";
 import { RealtimeClient,type RealtimeTransport } from "./RealtimeClient";
 import { RealtimePlayback,type RealtimeAudioOutput } from "./RealtimePlayback";
-import { tokenUsage,type RealtimeEvent,type RealtimePolicy } from "./RealtimeEvents";
+import { tokenUsage,transcriptionUsage,type RealtimeUsageObservation,type RealtimeEvent,type RealtimePolicy } from "./RealtimeEvents";
 
 export interface SourceItem {
   localId:string;itemId:string;committed:boolean;contents:Map<number,{text:string;final:boolean;failed:boolean}>;
@@ -14,6 +14,7 @@ export interface SourceItem {
   requestState:"queued"|"requested"|"acknowledged"|"completed"|"failed"|"unknown";
   committedAt?:number;firstSourceTextAtMs?:number;generationDone:boolean;bufferStopped:boolean;drained:boolean;
   outputContents:Map<string,{text:string;final:boolean}>;
+  firstNonzeroPcmAtMs?:number; localPcmDrainedAtMs?:number;
 }
 type Capture = Pick<AudioController,"startCapture"|"getCaptureStream"|"setCaptureEnabled"|"dispose"|"onCaptureEnded">;
 interface Attempt {
@@ -68,7 +69,7 @@ export class RealtimeSessionController implements ProductSession {
   private held=false;
   private disposed=false;
   private events:Array<{name:string;elapsedMs:number;itemId?:string;responseId?:string;providerAudioMs?:number;category?:string;state?:string;activity?:string}>=[];
-  private usage:Array<{responseId:string;usage:object}>=[];
+  private usage:Array<RealtimeUsageObservation & {attemptId:string;generation:number;model:string;source:string;delivery:"sending"|"delivered"|"failed_best_effort"}>=[];
   private cleanup={state:"not_dispatched",closeConfirmed:true};
   private startAt=0;
   private wallStartedAt:string|undefined;
@@ -115,13 +116,13 @@ export class RealtimeSessionController implements ProductSession {
     transport.onFailure=category=>{if(this.valid(attempt))this.fail(category);};
     capture.onCaptureEnded=()=>{if(this.valid(attempt))this.fail("microphone_ended");};
     output.onFailure=category=>{if(this.valid(attempt))this.fail(category);};
-    output.onStarted=id=> {
-      if(!this.valid(attempt)||this.active?.requestId!==id)return;
-      this.active.turn.audioOutputStarted=true;this.trace("local_playback_started",this.active);this.update();
+    output.onPcmRendered=id=> {
+      if(!this.valid(attempt)||this.active?.requestId!==id||!this.active.responseId||this.active.firstNonzeroPcmAtMs!==undefined)return;
+      this.active.firstNonzeroPcmAtMs=this.now();this.trace("local_nonzero_pcm_rendered_estimate",this.active);this.update();
     };
     output.onDrained=id=> {
       if(!this.valid(attempt)||this.active?.requestId!==id)return;
-      this.active.drained=true;this.active.turn.playbackEndAtMs=this.now();
+      this.active.drained=true;this.active.localPcmDrainedAtMs=this.now();
       this.trace("local_playback_drained",this.active);this.finishResponse();this.update();
     };
     this.trace("attempt_started",undefined,{state:this.session.state});
@@ -193,7 +194,11 @@ export class RealtimeSessionController implements ProductSession {
       } else if(event.type==="conversation.item.input_audio_transcription.delta" || event.type==="conversation.item.input_audio_transcription.completed" || event.type==="conversation.item.input_audio_transcription.failed") {
         const item=this.item(event.item_id),part=item.contents.get(event.content_index)??{text:"",final:false,failed:false};
         if(event.type.endsWith("failed")) {part.failed=true;part.final=true;this.trace("transcription_failed",item);}
-        else if("transcript" in event) {part.text=event.transcript;part.final=true;}
+        else if("transcript" in event) {
+          part.text=event.transcript;part.final=true;
+          const usage=transcriptionUsage(event.usage);
+          if(usage)this.observeUsage(attempt,item,{operation:"transcription",itemId:event.item_id,contentIndex:event.content_index,usage});
+        }
         else if("delta" in event && !part.final) part.text+=event.delta;
         if(part.text.length>16000)throw new Error("text_limit");
         item.contents.set(event.content_index,part);
@@ -216,9 +221,7 @@ export class RealtimeSessionController implements ProductSession {
           if(item.generationDone)return;
           item.generationDone=true;this.trace("generation_done",item);
           const usage=tokenUsage(event.response.usage);
-          if(usage) {this.usage.push({responseId:item.responseId,usage});void attempt.transport.reportUsage(item.responseId,usage).catch(()=> {
-            if(this.valid(attempt)){this.trace("usage_delivery_pending",item);this.notify();}
-          });}
+          if(usage)this.observeUsage(attempt,item,{operation:"response",responseId:item.responseId,usage});
           if(event.response.status!=="completed" || !event.response.output?.length) {
             item.requestState="failed";item.turn.status="failed";this.fail("response_failed_or_empty");return;
           }
@@ -254,6 +257,17 @@ export class RealtimeSessionController implements ProductSession {
       }
       this.update();this.schedule();
     } catch(error) {this.fail(error instanceof Error ? error.message:"protocol_error");}
+  }
+  private observeUsage(attempt:Attempt,item:SourceItem,observation:RealtimeUsageObservation) {
+    if(this.usage.some(old=>old.operation===observation.operation && ("responseId" in old && "responseId" in observation ? old.responseId===observation.responseId :
+      "itemId" in old && "itemId" in observation && old.itemId===observation.itemId && old.contentIndex===observation.contentIndex)))return;
+    const entry: (typeof this.usage)[number]={...observation,attemptId:attempt.id,generation:attempt.generation,
+      model:observation.operation==="response"?this.model:this.policy.transcriptionModel,source:"provider_data_channel_via_browser",delivery:"sending"};
+    this.usage.push(entry);
+    // ponytail: best effort delivery; no durable browser outbox in this pilot.
+    void attempt.transport.reportUsage(observation).then(()=>{entry.delivery="delivered";},()=>{entry.delivery="failed_best_effort";}).then(()=> {
+      if(this.lastAttemptId===attempt.id){if(entry.delivery==="failed_best_effort")this.trace("usage_delivery_failed_best_effort",item);this.notify();}
+    });
   }
   private sourceSide(text:string):Side|undefined {
     if(/[\p{Script=Cyrillic}]/u.test(text)&&/[\p{Script=Latin}]/u.test(text))return;
@@ -307,7 +321,7 @@ export class RealtimeSessionController implements ProductSession {
     });
     if(this.inputReady) {
       this.activityLabel=this.held&&this.active?"Перевод удержан · принимаю речь":this.speech.size?"Принимаю речь":
-        this.active?.turn.audioOutputStarted?"Воспроизведение перевода":this.active?"Генерация перевода":"Готов слушать";
+        this.active?.firstNonzeroPcmAtMs!==undefined?"Вывод аудио · оценка по PCM":this.active?"Генерация перевода":"Готов слушать";
       this.session={...this.session,state:this.active?"outputting":"listening"};
     }
     if(this.lastActivity!==this.activityLabel){this.lastActivity=this.activityLabel;this.trace("state_changed",undefined,{state:this.session.state,activity:this.activityLabel});}
@@ -362,11 +376,12 @@ export class RealtimeSessionController implements ProductSession {
     return {engine:this.engine,model:this.model,transcriptionModel:this.policy.transcriptionModel,buildSha:this.buildSha,
       vad:this.policy.vad,promptVersion:this.policy.promptVersion,schemaVersion:this.policy.schemaVersion,generation:this.generation,
       attemptId:this.lastAttemptId,wallStartedAt:this.wallStartedAt,clock:"client elapsed milliseconds; provider audio timestamps stored separately",
-      playbackClock:"AudioWorklet render quanta, including silence; not acoustic sound at the listener",
+      playbackClock:"First nonzero PCM rendered: activity estimate only; RTP attribution and acoustic playback start remain unknown",
       state:this.session.state,pendingItems:this.pending.length,pcmSamples:this.attempt?.output.pendingSamples??0,cleanup:this.cleanup,
       items:[...this.items.values()].map(i=>({localId:i.localId,inputItemId:i.itemId,requestId:i.requestId,responseId:i.responseId,
         outputItemIds:i.outputItemIds,requestState:i.requestState,side:i.turn.speaker,sideSource:i.turn.speaker?"local_text_estimate":"unknown",
         transcriptionStatus:[...i.contents.values()].some(p=>p.failed)?"failed":[...i.contents.values()].every(p=>p.final)&&i.contents.size?"completed":"pending",
+        firstNonzeroPcmAtMs:i.firstNonzeroPcmAtMs,localPcmDrainedAtMs:i.localPcmDrainedAtMs,acousticPlaybackStart:"unknown",
         generationDone:i.generationDone,bufferStopped:i.bufferStopped,drained:i.drained})),
       events:this.events,usage:this.usage,cost:"not calculated"};
   }

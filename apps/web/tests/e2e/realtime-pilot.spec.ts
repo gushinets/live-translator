@@ -8,6 +8,7 @@ declare global {
   }
 }
 const policy={enabled:true,model:"gpt-realtime-2.1",transcriptionModel:"gpt-4o-transcribe",promptVersion:"realtime-translation-v1",schemaVersion:1,maxSessionMs:900000,
+  instructions:"Translate only",transcriptionPrompt:"Russian and English",maxOutputTokens:4096,
   vad:{type:"server_vad",threshold:.5,prefix_padding_ms:300,silence_duration_ms:700,create_response:false,interrupt_response:false}};
 async function setup(page:Page,enabled=true) {
   const live=await MockLiveHarness.attach(page);
@@ -21,7 +22,7 @@ async function setup(page:Page,enabled=true) {
     let outputPort:((event:{data:unknown})=>void)|null=null,requestId="";
     const state:Window["__realtimeTest"]={sent:[],holds:[],captures:0,peerCreates:0,
       emit:event=>channel?.onmessage?.({data:JSON.stringify(event)}),
-      drain:()=>outputPort?.({data:{type:"drained",responseId:requestId}}),started:()=>outputPort?.({data:{type:"started",responseId:requestId}})};
+      drain:()=>outputPort?.({data:{type:"drained",responseId:requestId}}),started:()=>outputPort?.({data:{type:"nonzero_pcm_rendered",responseId:requestId}})};
     window.__realtimeTest=state;
     const originalCapture=navigator.mediaDevices.getUserMedia.bind(navigator.mediaDevices);
     navigator.mediaDevices.getUserMedia=async constraints=>{state.captures++;return originalCapture(constraints);};
@@ -54,8 +55,8 @@ async function setup(page:Page,enabled=true) {
       async setRemoteDescription(description:RTCSessionDescriptionInit) {
         if(description.sdp!=="mock-realtime-answer")return super.setRemoteDescription(description);
         this.ontrack?.({track:{kind:"audio"},streams:[await originalCapture({audio:true})]});
-        queueMicrotask(()=>state.emit({type:"session.created",session:{model:policy.model,output_modalities:["audio"],
-          audio:{input:{transcription:{model:policy.transcriptionModel},turn_detection:policy.vad},output:{voice:"marin"}}}}));
+        queueMicrotask(()=>state.emit({type:"session.created",session:{type:"realtime",instructions:policy.instructions,tools:[],max_output_tokens:policy.maxOutputTokens,model:policy.model,output_modalities:["audio"],
+          audio:{input:{transcription:{model:policy.transcriptionModel,prompt:policy.transcriptionPrompt},turn_detection:policy.vad},output:{voice:"marin"}}}}));
       }
     }
     Object.defineProperty(window,"AudioContext",{configurable:true,value:Context});
@@ -63,7 +64,7 @@ async function setup(page:Page,enabled=true) {
     Object.defineProperty(window,"RTCPeerConnection",{configurable:true,value:Peer});
   },{policy});
   await page.route("**/api/policy",route=>route.fulfill({json:{usageLedgerEnabled:false,realtime:{...policy,enabled}}}));
-  await page.route("**/api/realtime/identity",route=>route.fulfill({status:204}));
+  await page.route("**/api/realtime/identity",route=>route.fulfill({status:201,json:{admissionToken:"mock-ticket"}}));
   await page.route("**/api/realtime/session/*/cleanup",route=>route.fulfill({json:{state:"closed",closeConfirmed:true}}));
   await page.route("**/api/realtime/session/*/usage",route=>route.fulfill({status:204}));
   await page.route("**/api/realtime/session/*/handoff",route=>route.fulfill({status:204}));

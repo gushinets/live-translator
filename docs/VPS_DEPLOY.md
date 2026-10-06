@@ -193,6 +193,7 @@ docker compose --env-file .env -f infra/docker-compose.yml config --quiet
 Build and start:
 
 ```bash
+export VITE_BUILD_SHA=$(git rev-parse HEAD)
 docker compose --env-file .env -f infra/docker-compose.yml build
 docker compose --env-file .env -f infra/docker-compose.yml up -d
 ```
@@ -424,6 +425,7 @@ API image can reopen the ledger after this release. After selecting that
 known-good compatible revision:
 
 ```bash
+export VITE_BUILD_SHA=$(git rev-parse HEAD)
 docker compose --env-file .env -f infra/docker-compose.yml build
 docker compose --env-file .env -f infra/docker-compose.yml up -d
 ```

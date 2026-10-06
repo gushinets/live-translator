@@ -12,6 +12,10 @@ DEFAULTS = {
     "LIVE_SESSION_LEASE_MS": "900000",
     "LIVE_SESSION_RATE_LIMIT": "20",
     "LIVE_SESSION_RATE_WINDOW_MS": "600000",
+    "REALTIME_PILOT_ENABLED": "false",
+    "REALTIME_MODEL": "gpt-realtime-2.1",
+    "REALTIME_TRANSCRIPTION_MODEL": "gpt-4o-transcribe",
+    "REALTIME_DB_PATH": "/data/live-translator.sqlite.realtime",
 }
 
 
@@ -54,6 +58,10 @@ class AdmissionComposeTests(unittest.TestCase):
             "LIVE_SESSION_LEASE_MS": "120000",
             "LIVE_SESSION_RATE_LIMIT": "60",
             "LIVE_SESSION_RATE_WINDOW_MS": "300000",
+            "REALTIME_PILOT_ENABLED": "true",
+            "REALTIME_MODEL": "gpt-realtime-2.1",
+            "REALTIME_TRANSCRIPTION_MODEL": "gpt-4o-transcribe",
+            "REALTIME_DB_PATH": "/data/pilot.sqlite",
         }
         self.check_api_only(resolve_compose(settings), settings)
 
@@ -62,6 +70,11 @@ class AdmissionComposeTests(unittest.TestCase):
             with self.subTest(variable=name):
                 expected = {**DEFAULTS, name: ""}
                 self.check_api_only(resolve_compose({name: ""}), expected)
+
+    def test_web_build_forwards_explicit_source_sha(self):
+        sha = "0123456789abcdef" * 2 + "01234567"
+        services = resolve_compose({"VITE_BUILD_SHA": sha})
+        self.assertEqual(services["web"]["build"]["args"]["VITE_BUILD_SHA"], sha)
 
 
 if __name__ == "__main__":

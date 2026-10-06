@@ -2,10 +2,11 @@ export interface RealtimePolicy {
   enabled: boolean; model: string; transcriptionModel: string; vad: { type:"server_vad"; threshold:number;
     prefix_padding_ms:number; silence_duration_ms:number; create_response:false; interrupt_response:false };
   promptVersion:string; schemaVersion:number; maxSessionMs:number;
+  instructions:string; transcriptionPrompt:string; maxOutputTokens:number;
 }
 export interface EffectiveSession {
-  model?:string; output_modalities?:string[];
-  audio?: {input?: {transcription?:{model?:string};turn_detection?: Record<string,unknown>};output?:{voice?:string}};
+  type?:string; model?:string; output_modalities?:string[]; instructions?:string; tools?:unknown[]; max_output_tokens?:number|string;
+  audio?: {input?: {transcription?:{model?:string;prompt?:string;language?:string|null};turn_detection?: Record<string,unknown>};output?:{voice?:string}};
 }
 export interface ResponseInfo {
   id:string; status?:string; metadata?:Record<string,string>;
@@ -16,7 +17,7 @@ export type RealtimeEvent =
   | {type:"input_audio_buffer.speech_started"|"input_audio_buffer.speech_stopped";item_id:string;audio_start_ms?:number;audio_end_ms?:number}
   | {type:"input_audio_buffer.committed";item_id:string;previous_item_id?:string|null}
   | {type:"conversation.item.input_audio_transcription.delta";item_id:string;content_index:number;delta:string}
-  | {type:"conversation.item.input_audio_transcription.completed";item_id:string;content_index:number;transcript:string}
+  | {type:"conversation.item.input_audio_transcription.completed";item_id:string;content_index:number;transcript:string;usage?:unknown}
   | {type:"conversation.item.input_audio_transcription.failed";item_id:string;content_index:number}
   | {type:"response.created"|"response.done";response:ResponseInfo}
   | {type:"response.output_item.added";response_id:string;item:{id:string}}
@@ -54,9 +55,9 @@ export function parseRealtimeEvent(raw:string): RealtimeEvent | undefined {
     if (!id("item_id")) throw new Error("invalid_item");
     for(const key of ["audio_start_ms","audio_end_ms"])if(v[key]!==undefined && (typeof v[key]!=="number" || !Number.isFinite(v[key]) || (v[key] as number)<0))throw new Error("invalid_audio_clock");
   } else if (v.type.startsWith("conversation.item.input_audio_transcription.")) {
+    if (!["delta","completed","failed"].some(s => v.type === `conversation.item.input_audio_transcription.${s}`)) return;
     if (!id("item_id") || !index()) throw new Error("invalid_transcription");
     if (v.type.endsWith(".delta") && !text(v.delta) || v.type.endsWith(".completed") && !text(v.transcript)) throw new Error("invalid_transcription");
-    if (!["delta","completed","failed"].some(s => v.type === `conversation.item.input_audio_transcription.${s}`)) return;
   } else if (v.type === "response.output_audio_transcript.delta" || v.type === "response.output_audio_transcript.done") {
     if (!id("response_id") || !id("item_id") || !index() ||
       (v.type.endsWith("delta") ? !text(v.delta) : !text(v.transcript))) throw new Error("invalid_output");
@@ -70,20 +71,36 @@ export function parseRealtimeEvent(raw:string): RealtimeEvent | undefined {
 
 export function acceptsConfiguration(session:EffectiveSession,policy:RealtimePolicy):boolean {
   const vad = session.audio?.input?.turn_detection;
-  return session.model === policy.model && session.output_modalities?.length === 1 && session.output_modalities[0] === "audio" &&
+  return session.type==="realtime" && typeof policy.instructions==="string" && policy.instructions.length>0 &&
+    session.instructions===policy.instructions && Array.isArray(session.tools) && session.tools.length===0 &&
+    session.max_output_tokens===policy.maxOutputTokens && policy.maxOutputTokens===4096 &&
+    session.model === policy.model && session.output_modalities?.length === 1 && session.output_modalities[0] === "audio" &&
     session.audio?.input?.transcription?.model === policy.transcriptionModel &&
+    typeof policy.transcriptionPrompt==="string" && policy.transcriptionPrompt.length>0 && session.audio.input.transcription.prompt===policy.transcriptionPrompt &&
+    session.audio.input.transcription.language==null &&
     session.audio?.output?.voice === "marin" && !!vad && Object.entries(policy.vad).every(([key,value]) => vad[key] === value) &&
     vad.idle_timeout_ms == null;
 }
 
 /** Numeric provider token observations only; no speech or arbitrary payloads. */
-export function tokenUsage(raw:unknown):Record<string,unknown> | undefined {
+export function tokenUsage(raw:unknown,depth=0):Record<string,unknown> | undefined {
+  if(depth>2)return;
   if (!raw || typeof raw !== "object") return;
   const r = raw as Record<string,unknown>, result:Record<string,unknown> = {};
   const numericKeys = ["total_tokens","input_tokens","output_tokens","cached_tokens","text_tokens","audio_tokens","image_tokens"];
   for (const key of numericKeys) if (Number.isSafeInteger(r[key]) && (r[key] as number) >= 0) result[key] = r[key];
   for (const key of ["input_token_details","output_token_details","cached_tokens_details"]) {
-    if (r[key]) result[key] = tokenUsage(r[key]);
+    if (r[key]) result[key] = tokenUsage(r[key],depth+1);
   }
-  return result;
+  return Object.keys(result).length && (depth>0 || ["total_tokens","input_tokens","output_tokens"].every(key=>key in result))?result:undefined;
 }
+
+export function transcriptionUsage(raw:unknown):Record<string,unknown>|undefined {
+  if(!raw || typeof raw!=="object")return;
+  const r=raw as Record<string,unknown>;
+  if(r.type==="tokens") {const tokens=tokenUsage(raw);return tokens?{type:"tokens",...tokens}:undefined;}
+  if(r.type==="duration" && typeof r.seconds==="number" && Number.isFinite(r.seconds) && r.seconds>=0 && r.seconds<=3600)return {type:"duration",seconds:r.seconds};
+}
+export type RealtimeUsageObservation=
+  | {operation:"response";responseId:string;usage:object}
+  | {operation:"transcription";itemId:string;contentIndex:number;usage:object};

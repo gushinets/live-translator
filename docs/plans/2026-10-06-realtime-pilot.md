@@ -25,3 +25,10 @@ that environment. Reviewed implementation: 1893 passed / 69 files.
 Provider voice smoke and physical phone: not run. Read-only models.list returned
 HTTP 200 with Live, Realtime and transcription candidates visible. This is not
 a voice connection test. Details: [experiment report](../experiments/2026-10-06-realtime-pilot.md).
+
+PR #36 revision, 2026-10-07: 13 initial inline review threads inspected.
+Location-before-SDP cleanup, fail-closed shared reservations, honest PCM activity,
+separate ASR usage, semantic startup barrier, bounded preparation/usage, drain
+budget, Compose settings and production source SHA fixed with real-class tests.
+Revision baseline: 1893/69 passed. Current results and remaining physical/API
+limits are recorded in the experiment report; last-HEAD CI is checked on GitHub.

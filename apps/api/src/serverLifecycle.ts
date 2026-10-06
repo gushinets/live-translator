@@ -20,7 +20,8 @@ export function startApiServer(app: Express, options: { port: number; host?: str
     const httpClosed = new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve()));
     server.closeIdleConnections();
     let failure: unknown;
-    try { await Promise.all([runtimeStop, realtime?.shutdown()]); } catch (error) { failure = error; }
+    try { await Promise.all([runtimeStop, realtime?.shutdown({ drainMs: options.drainMs,
+      timeoutMs: Math.max(0, deadline - performance.now()) })]); } catch (error) { failure = error; }
     // Never keep a disconnected client socket alive after the bounded provider handoff/drain.
     server.closeAllConnections();
     const remaining = deadline - performance.now();

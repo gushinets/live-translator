@@ -1,6 +1,6 @@
 import workletUrl from "./RealtimePlaybackProcessor.ts?worker&url";
 export interface RealtimeAudioOutput {
-  onStarted:((id:string)=>void)|null;
+  onPcmRendered:((id:string)=>void)|null;
   onDrained:((id:string)=>void)|null;
   onFailure:((category:string)=>void)|null;
   readonly pendingSamples:number;
@@ -12,7 +12,7 @@ export interface RealtimeAudioOutput {
   dispose():void;
 }
 export class RealtimePlayback implements RealtimeAudioOutput {
-  onStarted:((id:string)=>void)|null=null;
+  onPcmRendered:((id:string)=>void)|null=null;
   onDrained:((id:string)=>void)|null=null;
   onFailure:((category:string)=>void)|null=null;
   pendingSamples=0;
@@ -39,7 +39,7 @@ export class RealtimePlayback implements RealtimeAudioOutput {
       node.onprocessorerror=()=>this.onFailure?.("pcm_processor_failed");
       node.port.onmessage=({data}:MessageEvent<{type:string;responseId?:string;value?:number}>)=> {
         if (this.disposed) return;
-        if (data.type==="started" && data.responseId) this.onStarted?.(data.responseId);
+        if (data.type==="nonzero_pcm_rendered" && data.responseId) this.onPcmRendered?.(data.responseId);
         if (data.type==="drained" && data.responseId) this.onDrained?.(data.responseId);
         if (data.type==="size") this.pendingSamples=data.value??0;
         if (data.type==="error") this.onFailure?.("pcm_limit");
@@ -69,7 +69,7 @@ export class RealtimePlayback implements RealtimeAudioOutput {
   seal() {this.node?.port.postMessage({type:"seal"});}
   dispose() {
     if (this.disposed) return;this.disposed=true;
-    this.onStarted=this.onDrained=this.onFailure=null;
+    this.onPcmRendered=this.onDrained=this.onFailure=null;
     if (this.decoder) {this.decoder.onerror=null;this.decoder.pause();this.decoder.srcObject=null;this.decoder=null;}
     this.source?.disconnect();this.source=null;
     if (this.stream) for (const track of this.stream.getTracks()) {track.onended=null;track.stop();}
