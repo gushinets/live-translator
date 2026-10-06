@@ -110,8 +110,12 @@ it.each(["'90s were great. Music was better.'", "'cause it was late. I left earl
   expect(sentences.slice(0, -1).join("")).toBe(source + " ");
 });
 
-it.each(["Veuillez ouvrir le site example.no.", 'Veuillez ouvrir le site "example.no".'])("keeps a canonical reply inside a contiguous hostname: %s", text => {
+it.each(["Veuillez ouvrir le site example.no.", 'Veuillez ouvrir le site "example.no".', "Visit example.no."])("keeps a canonical reply inside a contiguous hostname: %s", text => {
   expect(splitLanguageSentences(text, { A: "en", B: "fr" }, eld.newInstance())).toEqual([text]);
+});
+it("keeps a hostname after a Spanish web-page cue", () => {
+  const text = "Visite la página example.no.";
+  expect(splitLanguageSentences(text, { A: "en", B: "es" }, eld.newInstance())).toEqual([text]);
 });
 
 it("keeps a lowercase no-space reply separate from a preceding sentence", () => {
