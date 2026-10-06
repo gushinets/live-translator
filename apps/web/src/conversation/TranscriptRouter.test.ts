@@ -256,6 +256,8 @@ it.each([
 it.each([
   { prefix: "Veuillez ouvrir le site example.", suffix: "no." },
   { prefix: "Veuillez ouvrir le site www.documentation.", suffix: "no." },
+  { prefix: "Veuillez visiter www.documentation.", suffix: "no." },
+  { prefix: "Veuillez visiter https://documentation.", suffix: "no." },
   { prefix: 'Veuillez ouvrir le site "example.', suffix: 'no".' },
   { prefix: "Veuillez ouvrir le site (example.", suffix: "no)." },
 ])("keeps a canonical reply suffix on its hostname source: $prefix$suffix", ({ prefix, suffix }) => {
@@ -299,4 +301,10 @@ it("preserves a lowercase standalone reply in a new packet", () => {
   const router = new TranscriptRouter(), pair = { A: "en", B: "fr" };
   expect(router.push(fragment("Veuillez attendre."), pair)[0]?.side).toBe("B");
   expect(router.push(fragment("no."), pair, "B", "Veuillez attendre.")[0]).toMatchObject({ side: "A" });
+});
+
+it.each(["U.S.", "J.R.", "e.g."])("preserves a lowercase reply after a dotted abbreviation: %s", abbreviation => {
+  const router = new TranscriptRouter(), pair = { A: "en", B: "fr" };
+  const source = "Je vis aux " + abbreviation;
+  expect(router.push(fragment("no."), pair, "B", source)).toMatchObject([{ side: "A" }]);
 });

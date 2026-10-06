@@ -80,10 +80,10 @@ export function isDottedContinuation(before: string, after: string): boolean {
     /^(?=\p{Ll})\p{Script_Extensions=Latin}[\p{Script_Extensions=Latin}\p{M}\p{Nd}./_-]*[\p{Pe}\p{Pf}"']*\.?[\p{Pe}\p{Pf}"']*\s*$/u.test(after);
 }
 
-/** An existing dotted address or a web cue is positive token evidence. */
+/** A scheme, www prefix or web cue is positive address evidence; dotted initials are not. */
 function hasDottedTokenPrefix(before: string): boolean {
-  return /(?:https?:\/\/|[\p{Script_Extensions=Latin}\p{Nd}]\.)[\p{Script_Extensions=Latin}\p{M}\p{Nd}._-]+\.$/u.test(before) ||
-    /(?:^|\s)(?:site|website|domain|url|address|adresse|visit|página|pagina)\s+[\p{Ps}\p{Pi}"']*[\p{Script_Extensions=Latin}\p{M}\p{Nd}_-]+\.$/iu.test(before);
+  return /(?:https?:\/\/|(?:^|[\s\p{Ps}\p{Pi}"'])www\.)(?:[\p{Script_Extensions=Latin}\p{M}\p{Nd}_-]+\.)*$/iu.test(before) ||
+    /(?:^|\s)(?:site|website|domain|url|address|adresse|visit|página|pagina)\s+[\p{Ps}\p{Pi}"']*(?:[\p{Script_Extensions=Latin}\p{M}\p{Nd}_-]+\.)+$/iu.test(before);
 }
 
 /** Prefer explicit replies unless positive token or conflicting-language evidence exists. */
