@@ -5981,3 +5981,44 @@ it("retains timestamped late output for completed history beside a fresh unresol
   expect(controller.session.activeTurn?.translatedText).toBeUndefined();
   expect(controller.session.pendingTurns ?? []).toHaveLength(0);
 });
+
+it.each((["streaming", "outputting"] as const).flatMap(status => [undefined, 1600].map(startMs => ({ status, startMs }))))(
+  "keeps fresh output independent of pending same-speaker history, status=$status, timestamp=$startMs", async ({ status, startMs }) => {
+    vi.useFakeTimers(); vi.setSystemTime(0);
+    const { controller, live, audio } = createController();
+    await controller.startWithLanguages({ A: "en", B: "es" });
+    emitVoice(audio, true);
+    live.emit({ type: "session.input_transcript.delta", delta: "Sí.", start_ms: 0, end_ms: 500 });
+    const previousId = controller.session.activeTurn!.id;
+    if (status === "outputting") live.emit({ type: "session.output_transcript.delta", delta: "Yes.", start_ms: 600, end_ms: 900 });
+    live.emit({ type: "session.input_transcript.delta", delta: "No.", start_ms: 1000, end_ms: 1500 });
+    await vi.advanceTimersByTimeAsync(runtime.captionIdleMs);
+    const unresolvedId = controller.session.activeTurn!.id;
+    expect(unresolvedId).not.toBe(previousId);
+    expect(controller.session.activeTurn).toMatchObject({ speaker: undefined, originalText: "No." });
+    expect(controller.session.pendingTurns?.find(turn => turn.id === previousId)).toMatchObject({ speaker: "B", status });
+    live.emit({ type: "session.output_transcript.delta", delta: "Yes.", start_ms: startMs, end_ms: startMs === undefined ? undefined : 1900 });
+    expect(controller.session.pendingTurns?.find(turn => turn.id === previousId)?.translatedText).toBe(status === "outputting" ? "Yes." : undefined);
+    expect(controller.session.activeTurn).toMatchObject({ id: unresolvedId, speaker: undefined });
+    expect(controller.session.activeTurn?.translatedText).toBeUndefined();
+    expect(controller.session.pendingTurns?.find(turn => turn.translationOnly)).toMatchObject({ speaker: "B", translatedText: "Yes." });
+  });
+
+it("retains timestamped late output for pending history beside a fresh unresolved source", async () => {
+  vi.useFakeTimers(); vi.setSystemTime(0);
+  const { controller, live, audio } = createController();
+  await controller.startWithLanguages({ A: "en", B: "es" });
+  emitVoice(audio, true);
+  live.emit({ type: "session.input_transcript.delta", delta: "Sí.", start_ms: 0, end_ms: 500 });
+  const previousId = controller.session.activeTurn!.id;
+  live.emit({ type: "session.output_transcript.delta", delta: "Yes.", start_ms: 600, end_ms: 900 });
+  live.emit({ type: "session.input_transcript.delta", delta: "No.", start_ms: 1000, end_ms: 1500 });
+  await vi.advanceTimersByTimeAsync(runtime.captionIdleMs);
+  const unresolvedId = controller.session.activeTurn!.id;
+  expect(controller.session.pendingTurns?.find(turn => turn.id === previousId)?.status).toBe("outputting");
+  live.emit({ type: "session.output_transcript.delta", delta: "Yes.", start_ms: 600, end_ms: 900 });
+  expect(controller.session.pendingTurns?.find(turn => turn.id === previousId)?.translatedText).toBe("Yes.Yes.");
+  expect(controller.session.activeTurn).toMatchObject({ id: unresolvedId, speaker: undefined });
+  expect(controller.session.activeTurn?.translatedText).toBeUndefined();
+  expect(controller.session.pendingTurns?.some(turn => turn.translationOnly)).toBe(false);
+});

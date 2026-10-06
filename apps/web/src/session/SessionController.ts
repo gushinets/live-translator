@@ -1542,10 +1542,11 @@ export class SessionController {
       // Known language ownership takes precedence over unresolved-source fallback.
       // Several exact matches still need independent output; recency cannot choose one.
       const exact = candidates.filter(turn => turn.speaker === speaker);
-      const hasUnresolvedSource = candidates.some(turn => turn.speaker === undefined &&
-        (turn.status === "streaming" || turn.status === "outputting"));
-      // Completed history cannot identify a fresh unresolved source's output by language alone.
-      const eligible = exact.length && !(hasUnresolvedSource && exact.every(turn => turn.status === "completed"))
+      // The latest unresolved source competes with older matches, even while they are pending.
+      const hasCompetingUnresolvedSource = candidates.some(turn => turn.speaker === undefined &&
+        (turn.status === "streaming" || turn.status === "outputting") &&
+        (turn.id === this.latestSourceTurnId || exact.every(match => match.status === "completed")));
+      const eligible = exact.length && !hasCompetingUnresolvedSource
         ? exact : candidates;
       let target = eligible.length === 1 && eligible[0]?.status !== "failed" ? eligible[0] : undefined;
       if (fragments.every(fragment => /^[\p{P}\s]+$/u.test(fragment.text))) target = this.findOutputContinuation(fragments);
