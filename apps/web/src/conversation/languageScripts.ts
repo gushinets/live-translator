@@ -80,6 +80,18 @@ export function isDottedContinuation(before: string, after: string): boolean {
     /^(?=\p{Ll})\p{Script_Extensions=Latin}[\p{Script_Extensions=Latin}\p{M}\p{Nd}./_-]*[\p{Pe}\p{Pf}"']*\.?[\p{Pe}\p{Pf}"']*\s*$/u.test(after);
 }
 
+/** Prefer explicit replies unless the preceding label differs from its sentence language. */
+export function isDottedTokenContinuation(before: string, after: string, languages: ConversationLanguages,
+  detector: ReturnType<typeof eld.newInstance>): boolean {
+  const dotted = isDottedContinuation(before, after);
+  if (!dotted || shortReplyEvidence(after, languages) === undefined) return dotted;
+  const label = /([\p{Script_Extensions=Latin}\p{M}\p{Nd}_-]+)\.$/u.exec(before)?.[1];
+  if (!label) return false;
+  detector.setLanguageSubset([languages.A, languages.B]);
+  const context = detector.detect(languageDetectionSample(before)), token = detector.detect(label);
+  return !context.isReliable() || !token.isReliable() || context.language !== token.language;
+}
+
 /** Keep weak period prefixes and dotted tokens until language context is available. */
 export function splitLanguageSentences(text: string, languages: ConversationLanguages, detector: ReturnType<typeof eld.newInstance>): string[] {
   detector.setLanguageSubset([languages.A, languages.B]);
@@ -98,7 +110,7 @@ export function splitLanguageSentences(text: string, languages: ConversationLang
     const continuation = /^[\s\p{Ps}\p{Pi}"']*(?:\p{Nd}+|Dr|Mr|Mrs|Ms|Prof|Sr|Jr)\.\s*$/iu.test(sentence) ||
       /^[\s\p{Ps}\p{Pi}"']*\p{Lu}\.\s*$/u.test(sentence) ||
       (/^[\s\p{Ps}\p{Pi}"']*No\.\s*$/iu.test(sentence) && /^\s*\p{Nd}/u.test(next ?? ""));
-    const reply = continuation || (prefix && isDottedContinuation(candidates[index - 1]!, sentence))
+    const reply = continuation || (prefix && isDottedTokenContinuation(candidates[index - 1]!, sentence, languages, detector))
       ? undefined : shortReplyEvidence(sentence, languages);
     // Preserve standalone replies and leave room for new evidence in the detection sample.
     if (prefix && (reply !== undefined || prefix.length + sentence.length > 2000)) {
@@ -118,7 +130,7 @@ export function splitLanguageSentences(text: string, languages: ConversationLang
     if (continuation && reply === undefined &&
         (prefixScriptSide === undefined || prefixScriptSide === "ambiguous") && prefixCovered && !reliable(prefixEvidence)) continue;
     // Contiguous lowercase labels (including .no) belong to the dotted token before reply evidence.
-    if (next && isDottedContinuation(sentence, next) &&
+    if (next && isDottedTokenContinuation(sentence, next, languages, detector) &&
         covered(next) && !reliable(next)) continue;
     sentences.push(prefix); prefix = ""; prefixEvidence = ""; prefixCovered = true; prefixScriptSide = undefined;
   }

@@ -19,8 +19,26 @@ export function splitSentences(text: string): string[] {
     while (/[\s\p{Pe}\p{Pf}"']/u.test(text[before] ?? "")) before--;
     return /\p{Sentence_Terminal}/u.test(text[before] ?? "");
   };
+  // The shared scan never performs paired-opener lookahead unless explicitly supplied.
+  const scanQuoteBoundary = (char: string, index: number, pairedLevel: number,
+    startsPair?: (char: string, index: number) => boolean): number => {
+    const word = pairedLevel ? /^\s*[\p{L}\p{M}\p{N}]+/u.exec(text.slice(index + 1))?.[0] : undefined;
+    const wordClosing = word && text[index + 1 + word.length] === char ? index + 1 + word.length : -1;
+    let next = text.indexOf(char, index + 1);
+    while (next >= 0 && !(pairedLevel && /\p{Sentence_Terminal}/u.test(text[next + 1] ?? "")) &&
+        ((next !== wordClosing && /\p{Nd}/u.test(text[next - 1] ?? "")) || (char === "'" &&
+        ((next !== wordClosing && /[sS]/u.test(text[next - 1] ?? "")) ||
+         (/[\p{L}\p{Nd}]/u.test(text[next - 1] ?? "") && /[\p{L}\p{Nd}]/u.test(text[next + 1] ?? "")) ||
+         (leadingApostrophe.test(text.slice(next)) && !followsSentence(next) && !startsPair?.(char, next)))))) {
+        const lexical = char === "'" && !followsSentence(next) ? leadingApostrophe.exec(text.slice(next)) : null;
+        // A paired lexical word inside speech contributes neither quote boundary.
+        if (lexical && text[next + lexical[0].length] === char) next += lexical[0].length;
+        next = text.indexOf(char, next + 1);
+    }
+    return next;
+  };
   const startsPairedSentence = (char: string, index: number): boolean => {
-    const closing = text.indexOf(char, index + 1);
+    const closing = scanQuoteBoundary(char, index, 2);
     if (closing < 0) return false;
     const quoted = text.slice(index + 1, closing);
     return /[\p{L}\p{N}]/u.test(quoted) &&
@@ -31,21 +49,7 @@ export function splitSentences(text: string): string[] {
     const cacheKey = char + pairedLevel;
     let next = quoteBoundaries[cacheKey];
     if (next === undefined || (next >= 0 && next <= index)) {
-      const word = pairedLevel ? /^\s*[\p{L}\p{M}\p{N}]+/u.exec(text.slice(index + 1))?.[0] : undefined;
-      const wordClosing = word && text[index + 1 + word.length] === char ? index + 1 + word.length : -1;
-      next = text.indexOf(char, index + 1);
-      // Share one forward scan through lexical marks, including contractions.
-      while (next >= 0 && !(pairedLevel && /\p{Sentence_Terminal}/u.test(text[next + 1] ?? "")) &&
-          ((next !== wordClosing && /\p{Nd}/u.test(text[next - 1] ?? "")) || (char === "'" &&
-          ((next !== wordClosing && /[sS]/u.test(text[next - 1] ?? "")) ||
-           (/[\p{L}\p{Nd}]/u.test(text[next - 1] ?? "") && /[\p{L}\p{Nd}]/u.test(text[next + 1] ?? "")) ||
-           (leadingApostrophe.test(text.slice(next)) && !followsSentence(next) &&
-            !(pairedLevel === 1 && startsPairedSentence(char, next))))))) {
-        const lexical = char === "'" && !followsSentence(next) ? leadingApostrophe.exec(text.slice(next)) : null;
-        // A paired lexical word inside speech contributes neither quote boundary.
-        if (lexical && text[next + lexical[0].length] === char) next += lexical[0].length;
-        next = text.indexOf(char, next + 1);
-      }
+      next = scanQuoteBoundary(char, index, pairedLevel, pairedLevel === 1 ? startsPairedSentence : undefined);
       quoteBoundaries[cacheKey] = next;
     }
     return next;

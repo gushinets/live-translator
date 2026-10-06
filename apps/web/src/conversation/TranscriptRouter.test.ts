@@ -272,8 +272,15 @@ it.each([
   { text: "No.", expected: [{ side: "A", text: "No." }] },
   { text: "Veuillez ouvrir le site. no.", expected: [{ side: "B", text: "Veuillez ouvrir le site. " }, { side: "A", text: "no." }] },
   { text: "Veuillez ouvrir le site.No.", expected: [{ side: "B", text: "Veuillez ouvrir le site." }, { side: "A", text: "No." }] },
+  { text: "Veuillez attendre.no.", expected: [{ side: "B", text: "Veuillez attendre." }, { side: "A", text: "no." }] },
 ])("preserves a standalone canonical reply outside a dotted token: $text", ({ text, expected }) => {
   const router = new TranscriptRouter(), pair = { A: "en", B: "fr" };
   const groups = [...router.push(fragment(text), pair), ...router.flush(pair, true)];
   expect(groups.map(group => ({ side: group.side, text: group.fragments.map(part => part.text).join("") }))).toEqual(expected);
+});
+
+it("preserves a lowercase standalone reply in a new packet", () => {
+  const router = new TranscriptRouter(), pair = { A: "en", B: "fr" };
+  expect(router.push(fragment("Veuillez attendre."), pair)[0]?.side).toBe("B");
+  expect(router.push(fragment("no."), pair, "B", "Veuillez attendre.")[0]).toMatchObject({ side: "A" });
 });

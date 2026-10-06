@@ -46,6 +46,8 @@ it.each([
 
 it.each([
   { text: "He said 'Goodbye.' and then 'Hello.'", expected: ["He said 'Goodbye.' ", "and then 'Hello.'"] },
+  { text: "He said 'Goodbye.' and then 'I'm here.'", expected: ["He said 'Goodbye.' ", "and then 'I'm here.'"] },
+  { text: "He said 'Goodbye.' and then 'rock 'n' roll.'", expected: ["He said 'Goodbye.' ", "and then 'rock 'n' roll.'"] },
   { text: "He said 'Goodbye.' La estación está cerca del supermercado, dijo 'Sí.'", expected: ["He said 'Goodbye.' ", "La estación está cerca del supermercado, dijo 'Sí.'"] },
   { text: "He said 'Are you sure (really?)' 'Sí.'", expected: ["He said 'Are you sure (really?)' ", "'Sí.'"] },
   { text: "He said 'She said “hello.”' 'Sí.'", expected: ["He said 'She said “hello.”' ", "'Sí.'"] },
@@ -110,6 +112,11 @@ it.each(["'90s were great. Music was better.'", "'cause it was late. I left earl
 
 it.each(["Veuillez ouvrir le site example.no.", 'Veuillez ouvrir le site "example.no".'])("keeps a canonical reply inside a contiguous hostname: %s", text => {
   expect(splitLanguageSentences(text, { A: "en", B: "fr" }, eld.newInstance())).toEqual([text]);
+});
+
+it("keeps a lowercase no-space reply separate from a preceding sentence", () => {
+  expect(splitLanguageSentences("Veuillez attendre.no.", { A: "en", B: "fr" }, eld.newInstance()))
+    .toEqual(["Veuillez attendre.", "no."]);
 });
 
 it.each(["I stayed 'cept.", "I waited 'neath.", "I said 'scuse.", "I waited 'nęath.", "I left 'Cause it was late.", "I stayed 'CEPT.", "I looked 'Round.", "I loved the '90S.", "'Cause it was late."])("keeps unlisted leading elisions separate from quoted replies: %s", source => {
