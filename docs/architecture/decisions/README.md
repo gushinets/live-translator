@@ -8,6 +8,7 @@ ADR отвечает на вопрос «почему», [спецификаци
 | 0002 | [SQLite ledger и раздельное качество измерений](0002-usage-ledger-and-quality.md) | proposed | этапы 2–3 merged (#15, #17, #18); этап 6 in-progress |
 | 0003 | [Закрывать provider при hidden, сохранять продуктовый разговор](0003-background-close-and-resume.md) | proposed | этапы 4–5 merged (#19, #20, #21); этап 6 in-progress |
 | 0004 | [Граница серверной authority и metadata-only privacy](0004-mvp-authority-and-privacy.md) | proposed | этапы 1–5 merged (#14, #15, #17, #18, #19, #20, #21); этап 6 in-progress |
+| 0005 | [Realtime Pilot v1](0005-realtime-pilot.md) | proposed | экспериментальный код и автоматические проверки; реальный voice smoke не запускался |
 
 ## Правила
 
