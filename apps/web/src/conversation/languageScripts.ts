@@ -87,9 +87,11 @@ export function isDottedTokenContinuation(before: string, after: string, languag
   if (!dotted || shortReplyEvidence(after, languages) === undefined) return dotted;
   const label = /([\p{Script_Extensions=Latin}\p{M}\p{Nd}_-]+)\.$/u.exec(before)?.[1];
   if (!label) return false;
+  // A preceding web address cue is positive token evidence even when a short label is hard to classify.
+  if (/(?:^|\s)(?:site|website|domain|url|address|adresse)\s+[\p{Ps}\p{Pi}"']*$/iu.test(before.slice(0, -label.length - 1))) return true;
   detector.setLanguageSubset([languages.A, languages.B]);
   const context = detector.detect(languageDetectionSample(before)), token = detector.detect(label);
-  return !context.isReliable() || !token.isReliable() || context.language !== token.language;
+  return context.isReliable() && token.isReliable() && context.language !== token.language;
 }
 
 /** Keep weak period prefixes and dotted tokens until language context is available. */

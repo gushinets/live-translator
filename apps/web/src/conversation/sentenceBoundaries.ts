@@ -21,8 +21,8 @@ export function splitSentences(text: string): string[] {
   };
   // The shared scan never performs paired-opener lookahead unless explicitly supplied.
   const scanQuoteBoundary = (char: string, index: number, pairedLevel: number,
-    startsPair?: (char: string, index: number) => boolean): number => {
-    const word = pairedLevel ? /^\s*[\p{L}\p{M}\p{N}]+/u.exec(text.slice(index + 1))?.[0] : undefined;
+    startsPair?: (char: string, index: number) => boolean, generic = false): number => {
+    const word = pairedLevel && !generic ? /^\s*[\p{L}\p{M}\p{N}]+/u.exec(text.slice(index + 1))?.[0] : undefined;
     const wordClosing = word && text[index + 1 + word.length] === char ? index + 1 + word.length : -1;
     let next = text.indexOf(char, index + 1);
     while (next >= 0 && !(pairedLevel && /\p{Sentence_Terminal}/u.test(text[next + 1] ?? "")) &&
@@ -37,8 +37,25 @@ export function splitSentences(text: string): string[] {
     }
     return next;
   };
+  const pairedBoundaries: Record<string, number | undefined> = {};
+  const pairedScannedFrom: Record<string, number | undefined> = {};
   const startsPairedSentence = (char: string, index: number): boolean => {
-    const closing = scanQuoteBoundary(char, index, 2);
+    // Reuse the generic mate scan across later openers; only an immediate word closer is opener-specific.
+    let generic = pairedBoundaries[char];
+    if (generic === undefined || index < (pairedScannedFrom[char] ?? 0) || (generic >= 0 && generic <= index)) {
+      generic = scanQuoteBoundary(char, index, 2, undefined, true);
+      pairedBoundaries[char] = generic;
+      pairedScannedFrom[char] = index;
+    }
+    const word = /^\s*[\p{L}\p{M}\p{N}]+/u.exec(text.slice(index + 1))?.[0];
+    const wordClosing = word && text[index + 1 + word.length] === char ? index + 1 + word.length : -1;
+    const specific = wordClosing >= 0 &&
+      (/\p{Sentence_Terminal}/u.test(text[wordClosing + 1] ?? "") ||
+       !(char === "'" && ((/[\p{L}\p{Nd}]/u.test(text[wordClosing - 1] ?? "") &&
+         /[\p{L}\p{Nd}]/u.test(text[wordClosing + 1] ?? "")) ||
+         (leadingApostrophe.test(text.slice(wordClosing)) && !followsSentence(wordClosing)))))
+      ? wordClosing : -1;
+    const closing = specific >= 0 && (generic < 0 || specific < generic) ? specific : generic;
     if (closing < 0) return false;
     const quoted = text.slice(index + 1, closing);
     return /[\p{L}\p{N}]/u.test(quoted) &&

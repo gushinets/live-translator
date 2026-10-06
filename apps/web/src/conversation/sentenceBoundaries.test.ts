@@ -117,6 +117,15 @@ it.each(["Veuillez ouvrir le site example.no.", 'Veuillez ouvrir le site "exampl
 it("keeps a lowercase no-space reply separate from a preceding sentence", () => {
   expect(splitLanguageSentences("Veuillez attendre.no.", { A: "en", B: "fr" }, eld.newInstance()))
     .toEqual(["Veuillez attendre.", "no."]);
+  expect(splitLanguageSentences("Va.no.", { A: "en", B: "fr" }, eld.newInstance()))
+    .toEqual(["Va.", "no."]);
+});
+
+it("bounds quote-mate lookahead after a completed quote and repeated unmatched elisions", () => {
+  const tail = "'cept ".repeat(3000) + "tail";
+  const start = performance.now();
+  expect(splitSentences("He said 'Goodbye.' and " + tail)).toEqual(["He said 'Goodbye.' ", "and " + tail]);
+  expect(performance.now() - start).toBeLessThan(1000);
 });
 
 it.each(["I stayed 'cept.", "I waited 'neath.", "I said 'scuse.", "I waited 'nęath.", "I left 'Cause it was late.", "I stayed 'CEPT.", "I looked 'Round.", "I loved the '90S.", "'Cause it was late."])("keeps unlisted leading elisions separate from quoted replies: %s", source => {
