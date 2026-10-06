@@ -44,6 +44,15 @@ it.each([
   }
 });
 
+it.each([
+  { text: "He said 'Goodbye.' and then 'Hello.'", expected: ["He said 'Goodbye.' ", "and then 'Hello.'"] },
+  { text: "He said 'Goodbye.' La estación está cerca del supermercado, dijo 'Sí.'", expected: ["He said 'Goodbye.' ", "La estación está cerca del supermercado, dijo 'Sí.'"] },
+  { text: "He said 'Are you sure (really?)' 'Sí.'", expected: ["He said 'Are you sure (really?)' ", "'Sí.'"] },
+  { text: "He said 'She said “hello.”' 'Sí.'", expected: ["He said 'She said “hello.”' ", "'Sí.'"] },
+])("preserves quote mates around later clauses and closing punctuation: $text", ({ text, expected }) => {
+  expect(splitSentences(text)).toEqual(expected);
+});
+
 it("keeps a long weak prefix separate from a decisive reply", () => {
   const prefix = "123. ".repeat(400);
   expect(splitLanguageSentences(prefix + "Sí.", { A: "en", B: "es" }, eld.newInstance())).toEqual([prefix, "Sí."]);

@@ -560,3 +560,13 @@ it.each(["'The dogs' owner is here.'", "'The board is 6' long.'", "'John's book 
       expect(transcript.blocks.map(block => block.text).join("")).toBe(text);
     }
   });
+
+it.each(["He said 'Goodbye.'", "He said 'Are you sure (really?)'", "He said 'She said “hello.”'"])(
+  "keeps a closing quote on its caption before later speech: %s", source => {
+    const second = "La estación está cerca del supermercado, dijo 'Sí.'", text = source + " " + second;
+    for (const kind of ["input", "output"] as const) {
+      const transcript = new DialogueTranscript();
+      transcript.push(kind, fragment(text), { A: "en", B: "es" });
+      expect(content(transcript)).toEqual([{ kind, side: "A", text: source }, { kind, side: "B", text: second }]);
+    }
+  });

@@ -19,6 +19,13 @@ export function splitSentences(text: string): string[] {
     while (/[\s\p{Pe}\p{Pf}"']/u.test(text[before] ?? "")) before--;
     return /\p{Sentence_Terminal}/u.test(text[before] ?? "");
   };
+  const startsPairedSentence = (char: string, index: number): boolean => {
+    const closing = text.indexOf(char, index + 1);
+    if (closing < 0) return false;
+    const quoted = text.slice(index + 1, closing);
+    return /[\p{L}\p{N}]/u.test(quoted) &&
+      (isSentenceComplete(quoted) || /\p{Sentence_Terminal}/u.test(text[closing + 1] ?? ""));
+  };
   const nextQuoteBoundary = (char: string, index: number, pairedLevel = 0): number => {
     // Separate forward caches keep mate lookahead from advancing the main quote scan.
     const cacheKey = char + pairedLevel;
@@ -32,7 +39,8 @@ export function splitSentences(text: string): string[] {
           ((next !== wordClosing && /\p{Nd}/u.test(text[next - 1] ?? "")) || (char === "'" &&
           ((next !== wordClosing && /[sS]/u.test(text[next - 1] ?? "")) ||
            (/[\p{L}\p{Nd}]/u.test(text[next - 1] ?? "") && /[\p{L}\p{Nd}]/u.test(text[next + 1] ?? "")) ||
-           (leadingApostrophe.test(text.slice(next)) && !followsSentence(next)))))) {
+           (leadingApostrophe.test(text.slice(next)) && !followsSentence(next) &&
+            !(pairedLevel === 1 && startsPairedSentence(char, next))))))) {
         const lexical = char === "'" && !followsSentence(next) ? leadingApostrophe.exec(text.slice(next)) : null;
         // A paired lexical word inside speech contributes neither quote boundary.
         if (lexical && text[next + lexical[0].length] === char) next += lexical[0].length;
@@ -75,7 +83,7 @@ export function splitSentences(text: string): string[] {
           const startsNextQuote = following >= 0 && !followingStartsQuote && !/[\p{L}\p{N}]/u.test(text[following + 1] ?? "") &&
             (/^[\p{L}\p{M}\p{N}]+$/u.test(quotedText) || isSentenceComplete(quotedText));
           const paired = text[i + lexical[0].length] === "'" || (closing >= 0 &&
-            /\p{Sentence_Terminal}/u.test(text[closing - 1] ?? "") &&
+            followsSentence(closing) &&
             !startsNextQuote);
           if (!paired) continue;
         }
