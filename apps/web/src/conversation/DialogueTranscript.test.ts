@@ -467,6 +467,7 @@ it.each(['"La estación está cerca del supermercado', '"La estación está cerc
 
 it.each([
   { languages: { A: "en", B: "fr" }, side: "B", text: "Veuillez ouvrir le site example.no." },
+  { languages: { A: "en", B: "fr" }, side: "B", text: "Veuillez ouvrir le site www.documentation.no." },
   { languages: { A: "fr", B: "en" }, side: "A", text: 'Veuillez ouvrir le site "example.no".' },
 ])("keeps a canonical hostname suffix in both caption streams: $text", ({ languages, side, text }) => {
   for (const kind of ["input", "output"] as const) for (const size of [1, 1000]) {

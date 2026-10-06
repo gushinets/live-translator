@@ -1542,10 +1542,10 @@ export class SessionController {
       // Known language ownership takes precedence over unresolved-source fallback.
       // Several exact matches still need independent output; recency cannot choose one.
       const exact = candidates.filter(turn => turn.speaker === speaker);
-      // The latest unresolved source competes with older matches, even while they are pending.
+      // The latest unresolved source competes with older matches even after its no-output timeout.
       const hasCompetingUnresolvedSource = candidates.some(turn => turn.speaker === undefined &&
-        (turn.status === "streaming" || turn.status === "outputting") &&
-        (turn.id === this.latestSourceTurnId || exact.every(match => match.status === "completed")));
+        (turn.id === this.latestSourceTurnId || ((turn.status === "streaming" || turn.status === "outputting") &&
+        exact.every(match => match.status === "completed"))));
       const eligible = exact.length && !hasCompetingUnresolvedSource
         ? exact : candidates;
       let target = eligible.length === 1 && eligible[0]?.status !== "failed" ? eligible[0] : undefined;

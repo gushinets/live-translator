@@ -255,6 +255,7 @@ it.each([
 
 it.each([
   { prefix: "Veuillez ouvrir le site example.", suffix: "no." },
+  { prefix: "Veuillez ouvrir le site www.documentation.", suffix: "no." },
   { prefix: 'Veuillez ouvrir le site "example.', suffix: 'no".' },
   { prefix: "Veuillez ouvrir le site (example.", suffix: "no)." },
 ])("keeps a canonical reply suffix on its hostname source: $prefix$suffix", ({ prefix, suffix }) => {
@@ -278,6 +279,20 @@ it.each([
   const router = new TranscriptRouter(), pair = { A: "en", B: "fr" };
   const groups = [...router.push(fragment(text), pair), ...router.flush(pair, true)];
   expect(groups.map(group => ({ side: group.side, text: group.fragments.map(part => part.text).join("") }))).toEqual(expected);
+});
+
+it("keeps reliable subdomain labels and a reply-shaped suffix on the same source", () => {
+  const router = new TranscriptRouter(), pair = { A: "en", B: "fr" };
+  const chunks = ["Veuillez ouvrir le site www.", "documentation.", "no."];
+  let source = "";
+  const groups = chunks.flatMap(text => {
+    const result = router.push(fragment(text), pair, source ? "B" : undefined, source);
+    source += text;
+    return result;
+  });
+  groups.push(...router.flush(pair, true));
+  expect(groups.map(group => ({ side: group.side, text: group.fragments.map(part => part.text).join("") })))
+    .toEqual(chunks.map(text => ({ side: "B", text })));
 });
 
 it("preserves a lowercase standalone reply in a new packet", () => {

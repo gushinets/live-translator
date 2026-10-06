@@ -5982,6 +5982,34 @@ it("retains timestamped late output for completed history beside a fresh unresol
   expect(controller.session.pendingTurns ?? []).toHaveLength(0);
 });
 
+it("keeps late output independent of completed history after the latest unresolved source fails", async () => {
+  vi.useFakeTimers(); vi.setSystemTime(0);
+  const { controller, live, audio } = createController();
+  await controller.startWithLanguages({ A: "en", B: "es" });
+  emitVoice(audio, true);
+  live.emit({ type: "session.input_transcript.delta", delta: "Sí." });
+  const completedId = controller.session.activeTurn!.id;
+  live.emit({ type: "session.output_transcript.delta", delta: "Yes." });
+  emitVoice(audio, false);
+  await vi.advanceTimersByTimeAsync(runtime.audioStartGraceMs + runtime.captionIdleMs);
+  expect(controller.session.recentTurns.find(turn => turn.id === completedId)?.status).toBe("completed");
+  emitVoice(audio, true);
+  live.emit({ type: "session.input_transcript.delta", delta: "No." });
+  await vi.advanceTimersByTimeAsync(runtime.captionIdleMs);
+  const unresolvedId = controller.session.activeTurn!.id;
+  emitVoice(audio, false);
+  await vi.advanceTimersByTimeAsync(runtime.noOutputTimeoutMs + runtime.captionIdleMs);
+  expect(controller.session.recentTurns.find(turn => turn.id === unresolvedId)).toMatchObject({
+    status: "failed", speaker: undefined,
+  });
+  live.emit({ type: "session.output_transcript.delta", delta: "Yes." });
+  const turns = [...controller.session.recentTurns, ...(controller.session.pendingTurns ?? []),
+    ...(controller.session.activeTurn ? [controller.session.activeTurn] : [])];
+  expect(turns.find(turn => turn.id === completedId)?.translatedText).toBe("Yes.");
+  expect(turns.find(turn => turn.id === unresolvedId)?.translatedText).toBeUndefined();
+  expect(turns.find(turn => turn.translationOnly)).toMatchObject({ speaker: "B", translatedText: "Yes." });
+});
+
 it.each((["streaming", "outputting"] as const).flatMap(status => [undefined, 1600].map(startMs => ({ status, startMs }))))(
   "keeps fresh output independent of pending same-speaker history, status=$status, timestamp=$startMs", async ({ status, startMs }) => {
     vi.useFakeTimers(); vi.setSystemTime(0);
