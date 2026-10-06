@@ -572,3 +572,8 @@ html {
 
   .setup-connecting-label { animation: none; }
 }
+.setup-engine { display: grid; gap: .5rem; }
+.setup-engine select { width: 100%; min-height: 44px; padding: .6rem; border: 1px solid #526866; border-radius: .7rem; background: #263b3c; color: #f1f6f3; font: inherit; }
+.setup-engine select:focus-visible { outline: 2px solid #ace2c9; }
+.setup-engine small, .setup-build { color: #c2d1cc; line-height: 1.5; }
+.setup-build { display: block; margin-bottom: .5rem; }

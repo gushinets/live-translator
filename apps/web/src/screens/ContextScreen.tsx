@@ -1,4 +1,7 @@
-import { createAccountedSessionController, type AccountedSessionController } from "../session/createAccountedSessionController";
+import { createAccountedSessionController } from "../session/createAccountedSessionController";
+import type { ProductSession } from "../session/ProductSession";
+import type { RealtimePolicy } from "../realtime/RealtimeEvents";
+import { RealtimeDiagnostics } from "../realtime/RealtimeDiagnostics";
 import { useEffect, useLayoutEffect, useReducer, useRef, useState } from "react";
 import { ErrorOverlay } from "../components/ErrorOverlay";
 import { BootstrapPrompt } from "../components/BootstrapPrompt";
@@ -8,7 +11,6 @@ import { ContextTooLongError } from "../live/LiveEvents";
 import {
   type LifecycleSuspendReason,
   type RecoveryPrompt,
-  type SessionController,
 } from "../session/SessionController";
 import type { TranslationSession } from "../session/SessionState";
 import type { Side } from "../conversation/Turn";
@@ -26,12 +28,12 @@ import { translate, uiLocale } from "../i18n/messages";
  * Owner start-flow surface used by ContextScreen. SessionController implements
  * this; tests inject a fake so UI behavior can be asserted without Live/audio.
  */
-export interface ContextScreenController {
+export interface ContextScreenController extends ProductSession {
   readonly session: TranslationSession;
   readonly captionBlocks: readonly DialogueBlock[];
   readonly inputReady: boolean;
-  readonly contextText: string;
-  readonly bootstrapText: string;
+  readonly contextText?: string;
+  readonly bootstrapText?: string;
   readonly ownerError?: string;
   readonly hasEnteredInterpreter?: boolean;
   readonly isConnectInFlight?: boolean;
@@ -42,20 +44,20 @@ export interface ContextScreenController {
   readonly retainedRecoveryState?: RetainedRecoveryState;
   readonly selectedInterlocutorLanguage?: string;
   subscribe(listener: () => void): () => void;
-  startContextCapture(): Promise<void>;
-  finishContextCapture(): void;
-  setContextText(text: string): void;
-  clearContext(): void;
-  startBootstrap(): Promise<void>;
+  startContextCapture?(): Promise<void>;
+  finishContextCapture?(): void;
+  setContextText?(text: string): void;
+  clearContext?(): void;
+  startBootstrap?(): Promise<void>;
   startWithLanguages(languages: { A: string; B: string }): Promise<void>;
-  changeInterlocutorLanguage(language: string): Promise<void>;
-  readonly bootstrapSide: Side;
-  readonly bootstrapRecording: boolean;
-  acceptBootstrap(text: string): Promise<void>;
-  beginInterpreter(): Promise<void>;
+  changeInterlocutorLanguage?(language: string): Promise<void>;
+  readonly bootstrapSide?: Side;
+  readonly bootstrapRecording?: boolean;
+  acceptBootstrap?(text: string): Promise<void>;
+  beginInterpreter?(): Promise<void>;
   cancel(): Promise<void>;
   endConversation(): Promise<void>;
-  resumeFromSourceTimeout(): Promise<void>;
+  resumeFromSourceTimeout?(): Promise<void>;
   resumeRetainedConversation?(): Promise<void>;
   verifyRetainedConversation?(): Promise<void>;
 }
@@ -68,7 +70,8 @@ function uiSnapshot(controller: ContextScreenController): unknown[] {
     controller.audioElement, controller.selectedInterlocutorLanguage];
 }
 
-let documentController: AccountedSessionController | null = null;
+type DocumentController = ContextScreenController & {start():void;dispose():Promise<void>};
+let documentController: DocumentController | null = null;
 let documentOwners = 0;
 let disposalToken = 0;
 let pendingDisposal: Promise<void> | null = null;
@@ -97,7 +100,7 @@ function initialOwnerLanguage(): string | undefined {
   return devicePreferredLanguage();
 }
 
-function acquireDocumentController(): AccountedSessionController {
+function acquireDocumentController(): DocumentController {
   disposalToken++;
   documentController ??= createAccountedSessionController();
   documentOwners++;
@@ -130,7 +133,10 @@ export function ContextScreen({
 }: {
   controller?: ContextScreenController;
 } = {}) {
-  const [ownedController, setOwnedController] = useState<SessionController | null>(null);
+  const [ownedController, setOwnedController] = useState<DocumentController | null>(null);
+  const [realtimePolicy,setRealtimePolicy] = useState<RealtimePolicy>();
+  const [engineBusy,setEngineBusy] = useState(false);
+  const engineChange=useRef(false);
   const [ownerFailed, setOwnerFailed] = useState(false);
   const [ownerLanguage, setOwnerLanguage] = useState(initialOwnerLanguage);
   const [draftOwnerLanguage, setDraftOwnerLanguage] = useState<string>();
@@ -139,6 +145,16 @@ export function ContextScreen({
   const [pickerBusy, setPickerBusy] = useState(false);
   const [languageChangeError, setLanguageChangeError] = useState<string>();
   const [startingWithLanguages, setStartingWithLanguages] = useState(false);
+  useEffect(()=> {
+    if(injectedController)return;
+    const abort=new AbortController();
+    void fetch("/api/policy",{signal:abort.signal}).then(async response=> {
+      if(!response.ok)throw new Error("policy_unavailable");
+      const policy=await response.json() as {realtime?:RealtimePolicy};
+      if(!abort.signal.aborted)setRealtimePolicy(policy.realtime);
+    }).catch(()=>{/* Live's accounted controller independently enforces fail-closed policy. */});
+    return()=>abort.abort();
+  },[injectedController]);
   useEffect(() => {
     if (injectedController !== undefined) return;
     let mounted = true, acquired = false;
@@ -232,12 +248,33 @@ export function ContextScreen({
   </main>;
   const activeController = controller;
 
+  async function selectEngine(engine:string):Promise<void> {
+    if(injectedController || engineChange.current || controller?.session.state!=="idle" ||
+      controller.retainedRecoveryState || controller.isConnectInFlight || documentOwners!==1 ||
+      engine===(controller.engine??"live"))return;
+    if(engine==="realtime" && !realtimePolicy?.enabled)return;
+    engineChange.current=true;setEngineBusy(true);
+    const previous=documentController;
+    try {
+      await previous?.dispose();
+      if(documentController!==previous || documentOwners!==1)return;
+      let next:DocumentController;
+      if(engine==="realtime") {
+        const {RealtimeSessionController}=await import("../realtime/RealtimeSessionController");
+        next=new RealtimeSessionController(realtimePolicy!);
+      } else next=createAccountedSessionController();
+      if(documentController!==previous || documentOwners!==1){await next.dispose();return;}
+      documentController=next;next.start();setOwnedController(next);
+    } catch {setOwnerFailed(true);}
+    finally {engineChange.current=false;setEngineBusy(false);}
+  }
+
   async function handleRecord(): Promise<void> {
     if (activeController.session.state === "context") {
-      activeController.finishContextCapture();
+      activeController.finishContextCapture?.();
     }
     try {
-      await activeController.startBootstrap();
+      await activeController.startBootstrap?.();
     } catch (error) {
       console.error("Failed to enter language bootstrap", {
         error,
@@ -279,7 +316,7 @@ export function ContextScreen({
       setPickerMode(null);
     }
     try {
-      if (changing) await activeController.changeInterlocutorLanguage(interlocutor);
+      if (changing) await activeController.changeInterlocutorLanguage?.(interlocutor);
       else await activeController.startWithLanguages({ A: owner, B: interlocutor });
       if (changing) setPickerMode(null);
     } catch (error) {
@@ -299,7 +336,7 @@ export function ContextScreen({
       enteredInterpreter: activeController.hasEnteredInterpreter === true,
     });
     try {
-      await activeController.beginInterpreter();
+      await activeController.beginInterpreter?.();
     } catch (error) {
       if (!(error instanceof ContextTooLongError)) {
         console.error("Failed to begin interpreter", { error });
@@ -310,7 +347,7 @@ export function ContextScreen({
   async function handleAccept(): Promise<void> {
     if (activeController.isInterpreterStarting === true) return;
     try {
-      await activeController.acceptBootstrap(activeController.bootstrapText.trim());
+      await activeController.acceptBootstrap?.(activeController.bootstrapText?.trim()??"");
     } catch (error) {
       console.error("Failed to save language sample", { error });
     }
@@ -326,7 +363,7 @@ export function ContextScreen({
     (sessionState === "error" && controller.hasEnteredInterpreter === true);
   const isOwnerSetup = !isConversation;
   const isBusy =
-    sessionState === "error" ||
+    engineBusy || sessionState === "error" ||
     controller.isConnectInFlight === true || controller.retainedRecoveryState !== undefined;
   const recovery = controller.retainedRecoveryState;
   const showStartLayout = !showStartPicker && (sessionState === "idle" || startingWithLanguages);
@@ -354,7 +391,7 @@ export function ContextScreen({
       <div ref={audioHostRef} hidden />
       {!isOwnerSetup ? (
         <>
-          <ConversationScreen controller={controller} onChangeLanguage={() => {
+          <ConversationScreen controller={controller} onChangeLanguage={controller.capabilities?.changeLanguages===false?undefined:() => {
             setLanguageChangeError(undefined);
             setPickerMode("change");
           }} />
@@ -396,9 +433,21 @@ export function ContextScreen({
           </header>
 
           <div className={`setup-card${showStartPicker ? " setup-card--picker" : ""}${showStartLayout ? " setup-card--start" : ""}`}>
+            {realtimePolicy?.enabled || controller.engine==="realtime" ? <label className="setup-engine">
+              <span>Режим перевода</span>
+              <select aria-label="Режим перевода" value={controller.engine??"live"}
+                disabled={isBusy || startingWithLanguages || sessionState!=="idle"}
+                onChange={event=>{void selectEngine(event.target.value);}}>
+                <option value="live">GPT-Live</option>
+                <option value="realtime">GPT-Realtime · экспериментальный</option>
+              </select>
+              {controller.engine==="realtime"?<small>ru/en · перевод после реплики · без восстановления после фона</small>:null}
+            </label>:null}
+            <small className="setup-build">{controller.engine==="realtime"?controller.model:"GPT-Live · gpt-live-1"} · build {__BUILD_SHA__}</small>
             {controller.ownerError !== undefined ? (
               <ErrorOverlay message={controller.ownerError} language={ownerLocale} />
             ) : null}
+            {controller.exportDiagnostics?<RealtimeDiagnostics controller={controller}/>:null}
             {recovery !== undefined ? (
               <RetainedRecovery state={recovery} surface="setup" language={ownerLocale}
                 onResume={controller.resumeRetainedConversation?.bind(controller)}
@@ -408,9 +457,9 @@ export function ContextScreen({
               <p role="status" className="setup-inline-status">{t("Запускаю перевод…")}</p>
             ) : isBootstrap && !startingWithLanguages ? (
               <BootstrapPrompt
-                transcript={controller.bootstrapText}
-                side={controller.bootstrapSide}
-                recording={controller.bootstrapRecording}
+                transcript={controller.bootstrapText??""}
+                side={controller.bootstrapSide??"A"}
+                recording={controller.bootstrapRecording===true}
                 languageA={controller.session.participantA.language}
                 languageB={controller.session.participantB.language}
                 language={ownerLocale}
