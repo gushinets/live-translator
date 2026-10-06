@@ -214,6 +214,11 @@ Local Docker image build/persistence не запускались: Docker daemon 
 строки могли блокировать prune по foreign key; они сохранены, migration additive
 проверена `foreign_key_check`/`integrity_check`. Закрытая/истёкшая попытка не
 возвращает late SDP; первый PCM timestamp не меняется при повторном callback.
+Проверка screenshot выявила ещё конфликт CSS: conversation flex-basis=100%
+растягивал свёрнутую diagnostics панель в setup language picker. Правило
+ограничено conversation-center; browser regression открывает настройки Realtime,
+проверяет компактный details и заголовок языка в viewport. До исправления оба
+браузера падали с высотой панели около 300 px; после она занимает 44 px.
 
 Docstring coverage warning CodeRabbit рассмотрен как рекомендация по оформлению:
 контрпримера поведения он не содержит. Ownership, admission, usage и PCM

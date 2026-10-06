@@ -88,6 +88,11 @@ test("server-off setup keeps Live and hides Realtime",async({page})=> {
 test("product Realtime translates correlated items, holds, drains and ends",async({page},testInfo)=> {
   await setup(page);const errors:string[]=[];page.on("pageerror",error=>errors.push(error.message));await page.goto("/");
   const select=page.getByRole("combobox",{name:"Режим перевода"});await select.selectOption("realtime");await expect(select).toHaveValue("realtime");
+  await page.getByRole("button",{name:"Настройки",exact:true}).click();
+  const diagnostics=page.locator(".setup-card .realtime-diagnostics");await expect(diagnostics).toBeVisible();
+  expect((await diagnostics.boundingBox())!.height).toBeLessThan(80);
+  await expect(page.getByRole("heading",{name:"Язык собеседника"})).toBeInViewport();
+  await page.getByRole("button",{name:"Закрыть настройки",exact:true}).click();
   await expect(page.getByRole("button",{name:"Начать перевод"})).toBeEnabled();
   await page.getByRole("button",{name:"Начать перевод"}).click();await expect(page.getByRole("button",{name:"Завершить",exact:true})).toBeVisible();
   await expect(page.getByRole("button",{name:"Не перебивать"})).toHaveCount(0);
