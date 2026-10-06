@@ -50,9 +50,12 @@ export function splitSentences(text: string): string[] {
     for (let i = start; i < end; i++) {
       const char = text[i]!;
       const before = text[i - 1] ?? "", after = text[i + 1] ?? "";
+      const quotedPossessive = char === "'" && openQuotes[char]! >= 0 &&
+        /^s(?![\p{L}\p{M}\p{N}])/iu.test(text.slice(i + 1)) &&
+        /^\s*[\p{L}\p{M}\p{N}]+$/u.test(text.slice(openQuotes[char]! + 1, i));
       // Apostrophes within words and feet marks stay literal inside quotes too.
-      if (char === "'" && /[\p{L}\p{Nd}]/u.test(before) && /[\p{L}\p{Nd}]/u.test(after)) continue;
-      if (char === "'") {
+      if (char === "'" && /[\p{L}\p{Nd}]/u.test(before) && /[\p{L}\p{Nd}]/u.test(after) && !quotedPossessive) continue;
+      if (char === "'" && !quotedPossessive) {
         const lexical = leadingApostrophe.exec(text.slice(i));
         if (lexical) {
           if (openQuotes[char]! >= 0) {
@@ -84,12 +87,12 @@ export function splitSentences(text: string): string[] {
       }
       // Distinguish an outer closing quote from an adjacent quoted reply's opener.
       if (char in openQuotes && openQuotes[char]! >= 0 &&
-          ((char === "'" && /[sS]/u.test(before)) || /\p{Nd}/u.test(before)) &&
+          (quotedPossessive || (char === "'" && /[sS]/u.test(before)) || /\p{Nd}/u.test(before)) &&
           !/^[\p{N}\s.,+−-]+$/u.test(text.slice(openQuotes[char]! + 1, i))) {
         const nextQuote = nextQuoteBoundary(char, i);
         const followingQuote = nextQuote < 0 ? -1 : text.indexOf(char, nextQuote + 1);
         const quotedText = followingQuote < 0 ? "" : text.slice(nextQuote + 1, followingQuote);
-        const startsNextQuote = /^\S/u.test(quotedText) && /[\p{L}\p{Nd}]/u.test(quotedText) && isSentenceComplete(quotedText);
+        const startsNextQuote = /[\p{L}\p{Nd}]/u.test(quotedText) && isSentenceComplete(quotedText);
         if (/\p{Sentence_Terminal}/u.test(text[nextQuote - 1] ?? "") && !startsNextQuote) continue;
       }
       // Marks after a number or word do not open quoted speech (6'2", dogs').

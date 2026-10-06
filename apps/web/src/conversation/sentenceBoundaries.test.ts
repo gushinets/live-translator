@@ -168,3 +168,18 @@ it.each(["yes", "oui", "90", "two words", "I'm happy"])("keeps an earlier closer
 it.each(["I said 'rock 'n' roll.'", "I loved 'the '90s' music.'"])("keeps paired lexical words inside an outer quote: %s", source => {
   expect(splitSentences(source + " 'Sí.'")).toEqual([source + " ", "'Sí.'"]);
 });
+
+it.each([
+  "I explained 'foo's meaning.",
+  "I explained 'notes's meaning.",
+  "I explained 'café's meaning.",
+  "He said 'It's quiet.'",
+  "He said 'John's happy. He is here.'",
+  "He said 'It's quiet. Don't go.'",
+])("keeps a quoted-word possessive distinct from contractions: %s", source => {
+  for (const gap of [" ", ""]) {
+    const sentences = splitSentences(source + gap + "' Sí.'");
+    expect(sentences.at(-1)).toBe("' Sí.'");
+    expect(sentences.slice(0, -1).join("")).toBe(source + gap);
+  }
+});
