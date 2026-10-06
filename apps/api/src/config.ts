@@ -78,6 +78,10 @@ if (backgroundSessionCloseEnabled && !usageLedgerEnabled) {
   throw new Error("BACKGROUND_SESSION_CLOSE_ENABLED requires USAGE_LEDGER_ENABLED");
 }
 export const apiConfig = {
+  realtimePilotEnabled: booleanEnv("REALTIME_PILOT_ENABLED", false),
+  realtimeModel: allowedModel("REALTIME_MODEL", "gpt-realtime-2.1", ["gpt-realtime-2.1"]),
+  realtimeTranscriptionModel: allowedModel("REALTIME_TRANSCRIPTION_MODEL", "gpt-4o-transcribe", ["gpt-4o-transcribe"]),
+  realtimeDbPath: process.env.REALTIME_DB_PATH ?? `${dbPath()}.realtime`,
   webOrigin: resolveWebOrigin(),
   usageLedgerEnabled,
   backgroundSessionCloseEnabled,
@@ -102,3 +106,9 @@ export const apiConfig = {
     2_147_483_647,
   ),
 };
+
+function allowedModel(name: string, fallback: string, allowed: string[]): string {
+  const value = process.env[name] ?? fallback;
+  if (!allowed.includes(value)) throw new Error(`${name} is not an allowed pilot model`);
+  return value;
+}

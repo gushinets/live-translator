@@ -1,6 +1,7 @@
 import type { Express } from "express";
 import type { Server } from "node:http";
 import type { LedgerRuntime } from "./accounting/LedgerRuntime.js";
+import type { RealtimeAttempts } from "./accounting/RealtimeAttempts.js";
 
 export interface ApiServerLifecycle {
   server: Server;
@@ -9,6 +10,7 @@ export interface ApiServerLifecycle {
 /** Single absolute budget for network create drain, cleanup worker, HTTP and database. */
 export function startApiServer(app: Express, options: { port: number; host?: string; drainMs: number; timeoutMs: number }): ApiServerLifecycle {
   const runtime = app.locals.ledgerRuntime as LedgerRuntime | undefined;
+  const realtime = app.locals.realtimeRuntime as RealtimeAttempts | undefined;
   const server = app.listen(options.port, options.host ?? "0.0.0.0");
   let shutdown: Promise<void> | undefined;
   const stop = async () => {
@@ -18,7 +20,7 @@ export function startApiServer(app: Express, options: { port: number; host?: str
     const httpClosed = new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve()));
     server.closeIdleConnections();
     let failure: unknown;
-    try { await runtimeStop; } catch (error) { failure = error; }
+    try { await Promise.all([runtimeStop, realtime?.shutdown()]); } catch (error) { failure = error; }
     // Never keep a disconnected client socket alive after the bounded provider handoff/drain.
     server.closeAllConnections();
     const remaining = deadline - performance.now();

@@ -14,6 +14,10 @@ import { rateLimit } from "express-rate-limit";
 import { apiConfig } from "./config.js";
 import type { LiveSessionCreator } from "./openai/createLiveSession.js";
 import { createLiveSessionRouter } from "./routes/liveSession.js";
+import { createRealtimeRouter } from "./routes/realtime.js";
+import { RealtimeAttempts, openRealtimeDatabase } from "./accounting/RealtimeAttempts.js";
+import type { RealtimeCallCreator, RealtimeCallCloser } from "./openai/realtimeCall.js";
+import { REALTIME_VAD, REALTIME_PROMPT_VERSION } from "./openai/realtimeCall.js";
 import {
   SessionLeaseRegistry,
   type LeaseRegistry,
@@ -27,6 +31,9 @@ export interface AppDependencies {
   closeOrphan?: OrphanCloser;
   startWorker?: boolean;
   ledgerEnabled?: boolean;
+  realtimeEnabled?: boolean;
+  createRealtimeCall?: RealtimeCallCreator;
+  closeRealtimeCall?: RealtimeCallCloser;
 }
 
 export function createApp(dependencies: AppDependencies = {}) {
@@ -51,11 +58,16 @@ export function createApp(dependencies: AppDependencies = {}) {
   app.use(express.json({ limit: "64kb" }));
   app.get("/health", (_request, response) => response.json({ status: "ok" }));
   // Only the creation route consumes quota; cleanup must work after a 429.
-  app.post("/api/live/session", sessionCreationLimiter);
+  app.post(["/api/live/session", "/api/realtime/session"], sessionCreationLimiter);
   const enabled = dependencies.ledgerEnabled ?? (dependencies.ledger !== undefined || apiConfig.usageLedgerEnabled);
   const retainLedger = enabled || dependencies.ledger !== undefined || existsSync(apiConfig.usageDbPath);
+  const realtimeEnabled = dependencies.realtimeEnabled ?? apiConfig.realtimePilotEnabled;
+  let realtime: RealtimeAttempts | undefined;
   app.use("/api", (_req, res, next) => { res.set("Cache-Control", "no-store"); next(); });
-  app.get("/api/policy", (_req, res) => res.json({ usageLedgerEnabled: enabled, backgroundSessionCloseEnabled: enabled && apiConfig.backgroundSessionCloseEnabled, creationPaused: !enabled && retainLedger, schemaVersion: 1 }));
+  app.get("/api/policy", (_req, res) => res.json({ usageLedgerEnabled: enabled, backgroundSessionCloseEnabled: enabled && apiConfig.backgroundSessionCloseEnabled, creationPaused: !enabled && retainLedger, schemaVersion: 1,
+    realtime: { enabled: realtimeEnabled && (enabled || !retainLedger), model: apiConfig.realtimeModel,
+      transcriptionModel: apiConfig.realtimeTranscriptionModel, vad: REALTIME_VAD, promptVersion: REALTIME_PROMPT_VERSION,
+      schemaVersion: 1, maxSessionMs: Math.min(apiConfig.maxProviderSessionMs,apiConfig.maxConversationElapsedMs,apiConfig.leaseMs) } }));
   if (retainLedger) {
     const ledger = dependencies.ledger ?? new UsageLedger(openUsageDatabase(apiConfig.usageDbPath), { policy: {
       ...DEFAULT_LEDGER_POLICY, conversationRetentionMs: apiConfig.conversationRetentionMs,
@@ -66,8 +78,10 @@ export function createApp(dependencies: AppDependencies = {}) {
     const runtime = new LedgerRuntime(ledger, { creator: dependencies.createLiveSession, closeOrphan: dependencies.closeOrphan,
       maxConcurrent: apiConfig.maxConcurrentSessions, leaseMs: apiConfig.leaseMs,
       workerConcurrency: apiConfig.cleanupWorkerConcurrency, workerBatchSize: apiConfig.cleanupWorkerBatchSize,
-      logger: dependencies.logger, startWorker: dependencies.startWorker });
+      logger: dependencies.logger, startWorker: dependencies.startWorker, additionalReservations: () => realtime?.reservations() ?? [] });
     app.locals.ledgerRuntime = runtime;
+    realtime = new RealtimeAttempts(ledger.db, runtime.registry, { create: dependencies.createRealtimeCall,
+      close: dependencies.closeRealtimeCall, syncAdmission: () => runtime.syncAdmission(), startWorker: dependencies.startWorker });
     const identity = new AnonymousIdentity(process.env.NODE_ENV === "production");
     app.use("/api/conversations", createConversationRouter(runtime, identity, apiConfig.webOrigin, enabled));
     app.use("/api/live/session", createUsageRouter(runtime, identity, apiConfig.webOrigin));
@@ -83,8 +97,15 @@ export function createApp(dependencies: AppDependencies = {}) {
       }
     });
   } else {
+    if (realtimeEnabled || existsSync(apiConfig.realtimeDbPath)) {
+      realtime = new RealtimeAttempts(openRealtimeDatabase(apiConfig.realtimeDbPath), leaseRegistry, {
+        create: dependencies.createRealtimeCall, close: dependencies.closeRealtimeCall, startWorker: dependencies.startWorker, ownsDb: true });
+      if (leaseRegistry instanceof SessionLeaseRegistry) leaseRegistry.restoreReservations(realtime.reservations());
+    }
     app.use("/api/live/session", createLiveSessionRouter({ createLiveSession: dependencies.createLiveSession,
       leaseRegistry, webOrigin: apiConfig.webOrigin, logger: dependencies.logger }));
   }
+  app.locals.realtimeRuntime = realtime;
+  app.use("/api/realtime",createRealtimeRouter(realtime,realtimeEnabled,() => enabled || !retainLedger));
   return app;
 }
