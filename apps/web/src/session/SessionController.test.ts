@@ -6022,3 +6022,32 @@ it("retains timestamped late output for pending history beside a fresh unresolve
   expect(controller.session.activeTurn?.translatedText).toBeUndefined();
   expect(controller.session.pendingTurns?.some(turn => turn.translationOnly)).toBe(false);
 });
+
+it.each([false, true].flatMap(completed => [1900, 2200, undefined].map(endMs => ({ completed, endMs }))))(
+  "requires a contained lexical output interval for older history, completed=$completed, end=$endMs", async ({ completed, endMs }) => {
+    vi.useFakeTimers(); vi.setSystemTime(0);
+    const { controller, live, audio } = createController();
+    await controller.startWithLanguages({ A: "en", B: "es" });
+    emitVoice(audio, true);
+    live.emit({ type: "session.input_transcript.delta", delta: "Sí.", start_ms: 0, end_ms: 500 });
+    const previousId = controller.session.activeTurn!.id;
+    live.emit({ type: "session.output_transcript.delta", delta: "Yes.", start_ms: 600, end_ms: 1900 });
+    if (completed) {
+      emitVoice(audio, false);
+      await vi.advanceTimersByTimeAsync(runtime.audioStartGraceMs + runtime.captionIdleMs);
+      expect(controller.session.recentTurns.find(turn => turn.id === previousId)?.status).toBe("completed");
+      emitVoice(audio, true);
+    }
+    live.emit({ type: "session.input_transcript.delta", delta: "No.", start_ms: 2000, end_ms: 2500 });
+    await vi.advanceTimersByTimeAsync(runtime.captionIdleMs);
+    const unresolvedId = controller.session.activeTurn!.id;
+    expect(unresolvedId).not.toBe(previousId);
+    expect(controller.session.activeTurn?.speaker).toBeUndefined();
+    live.emit({ type: "session.output_transcript.delta", delta: "Yes.", start_ms: 1600, end_ms: endMs });
+    const contained = endMs === 1900;
+    const history = [...controller.session.recentTurns, ...(controller.session.pendingTurns ?? [])];
+    expect(history.find(turn => turn.id === previousId)?.translatedText).toBe(contained ? "Yes.Yes." : "Yes.");
+    expect(controller.session.activeTurn).toMatchObject({ id: unresolvedId, speaker: undefined });
+    expect(controller.session.activeTurn?.translatedText).toBeUndefined();
+    expect(history.find(turn => turn.translationOnly)?.translatedText).toBe(contained ? undefined : "Yes.");
+  });
