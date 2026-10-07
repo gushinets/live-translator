@@ -50,6 +50,37 @@ async function stop(a: ReturnType<typeof createApp>) {
   if (a.locals.ledgerRuntime?.ledger.db.isOpen) a.locals.ledgerRuntime.ledger.db.close();
 }
 describe("Realtime persistence across ledger modes and handoff timing", () => {
+  it.each([false, true])("keeps Realtime capacity reserved after legacy Live DELETE (restart=%s)", async (restart) => {
+    const close = vi.fn(async (): Promise<void> => { throw new Error("hangup unavailable"); });
+    let a = await app(false, close); const { id, cookie } = await create(a);
+    if (restart) { await stop(a); a = await app(false, close); }
+    close.mockClear();
+    expect(a.locals.ledgerRuntime).toBeUndefined();
+    expect(existsSync(join(directory, "ledger.sqlite"))).toBe(false);
+    const r = a.locals.realtimeRuntime as RealtimeAttempts;
+    const row = r.db.prepare("SELECT call_id,lease_id FROM realtime_attempts WHERE id=?").get(id)!;
+    for (const sessionId of [row.call_id, `realtime:${row.call_id}`, `realtime:${row.lease_id}`]) {
+      await request(a).delete(`/api/live/session/${encodeURIComponent(String(sessionId))}`).set("Origin", origin).expect(204);
+    }
+    expect(close).not.toHaveBeenCalled(); expect(r.reservations()).toHaveLength(1);
+    const other = randomUUID(), identity = await request(a).post("/api/realtime/identity").set("Origin", origin)
+      .send({ attemptId: other, generation: 1 }).expect(201);
+    const otherCookie = identity.headers["set-cookie"]![0]!.split(";")[0]!;
+    await request(a).post("/api/realtime/session").set("Origin", origin).set("Cookie", otherCookie)
+      .send({ attemptId: other, generation: 1, admissionToken: identity.body.admissionToken, sdp: "offer", languages: { A: "ru", B: "en" } }).expect(429);
+    expect(r.db.prepare("SELECT COUNT(*) AS n FROM realtime_attempts WHERE close_confirmed=0 AND lease_id IS NOT NULL").get()!.n).toBe(1);
+    await request(a).post(`/api/realtime/session/${id}/cleanup`).set("Origin", origin).set("Cookie", otherCookie).send({}).expect(404);
+    expect(close).not.toHaveBeenCalled();
+    const pending = await request(a).post(`/api/realtime/session/${id}/cleanup`).set("Origin", origin).set("Cookie", cookie).send({}).expect(200);
+    expect(pending.body.closeConfirmed).toBe(false); expect(r.reservations()).toHaveLength(1);
+    await request(a).post("/api/live/session").set("Origin", origin).send({ sdp: "offer" }).expect(429);
+    close.mockResolvedValue(undefined);
+    const confirmed = await request(a).post(`/api/realtime/session/${id}/cleanup`).set("Origin", origin).set("Cookie", cookie).send({}).expect(200);
+    expect(confirmed.body.closeConfirmed).toBe(true); expect(r.reservations()).toHaveLength(0);
+    expect(close).toHaveBeenCalledTimes(2);
+    expect(close).toHaveBeenLastCalledWith("rtc_recovered", expect.any(AbortSignal));
+    await create(a);
+  });
   it.each([false, true])("preserves ledger maintenance after actual API startup (pilot=%s)", async (pilot) => {
     const { createApp } = await import("../src/app.js");
     const a = createApp({ ledgerEnabled: true, realtimeEnabled: pilot, startWorker: false,

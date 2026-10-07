@@ -72,7 +72,7 @@ export class RealtimeAttempts {
     // Product expiry triggers cleanup; it is never evidence of provider closure.
     // ponytail: fail closed until confirmed hangup; reconciliation is required for lost IDs.
     return (this.db.prepare("SELECT lease_id,call_id FROM realtime_attempts WHERE close_confirmed=0 AND lease_id IS NOT NULL").all() as unknown as Array<{lease_id:string;call_id:string|null}>)
-      .map(r => ({ leaseId: r.lease_id, expiresAt: Number.MAX_SAFE_INTEGER, sessionId: r.call_id ?? `realtime:${r.lease_id}` }));
+      .map(r => ({ leaseId: r.lease_id, expiresAt: Number.MAX_SAFE_INTEGER, sessionId: `realtime:${r.call_id ?? r.lease_id}` }));
   }
   private prunePreparations() {
     this.db.prepare("DELETE FROM realtime_attempts WHERE call_id IS NULL AND lease_id IS NULL AND state IN ('prepared','failed') AND created_at<=? AND NOT EXISTS (SELECT 1 FROM realtime_usage WHERE attempt_id=realtime_attempts.id) AND NOT EXISTS (SELECT 1 FROM realtime_response_usage WHERE attempt_id=realtime_attempts.id)").run(this.now()-PREPARATION_TTL_MS);
@@ -121,7 +121,7 @@ export class RealtimeAttempts {
         if(this.disposed) {void this.closeDetached(callId);throw new LedgerError("attempt_cancelled");}
         this.db.prepare("UPDATE realtime_attempts SET call_id=? WHERE id=?").run(callId,id);
         const row=this.owned(owner,id);
-        if(row.lease_id)this.registry.bindSession(row.lease_id,callId,this.now(),Number.MAX_SAFE_INTEGER);
+        if(row.lease_id)this.registry.bindSession(row.lease_id,`realtime:${callId}`,this.now(),Number.MAX_SAFE_INTEGER);
       };
       const call = await (this.options.create ?? this.provider!.create)(sdp, AbortSignal.any([AbortSignal.timeout(30000),this.shutdownAbort.signal]),remember);
       if(this.disposed) {if(!this.emergencyCalls.has(id))void this.closeDetached(call.callId);throw new LedgerError("attempt_cancelled");}
@@ -177,7 +177,7 @@ export class RealtimeAttempts {
       known.closed=true;
       if(this.disposed)return before;
       this.db.prepare("UPDATE realtime_attempts SET call_id=?,state='closed',close_confirmed=1,closed_at=?,lease_id=NULL,error_category=NULL WHERE id=?").run(callId,this.now(), id);
-      this.registry.releaseSession(callId);
+      this.registry.releaseSession(`realtime:${callId}`);
       if(before.lease_id)this.registry.releaseSession(`realtime:${before.lease_id}`);
       this.emergencyCalls.delete(id);
     } catch {
@@ -213,7 +213,7 @@ export class RealtimeAttempts {
       const row=this.row(id);
       if(value.closed) {
         this.db.prepare("UPDATE realtime_attempts SET call_id=?,state='closed',close_confirmed=1,closed_at=?,lease_id=NULL,error_category=NULL WHERE id=?").run(value.callId,this.now(),id);
-        this.registry.releaseSession(value.callId);
+        this.registry.releaseSession(`realtime:${value.callId}`);
         if(row?.lease_id)this.registry.releaseSession(`realtime:${row.lease_id}`);
         this.emergencyCalls.delete(id);
       } else if(row?.call_id===null) {

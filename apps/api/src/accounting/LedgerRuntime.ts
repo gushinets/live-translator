@@ -65,7 +65,7 @@ export class LedgerRuntime {
     }
   }
   syncAdmission(): void {
-    this.registry.restoreReservations([...this.ledger.reservations().map(s => ({ leaseId: s.lease_id!, expiresAt: s.lease_expires_at!, sessionId: s.openai_session_id })),
+    this.registry.restoreReservations([...this.ledger.reservations().map(s => ({ leaseId: s.lease_id!, expiresAt: s.lease_expires_at!, sessionId: s.openai_session_id ? `live:${s.openai_session_id}` : null })),
       ...this.options.additionalReservations?.() ?? []], this.ledger.now());
   }
   wake(): void { if (this.options.startWorker !== false) this.worker.wake(); }
