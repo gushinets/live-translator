@@ -3,10 +3,11 @@ import { RealtimeSessionController } from "./RealtimeSessionController";
 import type { RealtimeEvent,RealtimePolicy } from "./RealtimeEvents";
 import type { RealtimeTransport } from "./RealtimeClient";
 import type { RealtimeAudioOutput } from "./RealtimePlayback";
+import { WakeLockController } from "../platform/WakeLockController";
 const policy:RealtimePolicy={enabled:true,model:"gpt-realtime-2.1",transcriptionModel:"gpt-4o-transcribe",promptVersion:"v1",schemaVersion:1,maxSessionMs:900000,
   instructions:"Translate only",transcriptionPrompt:"Russian and English",maxOutputTokens:4096,
   vad:{type:"server_vad",threshold:.5,prefix_padding_ms:300,silence_duration_ms:700,create_response:false,interrupt_response:false}};
-function harness(options:{connect?:()=>Promise<void>;capture?:()=>Promise<void>;now?:()=>number}={}) {
+function harness(options:{connect?:()=>Promise<void>;capture?:()=>Promise<void>;now?:()=>number;createWakeLock?:()=>WakeLockController}={}) {
   vi.useFakeTimers();
   const transport:RealtimeTransport={onEvent:null,onFailure:null,connect:vi.fn(options.connect??(async()=>{})),send:vi.fn(),
     close:vi.fn(async()=>({state:"closed",closeConfirmed:true})),reportUsage:vi.fn(async()=>{})};
@@ -15,7 +16,8 @@ function harness(options:{connect?:()=>Promise<void>;capture?:()=>Promise<void>;
   const track={enabled:true,stop:vi.fn()};
   const capture={onCaptureEnded:null,startCapture:vi.fn(options.capture??(async()=>{})),getCaptureStream:()=>({getAudioTracks:()=>[track]}) as unknown as MediaStream,
     setCaptureEnabled:vi.fn((value:boolean)=>{track.enabled=value;}),dispose:vi.fn()};
-  const controller=new RealtimeSessionController(policy,{createTransport:()=>transport,createOutput:()=>output,createCapture:()=>capture,mediaTailMs:1000,now:options.now});
+  const controller=new RealtimeSessionController(policy,{createTransport:()=>transport,createOutput:()=>output,createCapture:()=>capture,mediaTailMs:1000,now:options.now,
+    createWakeLock:options.createWakeLock??(()=>new WakeLockController({wakeLock:{request:async()=>({released:false,release:async()=>{}})}} as unknown as Navigator))});
   const emit=(e:RealtimeEvent)=>transport.onEvent?.(e);
   const commit=(id:string)=>emit({type:"input_audio_buffer.committed",item_id:id});
   const text=(id:string,value:string,final=true)=>emit(final?{type:"conversation.item.input_audio_transcription.completed",item_id:id,content_index:0,transcript:value}:
@@ -34,7 +36,7 @@ function harness(options:{connect?:()=>Promise<void>;capture?:()=>Promise<void>;
   function drain(id:string) {output.onDrained?.(controller.items.get(id)!.requestId!);}
   return {controller,transport,output,capture,emit,commit,text,speech,response,start,tick,drain};
 }
-afterEach(()=>{vi.clearAllTimers();vi.useRealTimers();});
+afterEach(()=>{vi.clearAllTimers();vi.useRealTimers();vi.restoreAllMocks();});
 describe("Realtime serialized conversation",()=> {
   it("records ASR usage independently before translation, deduplicates and reports failed delivery honestly",async()=> {
     const h=harness();await h.start();vi.mocked(h.transport.reportUsage).mockRejectedValue(new Error("offline"));
@@ -59,15 +61,54 @@ describe("Realtime serialized conversation",()=> {
     expect(h.controller.exportDiagnostics().usage).toEqual([]);expect(h.controller.exportDiagnostics().events.some(e=>e.name.includes("usage_delivery"))).toBe(false);
     await h.controller.endConversation();
   });
-  it("keeps acoustic playback unknown and estimates output only for an acknowledged current request",async()=> {
-    const h=harness();await h.start();h.commit("a");await h.tick();const id=h.controller.items.get("a")!.requestId!;
+  it("retains one-shot PCM before acknowledgement without claiming acoustic playback",async()=> {
+    let now=600000;const h=harness({now:()=>now});await h.start();h.commit("a");await h.tick();const id=h.controller.items.get("a")!.requestId!;
+    expect(h.output.begin).toHaveBeenCalledExactlyOnceWith(id);now+=200;
     h.output.onPcmRendered?.(id);expect(h.controller.items.get("a")!.firstNonzeroPcmAtMs).toBeUndefined();
-    h.response("r1");h.output.onPcmRendered?.("old");expect(h.controller.items.get("a")!.firstNonzeroPcmAtMs).toBeUndefined();
-    h.output.onPcmRendered?.(id);expect(h.controller.activityLabel).toContain("оценка");
+    h.output.onPcmRendered?.("old");now+=100;h.response("r1");expect(h.controller.activityLabel).toContain("оценка");
+    expect(h.controller.items.get("a")!.firstNonzeroPcmAtMs).toBe(600200);
     expect(h.controller.items.get("a")!.turn.audioOutputStarted).toBe(false);
-    expect(h.controller.exportDiagnostics().items[0]).toMatchObject({acousticPlaybackStart:"unknown"});
+    expect(h.controller.exportDiagnostics().items[0]).toMatchObject({firstNonzeroPcmAtMs:200,acousticPlaybackStart:"unknown"});
+    expect(h.controller.exportDiagnostics().events.filter(e=>e.name==="local_nonzero_pcm_rendered_estimate"))
+      .toEqual([expect.objectContaining({elapsedMs:200,itemId:"a",responseId:"r1"})]);
     expect(h.controller.exportDiagnostics().events.some(e=>e.name==="local_playback_started")).toBe(false);
     await h.controller.endConversation();
+  });
+  it("does not apply pending PCM from a retired attempt to the next request",async()=> {
+    const h=harness();await h.start();h.commit("a");await h.tick();
+    const old=h.output.onPcmRendered!,oldId=h.controller.items.get("a")!.requestId!;old(oldId);
+    await h.controller.cancel();await h.start();h.commit("a");await h.tick();old(oldId);h.response("r2");
+    expect(h.controller.exportDiagnostics().items[0]!.firstNonzeroPcmAtMs).toBeUndefined();
+    expect(h.controller.activityLabel).toBe("Генерация перевода");await h.controller.endConversation();
+  });
+  it.each(["end","cancel","dispose","hidden","pagehide","failure","startup_failure"])("owns a screen wake lock until %s",async retirement=> {
+    const sentinel={released:false,release:vi.fn(async()=>{})},request=vi.fn(async()=>sentinel);
+    const h=harness({createWakeLock:()=>new WakeLockController({wakeLock:{request}} as unknown as Navigator),
+      connect:retirement==="startup_failure"?async()=>{throw new Error("offline");}:undefined});
+    h.controller.start();await h.start();expect(request).toHaveBeenCalledExactlyOnceWith("screen");
+    if(retirement==="hidden") {vi.spyOn(document,"visibilityState","get").mockReturnValue("hidden");document.dispatchEvent(new Event("visibilitychange"));}
+    if(retirement==="pagehide")window.dispatchEvent(new Event("pagehide"));
+    if(retirement==="failure")h.transport.onFailure?.("connection_failed");
+    if(retirement==="cancel")await h.controller.cancel();
+    else if(retirement==="dispose")await h.controller.dispose();
+    else await h.controller.endConversation();
+    expect(sentinel.release).toHaveBeenCalledOnce();await h.controller.dispose();
+  });
+  it.each(["unsupported","denied"])("continues without a %s screen wake lock",async kind=> {
+    vi.spyOn(console,"error").mockImplementation(()=>{});
+    const nav=(kind==="unsupported"?{}:{wakeLock:{request:async()=>{throw new DOMException("denied","NotAllowedError");}}}) as Navigator;
+    const h=harness({createWakeLock:()=>new WakeLockController(nav)});await h.start();
+    expect(h.controller.inputReady).toBe(true);expect(h.controller.ownerError).toBeUndefined();await h.controller.endConversation();
+  });
+  it("releases a wake lock granted after cancellation without releasing the next attempt lock",async()=> {
+    let grant!:(sentinel:WakeLockSentinel)=>void;
+    const old={released:false,release:vi.fn(async()=>{})},current={released:false,release:vi.fn(async()=>{})};
+    const request=vi.fn().mockImplementationOnce(()=>new Promise<WakeLockSentinel>(resolve=>{grant=resolve;})).mockResolvedValueOnce(current);
+    const h=harness({createWakeLock:()=>new WakeLockController({wakeLock:{request}} as unknown as Navigator)});
+    await h.start();expect(request).toHaveBeenCalledOnce();await h.controller.cancel();await h.start();
+    grant(old as unknown as WakeLockSentinel);await Promise.resolve();await Promise.resolve();
+    expect(old.release).toHaveBeenCalledOnce();expect(current.release).not.toHaveBeenCalled();
+    expect(h.controller.inputReady).toBe(true);await h.controller.endConversation();expect(current.release).toHaveBeenCalledOnce();
   });
   it("exports PCM and drain timestamps on each attempt clock with a nonzero page clock", async () => {
     let now = 600000; const h = harness({ now: () => now });

@@ -34,5 +34,7 @@ describe("actual AudioWorklet response activity", () => {
     expect(p.port.postMessage).not.toHaveBeenCalledWith(expect.objectContaining({ type: "started" }));
     send({ type: "hold", value: false }); expect(render()[64]).toBe(quiet[64]);
     expect(p.port.postMessage).toHaveBeenCalledWith({ type: "nonzero_pcm_rendered", responseId: "a" });
+    render(quiet); render(quiet);
+    expect(p.port.postMessage.mock.calls.filter(([message])=>message.type==="nonzero_pcm_rendered")).toHaveLength(1);
   });
 });

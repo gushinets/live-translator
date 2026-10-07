@@ -1,4 +1,5 @@
 import { AudioController } from "../audio/AudioController";
+import { WakeLockController } from "../platform/WakeLockController";
 import { createInitialSession,type TranslationSession } from "../session/SessionState";
 import type { ProductSession } from "../session/ProductSession";
 import type { DialogueBlock } from "../conversation/DialogueTranscript";
@@ -14,16 +15,17 @@ export interface SourceItem {
   requestState:"queued"|"requested"|"acknowledged"|"completed"|"failed"|"unknown";
   committedAt?:number;firstSourceTextAtMs?:number;generationDone:boolean;bufferStopped:boolean;drained:boolean;
   outputContents:Map<string,{text:string;final:boolean}>;
-  firstNonzeroPcmAtMs?:number; localPcmDrainedAtMs?:number;
+  firstNonzeroPcmAtMs?:number; pendingFirstPcmAtMs?:number; localPcmDrainedAtMs?:number;
 }
 type Capture = Pick<AudioController,"startCapture"|"getCaptureStream"|"setCaptureEnabled"|"dispose"|"onCaptureEnded">;
 interface Attempt {
-  id:string;generation:number;capture:Capture;output:RealtimeAudioOutput;transport:RealtimeTransport;
+  id:string;generation:number;capture:Capture;output:RealtimeAudioOutput;transport:RealtimeTransport;wakeLock:WakeLockController;
   retiring:boolean;timers:Set<ReturnType<typeof setTimeout>>;abort:AbortController;
 }
 export interface RealtimeControllerOptions {
   createCapture?:()=>Capture;
   createOutput?:()=>RealtimeAudioOutput;
+  createWakeLock?:()=>WakeLockController;
   createTransport?:(id:string,generation:number,onRemote:(stream:MediaStream)=>Promise<void>)=>RealtimeTransport;
   now?:()=>number;
   responseTimeoutMs?:number;
@@ -111,24 +113,33 @@ export class RealtimeSessionController implements ProductSession {
     const capture=this.options.createCapture?.()??createCapture();
     const output=this.options.createOutput?.()??new RealtimePlayback();
     const transport=this.options.createTransport?.(id,generation,s=>output.attach(s))??new RealtimeClient(id,generation,this.policy,s=>output.attach(s));
-    const attempt:Attempt={id,generation,capture,output,transport,retiring:false,timers:new Set(),abort:new AbortController()};this.attempt=attempt;
+    const wakeLock=this.options.createWakeLock?.()??new WakeLockController();
+    const attempt:Attempt={id,generation,capture,output,transport,wakeLock,retiring:false,timers:new Set(),abort:new AbortController()};this.attempt=attempt;
     transport.onEvent=event=>{if(this.valid(attempt))this.receive(event,attempt);};
     transport.onFailure=category=>{if(this.valid(attempt))this.fail(category);};
     capture.onCaptureEnded=()=>{if(this.valid(attempt))this.fail("microphone_ended");};
     output.onFailure=category=>{if(this.valid(attempt))this.fail(category);};
     output.onPcmRendered=id=> {
-      if(!this.valid(attempt)||this.active?.requestId!==id||!this.active.responseId||this.active.firstNonzeroPcmAtMs!==undefined)return;
-      this.active.firstNonzeroPcmAtMs=this.now();this.trace("local_nonzero_pcm_rendered_estimate",this.active);this.update();
+      const item=this.active;
+      if(!this.valid(attempt)||item?.requestId!==id||item.firstNonzeroPcmAtMs!==undefined)return;
+      item.pendingFirstPcmAtMs??=this.now();this.applyFirstPcm(item);this.update();
     };
     output.onDrained=id=> {
       if(!this.valid(attempt)||this.active?.requestId!==id)return;
       this.active.drained=true;this.active.localPcmDrainedAtMs=this.now();
       this.trace("local_playback_drained",this.active);this.finishResponse();this.update();
     };
+    // Each attempt owns its lock, including a grant that arrives after retirement.
+    void wakeLock.request().then(()=>{if(!this.valid(attempt))void wakeLock.release();});
     this.trace("attempt_started",undefined,{state:this.session.state});
     // Start immediately in the user gesture; async failures are handled per owned attempt.
     const work=this.startAttempt(attempt,languages).finally(()=>{if(this.startWork===work)this.startWork=undefined;this.notify();});
     this.startWork=work;this.notify();return work;
+  }
+  private applyFirstPcm(item:SourceItem) {
+    if(!item.responseId||item.pendingFirstPcmAtMs===undefined||item.firstNonzeroPcmAtMs!==undefined)return;
+    item.firstNonzeroPcmAtMs=item.pendingFirstPcmAtMs;item.pendingFirstPcmAtMs=undefined;
+    this.trace("local_nonzero_pcm_rendered_estimate",item,{elapsedMs:item.firstNonzeroPcmAtMs-this.startAt});
   }
   private async startAttempt(attempt:Attempt,languages:{A:string;B:string}) {
     const aborted=new Promise<never>((_resolve,reject)=>attempt.abort.signal.addEventListener("abort",()=>reject(new Error("start_cancelled")),{once:true}));
@@ -216,6 +227,7 @@ export class RealtimeSessionController implements ProductSession {
         }
         if(item.responseId && item.responseId!==event.response.id)throw new Error("duplicate_response");
         item.responseId=event.response.id;
+        this.applyFirstPcm(item);
         if(event.type==="response.created") {item.requestState="acknowledged";this.trace("response_acknowledged",item);}
         else {
           if(item.generationDone)return;
@@ -350,6 +362,7 @@ export class RealtimeSessionController implements ProductSession {
       if(item.turn.status!=="completed")item.turn.status="failed";
     }
     for(const timer of attempt.timers)clearTimeout(timer);attempt.timers.clear();
+    void attempt.wakeLock.release();
     attempt.capture.onCaptureEnded=null;attempt.capture.dispose();attempt.output.dispose();
     attempt.transport.onEvent=attempt.transport.onFailure=null;
     this.speech.clear();this.awaitingCommit.clear();this.pending.length=0;
