@@ -1,6 +1,7 @@
 import { chmodSync, linkSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { backup, DatabaseSync } from "node:sqlite";
+import { ensureRealtimeSchema } from "./realtimeSchema.js";
 
 type FailureCode = "backup_failed" | "restore_failed";
 type VerificationResult = { integrity: "ok"; foreignKeyViolations: 0; ledgerSchema: "compatible" };
@@ -34,6 +35,7 @@ function matchesLedgerSchema(db: DatabaseSync, version: number): boolean {
     if (version === 3 || db.prepare("SELECT 1 FROM pragma_table_info('live_sessions') WHERE name='usage_identity_version'").get()) {
       expected.exec(readFileSync(new URL("./migrations/003-usage-identity.sql", import.meta.url), "utf8"));
     }
+    if (db.prepare("SELECT 1 FROM sqlite_schema WHERE type='table' AND name='realtime_attempts'").get()) ensureRealtimeSchema(expected);
     return schemaFingerprint(db) === schemaFingerprint(expected);
   } finally { expected.close(); }
 }

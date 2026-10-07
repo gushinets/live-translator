@@ -6,6 +6,7 @@ import OpenAI from "openai";
 import { apiConfig } from "../config.js";
 import { LedgerError } from "./types.js";
 import { transaction } from "../persistence/database.js";
+import { ensureRealtimeSchema } from "../persistence/realtimeSchema.js";
 import type { LeaseRegistry } from "../security/SessionLeaseRegistry.js";
 import { makeRealtimeProvider, type RealtimeCallCreator, type RealtimeCallCloser } from "../openai/realtimeCall.js";
 import { boundedWait } from "./LedgerRuntime.js";
@@ -46,26 +47,8 @@ export class RealtimeAttempts {
     create?: RealtimeCallCreator; close?: RealtimeCallCloser; syncAdmission?: () => void;
     startWorker?: boolean; ownsDb?: boolean; now?: () => number;
   } = {}) {
-    db.exec(`CREATE TABLE IF NOT EXISTS realtime_attempts (
-      id TEXT PRIMARY KEY, owner TEXT NOT NULL, generation INTEGER NOT NULL,
-      model TEXT NOT NULL, transcription_model TEXT NOT NULL, engine TEXT NOT NULL DEFAULT 'realtime',
-      state TEXT NOT NULL, call_id TEXT, lease_id TEXT, created_at INTEGER NOT NULL,
-      expires_at INTEGER NOT NULL, cleanup_at INTEGER, close_confirmed INTEGER NOT NULL DEFAULT 0,
-      next_cleanup_at INTEGER NOT NULL DEFAULT 0, cleanup_count INTEGER NOT NULL DEFAULT 0,
-      error_category TEXT, closed_at INTEGER, handoff_at INTEGER);
-      CREATE TABLE IF NOT EXISTS realtime_response_usage (
-        attempt_id TEXT NOT NULL REFERENCES realtime_attempts(id), response_id TEXT NOT NULL,
-        usage_json TEXT NOT NULL, source TEXT NOT NULL DEFAULT 'browser', received_at INTEGER NOT NULL,
-        PRIMARY KEY(attempt_id,response_id));`);
-    if (!db.prepare("SELECT 1 FROM pragma_table_info('realtime_attempts') WHERE name='handoff_at'").get()) db.exec("ALTER TABLE realtime_attempts ADD COLUMN handoff_at INTEGER");
-    if (!db.prepare("SELECT 1 FROM pragma_table_info('realtime_attempts') WHERE name='creation_token'").get()) db.exec("ALTER TABLE realtime_attempts ADD COLUMN creation_token TEXT");
-    if (!db.prepare("SELECT 1 FROM pragma_table_info('realtime_attempts') WHERE name='handoff_ready_at'").get()) db.exec("ALTER TABLE realtime_attempts ADD COLUMN handoff_ready_at INTEGER");
-    db.exec(`CREATE TABLE IF NOT EXISTS realtime_usage (
-      attempt_id TEXT NOT NULL REFERENCES realtime_attempts(id), operation TEXT NOT NULL,
-      observation_id TEXT NOT NULL, content_index INTEGER NOT NULL, model TEXT NOT NULL,
-      usage_json TEXT NOT NULL, source TEXT NOT NULL DEFAULT 'provider_data_channel_via_browser',
-      received_at INTEGER NOT NULL, PRIMARY KEY(attempt_id,operation,observation_id,content_index));
-      INSERT OR IGNORE INTO realtime_usage
+    ensureRealtimeSchema(db);
+    db.exec(`INSERT OR IGNORE INTO realtime_usage
         SELECT u.attempt_id,'response',u.response_id,-1,a.model,u.usage_json,u.source,u.received_at
         FROM realtime_response_usage u JOIN realtime_attempts a ON a.id=u.attempt_id;`);
     db.prepare("UPDATE realtime_attempts SET state='failed',cleanup_at=?,close_confirmed=1 WHERE state='prepared'").run(this.now());
@@ -224,7 +207,7 @@ export class RealtimeAttempts {
     if (row.handoff_at === null) this.db.prepare("UPDATE realtime_attempts SET handoff_at=? WHERE id=?").run(this.now(),id);
   }
   async sweep() {
-    if(this.disposed)return;
+    if(this.disposed)return 0;
     this.prunePreparations();
     for (const [id, value] of this.emergencyCalls) {
       const row=this.row(id);
@@ -240,6 +223,7 @@ export class RealtimeAttempts {
     const rows = this.db.prepare("SELECT * FROM realtime_attempts WHERE call_id IS NOT NULL AND close_confirmed=0 AND (cleanup_at IS NOT NULL OR expires_at<=? OR (handoff_at IS NULL AND handoff_ready_at<=?)) AND next_cleanup_at<=? AND cleanup_count<6 LIMIT 5")
       .all(this.now(),this.now()-apiConfig.sessionHandoffAckTimeoutMs,this.now()) as unknown as Attempt[];
     await Promise.allSettled(rows.map(r => this.cleanup(r.owner,r.id)));
+    return rows.length;
   }
   shutdown(options={drainMs:100,timeoutMs:1000}) {
     this.stopWork??=this.stop(options);return this.stopWork;
@@ -254,7 +238,12 @@ export class RealtimeAttempts {
     await boundedWait(work,Math.min(options.drainMs,Math.max(0,deadline-performance.now())));
     this.shutdownAbort.abort();
     await boundedWait(work,Math.min(100,Math.max(0,deadline-performance.now())));
-    await boundedWait(this.sweep().catch(()=>console.error("Realtime shutdown persistence unavailable")),Math.max(0,deadline-performance.now()));
+    const cleanup = async () => {
+      while (performance.now() < deadline) {
+        if (!await this.sweep()) break;
+      }
+    };
+    await boundedWait(cleanup().catch(()=>console.error("Realtime shutdown persistence unavailable")),Math.max(0,deadline-performance.now()));
     this.disposed=true;this.closeAbort.abort();
     if (this.options.ownsDb) this.db.close();
   }

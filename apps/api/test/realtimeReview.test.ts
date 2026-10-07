@@ -193,6 +193,43 @@ describe("PR36 real adapter and durable reservation regressions", () => {
     finish({callId:"rtc_after_db_close",sdp:"late"});await work;
     expect(close).toHaveBeenCalledWith("rtc_after_db_close",expect.any(Object));
   });
+  it.each([false, true])("drains every shutdown batch without retrying failed hangups (failure=%s)", async (failure) => {
+    let serial = 0, inFlight = 0, peak = 0;
+    const close = vi.fn(async (callId: string) => {
+      peak = Math.max(peak, ++inFlight);
+      await Promise.resolve(); inFlight--;
+      if (failure && Number(callId.slice(4)) <= 5) throw new Error("hangup unavailable");
+    });
+    const registry = new SessionLeaseRegistry(15, 900000), db = openRealtimeDatabase(":memory:");
+    const runtime = new RealtimeAttempts(db, registry, { startWorker: false, close,
+      create: async () => ({ callId: `rtc_${++serial}`, sdp: "answer" }) }); runtimes.push(runtime);
+    for (let i = 0; i < 15; i++) {
+      const owner = randomUUID(), id = randomUUID(); await admit(runtime, owner, id); runtime.handoff(owner, id);
+    }
+    const stopping = runtime.shutdown({ drainMs: 0, timeoutMs: 1000 });
+    expect(runtime.shutdown()).toBe(stopping); await stopping;
+    expect(close).toHaveBeenCalledTimes(15);
+    expect(new Set(close.mock.calls.map(([id]) => id)).size).toBe(15); expect(peak).toBeLessThanOrEqual(5);
+    expect(db.prepare("SELECT COUNT(*) AS n FROM realtime_attempts WHERE close_confirmed=0").get()!.n).toBe(failure ? 5 : 0);
+    expect(runtime.reservations()).toHaveLength(failure ? 5 : 0); expect(registry.activeLeases).toBe(failure ? 5 : 0);
+  });
+  it("stops shutdown batches at the absolute budget and retains pending reservations", async () => {
+    const close = vi.fn((_id: string, signal: AbortSignal) => new Promise<void>((_resolve, reject) => {
+      signal.addEventListener("abort", () => reject(new Error("aborted")), { once: true });
+    }));
+    const registry = new SessionLeaseRegistry(15, 900000), db = openRealtimeDatabase(":memory:"); let serial = 0;
+    const runtime = new RealtimeAttempts(db, registry, { startWorker: false, close,
+      create: async () => ({ callId: `rtc_${++serial}`, sdp: "answer" }) }); runtimes.push(runtime);
+    for (let i = 0; i < 15; i++) {
+      const owner = randomUUID(), id = randomUUID(); await admit(runtime, owner, id); runtime.handoff(owner, id);
+    }
+    const started = performance.now(); await runtime.shutdown({ drainMs: 0, timeoutMs: 40 });
+    expect(performance.now() - started).toBeLessThan(200); expect(close).toHaveBeenCalledTimes(5);
+    await Promise.resolve();
+    expect(close.mock.calls.every(([, signal]) => signal.aborted)).toBe(true);
+    expect(runtime.reservations()).toHaveLength(15); expect(registry.activeLeases).toBe(15);
+    expect(db.prepare("SELECT COUNT(*) AS n FROM realtime_attempts WHERE close_confirmed=0 AND cleanup_at IS NOT NULL").get()!.n).toBe(15);
+  });
   it("bounds prepared rows and prunes Cancel fences without admitting an old nonce",async()=> {
     let now=Date.now();const f=fixture({now:()=>now}),old=f.runtime.prepare(f.owner,f.id,1);
     await f.runtime.cleanup(f.owner,f.id);now+=60001;await f.runtime.sweep();
