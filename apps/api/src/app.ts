@@ -1,6 +1,7 @@
 import { createUsageRouter } from "./routes/usage.js";
 import express, { type Request, type Response, type NextFunction } from "express";
-import { existsSync } from "node:fs";
+import { existsSync, realpathSync } from "node:fs";
+import { DatabaseSync } from "node:sqlite";
 import { z } from "zod";
 import { UsageLedger } from "./accounting/UsageLedger.js";
 import { LedgerRuntime } from "./accounting/LedgerRuntime.js";
@@ -34,6 +35,11 @@ export interface AppDependencies {
   realtimeEnabled?: boolean;
   createRealtimeCall?: RealtimeCallCreator;
   closeRealtimeCall?: RealtimeCallCloser;
+}
+
+function hasRealtimeRecords(db: DatabaseSync) {
+  return !!(db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='realtime_attempts'").get()
+    && db.prepare("SELECT 1 FROM realtime_attempts LIMIT 1").get());
 }
 
 export function createApp(dependencies: AppDependencies = {}) {
@@ -77,13 +83,27 @@ export function createApp(dependencies: AppDependencies = {}) {
       sessionCloseTimeoutMs: apiConfig.sessionCloseTimeoutMs, sessionHandoffAckTimeoutMs: apiConfig.sessionHandoffAckTimeoutMs,
       resumeClaimTimeoutMs: apiConfig.resumeClaimTimeoutMs, backgroundSessionCloseEnabled: apiConfig.backgroundSessionCloseEnabled,
     } });
+    const ledgerFile = ledger.db.prepare("PRAGMA database_list").get()!.file as string;
+    let standalone = existsSync(apiConfig.realtimeDbPath) && (!ledgerFile || realpathSync(apiConfig.realtimeDbPath) !== realpathSync(ledgerFile));
+    if (standalone && hasRealtimeRecords(ledger.db)) {
+      const previous = new DatabaseSync(apiConfig.realtimeDbPath, { readOnly: true });
+      try {
+        if (hasRealtimeRecords(previous)) {
+          // ponytail: fail closed on split stores; explicit migration if mixed deployments need recovery.
+          if (!dependencies.ledger) ledger.db.close();
+          throw new Error("Realtime records exist in both databases; explicit reconciliation is required");
+        }
+        standalone = false;
+      } finally { previous.close(); }
+    }
     const runtime = new LedgerRuntime(ledger, { creator: dependencies.createLiveSession, closeOrphan: dependencies.closeOrphan,
       maxConcurrent: apiConfig.maxConcurrentSessions, leaseMs: apiConfig.leaseMs,
       workerConcurrency: apiConfig.cleanupWorkerConcurrency, workerBatchSize: apiConfig.cleanupWorkerBatchSize,
       logger: dependencies.logger, startWorker: dependencies.startWorker, additionalReservations: () => realtime?.reservations() ?? [] });
     app.locals.ledgerRuntime = runtime;
-    realtime = new RealtimeAttempts(ledger.db, runtime.registry, { create: dependencies.createRealtimeCall,
+    realtime = new RealtimeAttempts(standalone ? openRealtimeDatabase(apiConfig.realtimeDbPath) : ledger.db, runtime.registry, { create: dependencies.createRealtimeCall,
       close: dependencies.closeRealtimeCall, syncAdmission: () => runtime.syncAdmission(), startWorker: dependencies.startWorker });
+    runtime.syncAdmission();
     const identity = new AnonymousIdentity(process.env.NODE_ENV === "production");
     app.use("/api/conversations", createConversationRouter(runtime, identity, apiConfig.webOrigin, enabled));
     app.use("/api/live/session", createUsageRouter(runtime, identity, apiConfig.webOrigin));

@@ -39,6 +39,7 @@ export function startApiServer(app: Express, options: { port: number; host?: str
       } catch (error) { tailFailure = error; }
       finally { if (timer) clearTimeout(timer); }
     }
+    if (realtime?.db.isOpen && realtime.db !== runtime?.ledger.db) realtime.db.close();
     if (runtime?.ledger.db.isOpen) runtime.ledger.db.close();
     if (failure) throw failure;
     if (tailFailure) throw tailFailure;

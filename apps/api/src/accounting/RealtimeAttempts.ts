@@ -19,7 +19,7 @@ interface Attempt {
   id: string; owner: string; generation: number; state: string; call_id: string | null;
   lease_id: string | null; expires_at: number; cleanup_at: number | null;
   close_confirmed: number; next_cleanup_at: number; cleanup_count: number;
-  handoff_at: number | null;
+  handoff_at: number | null; handoff_ready_at: number | null;
   created_at: number; creation_token: string | null; model: string; transcription_model: string;
 }
 export function openRealtimeDatabase(path: string): DatabaseSync {
@@ -59,6 +59,7 @@ export class RealtimeAttempts {
         PRIMARY KEY(attempt_id,response_id));`);
     if (!db.prepare("SELECT 1 FROM pragma_table_info('realtime_attempts') WHERE name='handoff_at'").get()) db.exec("ALTER TABLE realtime_attempts ADD COLUMN handoff_at INTEGER");
     if (!db.prepare("SELECT 1 FROM pragma_table_info('realtime_attempts') WHERE name='creation_token'").get()) db.exec("ALTER TABLE realtime_attempts ADD COLUMN creation_token TEXT");
+    if (!db.prepare("SELECT 1 FROM pragma_table_info('realtime_attempts') WHERE name='handoff_ready_at'").get()) db.exec("ALTER TABLE realtime_attempts ADD COLUMN handoff_ready_at INTEGER");
     db.exec(`CREATE TABLE IF NOT EXISTS realtime_usage (
       attempt_id TEXT NOT NULL REFERENCES realtime_attempts(id), operation TEXT NOT NULL,
       observation_id TEXT NOT NULL, content_index INTEGER NOT NULL, model TEXT NOT NULL,
@@ -147,7 +148,7 @@ export class RealtimeAttempts {
         await this.cleanup(owner, id);
         throw new LedgerError("attempt_cancelled");
       }
-      this.db.prepare("UPDATE realtime_attempts SET state='active' WHERE id=?").run(id);
+      this.db.prepare("UPDATE realtime_attempts SET state='active',handoff_ready_at=? WHERE id=?").run(this.now(),id);
       return { attemptId: id, sdp: call.sdp, expiresAt: row.expires_at };
     } catch (error) {
       const definitive = error instanceof OpenAI.APIError && [400,401,403,404,422,429].includes(error.status ?? 0);
@@ -236,7 +237,7 @@ export class RealtimeAttempts {
         this.db.prepare("UPDATE realtime_attempts SET call_id=?,cleanup_at=COALESCE(cleanup_at,?),state='closing' WHERE id=?").run(value.callId,this.now(),id);
       }
     }
-    const rows = this.db.prepare("SELECT * FROM realtime_attempts WHERE call_id IS NOT NULL AND close_confirmed=0 AND (cleanup_at IS NOT NULL OR expires_at<=? OR (handoff_at IS NULL AND created_at<=?)) AND next_cleanup_at<=? AND cleanup_count<6 LIMIT 5")
+    const rows = this.db.prepare("SELECT * FROM realtime_attempts WHERE call_id IS NOT NULL AND close_confirmed=0 AND (cleanup_at IS NOT NULL OR expires_at<=? OR (handoff_at IS NULL AND handoff_ready_at<=?)) AND next_cleanup_at<=? AND cleanup_count<6 LIMIT 5")
       .all(this.now(),this.now()-apiConfig.sessionHandoffAckTimeoutMs,this.now()) as unknown as Attempt[];
     await Promise.allSettled(rows.map(r => this.cleanup(r.owner,r.id)));
   }

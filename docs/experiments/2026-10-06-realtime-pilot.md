@@ -129,6 +129,8 @@ Call ID из Location сохраняется до чтения SDP; сбой з�
 durable unknown reservation всё равно остаётся fail closed.
 Shutdown прекращает admission, ограниченно дожидается create, затем abort и
 cleanup в одном бюджете; поздние callbacks не обращаются к закрытой SQLite.
+Ожидание handoff начинается с сохранённого `handoff_ready_at` после успешного
+create; подготовка, ICE и provider latency не расходуют этот grace period.
 
 ## Автоматические проверки и саморевью
 
@@ -259,8 +261,11 @@ spike; для проверки владельцем нужен build + preview. 
 
 Нужны `OPENAI_API_KEY`, точный `WEB_ORIGIN=http://localhost:5173`, существующие
 ledger/recovery/proxy переменные. Секреты сюда не копируются. `.env.example`
-содержит флаг, модели и описание `REALTIME_DB_PATH`: при включённом ledger
-таблицы добавляются в локальный usage DB; отдельный DB нужен legacy setup.
+содержит флаг, модели и описание `REALTIME_DB_PATH`: новый ledger setup использует
+usage DB, а существующий standalone Realtime-файл сохраняется при включении
+ledger. Его reservations восстанавливаются в общем admission до приёма запросов.
+Если записи уже есть в двух разных файлах, startup требует явной сверки;
+автоматического копирования, удаления или замены записей нет.
 Отсутствующий `REALTIME_DB_PATH` получает `${USAGE_DB_PATH}.realtime`;
 пустой или пробельный путь отклоняется при startup и в DB opener.
 `:memory:` сохранён для изолированных тестов.
