@@ -61,6 +61,25 @@ describe("Realtime server boundary",()=> {
     await request(a).post("/api/realtime/session").set("Origin",origin).set("Cookie",cookie).send(body()).expect(429);
     await request(a).post(`/api/realtime/session/${b.attemptId}/cleanup`).set("Origin",origin).set("Cookie",cookie).send({}).expect(200);
   });
+  it.each(["cleanup", "handoff"] as const)("bounds owned %s independently from creation and other maintenance quotas", async (operation) => {
+    const { a, runtime } = app(), b = body(), cookie = await identity(a, b);
+    await request(a).post("/api/realtime/session").set("Origin", origin).set("Cookie", cookie).send(b).expect(201);
+    for (let n = 0; n < apiConfig.creationLimit; n++) await request(a).post("/api/live/session").set("Origin", origin).send({});
+    const method = vi.spyOn(runtime, operation);
+    for (let n = 0; n < 1000; n++) {
+      await request(a).post(`/api/realtime/session/${b.attemptId}/${operation}`).set("Origin", origin).set("Cookie", cookie)
+        .send({}).expect(operation === "cleanup" ? 200 : 204);
+    }
+    await request(a).post(`/api/realtime/session/${b.attemptId}/${operation}`).set("Origin", origin).set("Cookie", cookie).send({}).expect(429);
+    expect(method).toHaveBeenCalledTimes(1000);
+    if (operation === "handoff") {
+      await request(a).post(`/api/realtime/session/${b.attemptId}/cleanup`).set("Origin", origin).set("Cookie", cookie).send({}).expect(200);
+    } else {
+      const other = body(), otherCookie = await identity(a, other);
+      await runtime.create(runtime.db.prepare("SELECT owner FROM realtime_attempts WHERE id=?").get(other.attemptId)!.owner as string, other.attemptId, 1, "offer", () => false, other.admissionToken);
+      await request(a).post(`/api/realtime/session/${other.attemptId}/handoff`).set("Origin", origin).set("Cookie", otherCookie).send({}).expect(204);
+    }
+  }, 20000);
   it("reserves global admission, expires known calls and leaves unknown creation uncertain",async()=> {
     const {a,runtime,create,close}=app();
     for(let n=0;n<apiConfig.maxConcurrentSessions;n++)await admit(runtime,randomUUID(),randomUUID(),1,"offer",()=>false);

@@ -28,7 +28,7 @@ const usageObservationSchema=z.discriminatedUnion("operation",[
 export function createRealtimeRouter(attempts: RealtimeAttempts | undefined, enabled: boolean, allowCreate: () => boolean) {
   const router = Router(), identity = new AnonymousIdentity(process.env.NODE_ENV === "production");
   router.use(requireOrigin(apiConfig.webOrigin));
-  // Separate from creation quota. Known owned cleanup remains available after any 429.
+  // Independent maintenance quotas keep cleanup available after a creation 429.
   const limiter=(limit:number)=>rateLimit({windowMs:60000,limit,ipv6Subnet:56,standardHeaders:"draft-8",legacyHeaders:false});
   router.post("/identity",limiter(60), (req,res) => {
     if (!enabled || !allowCreate() || !attempts) throw new LedgerError("realtime_disabled",403);
@@ -53,9 +53,7 @@ export function createRealtimeRouter(attempts: RealtimeAttempts | undefined, ena
       identity.renew(res,owner); res.status(201).json(result);
     } finally { req.removeListener("aborted",onDisconnect); res.once("finish",() => res.removeListener("close",onDisconnect)); }
   });
-  const cleanupLimiter=rateLimit({windowMs:60000,limit:1000,ipv6Subnet:56,standardHeaders:"draft-8",legacyHeaders:false,
-    skip:req=>{try {attempts?.owned(identity.require(req),String(req.params.id));return !!attempts;}catch{return false;}}});
-  router.post("/session/:id/cleanup",cleanupLimiter, async (req,res) => {
+  router.post("/session/:id/cleanup",limiter(1000), async (req,res) => {
     const id = parseBody(uuidSchema,req.params.id); parseBody(z.object({}).strict(),req.body);
     if (!attempts) throw new LedgerError("not_found",404);
     const row = await attempts.cleanup(identity.require(req),id);
@@ -68,7 +66,7 @@ export function createRealtimeRouter(attempts: RealtimeAttempts | undefined, ena
     attempts.recordUsage(identity.require(req),id,body);
     res.status(204).send();
   });
-  router.post("/session/:id/handoff",(req,res)=> {
+  router.post("/session/:id/handoff",limiter(1000),(req,res)=> {
     const id=parseBody(uuidSchema,req.params.id);parseBody(z.object({}).strict(),req.body);
     if(!attempts)throw new LedgerError("not_found",404);
     attempts.handoff(identity.require(req),id);res.status(204).send();

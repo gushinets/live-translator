@@ -1,4 +1,7 @@
 import { randomUUID } from "node:crypto";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import OpenAI from "openai";
 import { RealtimeAttempts, openRealtimeDatabase } from "../src/accounting/RealtimeAttempts.js";
@@ -14,6 +17,7 @@ import { createLiveSessionRouter } from "../src/routes/liveSession.js";
 import request from "supertest";
 
 const runtimes: RealtimeAttempts[] = [];
+const directories: string[] = [];
 function admit(runtime:RealtimeAttempts,owner:string,id:string) {
   return runtime.create(owner,id,1,"offer",()=>false,runtime.prepare(owner,id,1).admissionToken);
 }
@@ -22,10 +26,37 @@ afterEach(async () => {
     await runtime.shutdown();
     if (runtime.db.isOpen) runtime.db.close();
   }
+  for (const directory of directories.splice(0)) rmSync(directory, { recursive: true, force: true });
   vi.restoreAllMocks();
   vi.useRealTimers();vi.unstubAllEnvs();
 });
 describe("PR36 real adapter and durable reservation regressions", () => {
+  it.each(["", "   ", "\t\r\n"])("rejects blank database path %j before SQLite opens", (path) => {
+    expect(() => openRealtimeDatabase(path)).toThrow("Invalid realtime database path");
+  });
+  it("keeps :memory: databases isolated", () => {
+    const first = new RealtimeAttempts(openRealtimeDatabase(":memory:"), new SessionLeaseRegistry(1, 10), { startWorker: false });
+    const second = new RealtimeAttempts(openRealtimeDatabase(":memory:"), new SessionLeaseRegistry(1, 10), { startWorker: false });
+    runtimes.push(first, second);
+    const id = randomUUID(); first.prepare(randomUUID(), id, 1);
+    expect(first.db.prepare("SELECT id FROM realtime_attempts").get()!.id).toBe(id);
+    expect(second.db.prepare("SELECT id FROM realtime_attempts").get()).toBeUndefined();
+  });
+  it("preserves a Realtime attempt and usage after closing and reopening a file database", async () => {
+    const directory = mkdtempSync(join(tmpdir(), "realtime-path-")); directories.push(directory);
+    const path = join(directory, "nested", "pilot.sqlite"), owner = randomUUID(), id = randomUUID();
+    const options = { startWorker: false, create: async () => ({ callId: "rtc_persisted", sdp: "answer" }), close: async () => {} };
+    const first = new RealtimeAttempts(openRealtimeDatabase(path), new SessionLeaseRegistry(1, 10), options); runtimes.push(first);
+    await admit(first, owner, id);
+    first.recordUsage(owner, id, { operation: "response", responseId: "persisted", usage: { total_tokens: 3 } });
+    await first.shutdown(); first.db.close(); runtimes.pop();
+    const second = new RealtimeAttempts(openRealtimeDatabase(path), new SessionLeaseRegistry(1, 10), options); runtimes.push(second);
+    expect(second.owned(owner, id)).toMatchObject({ id, owner, generation: 1, call_id: "rtc_persisted", state: "closed", close_confirmed: 1 });
+    expect(second.db.prepare("SELECT usage_json FROM realtime_usage WHERE attempt_id=?").get(id)!.usage_json).toBe('{"total_tokens":3}');
+    expect(second.db.prepare("PRAGMA journal_mode").get()!.journal_mode).toBe("wal");
+    expect(second.db.prepare("PRAGMA synchronous").get()!.synchronous).toBe(2);
+    expect(second.db.prepare("PRAGMA integrity_check").get()!.integrity_check).toBe("ok");
+  });
   it("migrates legacy usage additively and keeps old tombstone observations during pruning",async()=> {
     let now=Date.now();const db=openUsageDatabase(":memory:"),registry=new SessionLeaseRegistry(1,10),owner=randomUUID(),id=randomUUID();
     const options={startWorker:false,now:()=>now,close:async()=>{}};
@@ -82,6 +113,20 @@ describe("PR36 real adapter and durable reservation regressions", () => {
     const runtime=new RealtimeAttempts(db,registry,{create:async()=>({callId:"rtc_test",sdp:"answer"}),close:async()=>{},startWorker:false,...options});
     runtimes.push(runtime);return {runtime,registry,db,owner:randomUUID(),id:randomUUID()};
   }
+  it("writes the handoff timestamp once and preserves lifecycle validation on replay", async () => {
+    let now = Date.now(); const f = fixture({ now: () => now });
+    await admit(f.runtime, f.owner, f.id);
+    const before = Number(f.db.prepare("SELECT total_changes() AS n").get()!.n);
+    f.runtime.handoff(f.owner, f.id);
+    const timestamp = f.runtime.owned(f.owner, f.id).handoff_at;
+    now += 1;
+    f.runtime.handoff(f.owner, f.id);
+    expect(f.runtime.owned(f.owner, f.id).handoff_at).toBe(timestamp);
+    expect(Number(f.db.prepare("SELECT total_changes() AS n").get()!.n) - before).toBe(1);
+    expect(() => f.runtime.handoff(randomUUID(), f.id)).toThrow("not_found");
+    await f.runtime.cleanup(f.owner, f.id);
+    expect(() => f.runtime.handoff(f.owner, f.id)).toThrow("attempt_not_activatable");
+  });
   it("preserves a known ID after failed SDP and failed hangup, then retries it",async()=> {
     const hangup=vi.fn(async():Promise<void>=>{throw new Error("404");});
     const create=vi.fn(async()=>({headers:new Headers({location:"/v1/realtime/calls/rtc_retry"}),text:async()=>{throw new Error("body reset");}}));

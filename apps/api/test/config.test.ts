@@ -11,6 +11,7 @@ beforeEach(() => {
   vi.resetModules();
   vi.stubEnv("NODE_ENV", "test");
   vi.stubEnv("WEB_ORIGIN", undefined);
+  vi.stubEnv("REALTIME_DB_PATH", undefined);
   for (const name of admissionVariables) vi.stubEnv(name, undefined);
 });
 
@@ -19,6 +20,25 @@ afterEach(() => {
 });
 
 describe("API configuration", () => {
+  describe("Realtime database path", () => {
+    it.each([undefined, "/test/ledger.sqlite"])("defaults to the ledger path suffix when absent (ledger path %j)", async (path) => {
+      vi.stubEnv("USAGE_DB_PATH", path);
+      const { apiConfig } = await import("../src/config.js");
+      expect(apiConfig.realtimeDbPath).toBe(`${path ?? "/data/live-translator.sqlite"}.realtime`);
+    });
+
+    it.each(["", "   ", "\t\r\n"])("rejects an explicitly blank path %j at startup", async (path) => {
+      vi.stubEnv("REALTIME_DB_PATH", path);
+      await expect(import("../src/config.js")).rejects.toThrow("REALTIME_DB_PATH must not be empty");
+    });
+
+    it.each([":memory:", "./test/pilot.sqlite"])("preserves the configured path %j", async (path) => {
+      vi.stubEnv("REALTIME_DB_PATH", path);
+      const { apiConfig } = await import("../src/config.js");
+      expect(apiConfig.realtimeDbPath).toBe(path);
+    });
+  });
+
   it("keeps all four safe admission defaults when env is absent", async () => {
     const { apiConfig } = await import("../src/config.js");
     expect(apiConfig).toMatchObject({

@@ -23,6 +23,7 @@ interface Attempt {
   created_at: number; creation_token: string | null; model: string; transcription_model: string;
 }
 export function openRealtimeDatabase(path: string): DatabaseSync {
+  if (!path.trim()) throw new Error("Invalid realtime database path");
   if (path !== ":memory:") mkdirSync(dirname(path), { recursive: true });
   const db = new DatabaseSync(path);
   db.exec("PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL; PRAGMA busy_timeout=1000;");
@@ -219,7 +220,7 @@ export class RealtimeAttempts {
   handoff(owner:string,id:string) {
     const row=this.owned(owner,id);
     if(row.state!=="active" || row.cleanup_at!==null || row.expires_at<=this.now()) throw new LedgerError("attempt_not_activatable");
-    this.db.prepare("UPDATE realtime_attempts SET handoff_at=COALESCE(handoff_at,?) WHERE id=?").run(this.now(),id);
+    if (row.handoff_at === null) this.db.prepare("UPDATE realtime_attempts SET handoff_at=? WHERE id=?").run(this.now(),id);
   }
   async sweep() {
     if(this.disposed)return;
