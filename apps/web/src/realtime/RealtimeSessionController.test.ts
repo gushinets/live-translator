@@ -96,7 +96,7 @@ describe("Realtime serialized conversation",()=> {
   });
   it.each(["unsupported","denied"])("continues without a %s screen wake lock",async kind=> {
     vi.spyOn(console,"error").mockImplementation(()=>{});
-    const nav=(kind==="unsupported"?{}:{wakeLock:{request:async()=>{throw new DOMException("denied","NotAllowedError");}}}) as Navigator;
+    const nav=(kind==="unsupported"?{}:{wakeLock:{request:async()=>{throw new DOMException("denied","NotAllowedError");}}}) as unknown as Navigator;
     const h=harness({createWakeLock:()=>new WakeLockController(nav)});await h.start();
     expect(h.controller.inputReady).toBe(true);expect(h.controller.ownerError).toBeUndefined();await h.controller.endConversation();
   });
