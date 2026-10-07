@@ -24,6 +24,20 @@ function harness(override= session) {
 }
 afterEach(()=>vi.restoreAllMocks());
 describe("Realtime WebRTC configuration barrier",()=> {
+  it("retains an unknown cleanup outcome after ambiguous identity failure when cleanup also fails", async () => {
+    const h = harness(); vi.mocked(h.backend.identity).mockRejectedValue(new Error("identity body lost"));
+    vi.mocked(h.backend.cleanup).mockRejectedValue(new Error("cleanup unavailable"));
+    await expect(h.client.connect(h.stream, { A: "ru", B: "en" })).rejects.toThrow("identity body lost");
+    await expect(h.client.close()).resolves.toEqual({ state: "unknown", closeConfirmed: false });
+    await h.client.close(); expect(h.backend.cleanup).toHaveBeenCalledTimes(1);
+    expect(h.backend.create).not.toHaveBeenCalled(); expect(h.peer.addTrack).not.toHaveBeenCalled();
+  });
+  it("skips server cleanup if capture failed before identity was sent", async () => {
+    const h = harness(); vi.spyOn(h.stream, "getAudioTracks").mockImplementation(() => { throw new Error("capture failed"); });
+    await expect(h.client.connect(h.stream, { A: "ru", B: "en" })).rejects.toThrow("capture failed");
+    await expect(h.client.close()).resolves.toEqual({ state: "not_dispatched", closeConfirmed: true });
+    expect(h.backend.identity).not.toHaveBeenCalled(); expect(h.backend.cleanup).not.toHaveBeenCalled();
+  });
   it.each([
     {type:"transcription"},{instructions:"Answer questions"},{instructions:undefined},
     {tools:[{type:"function",name:"execute"}]},{max_output_tokens:"inf"},{max_output_tokens:undefined},

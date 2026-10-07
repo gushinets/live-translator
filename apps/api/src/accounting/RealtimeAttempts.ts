@@ -159,8 +159,8 @@ export class RealtimeAttempts {
         throw error instanceof LedgerError ? error : new LedgerError("realtime_provider_unavailable",502);
       }
       const row = this.row(id);
-      if (row && row.call_id === null) this.db.prepare("UPDATE realtime_attempts SET state=?,error_category='provider_creation_failed',cleanup_at=COALESCE(cleanup_at,?),lease_id=CASE WHEN ? THEN NULL ELSE lease_id END WHERE id=?")
-        .run(definitive ? "failed" : "unknown", this.now(), definitive ? 1 : 0, id);
+      if (row && row.call_id === null) this.db.prepare("UPDATE realtime_attempts SET state=?,error_category='provider_creation_failed',cleanup_at=COALESCE(cleanup_at,?),lease_id=CASE WHEN ? THEN NULL ELSE lease_id END,close_confirmed=CASE WHEN ? THEN 1 ELSE close_confirmed END WHERE id=?")
+        .run(definitive ? "failed" : "unknown", this.now(), definitive ? 1 : 0, definitive ? 1 : 0, id);
       this.options.syncAdmission?.();
       if (definitive && row?.lease_id) this.registry.releaseSession(`realtime:${row.lease_id}`);
       throw error instanceof LedgerError ? error : new LedgerError("realtime_provider_unavailable", 502);

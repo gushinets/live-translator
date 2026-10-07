@@ -115,9 +115,9 @@ export class RealtimeClient implements RealtimeTransport {
     if (this.peer) { this.peer.ontrack=this.peer.onconnectionstatechange=null; this.peer.close(); }
     this.channel=null; this.peer=null;
     this.closeWork=(async()=> {
-      if (!this.started) return {closeConfirmed:true,state:"not_dispatched"};
-      // A fulfilled identity precedes provider dispatch; no identity means no creation.
-      try { await this.identity; } catch { return {closeConfirmed:true,state:"not_dispatched"}; }
+      if (!this.identity) return {closeConfirmed:true,state:"not_dispatched"};
+      // Preparation and its cookie may exist even when reading the identity body fails.
+      await this.identity.catch(() => undefined);
       try { return await this.backend.cleanup(this.attemptId); }
       catch { return {closeConfirmed:false,state:"unknown"}; }
     })();

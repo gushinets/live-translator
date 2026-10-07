@@ -8,6 +8,9 @@ import type { RealtimeAttempts } from "../src/accounting/RealtimeAttempts.js";
 import express from "express";
 import { createRealtimeRouter } from "../src/routes/realtime.js";
 import { apiConfig } from "../src/config.js";
+import OpenAI from "openai";
+import { RealtimeClient } from "../../web/src/realtime/RealtimeClient.js";
+import type { RealtimePolicy } from "../../web/src/realtime/RealtimeEvents.js";
 const origin="http://localhost:5173";
 const apps:Array<ReturnType<typeof createApp>>=[];
 function app(enabled=true,create=vi.fn(async()=>({callId:"rtc_test",sdp:"answer"})),close=vi.fn(async()=>{})) {
@@ -27,6 +30,47 @@ function admit(runtime:RealtimeAttempts,owner:string,id:string,generation:number
 }
 afterEach(async()=> {for(const a of apps.splice(0)){await a.locals.realtimeRuntime.shutdown();await a.locals.ledgerRuntime.shutdown({drainMs:10,timeoutMs:1000});a.locals.ledgerRuntime.ledger.db.close();}vi.restoreAllMocks();});
 describe("Realtime server boundary",()=> {
+  it("cleans up committed preparation after the identity response body is lost, allowing the next Start", async () => {
+    const { a, create, close, runtime } = app(), b = body();
+    let cookie = "";
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (path, init) => {
+      const route = String(path), call = request(a).post(route).set("Origin", origin).send(JSON.parse(String(init!.body)));
+      if (cookie) call.set("Cookie", cookie);
+      const response = await call;
+      cookie = response.headers["set-cookie"]?.[0]?.split(";")[0] ?? cookie;
+      const result = new Response(JSON.stringify(response.body), { status: response.status });
+      if (route.endsWith("/identity")) vi.spyOn(result, "json").mockRejectedValue(new Error("identity body lost"));
+      return result;
+    });
+    const policy = (await request(a).get("/api/policy")).body.realtime as RealtimePolicy;
+    const track = { enabled: true }, stream = { getAudioTracks: () => [track] } as unknown as MediaStream;
+    const peer = vi.fn((): RTCPeerConnection => { throw new Error("unexpected peer"); });
+    const client = new RealtimeClient(b.attemptId, b.generation, policy, async () => {}, undefined, peer);
+    await expect(client.connect(stream, b.languages)).rejects.toThrow("identity body lost");
+    expect(cookie).not.toBe("");
+    expect(runtime.db.prepare("SELECT state FROM realtime_attempts WHERE id=?").get(b.attemptId)!.state).toBe("prepared");
+    expect(track.enabled).toBe(false); expect(peer).not.toHaveBeenCalled(); expect(create).not.toHaveBeenCalled();
+    await expect(client.close()).resolves.toEqual({ attemptId: b.attemptId, state: "failed", closeConfirmed: true });
+    await client.close();
+    expect(globalThis.fetch).toHaveBeenCalledTimes(2);
+    const next = body();
+    await request(a).post("/api/realtime/identity").set("Origin", origin).set("Cookie", cookie)
+      .send({ attemptId: next.attemptId, generation: next.generation }).expect(201);
+    expect(close).not.toHaveBeenCalled();
+  });
+  it.each([400, 401, 403, 404, 422, 429, 500])("reports the matching cleanup confirmation for provider create HTTP %i without a call ID", async (status) => {
+    const creator = vi.fn(async (): Promise<{ callId: string; sdp: string }> => { throw new OpenAI.APIError(status, undefined, "declined", new Headers()); });
+    const { a, runtime, close } = app(true, creator), b = body(), cookie = await identity(a, b);
+    await request(a).post("/api/realtime/session").set("Origin", origin).set("Cookie", cookie).send(b).expect(502);
+    const confirmed = status !== 500;
+    const cleanup = await request(a).post(`/api/realtime/session/${b.attemptId}/cleanup`).set("Origin", origin).set("Cookie", cookie).send({}).expect(200);
+    expect(cleanup.body).toMatchObject({ state: confirmed ? "failed" : "unknown", closeConfirmed: confirmed });
+    expect(runtime.db.prepare("SELECT call_id,close_confirmed,lease_id FROM realtime_attempts WHERE id=?").get(b.attemptId))
+      .toMatchObject({ call_id: null, close_confirmed: confirmed ? 1 : 0, lease_id: confirmed ? null : expect.any(String) });
+    expect(runtime.reservations()).toHaveLength(confirmed ? 0 : 1);
+    expect(a.locals.ledgerRuntime.registry.activeLeases).toBe(confirmed ? 0 : 1);
+    expect(close).not.toHaveBeenCalled();
+  });
   it("does not allocate anonymous cleanup rows or accept pre-dispatch usage",async()=> {
     const {a}=app(),b=body(),cookie=await identity(a,b),db=a.locals.ledgerRuntime.ledger.db;
     await request(a).post(`/api/realtime/session/${randomUUID()}/cleanup`).set("Origin",origin).set("Cookie",cookie).send({}).expect(404);

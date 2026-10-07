@@ -113,6 +113,16 @@ describe("PR36 real adapter and durable reservation regressions", () => {
     const runtime=new RealtimeAttempts(db,registry,{create:async()=>({callId:"rtc_test",sdp:"answer"}),close:async()=>{},startWorker:false,...options});
     runtimes.push(runtime);return {runtime,registry,db,owner:randomUUID(),id:randomUUID()};
   }
+  it("does not confirm closure on a 4xx error after a call ID is known and hangup fails", async () => {
+    const close = vi.fn(async () => { throw new Error("hangup unavailable"); });
+    const f = fixture({ create: async (_sdp, _signal, remember) => {
+      remember("rtc_known_4xx"); throw new OpenAI.APIError(400, undefined, "body error", new Headers());
+    }, close });
+    await expect(admit(f.runtime, f.owner, f.id)).rejects.toThrow("realtime_provider_unavailable");
+    expect(f.runtime.owned(f.owner, f.id)).toMatchObject({ call_id: "rtc_known_4xx", state: "unknown", close_confirmed: 0 });
+    expect(f.runtime.reservations()).toHaveLength(1); expect(f.registry.activeLeases).toBe(1);
+    expect(close).toHaveBeenCalledWith("rtc_known_4xx", expect.any(AbortSignal));
+  });
   it("writes the handoff timestamp once and preserves lifecycle validation on replay", async () => {
     let now = Date.now(); const f = fixture({ now: () => now });
     await admit(f.runtime, f.owner, f.id);
