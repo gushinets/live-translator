@@ -514,6 +514,22 @@ verified source and external usage evidence; `invoiceTotal` is always null.
 
 An online backup includes committed SQLite WAL pages. The maintenance CLI writes into a private staging directory beside the requested target, verifies the staged copy, then publishes it with an atomic hard link that never replaces an existing path. The target name appears only after verification. The JSON result includes stagingCleanup=complete or stagingCleanup=pending:
 
+If Realtime still uses a standalone file after enabling the ledger, backup also
+snapshots that file and copies its attempts and usage into the staged ledger
+archive. The working files are read-only. The result is one verified SQLite file;
+`realtimeMerged=true` confirms that standalone records were included. Restore
+uses only this archive, and on a new volume the API recovers those records from
+the shared ledger before opening admission. It does not need the old companion
+file or recreate provider calls.
+
+Backup uses `REALTIME_DB_PATH` when `--source` names the configured `USAGE_DB_PATH`,
+and otherwise checks `${source}.realtime`. Run from the API working directory
+with the same environment as the writer; Compose exec below inherits it. For a
+custom standalone path outside that environment, add `--realtime-source /path/to/realtime.sqlite`.
+An explicit missing/blank source, incompatible standalone schema, or attempts in
+both stores fail before publication. The two online snapshots are sequential;
+stop the writer when a single common snapshot instant is required.
+
 ```bash
 docker compose --env-file .env -f infra/docker-compose.yml exec api \
   node scripts/sqlite-maintenance.mjs backup \

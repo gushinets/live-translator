@@ -59,7 +59,8 @@ export function createRealtimeRouter(attempts: RealtimeAttempts | undefined, ena
     const row = await attempts.cleanup(identity.require(req),id);
     res.json({ attemptId:row.id,state:row.state,closeConfirmed:row.close_confirmed === 1 });
   });
-  router.put("/session/:id/usage",limiter(8192), (req,res) => {
+  // Bound synchronous writes independently from the per-attempt retention caps.
+  router.put("/session/:id/usage",limiter(128), (req,res) => {
     const id = parseBody(uuidSchema,req.params.id);
     const body = parseBody(usageObservationSchema,req.body);
     if (!attempts) throw new LedgerError("not_found",404);

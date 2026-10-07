@@ -3,7 +3,7 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { randomUUID } from "node:crypto";
 import { once } from "node:events";
-import { DatabaseSync } from "node:sqlite";
+import { backup as sqliteOnlineBackup, DatabaseSync } from "node:sqlite";
 import request from "supertest";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { createApp } from "../src/app.js";
@@ -87,6 +87,81 @@ describe("Realtime persistence across ledger modes and handoff timing", () => {
       await expect(backupUsageDatabase(source, target)).rejects.toMatchObject({ code: "ledger_schema_invalid" });
       expect(existsSync(target)).toBe(false);
     });
+  it.each(["default", "configured", "explicit"])("recovers standalone Realtime calls from the ordinary ledger backup (%s path)", async (pathKind) => {
+    const source = join(directory, "ledger.sqlite");
+    const realtimePath = pathKind === "default" ? `${source}.realtime` : join(directory, "pilot.sqlite");
+    vi.stubEnv("REALTIME_DB_PATH", pathKind === "default" ? undefined : realtimePath);
+    const first = await app(false), { id, cookie } = await create(first);
+    const r = first.locals.realtimeRuntime as RealtimeAttempts;
+    const owner = String(r.db.prepare("SELECT owner FROM realtime_attempts WHERE id=?").get(id)!.owner);
+    r.recordUsage(owner, id, { operation: "response", responseId: "saved", usage: { total_tokens: 3 } });
+    r.recordUsage(owner, id, { operation: "transcription", itemId: "input", contentIndex: 0, usage: { input_tokens: 2 } });
+    r.db.prepare("INSERT INTO realtime_response_usage VALUES(?,?,?,?,?)").run(id, "legacy", '{"total_tokens":1}', "browser", Date.now());
+    await stop(first);
+    const second = await app(true);
+    const ledger = second.locals.ledgerRuntime.ledger;
+    const conversation = ledger.createConversation(randomUUID(), randomUUID(), "standalone-backup");
+    const snapshot = () => ["realtime_attempts", "realtime_response_usage", "realtime_usage"]
+      .map(table => second.locals.realtimeRuntime.db.prepare(`SELECT * FROM ${table} ORDER BY 1`).all());
+    const original = snapshot();
+    const backup = join(directory, "backup.sqlite"), restored = join(directory, "new-volume", "ledger.sqlite");
+    if (pathKind === "explicit") vi.stubEnv("REALTIME_DB_PATH", undefined);
+    const result = pathKind === "explicit"
+      ? await backupUsageDatabase(source, backup, undefined, realtimePath)
+      : await backupUsageDatabase(source, backup);
+    expect(result).toMatchObject({ integrity: "ok", realtimeMerged: true });
+    await restoreUsageDatabase(backup, restored);
+    expect(verifyUsageDatabase(restored)).toMatchObject({ ledgerSchema: "compatible" });
+    expect(snapshot()).toEqual(original);
+    expect(ledger.db.prepare("SELECT id FROM conversations WHERE id=?").get(conversation.id)!.id).toBe(conversation.id);
+    await stop(second);
+    vi.stubEnv("USAGE_DB_PATH", restored); vi.stubEnv("REALTIME_DB_PATH", `${restored}.realtime`); vi.resetModules();
+    const close = vi.fn(async (): Promise<void> => { throw new Error("hangup unavailable"); });
+    const recovered = await app(true, close);
+    expect(recovered.locals.realtimeRuntime.db).toBe(recovered.locals.ledgerRuntime.ledger.db);
+    expect(existsSync(`${restored}.realtime`)).toBe(false);
+    expect(recovered.locals.ledgerRuntime.registry.activeLeases).toBe(1);
+    expect(recovered.locals.ledgerRuntime.registry.acquire()).toBeNull();
+    expect(recovered.locals.realtimeRuntime.owned(owner, id)).toMatchObject({ call_id: "rtc_recovered", close_confirmed: 0 });
+    expect(recovered.locals.realtimeRuntime.db.prepare("SELECT COUNT(*) AS n FROM realtime_usage WHERE attempt_id=?").get(id)!.n).toBe(3);
+    await request(recovered).post("/api/realtime/identity").set("Origin", origin).set("Cookie", cookie)
+      .send({ attemptId: randomUUID(), generation: 2 }).expect(409);
+    await request(recovered).post(`/api/realtime/session/${id}/cleanup`).set("Origin", origin).set("Cookie", cookie).send({}).expect(200);
+    expect(close).toHaveBeenCalledWith("rtc_recovered", expect.any(AbortSignal));
+    expect(recovered.locals.ledgerRuntime.registry.activeLeases).toBe(1);
+    close.mockResolvedValue(undefined);
+    await request(recovered).post(`/api/realtime/session/${id}/cleanup`).set("Origin", origin).set("Cookie", cookie).send({}).expect(200);
+    expect(recovered.locals.ledgerRuntime.registry.activeLeases).toBe(0);
+  });
+  it.each(["", "   ", "missing.sqlite"])("refuses an unavailable explicit Realtime source %j", async (path) => {
+    const { openUsageDatabase } = await import("../src/persistence/database.js");
+    const source = join(directory, "ledger.sqlite"), target = join(directory, "backup.sqlite");
+    openUsageDatabase(source).close();
+    await expect(async () => backupUsageDatabase(source, target, undefined, path.trim() ? join(directory, path) : path))
+      .rejects.toMatchObject({ code: "source_unavailable" });
+    expect(existsSync(target)).toBe(false);
+  });
+  it("does not publish or change either source when the standalone snapshot copy fails", async () => {
+    const first = await app(false); await create(first); await stop(first);
+    const second = await app(true), source = join(directory, "ledger.sqlite"), target = join(directory, "backup.sqlite");
+    const before = second.locals.realtimeRuntime.db.prepare("SELECT * FROM realtime_attempts").all();
+    let copies = 0;
+    await expect(backupUsageDatabase(source, target, async (db, path) => {
+      if (++copies === 2) throw new Error("standalone copy failed");
+      return sqliteOnlineBackup(db, path);
+    })).rejects.toMatchObject({ code: "backup_failed" });
+    expect(copies).toBe(2); expect(existsSync(target)).toBe(false);
+    expect(second.locals.realtimeRuntime.db.prepare("SELECT * FROM realtime_attempts").all()).toEqual(before);
+    expect(verifyUsageDatabase(source)).toMatchObject({ ledgerSchema: "compatible" });
+  });
+  it("refuses incompatible standalone schema before publishing the archive", async () => {
+    const first = await app(false); await create(first); await stop(first);
+    const second = await app(true), db = second.locals.realtimeRuntime.db as DatabaseSync;
+    db.exec("ALTER TABLE realtime_attempts ADD COLUMN unexpected TEXT");
+    const before = db.prepare("SELECT * FROM realtime_attempts").all(), target = join(directory, "invalid-backup.sqlite");
+    await expect(backupUsageDatabase(join(directory, "ledger.sqlite"), target)).rejects.toMatchObject({ code: "realtime_schema_invalid" });
+    expect(existsSync(target)).toBe(false); expect(db.prepare("SELECT * FROM realtime_attempts").all()).toEqual(before);
+  });
   it("retains standalone attempts, usage and shared admission on a false-to-true ledger restart", async () => {
     const first = await app(false), { id, cookie } = await create(first);
     await request(first).put(`/api/realtime/session/${id}/usage`).set("Origin", origin).set("Cookie", cookie)
@@ -130,6 +205,9 @@ describe("Realtime persistence across ledger modes and handoff timing", () => {
     const existing = new RealtimeAttempts(openUsageDatabase(join(directory, "ledger.sqlite")), new SessionLeaseRegistry(1, 1000), { startWorker: false });
     runtimes.push(existing); existing.prepare(randomUUID(), randomUUID(), 1); await existing.shutdown(); existing.db.close();
     await expect(app(true)).rejects.toThrow("Realtime records exist in both databases");
+    const target = join(directory, "split-backup.sqlite");
+    await expect(backupUsageDatabase(join(directory, "ledger.sqlite"), target)).rejects.toMatchObject({ code: "realtime_store_conflict" });
+    expect(existsSync(target)).toBe(false);
     for (const file of ["ledger.sqlite", "pilot.sqlite"]) {
       const db = new DatabaseSync(join(directory, file), { readOnly: true });
       try { expect(db.prepare("SELECT COUNT(*) AS n FROM realtime_attempts").get()!.n).toBe(1); }
@@ -140,6 +218,8 @@ describe("Realtime persistence across ledger modes and handoff timing", () => {
     vi.stubEnv("REALTIME_DB_PATH", join(directory, "ledger.sqlite"));
     const a = await app(true); expect(a.locals.realtimeRuntime.db).toBe(a.locals.ledgerRuntime.ledger.db);
     await create(a);
+    await expect(backupUsageDatabase(join(directory, "ledger.sqlite"), join(directory, "shared-backup.sqlite")))
+      .resolves.toMatchObject({ integrity: "ok", realtimeMerged: false });
   });
   it("does not hide existing ledger records behind an empty standalone file", async () => {
     const first = await app(true), { id, cookie } = await create(first); await stop(first);
@@ -147,6 +227,8 @@ describe("Realtime persistence across ledger modes and handoff timing", () => {
     const second = await app(true);
     expect(second.locals.realtimeRuntime.db).toBe(second.locals.ledgerRuntime.ledger.db);
     expect(second.locals.ledgerRuntime.registry.activeLeases).toBe(1);
+    await expect(backupUsageDatabase(join(directory, "ledger.sqlite"), join(directory, "empty-companion-backup.sqlite")))
+      .resolves.toMatchObject({ integrity: "ok", realtimeMerged: false });
     await request(second).post(`/api/realtime/session/${id}/cleanup`).set("Origin", origin).set("Cookie", cookie).send({}).expect(200);
   });
   it.each([true, false])("starts the full handoff grace after slow creation (acknowledged=%s)", async (acknowledged) => {

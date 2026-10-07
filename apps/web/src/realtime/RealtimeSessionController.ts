@@ -381,7 +381,8 @@ export class RealtimeSessionController implements ProductSession {
       items:[...this.items.values()].map(i=>({localId:i.localId,inputItemId:i.itemId,requestId:i.requestId,responseId:i.responseId,
         outputItemIds:i.outputItemIds,requestState:i.requestState,side:i.turn.speaker,sideSource:i.turn.speaker?"local_text_estimate":"unknown",
         transcriptionStatus:[...i.contents.values()].some(p=>p.failed)?"failed":[...i.contents.values()].every(p=>p.final)&&i.contents.size?"completed":"pending",
-        firstNonzeroPcmAtMs:i.firstNonzeroPcmAtMs,localPcmDrainedAtMs:i.localPcmDrainedAtMs,acousticPlaybackStart:"unknown",
+        firstNonzeroPcmAtMs:i.firstNonzeroPcmAtMs===undefined?undefined:i.firstNonzeroPcmAtMs-this.startAt,
+        localPcmDrainedAtMs:i.localPcmDrainedAtMs===undefined?undefined:i.localPcmDrainedAtMs-this.startAt,acousticPlaybackStart:"unknown",
         generationDone:i.generationDone,bufferStopped:i.bufferStopped,drained:i.drained})),
       events:this.events,usage:this.usage,cost:"not calculated"};
   }

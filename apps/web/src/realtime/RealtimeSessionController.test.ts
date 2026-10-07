@@ -6,7 +6,7 @@ import type { RealtimeAudioOutput } from "./RealtimePlayback";
 const policy:RealtimePolicy={enabled:true,model:"gpt-realtime-2.1",transcriptionModel:"gpt-4o-transcribe",promptVersion:"v1",schemaVersion:1,maxSessionMs:900000,
   instructions:"Translate only",transcriptionPrompt:"Russian and English",maxOutputTokens:4096,
   vad:{type:"server_vad",threshold:.5,prefix_padding_ms:300,silence_duration_ms:700,create_response:false,interrupt_response:false}};
-function harness(options:{connect?:()=>Promise<void>;capture?:()=>Promise<void>}={}) {
+function harness(options:{connect?:()=>Promise<void>;capture?:()=>Promise<void>;now?:()=>number}={}) {
   vi.useFakeTimers();
   const transport:RealtimeTransport={onEvent:null,onFailure:null,connect:vi.fn(options.connect??(async()=>{})),send:vi.fn(),
     close:vi.fn(async()=>({state:"closed",closeConfirmed:true})),reportUsage:vi.fn(async()=>{})};
@@ -15,7 +15,7 @@ function harness(options:{connect?:()=>Promise<void>;capture?:()=>Promise<void>}
   const track={enabled:true,stop:vi.fn()};
   const capture={onCaptureEnded:null,startCapture:vi.fn(options.capture??(async()=>{})),getCaptureStream:()=>({getAudioTracks:()=>[track]}) as unknown as MediaStream,
     setCaptureEnabled:vi.fn((value:boolean)=>{track.enabled=value;}),dispose:vi.fn()};
-  const controller=new RealtimeSessionController(policy,{createTransport:()=>transport,createOutput:()=>output,createCapture:()=>capture,mediaTailMs:1000});
+  const controller=new RealtimeSessionController(policy,{createTransport:()=>transport,createOutput:()=>output,createCapture:()=>capture,mediaTailMs:1000,now:options.now});
   const emit=(e:RealtimeEvent)=>transport.onEvent?.(e);
   const commit=(id:string)=>emit({type:"input_audio_buffer.committed",item_id:id});
   const text=(id:string,value:string,final=true)=>emit(final?{type:"conversation.item.input_audio_transcription.completed",item_id:id,content_index:0,transcript:value}:
@@ -68,6 +68,24 @@ describe("Realtime serialized conversation",()=> {
     expect(h.controller.exportDiagnostics().items[0]).toMatchObject({acousticPlaybackStart:"unknown"});
     expect(h.controller.exportDiagnostics().events.some(e=>e.name==="local_playback_started")).toBe(false);
     await h.controller.endConversation();
+  });
+  it("exports PCM and drain timestamps on each attempt clock with a nonzero page clock", async () => {
+    let now = 600000; const h = harness({ now: () => now });
+    for (const startAt of [600000, 900000]) {
+      now = startAt; await h.start(); h.speech("a", true);
+      now = startAt + 100; h.speech("a", false); h.commit("a"); await h.tick(); h.response("r1");
+      expect(h.controller.exportDiagnostics().items[0]).toMatchObject({ firstNonzeroPcmAtMs: undefined, localPcmDrainedAtMs: undefined });
+      now = startAt + 200; h.output.onPcmRendered?.(h.controller.items.get("a")!.requestId!);
+      now = startAt + 300; h.emit({ type: "output_audio_buffer.stopped", response_id: "r1" }); h.drain("a");
+      const report = h.controller.exportDiagnostics(), item = report.items[0]!;
+      const stopped = report.events.find(e => e.name === "speech_stopped")!.elapsedMs;
+      expect(stopped).toBe(100);
+      expect(item).toMatchObject({ firstNonzeroPcmAtMs: 200, localPcmDrainedAtMs: 300, acousticPlaybackStart: "unknown" });
+      expect(item.firstNonzeroPcmAtMs! - stopped).toBe(100);
+      expect(item.firstNonzeroPcmAtMs).toBe(report.events.find(e => e.name === "local_nonzero_pcm_rendered_estimate")!.elapsedMs);
+      expect(item.localPcmDrainedAtMs).toBe(report.events.find(e => e.name === "local_playback_drained")!.elapsedMs);
+      await h.controller.endConversation();
+    }
   });
   it("never reports an active attempt closed, records final-only output and terminal interruption",async()=> {
     const h=harness();await h.start();expect(h.controller.exportDiagnostics().cleanup).toEqual({state:"active",closeConfirmed:false});

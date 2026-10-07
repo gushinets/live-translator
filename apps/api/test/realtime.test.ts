@@ -105,6 +105,34 @@ describe("Realtime server boundary",()=> {
     await request(a).post("/api/realtime/session").set("Origin",origin).set("Cookie",cookie).send(body()).expect(429);
     await request(a).post(`/api/realtime/session/${b.attemptId}/cleanup`).set("Origin",origin).set("Cookie",cookie).send({}).expect(200);
   });
+  it("bounds a mixed usage burst before SQLite, across owners, without blocking handoff or cleanup", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    const initial = Date.now(), { a, runtime } = app(true, vi.fn(async () => ({ callId: `rtc_${randomUUID()}`, sdp: "answer" })));
+    try {
+      const b = body(), cookie = await identity(a, b), route = `/api/realtime/session/${b.attemptId}/usage`;
+      await request(a).post("/api/realtime/session").set("Origin", origin).set("Cookie", cookie).send(b).expect(201);
+      const write = vi.spyOn(runtime, "recordUsage");
+      for (let n = 0; n < 128; n++) {
+        const observation = n < 32 ? { operation: "response", responseId: `response_${n}`, usage: { total_tokens: 3, input_tokens: 2, output_tokens: 1 } }
+          : { operation: "transcription", itemId: `input_${n}`, contentIndex: 0, usage: { type: "duration", seconds: 1 } };
+        await request(a).put(route).set("Origin", origin).set("Cookie", cookie).send(observation).expect(204);
+      }
+      await request(a).put(route).set("Origin", origin).set("Cookie", cookie)
+        .send({ operation: "response", responseId: "response_0", usage: { total_tokens: 99, input_tokens: 99, output_tokens: 0 } }).expect(429);
+      const other = body(), otherCookie = await identity(a, other);
+      await request(a).post("/api/realtime/session").set("Origin", origin).set("Cookie", otherCookie).send(other).expect(201);
+      const otherRoute = `/api/realtime/session/${other.attemptId}/usage`, observation = { operation: "transcription", itemId: "new", contentIndex: 0, usage: { type: "duration", seconds: 1 } };
+      await request(a).put(otherRoute).set("Origin", origin).set("Cookie", otherCookie).send(observation).expect(429);
+      expect(write).toHaveBeenCalledTimes(128);
+      expect(runtime.db.prepare("SELECT COUNT(*) AS n FROM realtime_usage").get()!.n).toBe(128);
+      expect(runtime.db.prepare("SELECT usage_json FROM realtime_usage WHERE observation_id='response_0'").get()!.usage_json).toContain('"total_tokens":3');
+      await request(a).post(`/api/realtime/session/${b.attemptId}/handoff`).set("Origin", origin).set("Cookie", cookie).send({}).expect(204);
+      await request(a).post(`/api/realtime/session/${b.attemptId}/cleanup`).set("Origin", origin).set("Cookie", cookie).send({}).expect(200);
+      vi.setSystemTime(initial + 60001);
+      await request(a).put(otherRoute).set("Origin", origin).set("Cookie", otherCookie).send(observation).expect(204);
+      expect(write).toHaveBeenCalledTimes(129);
+    } finally { vi.useRealTimers(); }
+  });
   it.each(["cleanup", "handoff"] as const)("bounds owned %s independently from creation and other maintenance quotas", async (operation) => {
     const { a, runtime } = app(), b = body(), cookie = await identity(a, b);
     await request(a).post("/api/realtime/session").set("Origin", origin).set("Cookie", cookie).send(b).expect(201);
