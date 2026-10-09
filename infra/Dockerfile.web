@@ -9,6 +9,9 @@ COPY apps/web/package.json apps/web/package.json
 RUN pnpm install --frozen-lockfile --filter @live-translator/web...
 RUN pnpm rebuild esbuild
 COPY apps/web apps/web
+ARG VITE_BUILD_SHA=unknown
+ENV VITE_BUILD_SHA=$VITE_BUILD_SHA
+RUN node -e 'if (!/^[a-f0-9]{7,40}$/.test(process.env.VITE_BUILD_SHA || "")) throw new Error("Set VITE_BUILD_SHA to the source commit before building the web image")'
 RUN pnpm --filter @live-translator/web build
 
 FROM caddy:2-alpine

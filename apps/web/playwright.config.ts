@@ -1,4 +1,5 @@
 import { defineConfig, devices } from "@playwright/test";
+const previewPort=Number(process.env.PLAYWRIGHT_PREVIEW_PORT??4173);
 
 export default defineConfig({
   testDir: "./tests",
@@ -11,15 +12,15 @@ export default defineConfig({
     timeout: 15_000,
   },
   use: {
-    baseURL: "http://127.0.0.1:4173",
+    baseURL: `http://127.0.0.1:${previewPort}`,
     trace: "on-first-retry",
     serviceWorkers: "block",
     locale: "en-US",
     viewport: { width: 390, height: 844 },
   },
   webServer: {
-    command: "pnpm run build && pnpm exec vite preview --host 127.0.0.1 --port 4173 --strictPort",
-    url: "http://127.0.0.1:4173",
+    command: `pnpm run build && node node_modules/vite/bin/vite.js preview --host 127.0.0.1 --port ${previewPort} --strictPort`,
+    url: `http://127.0.0.1:${previewPort}`,
     reuseExistingServer: !process.env.CI,
     timeout: 120_000,
   },

@@ -9,8 +9,10 @@ import type { TranslationSession } from "../session/SessionState";
 import { translate, uiLocale } from "../i18n/messages";
 import type { Side, Turn } from "../conversation/Turn";
 import type { DialogueBlock } from "../conversation/DialogueTranscript";
+import type { ProductSession } from "../session/ProductSession";
+import { RealtimeDiagnostics } from "../realtime/RealtimeDiagnostics";
 
-export interface ConversationScreenController {
+export interface ConversationScreenController extends Pick<ProductSession,"engine"|"model"|"buildSha"|"activityLabel"|"capabilities"|"exportDiagnostics"|"diagnosticsRevision"> {
   readonly session: TranslationSession;
   readonly captionBlocks: readonly DialogueBlock[];
   readonly inputReady: boolean;
@@ -23,7 +25,7 @@ export interface ConversationScreenController {
   readonly retainedRecoveryState?: RetainedRecoveryState;
   subscribe(listener: () => void): () => void;
   endConversation(): Promise<void>;
-  resumeFromSourceTimeout(): Promise<void>;
+  resumeFromSourceTimeout?(): Promise<void>;
   resumeRetainedConversation?(): Promise<void>;
   verifyRetainedConversation?(): Promise<void>;
 }
@@ -31,7 +33,7 @@ export interface ConversationScreenController {
 function uiSnapshot(controller: ConversationScreenController): unknown[] {
   return [controller.session, controller.inputReady, controller.recoveryPrompt, controller.ownerError,
     controller.suspendReason, controller.retainedRecoveryState, controller.nonInterrupting,
-    controller.captionBlocks, controller.recoveryPromptIsTurnFailure];
+    controller.captionBlocks, controller.recoveryPromptIsTurnFailure,controller.activityLabel,controller.diagnosticsRevision];
 }
 
 export function ConversationScreen({
@@ -112,6 +114,16 @@ export function ConversationScreen({
         alertLanguage={ownerLocale}
       />
       <div className="conversation-center">
+        <p className="conversation-engine" role="status">{controller.engine==="realtime"?"GPT-Realtime · экспериментальный":"GPT-Live"}
+          {" · "}{controller.model??"gpt-live-1"}
+          {controller.engine==="realtime"?` · ${controller.activityLabel}`:null}
+          {" · "}{controller.buildSha??__BUILD_SHA__}</p>
+        {controller.engine==="realtime" && captions.some(block=>block.side===undefined)?
+          <div className="conversation-unknown" aria-label="Реплики с неопределённой стороной">
+            <span>Реплики без определённой стороны</span>
+            {captions.filter(block=>block.side===undefined).map(block=><p key={block.id}>{block.kind==="input"?"Оригинал":"Перевод"}: {block.text}</p>)}
+          </div>:null}
+        {controller.exportDiagnostics?<RealtimeDiagnostics controller={controller}/>:null}
         {onChangeLanguage ? <button className="conversation-language-action" type="button" title={t("Язык собеседника")}
           disabled={session.state !== "listening" && session.state !== "outputting"}
           onClick={onChangeLanguage}>
@@ -144,7 +156,7 @@ export function ConversationScreen({
           <span aria-hidden="true" className="conversation-end-size">{t("Завершаю…")}</span>
           <span aria-live="polite" className="conversation-end-label"><i aria-hidden="true" />{t(ending ? "Завершаю…" : "Завершить")}</span>
         </button> : null}
-        {recoveryState === undefined ? <button
+        {recoveryState === undefined && controller.capabilities?.playbackSwitch!==false ? <button
           type="button"
           role="switch"
           className="conversation-playback-switch"
@@ -159,7 +171,7 @@ export function ConversationScreen({
           <button
             type="button"
             onClick={() => {
-              void controller.resumeFromSourceTimeout().catch((error: unknown) => {
+              void controller.resumeFromSourceTimeout?.().catch((error: unknown) => {
                 console.error("Resume from source timeout failed", {
                   error,
                   state: session.state,

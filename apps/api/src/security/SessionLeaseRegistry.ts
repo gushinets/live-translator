@@ -5,7 +5,7 @@ export interface SessionLease {
 
 export interface LeaseRegistry {
   acquire(now?: number): SessionLease | null;
-  bindSession(leaseId: string, sessionId: string, now?: number): void;
+  bindSession(leaseId: string, sessionId: string, now?: number, expiresAt?: number): void;
   releaseSession(sessionId: string): boolean;
 }
 
@@ -38,11 +38,11 @@ export class SessionLeaseRegistry implements LeaseRegistry {
     };
   }
 
-  bindSession(leaseId: string, sessionId: string, now = Date.now()): void {
+  bindSession(leaseId: string, sessionId: string, now = Date.now(), expiresAt = now + this.ttlMs): void {
     const lease = this.leases.get(leaseId);
     if (lease === undefined) return;
 
-    lease.expiresAt = now + this.ttlMs;
+    lease.expiresAt = expiresAt;
     if (lease.sessionId !== undefined) {
       this.sessionLeases.delete(lease.sessionId);
     }

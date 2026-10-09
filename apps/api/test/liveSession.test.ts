@@ -102,7 +102,7 @@ describe("POST /api/live/session", () => {
     expect(response.status).toBe(201);
     expect(response.body).toEqual(sessionResult);
     expect(createLiveSession).toHaveBeenCalledWith("v=0\r\n...");
-    expect(bindSession).toHaveBeenCalledWith("lease-1", "session-1");
+    expect(bindSession).toHaveBeenCalledWith("lease-1", "live:session-1");
     expect(release).not.toHaveBeenCalled();
   });
 
@@ -127,8 +127,8 @@ describe("POST /api/live/session", () => {
 
     expect(first.status).toBe(204);
     expect(second.status).toBe(204);
-    expect(releaseSession).toHaveBeenNthCalledWith(1, "session-1");
-    expect(releaseSession).toHaveBeenNthCalledWith(2, "session-1");
+    expect(releaseSession).toHaveBeenNthCalledWith(1, "live:session-1");
+    expect(releaseSession).toHaveBeenNthCalledWith(2, "live:session-1");
   });
 
   it("rejects a session release from an unexpected origin", async () => {

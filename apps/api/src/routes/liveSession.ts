@@ -60,7 +60,7 @@ export function createLiveSessionRouter(
         createLiveSession = makeLiveSessionCreator();
       }
       const session = await createLiveSession(parsedRequest.data.sdp);
-      dependencies.leaseRegistry.bindSession(lease.leaseId, session.session.id);
+      dependencies.leaseRegistry.bindSession(lease.leaseId, `live:${session.session.id}`);
       response.status(201).json(session);
     } catch (error) {
       lease.release();
@@ -90,7 +90,8 @@ export function createLiveSessionRouter(
       return;
     }
 
-    dependencies.leaseRegistry.releaseSession(request.params.sessionId);
+    // Scope even client-supplied IDs so legacy DELETE cannot release Realtime capacity.
+    dependencies.leaseRegistry.releaseSession(`live:${request.params.sessionId}`);
     response.status(204).send();
   });
 

@@ -5,8 +5,8 @@ import { backupUsageDatabase, restoreUsageDatabase, verifyUsageDatabase } from "
 try {
   const [operation, ...args] = process.argv.slice(2), options = parseCliArguments(args);
   let result;
-  if (operation === "backup" && Object.keys(options).length === 2 && options.source && options.target) {
-    result = await backupUsageDatabase(options.source, options.target);
+  if (operation === "backup" && Object.keys(options).every(key => ["source", "target", "realtime-source"].includes(key)) && options.source && options.target) {
+    result = await backupUsageDatabase(options.source, options.target, undefined, options["realtime-source"]);
   } else if (operation === "restore" && Object.keys(options).length === 2 && options.source && options.target) {
     result = await restoreUsageDatabase(options.source, options.target);
   } else if (operation === "verify" && Object.keys(options).length === 1 && options.db) {

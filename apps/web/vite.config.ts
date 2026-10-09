@@ -2,12 +2,16 @@ import react from "@vitejs/plugin-react";
 import { loadEnv } from "vite";
 import { VitePWA } from "vite-plugin-pwa";
 import { defineConfig } from "vitest/config";
+import { execFileSync } from "node:child_process";
 
 export default defineConfig(({ mode }) => {
   const env = loadEnv(mode, "../..", "");
   const additionalAllowedHost = env.VITE_ADDITIONAL_ALLOWED_HOST?.trim();
+  let buildSha=env.VITE_BUILD_SHA??"unknown";
+  if(buildSha==="unknown")try{buildSha=execFileSync("git",["rev-parse","--short","HEAD"],{encoding:"utf8"}).trim();}catch{/* Source archives have no Git metadata. */}
 
   return {
+    define:{__BUILD_SHA__:JSON.stringify(buildSha)},
     plugins: [
       react(),
       VitePWA({

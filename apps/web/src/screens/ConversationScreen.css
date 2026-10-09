@@ -216,3 +216,11 @@ body,
   .conversation-switch-track { flex-basis: 1.25rem; width: 1.25rem; height: 1rem; }
   .conversation-switch-track i { width: 0.625rem; height: 0.625rem; }
 }
+.conversation-engine { flex-basis: 100%; margin: 0; text-align: center; font-size: .8rem; }
+.conversation-unknown, .conversation-center .realtime-diagnostics { flex-basis: 100%; font-size: .85rem; }
+.realtime-diagnostics { font-size: .85rem; }
+.conversation-unknown p { margin: .3rem 0; }
+.conversation-unknown { max-height: 8rem; overflow: auto; }
+.realtime-diagnostics summary { min-height: 44px; display: flex; align-items: center; cursor: pointer; }
+.realtime-diagnostics summary:focus-visible { outline: 2px solid #ace2c9; }
+.realtime-diagnostics pre { max-height: 12rem; overflow: auto; font-size: .75rem; }

@@ -8,7 +8,7 @@ import { UsageLedger } from "./UsageLedger.js";
 import { LedgerError, type AttemptInput, type CleanupReason } from "./types.js";
 
 type Creation = { controller: AbortController; promise: Promise<LiveSessionResponse>; safe: boolean; settled: boolean };
-async function boundedWait(work: Promise<unknown>, ms: number) {
+export async function boundedWait(work: Promise<unknown>, ms: number) {
   if (ms <= 0) return;
   let timer: ReturnType<typeof setTimeout> | undefined;
   await Promise.race([work, new Promise<void>(r => { timer = setTimeout(r, ms); })]);
@@ -31,6 +31,7 @@ export class LedgerRuntime {
   constructor(readonly ledger: UsageLedger, private readonly options: {
     creator?: LiveSessionCreator; closeOrphan?: OrphanCloser; maxConcurrent?: number; leaseMs?: number;
     workerConcurrency?: number; workerBatchSize?: number; logger?: Pick<Console, "error">; startWorker?: boolean;
+    additionalReservations?: () => Array<{ leaseId: string; expiresAt: number; sessionId: string | null }>;
   } = {}) {
     this.logger = options.logger ?? console; this.creator = options.creator;
     this.closer = boundOrphanCloser(options.closeOrphan ?? makeOrphanCloser(undefined, ledger.policy.sessionCloseTimeoutMs), options.workerConcurrency ?? 2);
@@ -64,7 +65,8 @@ export class LedgerRuntime {
     }
   }
   syncAdmission(): void {
-    this.registry.restoreReservations(this.ledger.reservations().map(s => ({ leaseId: s.lease_id!, expiresAt: s.lease_expires_at!, sessionId: s.openai_session_id })), this.ledger.now());
+    this.registry.restoreReservations([...this.ledger.reservations().map(s => ({ leaseId: s.lease_id!, expiresAt: s.lease_expires_at!, sessionId: s.openai_session_id ? `live:${s.openai_session_id}` : null })),
+      ...this.options.additionalReservations?.() ?? []], this.ledger.now());
   }
   wake(): void { if (this.options.startWorker !== false) this.worker.wake(); }
   cleanup(id: string, reason: CleanupReason): void {
