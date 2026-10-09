@@ -41,6 +41,7 @@ export class PlaybackQueue {
   private quiet = 0;
   private audible = false;
   private enabled = false;
+  private playbackAllowed = true;
   private speaking = false;
   private failed = false;
 
@@ -56,6 +57,10 @@ export class PlaybackQueue {
   }
 
   get pending(): boolean { return this.count > 0; }
+  get readyForPlayback(): boolean {
+    return this.audible && !this.failed && this.pending && !this.speaking && this.quiet >= this.sampleRate * .3;
+  }
+  setPlaybackAllowed(allowed: boolean): void { this.playbackAllowed = allowed; }
   setTurn(turnId: string | undefined): void {
     if (turnId !== undefined) {
       // Caption continuations and historical corrections never claim another PCM span.
@@ -110,7 +115,7 @@ export class PlaybackQueue {
       const voiced = this.observeEnergy(value);
       if (this.prerollHold > 0) this.prerollHold--;
       this.observeIncoming(voiced);
-      const held = this.enabled && (this.speaking || this.quiet < this.sampleRate * .3);
+      const held = this.enabled && (!this.playbackAllowed || this.speaking || this.quiet < this.sampleRate * .3);
       if (!this.speaking) this.quiet++;
       if (!this.enabled && this.count === 0) {
         // Default streaming path: no noise gate or added delay.

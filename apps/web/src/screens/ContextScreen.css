@@ -354,42 +354,6 @@ html {
 .language-picker-option input:checked + span::after { content: "✓"; color: #ace2c9; }
 .language-picker-option input:focus-visible + span { outline: 2px solid #ace2c9; outline-offset: 2px; }
 .language-picker-action { min-height: 5rem; margin-top: auto; font-size: 1.2rem; }
-.language-picker-overlay {
-  position: fixed;
-  z-index: 10;
-  inset: 0;
-  box-sizing: border-box;
-  width: 100%;
-  max-width: none;
-  height: 100%;
-  max-height: none;
-  display: grid;
-  place-items: safe center;
-  overflow-y: auto;
-  margin: 0;
-  border: 0;
-  padding: max(env(safe-area-inset-top), 1rem) 1rem max(env(safe-area-inset-bottom), 1rem);
-  background: rgba(23, 35, 38, 0.96);
-  color: #f1f6f3;
-  font-family: system-ui, sans-serif;
-}
-.language-picker-overlay::backdrop { background: rgba(23, 35, 38, 0.92); }
-.language-picker-overlay-content {
-  box-sizing: border-box;
-  display: flex;
-  width: min(100%, 30rem);
-  height: max(36rem, min(100%, 45rem));
-  flex-direction: column;
-  gap: 1rem;
-}
-.language-picker-overlay .language-picker {
-  box-sizing: border-box;
-  width: 100%;
-  padding: 1rem;
-  border: 1px solid #3b5353;
-  border-radius: 1.4rem;
-  background: #202f32;
-}
 
 .setup-field textarea::placeholder {
   color: #93a7a3;

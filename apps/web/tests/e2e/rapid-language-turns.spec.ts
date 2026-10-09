@@ -77,28 +77,6 @@ test("unidentified translation captions stay hidden without acquiring the curren
   expect(await harness.lastGateBCommand()).toBe("unmute");
 });
 
-test("a queued language replacement keeps unresolved text hidden and preserves identified history", async ({ page }) => {
-  const harness = await startRussianEnglish(page, { A: "en", B: "es" });
-  await harness.sourceActive();
-  await harness.inputDelta("Where is the nearest station?");
-  await harness.outputDelta("¿Dónde está la estación de tren, por favor?");
-  await harness.inputDelta(" Thank y");
-  await page.getByRole("button", { name: "Partner's language" }).click();
-  await page.getByRole("radio", { name: "German" }).check();
-  await page.getByRole("button", { name: "Confirm" }).click();
-  await harness.sourceQuiet();
-  await harness.advance(runtime.audioStartGraceMs + runtime.captionIdleMs);
-  await expect(page.getByTestId("participant-pane-B")).toHaveAttribute("lang", "es");
-  await harness.advance(runtime.noOutputTimeoutMs + runtime.captionIdleMs);
-  await expect(page.getByTestId("participant-pane-B")).toHaveAttribute("lang", "de");
-  for (const side of ["A", "B"]) {
-    const caption = page.getByTestId(`participant-pane-${side}`).getByText("Thank y", { exact: true });
-    await expect(caption).toHaveCount(0);
-    await expect(caption.locator("..").locator(".turn-author")).toHaveCount(0);
-  }
-  await expect(page.getByText("¿Dónde está la estación de tren, por favor?", { exact: true })).toHaveAttribute("lang", "es");
-});
-
 test("same-speaker continuation stays in the original source across a short pause", async ({ page }) => {
   const harness = await startRussianEnglish(page);
   await harness.sourceActive();
@@ -133,26 +111,4 @@ test("ambiguous A-B-A output stays an independent authored block after source ti
   await expect(page.getByText("Повторите", { exact: true })).toHaveCount(0);
   expect(await harness.lastGateBCommand()).toBe("unmute");
   await page.screenshot({ path: testInfo.outputPath("independent-translation.png") });
-});
-
-test("queued language replacement waits for audio that started before its caption", async ({ page }) => {
-  const harness = await startRussianEnglish(page);
-  await harness.sourceActive();
-  await harness.inputDelta("Подскажите, где находится вокзал?");
-  await harness.outputDelta("Where is the train station?");
-  await harness.sourceQuiet();
-  await harness.advance(runtime.audioStartGraceMs + runtime.captionIdleMs);
-  await harness.sourceActive();
-  await harness.inputDelta("The station is straight ahead.");
-  await harness.playbackActive();
-  await harness.outputDelta("Вокзал находится прямо впереди.");
-  await harness.sourceQuiet();
-  await page.getByRole("button", { name: "Язык собеседника" }).click();
-  await page.getByRole("radio", { name: "немецкий", exact: true }).check();
-  await page.getByRole("button", { name: "Подтвердить", exact: true }).click();
-  await harness.advance(runtime.audioStartGraceMs + runtime.captionIdleMs);
-  await expect(page.getByTestId("participant-pane-B")).toHaveAttribute("lang", "en");
-  expect(await harness.lastGateBCommand()).toBe("unmute");
-  await harness.playbackIdle();
-  await expect(page.getByTestId("participant-pane-B")).toHaveAttribute("lang", "de");
 });

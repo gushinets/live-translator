@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { VoiceActivityEstimator } from "./VoiceActivityEstimator";
 import { AudioController } from "./AudioController";
+import { runtime } from "../config/runtime";
 
 class FakeAudioTrack {
   kind = "audio";
@@ -101,7 +102,7 @@ function fakeStream(track: FakeAudioTrack): MediaStream {
   } as unknown as MediaStream;
 }
 
-describe("AudioController", () => {
+describe("AudioController with explicit direct playback", () => {
   let track: FakeAudioTrack;
   let audioContext: FakeAudioContext;
   let audioElement: HTMLAudioElement;
@@ -125,6 +126,7 @@ describe("AudioController", () => {
       createAudioContext: () => audioContext as unknown as AudioContext,
       nowMs: () => nowMs,
     });
+    controller.setNonInterrupting(false);
   });
 
   afterEach(() => {
@@ -483,6 +485,94 @@ describe("buffered audio output", () => {
     });
     return { context, controller, element, nodes, destinationStream };
   }
+  it("closes microphone and analysis before permitting PCM, ignores speech, then restores capture after the echo tail", async () => {
+    vi.useFakeTimers();
+    const { controller, context, nodes } = setup();
+    try {
+      await controller.primeOutput(); await controller.startCapture();
+      controller.attachRemoteStream(fakeStream(new FakeAudioTrack())); controller.setOutputAudible(true);
+      const track = controller.getCaptureStream()!.getAudioTracks()[0]!;
+      const analysis = context.sourceStreams[0]!.getAudioTracks()[0]!;
+      const observed = vi.fn(); controller.onVoiceActivity = observed;
+      const send = (value: boolean) => nodes[0]!.port.onmessage!({ data: { type: "playback", value } } as MessageEvent);
+      nodes[0]!.port.postMessage.mockImplementation((message: { type: string }) => {
+        if (message.type === "playback") {
+          expect(track.enabled).toBe(false); expect(analysis.enabled).toBe(false);
+        }
+      });
+      send(true);
+      expect(nodes[0]!.port.postMessage).toHaveBeenCalledWith({ type: "playback", value: true });
+      expect(controller.playbackInputBlocked).toBe(true);
+      context.analysers[0]!.fill(.8);
+      controller.setCaptureEnabled(true); // Other lifecycle callers cannot bypass playback protection.
+      await vi.advanceTimersByTimeAsync(1000);
+      expect(track.enabled).toBe(false); expect(observed).not.toHaveBeenCalled();
+      context.analysers[0]!.fill(0);
+      send(false);
+      await vi.advanceTimersByTimeAsync(runtime.playbackEchoTailMs - 1);
+      expect(track.enabled).toBe(false);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(track.enabled).toBe(true); expect(analysis.enabled).toBe(true);
+      expect(controller.playbackInputBlocked).toBe(false);
+      context.analysers[0]!.fill(.8);
+      await vi.advanceTimersByTimeAsync(150);
+      expect(observed).toHaveBeenCalledWith(expect.objectContaining({ active: true }));
+    } finally { controller.dispose(); vi.useRealTimers(); }
+  });
+  it.each(["suspend", "stop", "replace", "dispose"])("never lets an old playback timer reopen capture after %s", async boundary => {
+    vi.useFakeTimers();
+    const { controller, nodes } = setup();
+    try {
+      await controller.primeOutput(); await controller.startCapture();
+      controller.attachRemoteStream(fakeStream(new FakeAudioTrack())); controller.setOutputAudible(true);
+      const track = controller.getCaptureStream()!.getAudioTracks()[0]!;
+      const stale = nodes[0]!.port.onmessage!;
+      stale({ data: { type: "playback", value: true } } as MessageEvent);
+      stale({ data: { type: "playback", value: false } } as MessageEvent);
+      if (boundary === "suspend") { controller.setCaptureEnabled(false); controller.setOutputAudible(false); }
+      if (boundary === "stop") controller.stopCapture();
+      if (boundary === "dispose") controller.dispose();
+      if (boundary === "replace") {
+        controller.attachRemoteStream(fakeStream(new FakeAudioTrack()));
+        nodes[1]!.port.onmessage!({ data: { type: "playback", value: true } } as MessageEvent);
+        stale({ data: { type: "playback", value: false } } as MessageEvent);
+      }
+      await vi.advanceTimersByTimeAsync(1500);
+      expect(track.enabled && track.readyState === "live").toBe(false);
+    } finally { controller.dispose(); vi.useRealTimers(); }
+  });
+  it("cancels reopening when another output chunk starts during the echo tail", async () => {
+    vi.useFakeTimers();
+    const { controller, nodes } = setup();
+    try {
+      await controller.primeOutput(); await controller.startCapture();
+      controller.attachRemoteStream(fakeStream(new FakeAudioTrack())); controller.setOutputAudible(true);
+      const send = (value: boolean) => nodes[0]!.port.onmessage!({ data: { type: "playback", value } } as MessageEvent);
+      send(true); send(false);
+      await vi.advanceTimersByTimeAsync(runtime.playbackEchoTailMs - 1);
+      send(true);
+      await vi.advanceTimersByTimeAsync(runtime.playbackEchoTailMs + 1);
+      expect(controller.getCaptureStream()!.getAudioTracks()[0]!.enabled).toBe(false);
+      send(false);
+      await vi.advanceTimersByTimeAsync(runtime.playbackEchoTailMs);
+      expect(controller.getCaptureStream()!.getAudioTracks()[0]!.enabled).toBe(true);
+    } finally { controller.dispose(); vi.useRealTimers(); }
+  });
+  it("never permits queued PCM when closing the microphone fails", async () => {
+    const { controller, nodes, element } = setup();
+    try {
+      await controller.primeOutput(); await controller.startCapture();
+      controller.attachRemoteStream(fakeStream(new FakeAudioTrack())); controller.setOutputAudible(true);
+      const failed = vi.fn(); controller.onPlaybackBufferError = failed;
+      Object.defineProperty(controller.getCaptureStream()!.getAudioTracks()[0]!, "enabled", {
+        configurable: true, get: () => true,
+        set: value => { if (!value) throw new Error("Microphone closure failed"); },
+      });
+      nodes[0]!.port.onmessage!({ data: { type: "playback", value: true } } as MessageEvent);
+      expect(nodes[0]!.port.postMessage).not.toHaveBeenCalledWith({ type: "playback", value: true });
+      expect(element.muted).toBe(true); expect(failed).toHaveBeenCalledOnce();
+    } finally { controller.dispose(); }
+  });
   it("awaits original decoder playback before declaring processed playback ready", async () => {
     const { controller, element } = setup();
     await controller.primeOutput();
@@ -578,7 +668,7 @@ describe("buffered audio output", () => {
     expect(nodes[1]!.port.close).not.toHaveBeenCalled();
     controller.dispose();
   });
-  it("plays processed PCM through the primed element and analyses played audio", async () => {
+  it("buffers received PCM by default through the primed element and analyses played audio", async () => {
     const { controller, element, context, nodes, destinationStream } = setup();
     await controller.primeOutput();
     const remote = fakeStream(new FakeAudioTrack());
@@ -587,9 +677,22 @@ describe("buffered audio output", () => {
     expect(context.sources[0]?.connections).toContain(context.analysers[0]);
     expect(nodes[0]?.connections).toContain(context.analysers[1]);
     controller.setOutputAudible(true);
-    controller.setNonInterrupting(true);
     expect(element.muted).toBe(false);
     expect(nodes[0]?.port.postMessage).toHaveBeenCalledWith({ type: "enabled", value: true });
+    controller.attachRemoteStream(fakeStream(new FakeAudioTrack()));
+    expect(nodes[1]?.port.postMessage).toHaveBeenCalledWith({ type: "enabled", value: true });
+    controller.dispose();
+  });
+  it("fails closed when buffering is unavailable instead of playing directly", async () => {
+    const { controller, context, element } = setup();
+    Object.assign(context, { audioWorklet: undefined });
+    await controller.primeOutput();
+    const failed = vi.fn();
+    controller.onPlaybackBufferError = failed;
+    controller.attachRemoteStream(fakeStream(new FakeAudioTrack()));
+    expect(failed).toHaveBeenCalledOnce();
+    expect(element.muted).toBe(true);
+    expect(element.srcObject).toBeNull();
     controller.dispose();
   });
   it("keeps the original WebRTC decoder silent and releases it on replacement and disposal", async () => {

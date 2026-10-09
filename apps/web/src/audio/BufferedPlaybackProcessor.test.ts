@@ -22,6 +22,31 @@ function send(processor: Processor, type: string, value = true) {
 }
 
 describe("buffered playback processor lifetime", () => {
+  it("waits for microphone closure before the first sample, ignores speech during playback, and bridges short output gaps", () => {
+    const processor = new ProcessorClass();
+    send(processor, "audible"); send(processor, "enabled"); send(processor, "speaking");
+    const received = new Float32Array(400).fill(.5);
+    const output = new Float32Array(100);
+    processor.process([[received]], [[new Float32Array(400)]]);
+    send(processor, "speaking", false);
+    for (let i = 0; i < 10; i++) {
+      processor.process([[]], [[output]]);
+      expect(output.every(sample => sample === 0)).toBe(true);
+    }
+    expect(processor.port.postMessage).toHaveBeenCalledWith({ type: "playback", value: true });
+    expect(processor.port.postMessage.mock.calls.filter(([message]) => message.type === "playback")).toHaveLength(1);
+    send(processor, "playback");
+    send(processor, "speaking"); // Even a delayed source sample must not interrupt started playback.
+    const played: number[] = [];
+    for (let i = 0; i < 12; i++) { processor.process([[]], [[output]]); played.push(...output.filter(x => x !== 0)); }
+    expect(played).toEqual([...received]);
+    // New provider PCM after a short gap belongs to the same protected playback window.
+    expect(processor.port.postMessage).not.toHaveBeenCalledWith({ type: "playback", value: false });
+    processor.process([[new Float32Array(100).fill(.7)]], [[output]]);
+    expect(output.some(x => x > .6)).toBe(true);
+    for (let i = 0; i < 15; i++) processor.process([[]], [[output]]);
+    expect(processor.port.postMessage).toHaveBeenCalledWith({ type: "playback", value: false });
+  });
   it.each([true, false])("terminates after disposal, with incoming audio=%s", incoming => {
     const processor = new ProcessorClass();
     send(processor, "audible"); send(processor, "enabled"); send(processor, "speaking");
@@ -46,6 +71,7 @@ describe("buffered playback processor lifetime", () => {
     for (let quantum = 0; quantum < 100; quantum++) {
       expect(processor.process([[]], [[output]])).toBe(true);
       played.push(...output.filter(sample => sample !== 0));
+      if (processor.port.postMessage.mock.calls.some(([message]) => message.type === "playback" && message.value)) send(processor, "playback");
     }
     expect(played).toEqual(new Array(128).fill(.5));
     expect(processor.port.postMessage).toHaveBeenCalledWith({ type: "pending", value: false });
@@ -87,5 +113,18 @@ describe("buffered playback processor lifetime", () => {
     expect(processor.process([[Float32Array.of(.5)]], [[output]])).toBe(true);
     expect(output[0]).toBe(.5);
     expect(processor.port.close).not.toHaveBeenCalled();
+  });
+  it("discards a delayed playback permission after output closure", () => {
+    const processor = new ProcessorClass();
+    send(processor, "audible"); send(processor, "enabled");
+    const output = new Float32Array(500);
+    processor.process([[new Float32Array(500).fill(.5)]], [[output]]);
+    expect(output.every(x => x === 0)).toBe(true);
+    send(processor, "audible", false); send(processor, "playback"); send(processor, "audible");
+    processor.process([[new Float32Array(500).fill(.7)]], [[output]]);
+    expect(output.every(x => x === 0)).toBe(true);
+    send(processor, "playback");
+    processor.process([[]], [[output]]);
+    expect(output.some(x => x > .6)).toBe(true);
   });
 });

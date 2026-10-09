@@ -328,8 +328,13 @@ export class MockLiveHarness {
         }
       }
 
+      class FakeAudioWorkletNode extends FakeAudioNode {
+        readonly port = { postMessage: () => {}, close: () => {}, onmessage: null };
+      }
+
       class FakeAudioContext extends EventTarget {
         state: AudioContextState = "running";
+        readonly audioWorklet = { addModule: async () => {} };
         resume(): Promise<void> {
           this.state = "running";
           return Promise.resolve();
@@ -343,6 +348,9 @@ export class MockLiveHarness {
         }
         createMediaStreamSource(): FakeAudioNode {
           return new FakeAudioNode();
+        }
+        createMediaStreamDestination(): { stream: FakeMediaStream } {
+          return { stream: new FakeMediaStream() };
         }
       }
 
@@ -450,6 +458,10 @@ export class MockLiveHarness {
       Object.defineProperty(window, "webkitAudioContext", {
         configurable: true,
         value: FakeAudioContext,
+      });
+      Object.defineProperty(window, "AudioWorkletNode", {
+        configurable: true,
+        value: FakeAudioWorkletNode,
       });
       Object.defineProperty(window, "RTCPeerConnection", {
         configurable: true,

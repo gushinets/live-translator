@@ -10,12 +10,13 @@ test.beforeEach(async ({ page }) => {
   await page.waitForFunction(() => !!window.audioHarness);
 });
 
-test("real AudioWorklet holds, releases and pauses received speech without discarding it", async ({ page }) => {
+test("real AudioWorklet closes WebRTC microphone before playback and plays the entire buffer despite new speech", async ({ page }) => {
+  await page.evaluate(() => window.audioHarness.useWebRtc());
   await page.evaluate(() => {
-    window.audioHarness.controller.setNonInterrupting(true);
     window.audioHarness.mic.gain.value = .2;
   });
   await page.waitForTimeout(350);
+  await expect.poll(() => page.evaluate(() => window.audioHarness.readReceivedMicRms())).toBeGreaterThan(.02);
   await page.evaluate(() => { window.audioHarness.remote.gain.value = .1; });
   await page.waitForTimeout(1500);
   expect(await page.evaluate(() => window.audioHarness.readRms())).toBeLessThan(.001);
@@ -27,17 +28,23 @@ test("real AudioWorklet holds, releases and pauses received speech without disca
   await page.waitForTimeout(400);
   expect(await page.evaluate(() => window.audioHarness.readRms())).toBeLessThan(.001);
   await expect.poll(() => page.evaluate(() => window.audioHarness.readRms()), { intervals: [20] }).toBeGreaterThan(.02);
+  expect(await page.evaluate(() => window.audioHarness.controller.getCaptureStream()!.getAudioTracks()[0]!.enabled)).toBe(false);
   await page.evaluate(() => { window.audioHarness.mic.gain.value = .2; });
   await page.waitForTimeout(250);
-  expect(await page.evaluate(() => window.audioHarness.readRms())).toBeLessThan(.001);
-  await page.evaluate(() => { window.audioHarness.controller.setNonInterrupting(false); });
-  await expect.poll(() => page.evaluate(() => window.audioHarness.readRms()), { intervals: [20] }).toBeGreaterThan(.02);
+  expect(await page.evaluate(() => window.audioHarness.readRms())).toBeGreaterThan(.02);
+  await expect.poll(() => page.evaluate(() => window.audioHarness.readReceivedMicRms()), { intervals: [20] }).toBeLessThan(.001);
   await expect.poll(() => page.evaluate(() => window.audioHarness.controller.hasPendingPlayback)).toBe(false);
+  expect(await page.evaluate(() => window.audioHarness.controller.getCaptureStream()!.getAudioTracks()[0]!.enabled)).toBe(false);
+  await expect.poll(() => page.evaluate(() => window.audioHarness.controller.playbackInputBlocked)).toBe(false);
+  await expect.poll(() => page.evaluate(() => window.audioHarness.readReceivedMicRms())).toBeGreaterThan(.02);
   expect(await page.evaluate(() => window.audioHarness.errors)).toBe(0);
 });
 
-test("default streams during speech, lifecycle closure and replacement discard old PCM", async ({ page }) => {
-  await page.evaluate(() => { window.audioHarness.mic.gain.value = .2; });
+test("explicit direct playback streams during speech, lifecycle closure and replacement discard old PCM", async ({ page }) => {
+  await page.evaluate(() => {
+    window.audioHarness.controller.setNonInterrupting(false);
+    window.audioHarness.mic.gain.value = .2;
+  });
   await page.waitForTimeout(350);
   await page.evaluate(() => { window.audioHarness.remote.gain.value = .1; });
   await expect.poll(() => page.evaluate(() => window.audioHarness.readRms()), { intervals: [20] }).toBeGreaterThan(.02);
@@ -57,31 +64,25 @@ test("default streams during speech, lifecycle closure and replacement discard o
   expect(await page.evaluate(() => window.audioHarness.controller.hasPendingPlayback)).toBe(false);
 });
 
-test("mode switch works by keyboard and stays beside End on a narrow phone", async ({ page }, testInfo) => {
-  const toggle = page.getByRole("switch", { name: "Не перебивать" });
-  await expect(toggle).toHaveAttribute("aria-checked", "false");
-  await toggle.focus();
-  await page.keyboard.press("Space");
-  await expect(toggle).toHaveAttribute("aria-checked", "true");
-  await page.keyboard.press("Enter");
-  await expect(toggle).toHaveAttribute("aria-checked", "false");
+test("conversation has no playback switch and keeps its actions usable on a narrow phone", async ({ page }, testInfo) => {
+  await expect(page.getByRole("switch")).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "Язык собеседника" })).toHaveCount(0);
   for (const width of [390, 320]) {
     await page.setViewportSize({ width, height: 844 });
     const end = (await page.getByRole("button", { name: "Завершить", exact: true }).boundingBox())!;
-    const mode = (await toggle.boundingBox())!;
-    expect(mode.x).toBeGreaterThan(end.x);
-    expect(Math.abs(mode.y - end.y)).toBeLessThan(2);
-    expect(mode.width).toBeGreaterThanOrEqual(44);
-    expect(mode.height).toBeGreaterThanOrEqual(44);
+    expect(end.width).toBeGreaterThanOrEqual(44);
+    expect(end.height).toBeGreaterThanOrEqual(44);
+    await page.getByRole("button", { name: "Завершить", exact: true }).focus();
+    await expect(page.getByRole("button", { name: "Завершить", exact: true })).toBeFocused();
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
   }
-  await toggle.click();
-  await page.screenshot({ path: testInfo.outputPath("non-interrupting-switch.png") });
+  await page.screenshot({ path: testInfo.outputPath("buffered-playback-dialogue.png") });
 });
 
 
 test("real WebRTC receiver decodes through the worklet in both playback modes", async ({ page }) => {
   await page.evaluate(() => window.audioHarness.useWebRtc());
+  await page.evaluate(() => window.audioHarness.controller.setNonInterrupting(false));
   // As in a real translation, source speech precedes the generated reply.
   await page.evaluate(() => { window.audioHarness.mic.gain.value = .2; });
   await page.waitForTimeout(350);

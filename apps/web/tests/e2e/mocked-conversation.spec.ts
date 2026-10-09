@@ -17,52 +17,6 @@ const COURIER_TURNS: ReadonlyArray<{ original: string; translation: string }> = 
 ];
 
 test.describe("mocked conversation runtime", () => {
-  test("preserves old captions after changing B's language and labels new translations relative to each pane", async ({ page }, testInfo) => {
-    const harness = await MockLiveHarness.attach(page);
-    await harness.startListeningConversation();
-    await completeTextOnlyTurn(harness, page, {
-      speaker: "A", recipient: "B", original: "Where is the train station, please?",
-      translation: "¿Dónde está la estación de tren, por favor?",
-    });
-    await page.getByRole("button", { name: "Partner's language" }).click();
-    await page.getByRole("radio", { name: "German" }).check();
-    await page.getByRole("button", { name: "Confirm" }).click();
-    const b = page.getByTestId("participant-pane-B");
-    await expect(b).toHaveAttribute("lang", "de");
-    await expect(b.locator(".recent-turn")).toHaveText("Er: ¿Dónde está la estación de tren, por favor?");
-    await expect(page.getByTestId("participant-status-B")).toHaveText("Sprechen Sie");
-    await harness.sourceActive();
-    await harness.inputDelta("Could you tell me how to get there?");
-    await expect(b.locator(".recent-turn-primary")).toHaveText("¿Dónde está la estación de tren, por favor?");
-    await harness.outputDelta("Könnten Sie mir sagen, wie ich dorthin komme?");
-    await expect(page.getByTestId("participant-pane-A").locator(".turn-author").last()).toHaveText("Me:");
-    await expect(page.getByTestId("participant-pane-B").locator(".turn-author").last()).toHaveText("Er:");
-    await expect(page.getByTestId("participant-pane-B").locator(".recent-turn-primary").last()).toHaveText("Könnten Sie mir sagen, wie ich dorthin komme?");
-    await expect(page.getByTestId("participant-pane-A").locator(".recent-turn").first()).toHaveText("Me: Where is the train station, please?");
-    await expect(page.locator(".current-secondary, .recent-turn-secondary")).toHaveCount(0);
-    await page.setViewportSize({ width: 320, height: 640 });
-    await expect(page.getByTestId("participant-pane-A").locator(".turn-author").last()).toBeVisible();
-    await expect(page.getByTestId("participant-pane-B").locator(".turn-author").last()).toBeVisible();
-    expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
-    await page.screenshot({ path: testInfo.outputPath("localized-conversation.png") });
-  });
-
-  test("reopening languages reflects the queued choice before the turn ends", async ({ page }) => {
-    const harness = await MockLiveHarness.attach(page);
-    await harness.startListeningConversation();
-    await harness.sourceActive();
-    await harness.inputDelta("Could you tell me where the train station is?");
-    await page.getByRole("button", { name: "Partner's language" }).click();
-    await page.getByRole("radio", { name: "German" }).check();
-    await page.getByRole("button", { name: "Confirm" }).click();
-    await page.getByRole("button", { name: "Partner's language" }).click();
-    await expect(page.getByRole("radio", { name: "German" })).toBeChecked();
-    await page.getByRole("button", { name: "Confirm" }).click();
-    await harness.outputDelta("¿Dónde está la estación de tren, por favor?");
-    await harness.sourceQuiet();
-    await harness.advance(runtime.audioStartGraceMs);
-    await expect(page.getByText("Deutsch")).toBeVisible();
-  });
   test("End keeps the toolbar geometry until the provider confirms closure", async ({ page }) => {
     const harness = await MockLiveHarness.attach(page);
     await harness.startListeningConversation();
@@ -267,9 +221,7 @@ test("first language choice is usable with the keyboard on a phone viewport", as
   await page.getByRole("button", { name: "Start translation" }).focus();
   await page.keyboard.press("Enter");
   await expect(page.getByRole("button", { name: "End" })).toBeVisible();
-  await page.getByRole("button", { name: "Partner's language" }).click();
-  await expect(page.getByText("Live Translator")).toBeVisible();
-  await page.getByRole("button", { name: "Back" }).click();
+  await expect(page.getByRole("button", { name: "Partner's language" })).toHaveCount(0);
   await harness.sourceActive();
   await harness.inputDelta("¿Dónde está la estación de tren, por favor?");
   await harness.outputDelta("Where is the train station, please?");

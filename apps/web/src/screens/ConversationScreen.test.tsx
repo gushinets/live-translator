@@ -440,12 +440,12 @@ describe("caption history, languages and authors", () => {
   it("localizes controls independently and preserves old text and its language after a language change", () => {
     const controller = bilingualController();
     controller.captionBlocks = [{ id: "old", kind: "output", side: "B", language: "en", text: "Thank you", receivedAtMs: 1 }];
-    const view = render(<ConversationScreen controller={controller} onChangeLanguage={() => {}} />);
+    const view = render(<ConversationScreen controller={controller} />);
     expect(screen.getByTestId("participant-status-A")).toHaveTextContent("Говорите");
     expect(screen.getByTestId("participant-status-B")).toHaveTextContent("Speak");
     expect(screen.getByRole("button", { name: "Завершить" })).toBeInTheDocument();
     controller.session = { ...controller.session, participantB: { ...controller.session.participantB, language: "de" } };
-    view.rerender(<ConversationScreen controller={controller} onChangeLanguage={() => {}} />);
+    view.rerender(<ConversationScreen controller={controller} />);
     expect(screen.getByText("Thank you")).toHaveAttribute("lang", "en");
     expect(screen.getByTestId("participant-status-B")).toHaveTextContent("Sprechen Sie");
     expect(screen.getByTestId("participant-pane-B").querySelectorAll("li")).toHaveLength(1);
@@ -603,32 +603,16 @@ it.each(["active", "pending"].flatMap(location => (["PLAYBACK_ENDED", "AUDIO_INT
   expect((controller.session.activeTurn ?? controller.session.pendingTurns![0])?.translatedText).toBe("Hola. Más.");
 });
 
-describe("non-interrupting playback switch", () => {
-  it("is off by default, switches both ways, and keeps streamed captions visible", () => {
-    const controller = Object.assign(new FakeConversationController(session({
+describe("conversation controls", () => {
+  it.each(["listening", "outputting", "suspended", "ending"] as const)("has no playback switch and keeps captions visible while %s", state => {
+    const controller = new FakeConversationController(session({
+      state,
       activeTurn: turn({ id: "a", speaker: "A", translatedText: "Hello" }),
-    })), {
-      nonInterrupting: false,
-      setNonInterrupting(enabled: boolean) { this.nonInterrupting = enabled; controller.notify(); },
-    });
+    }));
     controller.captionBlocks = [{ id: "translation", kind: "output", side: "B", language: "en", text: "Hello", receivedAtMs: 1 }];
     render(<ConversationScreen controller={controller} />);
-    const toggle = screen.getByRole("switch", { name: "Не перебивать" });
-    expect(toggle).toHaveAttribute("aria-checked", "false");
-    fireEvent.click(toggle);
-    expect(toggle).toHaveAttribute("aria-checked", "true");
+    expect(screen.queryByRole("switch")).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Язык собеседника" })).not.toBeInTheDocument();
     expect(screen.getAllByText(/Hello/).length).toBeGreaterThan(0);
-    fireEvent.click(toggle);
-    expect(toggle).toHaveAttribute("aria-checked", "false");
-  });
-  it("disables mode changes when suspended or ending", () => {
-    const controller = Object.assign(new FakeConversationController(session({ state: "suspended" })), {
-      nonInterrupting: true, setNonInterrupting: vi.fn(),
-    });
-    const view = render(<ConversationScreen controller={controller} />);
-    expect(screen.getByRole("switch", { name: "Не перебивать" })).toBeDisabled();
-    controller.session = session({ state: "ending" });
-    view.rerender(<ConversationScreen controller={controller} />);
-    expect(screen.getByRole("switch", { name: "Не перебивать" })).toBeDisabled();
   });
 });
