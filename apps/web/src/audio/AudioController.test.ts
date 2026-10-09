@@ -519,6 +519,41 @@ describe("buffered audio output", () => {
       expect(observed).toHaveBeenCalledWith(expect.objectContaining({ active: true }));
     } finally { controller.dispose(); vi.useRealTimers(); }
   });
+  it("emits a pending source idle before blocking capture when the sampler is delayed", async () => {
+    vi.useFakeTimers(); vi.setSystemTime(0);
+    const { controller, context, nodes } = setup();
+    try {
+      await controller.primeOutput(); await controller.startCapture();
+      controller.attachRemoteStream(fakeStream(new FakeAudioTrack())); controller.setOutputAudible(true);
+      const observed = vi.fn();
+      controller.onVoiceActivity = event => {
+        observed(event);
+        expect(controller.playbackInputBlocked).toBe(false);
+      };
+      context.analysers[0]!.fill(.01);
+      await vi.advanceTimersByTimeAsync(50);
+      context.analysers[0]!.fill(.08);
+      await vi.advanceTimersByTimeAsync(100);
+      context.analysers[0]!.fill(0);
+      await vi.advanceTimersByTimeAsync(500);
+      expect(observed.mock.calls).toEqual([[{ active: true, atMs: 150 }]]);
+      expect(nodes[0]!.port.postMessage).toHaveBeenLastCalledWith({ type: "speaking", value: false });
+      // Worklet time advances independently while main-thread sampling is delayed.
+      vi.setSystemTime(950);
+      nodes[0]!.port.onmessage!({ data: { type: "playback", value: true } } as MessageEvent);
+      expect(observed.mock.calls).toEqual([[{ active: true, atMs: 150 }], [{ active: false, atMs: 950 }]]);
+      expect(controller.playbackInputBlocked).toBe(true);
+      expect(controller.getCaptureStream()!.getAudioTracks()[0]!.enabled).toBe(false);
+      expect(nodes[0]!.port.postMessage).toHaveBeenLastCalledWith({ type: "playback", value: true });
+      nodes[0]!.port.onmessage!({ data: { type: "playback", value: false } } as MessageEvent);
+      await vi.advanceTimersByTimeAsync(runtime.playbackEchoTailMs + 150);
+      expect(controller.playbackInputBlocked).toBe(false);
+      expect(observed).toHaveBeenCalledTimes(2);
+      context.analysers[0]!.fill(.08);
+      await vi.advanceTimersByTimeAsync(150);
+      expect(observed).toHaveBeenLastCalledWith(expect.objectContaining({ active: true }));
+    } finally { controller.dispose(); vi.useRealTimers(); }
+  });
   it.each(["active", "echo-tail"])("reopens capture on resume without waiting for a throttled timer after %s playback", async phase => {
     vi.useFakeTimers();
     const { controller, context, nodes } = setup();

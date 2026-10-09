@@ -307,6 +307,8 @@ export class AudioController {
 
   private blockPlaybackInput(blocked: boolean): void {
     if (this.inputBlocked === blocked) return;
+    // Deliver the pending idle edge before consumers start ignoring gated microphone events.
+    if (blocked && this.voiceActivityMonitor.active) this.onVoiceActivity?.({ active: false, atMs: this.nowMs() });
     this.inputBlocked = blocked;
     this.applyCaptureGate();
     this.resetVoiceActivityBaseline();
