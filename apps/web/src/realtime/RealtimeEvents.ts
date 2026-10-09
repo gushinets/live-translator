@@ -6,7 +6,7 @@ export interface RealtimePolicy {
 }
 export interface EffectiveSession {
   type?:string; model?:string; output_modalities?:string[]; instructions?:string; tools?:unknown[]; max_output_tokens?:number|string;
-  audio?: {input?: {transcription?:{model?:string;prompt?:string;language?:string|null};turn_detection?: Record<string,unknown>};output?:{voice?:string}};
+  audio?: {input?: {transcription?:{model?:string;prompt?:string;language?:string|null}|null;turn_detection?: Record<string,unknown>};output?:{voice?:string}};
 }
 export interface ResponseInfo {
   id:string; status?:string; metadata?:Record<string,string>;
@@ -23,7 +23,7 @@ export type RealtimeEvent =
   | {type:"response.output_item.added";response_id:string;item:{id:string}}
   | {type:"response.output_audio_transcript.delta";response_id:string;item_id:string;content_index:number;delta:string}
   | {type:"response.output_audio_transcript.done";response_id:string;item_id:string;content_index:number;transcript:string}
-  | {type:"output_audio_buffer.started"|"output_audio_buffer.stopped";response_id:string}
+  | {type:"output_audio_buffer.started"|"output_audio_buffer.stopped"|"output_audio_buffer.cleared";response_id:string}
   | {type:"error"};
 
 /** Ignore unrelated GA events; reject malformed fields without exporting raw payloads. */
@@ -63,7 +63,7 @@ export function parseRealtimeEvent(raw:string): RealtimeEvent | undefined {
       (v.type.endsWith("delta") ? !text(v.delta) : !text(v.transcript))) throw new Error("invalid_output");
   } else if (v.type === "response.output_item.added") {
     if (!id("response_id") || !v.item || typeof v.item !== "object" || !("id" in v.item) || !identifier(v.item.id)) throw new Error("invalid_output");
-  } else if (v.type === "output_audio_buffer.started" || v.type === "output_audio_buffer.stopped") {
+  } else if (v.type === "output_audio_buffer.started" || v.type === "output_audio_buffer.stopped" || v.type === "output_audio_buffer.cleared") {
     if (!id("response_id")) throw new Error("invalid_buffer");
   } else return;
   return v as unknown as RealtimeEvent;

@@ -120,7 +120,7 @@ export function ConversationScreen({
           {" · "}{controller.buildSha??__BUILD_SHA__}</p>
         {controller.engine==="realtime" && captions.some(block=>block.side===undefined)?
           <div className="conversation-unknown" aria-label="Реплики с неопределённой стороной">
-            <span>Сторона не определена</span>
+            <span>Реплики без определённой стороны</span>
             {captions.filter(block=>block.side===undefined).map(block=><p key={block.id}>{block.kind==="input"?"Оригинал":"Перевод"}: {block.text}</p>)}
           </div>:null}
         {controller.exportDiagnostics?<RealtimeDiagnostics controller={controller}/>:null}

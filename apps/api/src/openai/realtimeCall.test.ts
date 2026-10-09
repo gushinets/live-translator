@@ -9,7 +9,7 @@ describe("Realtime GA Calls adapter",()=> {
     expect(create).toHaveBeenCalledWith({sdp:"offer",session:realtimeConfiguration()},{signal});await provider.close("rtc_fixture",signal);
     expect(hangup).toHaveBeenCalledWith("rtc_fixture",{signal});
     const config=realtimeConfiguration();expect(config.model).toBe("gpt-realtime-2.1");expect(config.output_modalities).toEqual(["audio"]);
-    expect(config.audio?.input?.turn_detection).toMatchObject({create_response:false,interrupt_response:false,type:"server_vad"});
+    expect(config.audio?.input?.turn_detection).toMatchObject({create_response:false,interrupt_response:false,type:"server_vad",silence_duration_ms:1200});
     expect(config.audio?.input?.transcription).not.toHaveProperty("language");expect(config.tools).toEqual([]);
   });
 });

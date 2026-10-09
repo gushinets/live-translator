@@ -1,10 +1,10 @@
 import { AudioController } from "../audio/AudioController";
+import { AccountingRequestError } from "../api/AccountingBackend";
 import { WakeLockController } from "../platform/WakeLockController";
 import { createInitialSession,type TranslationSession } from "../session/SessionState";
 import type { ProductSession } from "../session/ProductSession";
-import type { DialogueBlock } from "../conversation/DialogueTranscript";
+import { DialogueTranscript,type DialogueBlock } from "../conversation/DialogueTranscript";
 import type { Side,Turn } from "../conversation/Turn";
-import { detectLanguage } from "../side/SideResolver";
 import { RealtimeClient,type RealtimeTransport } from "./RealtimeClient";
 import { RealtimePlayback,type RealtimeAudioOutput } from "./RealtimePlayback";
 import { tokenUsage,transcriptionUsage,type RealtimeUsageObservation,type RealtimeEvent,type RealtimePolicy } from "./RealtimeEvents";
@@ -13,7 +13,8 @@ export interface SourceItem {
   localId:string;itemId:string;committed:boolean;contents:Map<number,{text:string;final:boolean;failed:boolean}>;
   turn:Turn;requestId?:string;responseId?:string;outputItemIds:string[];
   requestState:"queued"|"requested"|"acknowledged"|"completed"|"failed"|"unknown";
-  committedAt?:number;firstSourceTextAtMs?:number;generationDone:boolean;bufferStopped:boolean;drained:boolean;
+  committedAt?:number;firstSourceTextAtMs?:number;sourceWaitExpired?:boolean;targetLanguage?:string;
+  translationIssue?:"empty"|"wrong_language";generationDone:boolean;bufferStopped:boolean;drained:boolean;
   outputContents:Map<string,{text:string;final:boolean}>;
   firstNonzeroPcmAtMs?:number; pendingFirstPcmAtMs?:number; localPcmDrainedAtMs?:number;
 }
@@ -58,6 +59,7 @@ export class RealtimeSessionController implements ProductSession {
   diagnosticsRevision=0;
   captionBlocks:readonly DialogueBlock[]=[];
   readonly items=new Map<string,SourceItem>();
+  private readonly transcript=new DialogueTranscript();
   private readonly listeners=new Set<()=>void>();
   private readonly speech=new Set<string>();
   private readonly awaitingCommit=new Set<string>();
@@ -167,7 +169,8 @@ export class RealtimeSessionController implements ProductSession {
       this.update();
     } catch(error) {
       if(!this.valid(attempt))return;
-      this.fail(error instanceof DOMException && error.name==="NotAllowedError" ? "microphone_denied" : "startup_failed");
+      this.fail(error instanceof AccountingRequestError && error.status===409 && error.code==="attempt_in_progress"?"attempt_in_progress":
+        error instanceof DOMException && error.name==="NotAllowedError" ? "microphone_denied" : "startup_failed");
     }
   }
   private item(id:string):SourceItem {
@@ -199,6 +202,7 @@ export class RealtimeSessionController implements ProductSession {
           if(this.pending.length>=16)throw new Error("input_queue_limit");
           item.committed=true;item.committedAt=this.now();item.turn.sourceIdleAtMs??=this.now();this.pending.push(item.itemId);
           this.trace("input_committed",item);
+          this.later(attempt,()=>{item.sourceWaitExpired=true;this.schedule();},1000);
           this.later(attempt,()=>{if(!["completed","failed"].includes(item.requestState))this.fail("item_wait_timeout");},180000);
         }
         this.releaseHold(attempt);
@@ -234,8 +238,12 @@ export class RealtimeSessionController implements ProductSession {
           item.generationDone=true;this.trace("generation_done",item);
           const usage=tokenUsage(event.response.usage);
           if(usage)this.observeUsage(attempt,item,{operation:"response",responseId:item.responseId,usage});
-          if(event.response.status!=="completed" || !event.response.output?.length) {
+          if(event.response.status!=="completed" || !event.response.output) {
             item.requestState="failed";item.turn.status="failed";this.fail("response_failed_or_empty");return;
+          }
+          if(!event.response.output.length) {
+            item.translationIssue="empty";
+            this.later(attempt,()=>{if(this.active===item)attempt.output.seal();},this.options.mediaTailMs??1000);
           }
           for(const output of event.response.output) {
             if(!item.outputItemIds.includes(output.id))item.outputItemIds.push(output.id);
@@ -260,11 +268,17 @@ export class RealtimeSessionController implements ProductSession {
             item.turn.firstOutputTextAtMs=this.now();this.trace("first_output_text",item);
           }
         } else if(event.type==="output_audio_buffer.started") {this.trace("provider_buffer_started",item);}
-        else if(event.type==="output_audio_buffer.stopped" && !item.bufferStopped) {
-          item.bufferStopped=true;this.trace("provider_buffer_stopped",item);
+        else if(event.type==="output_audio_buffer.stopped" || event.type==="output_audio_buffer.cleared") {
+          const terminal=item.bufferStopped || item.turn.audioOutputInterrupted;
+          if(event.type==="output_audio_buffer.cleared" && !item.turn.audioOutputInterrupted) {
+            item.turn.audioOutputInterrupted=true;this.trace("provider_buffer_cleared",item);
+          } else if(event.type==="output_audio_buffer.stopped" && !item.bufferStopped) {
+            item.bufferStopped=true;this.trace("provider_buffer_stopped",item);
+          }
           // ponytail: RTP/data-channel skew has no exact PCM boundary. Retain 1s;
           // measure on hardware before tuning or replacing with a stronger transport barrier.
-          this.later(attempt,()=>attempt.output.seal(),this.options.mediaTailMs??1000);
+          if(!terminal)this.later(attempt,()=>{if(this.active===item)attempt.output.seal();},this.options.mediaTailMs??1000);
+          this.finishResponse();
         }
       }
       this.update();this.schedule();
@@ -282,8 +296,8 @@ export class RealtimeSessionController implements ProductSession {
     });
   }
   private sourceSide(text:string):Side|undefined {
-    if(/[\p{Script=Cyrillic}]/u.test(text)&&/[\p{Script=Latin}]/u.test(text))return;
-    const language=detectLanguage(text);return language===this.session.participantA.language ? "A":language===this.session.participantB.language ? "B":undefined;
+    const sides=new Set(this.transcript.splitByLanguage(text,{A:this.session.participantA.language!,B:this.session.participantB.language!}).map(part=>part.side));
+    return sides.size===1?sides.values().next().value:undefined;
   }
   private refreshOutput(item:SourceItem) {item.turn.translatedText=[...item.outputContents.values()].map(p=>p.text).join(" ");}
   private releaseHold(attempt:Attempt) {
@@ -298,11 +312,18 @@ export class RealtimeSessionController implements ProductSession {
       this.scheduled=false;
       // Recheck at send time: speech_started may arrive after the commit callback.
       if(!this.inputReady || this.speech.size || this.awaitingCommit.size || this.held || this.active || !this.pending.length)return;
-      const item=this.items.get(this.pending.shift()!)!;
+      const item=this.items.get(this.pending[0]!)!;
+      const sourceFinal=item.contents.size>0&&[...item.contents.values()].every(part=>part.final&&!part.failed);
+      // ponytail: ASR may lag audio. Wait at most 1s, then retain audio-based detection.
+      if(!sourceFinal&&!item.sourceWaitExpired)return;
+      this.pending.shift();
+      const speaker=sourceFinal?item.turn.speaker:undefined;
+      item.targetLanguage=speaker?this.session[speaker==="A"?"participantB":"participantA"].language:undefined;
       item.requestId=`rt_${attempt.generation}_${crypto.randomUUID()}`;item.requestState="requested";item.turn.status="outputting";this.active=item;
       try {
         attempt.output.begin(item.requestId);
         attempt.transport.send({type:"response.create",event_id:item.requestId,response:{conversation:"none",output_modalities:["audio"],
+          instructions:this.policy.instructions+(item.targetLanguage?` Output ONLY the translation in ${item.targetLanguage==="en"?"English":"Russian"}.`:""),
           input:[{type:"item_reference",id:item.itemId}],metadata:{request_id:item.requestId,source_item_id:item.itemId,
             attempt_id:attempt.id,generation:String(attempt.generation)}}});
         this.trace("response_requested",item);
@@ -312,24 +333,29 @@ export class RealtimeSessionController implements ProductSession {
     },0);
   }
   private finishResponse() {
-    const item=this.active;if(!item || !item.generationDone || !item.bufferStopped || !item.drained)return;
-    if(!item.turn.translatedText?.trim()) {item.requestState="failed";item.turn.status="failed";this.fail("empty_translation");return;}
-    item.requestState="completed";item.turn.status="completed";item.turn.turnCompletedAtMs=this.now();
-    this.trace("translation_completed",item);this.active=undefined;this.schedule();
+    const item=this.active;if(!item)return;
+    const noOutput=item.translationIssue==="empty"&&!item.outputItemIds.length;
+    if(!item.generationDone || (!item.bufferStopped && !item.turn.audioOutputInterrupted && !noOutput) || !item.drained)return;
+    const outputSide=this.sourceSide(item.turn.translatedText??"");
+    if(!item.turn.translatedText?.trim())item.translationIssue="empty";
+    else if(item.turn.speaker&&outputSide===item.turn.speaker)item.translationIssue="wrong_language";
+    if(item.translationIssue) {item.requestState="failed";item.turn.status="failed";this.trace(`translation_${item.translationIssue}`,item);}
+    else if(item.turn.audioOutputInterrupted) {item.requestState="failed";item.turn.status="failed";this.trace("translation_audio_interrupted",item);}
+    else {item.requestState="completed";item.turn.status="completed";item.turn.turnCompletedAtMs=this.now();this.trace("translation_completed",item);}
+    this.active=undefined;this.schedule();
   }
   private update() {
     const turns=[...this.items.values()].map(i=>({...i.turn})),source=[...this.speech].at(-1);
     this.session={...this.session,activeTurn:source?{...this.items.get(source)!.turn}:undefined,
       pendingTurns:turns.filter(t=>t.status==="outputting"),recentTurns:turns.filter(t=>t.status==="completed"||t.status==="failed")};
     this.captionBlocks=[...this.items.values()].flatMap(item=> {
-      const side=item.turn.speaker;
-      const failed=[...item.contents.values()].some(p=>p.failed);
-      return [{id:`${item.localId}:input`,kind:"input" as const,text:failed?
-        (item.turn.originalText?`${item.turn.originalText} · исходный текст не подтверждён`:"Исходный текст недоступен"):
-        item.turn.originalText||"Ожидание исходного текста…",side,
-        receivedAtMs:item.turn.speechStartAtMs??item.committedAt??this.now()},
-        ...(item.turn.translatedText?[{id:`${item.localId}:output`,kind:"output" as const,text:item.turn.translatedText,
-          side:side?(side==="A"?"B":"A") as Side:undefined,receivedAtMs:item.turn.firstOutputTextAtMs??this.now()}]:[])];
+      const languages={A:this.session.participantA.language!,B:this.session.participantB.language!};
+      const inputs=this.transcript.splitByLanguage(item.turn.originalText,languages);
+      const outputs=this.transcript.splitByLanguage(item.turn.translatedText??"",languages);
+      return [ ...inputs.map((part,index)=>({ ...part,id:`${item.localId}:input:${index}`,kind:"input" as const,
+        language:part.side?languages[part.side]:undefined,receivedAtMs:item.turn.speechStartAtMs??item.committedAt??this.now()})),
+        ...outputs.map((part,index)=>({...part,id:`${item.localId}:output:${index}`,kind:"output" as const,
+          language:part.side?languages[part.side]:undefined,receivedAtMs:item.turn.firstOutputTextAtMs??this.now()})) ];
     });
     if(this.inputReady) {
       this.activityLabel=this.held&&this.active?"Перевод удержан · принимаю речь":this.speech.size?"Принимаю речь":
@@ -342,6 +368,7 @@ export class RealtimeSessionController implements ProductSession {
   private fail(category:string) {
     this.trace("error",undefined,{category:/^[a-z_]+$/.test(category)?category:"operation_failed"});
     this.ownerError=category==="microphone_denied"?"Разрешите доступ к микрофону и начните новый разговор.":
+      category==="attempt_in_progress"?"Закрытие предыдущего разговора ещё не подтверждено. Новый разговор пока недоступен.":
       category.includes("limit")?"Достигнут лимит Realtime. Разговор остановлен; начните новый.":
       category==="startup_failed"?`Не удалось подключить Realtime (${this.model}). Проверьте доступ к модели и соединение; начните новый разговор.`:
       "Realtime остановлен из-за ошибки или ожидания ответа. Начните новый разговор.";
@@ -393,10 +420,11 @@ export class RealtimeSessionController implements ProductSession {
       state:this.session.state,pendingItems:this.pending.length,pcmSamples:this.attempt?.output.pendingSamples??0,cleanup:this.cleanup,
       items:[...this.items.values()].map(i=>({localId:i.localId,inputItemId:i.itemId,requestId:i.requestId,responseId:i.responseId,
         outputItemIds:i.outputItemIds,requestState:i.requestState,side:i.turn.speaker,sideSource:i.turn.speaker?"local_text_estimate":"unknown",
+        targetLanguage:i.targetLanguage,translationIssue:i.translationIssue,
         transcriptionStatus:[...i.contents.values()].some(p=>p.failed)?"failed":[...i.contents.values()].every(p=>p.final)&&i.contents.size?"completed":"pending",
         firstNonzeroPcmAtMs:i.firstNonzeroPcmAtMs===undefined?undefined:i.firstNonzeroPcmAtMs-this.startAt,
         localPcmDrainedAtMs:i.localPcmDrainedAtMs===undefined?undefined:i.localPcmDrainedAtMs-this.startAt,acousticPlaybackStart:"unknown",
-        generationDone:i.generationDone,bufferStopped:i.bufferStopped,drained:i.drained})),
+        generationDone:i.generationDone,bufferStopped:i.bufferStopped,audioOutputInterrupted:i.turn.audioOutputInterrupted,drained:i.drained})),
       events:this.events,usage:this.usage,cost:"not calculated"};
   }
 }

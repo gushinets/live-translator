@@ -1,4 +1,5 @@
 import { waitForIceComplete } from "../live/waitForIceComplete";
+import { AccountingRequestError } from "../api/AccountingBackend";
 import { acceptsConfiguration,parseRealtimeEvent,type RealtimeEvent,type RealtimePolicy,type RealtimeUsageObservation } from "./RealtimeEvents";
 
 export class RealtimeBackend {
@@ -7,8 +8,7 @@ export class RealtimeBackend {
       body:body === undefined ? undefined : JSON.stringify(body),signal:signal ?? AbortSignal.timeout(20000),keepalive});
     if (!response.ok) {
       const error = await response.json().catch(() => ({})) as {code?:string};
-      throw new Error(error.code === "realtime_disabled" ? "Экспериментальный Realtime выключен сервером." :
-        error.code === "concurrent_session_limit" || error.code === "attempt_in_progress" ? "Достигнут лимит активных разговоров." : "Realtime недоступен. Проверьте доступ к выбранной модели и соединение.");
+      throw new AccountingRequestError(response.status,typeof error.code==="string" && /^[a-z_]{1,80}$/.test(error.code)?error.code:"realtime_request_failed");
     }
     return (response.status === 204 ? undefined : await response.json()) as T;
   }
@@ -39,6 +39,7 @@ export class RealtimeClient implements RealtimeTransport {
   private started = false;
   private closed = false;
   private identity:Promise<{admissionToken:string}>|undefined;
+  private identityRejected=false;
   private closeWork:Promise<{closeConfirmed:boolean;state:string}>|undefined;
   constructor(readonly attemptId:string,readonly generation:number,private readonly policy:RealtimePolicy,
     private readonly onRemote:(stream:MediaStream)=>Promise<void>,private readonly backend = new RealtimeBackend(),
@@ -62,7 +63,11 @@ export class RealtimeClient implements RealtimeTransport {
     void aborted.catch(() => undefined);
     const wait = <T>(work:Promise<T>) => Promise.race([work,aborted]);
     try {
-      this.identity = this.backend.identity(this.attemptId,this.generation,this.abort.signal); const prepared=await wait(this.identity);
+      this.identity = this.backend.identity(this.attemptId,this.generation,this.abort.signal).catch(error=> {
+        this.identityRejected=error instanceof AccountingRequestError && error.status===409 && error.code==="attempt_in_progress";
+        throw error;
+      });
+      const prepared=await wait(this.identity);
       const peer = this.peerFactory(); this.peer=peer;
       peer.onconnectionstatechange=()=> {
         if (!this.closed && ["failed","disconnected","closed"].includes(peer.connectionState)) {
@@ -83,6 +88,8 @@ export class RealtimeClient implements RealtimeTransport {
         try {
           const event=parseRealtimeEvent(String(message.data)); if (!event) return;
           if (event.type === "session.created" || event.type === "session.updated") {
+            // Input transcription can arrive in session.updated; keep capture gated until it does.
+            if (event.type === "session.created" && event.session.audio?.input?.transcription == null) return;
             if (!acceptsConfiguration(event.session,this.policy)) {
               rejectReady(new Error("effective_configuration_rejected")); this.abort.abort(); this.onFailure?.("configuration_rejected"); return;
             }
@@ -118,6 +125,7 @@ export class RealtimeClient implements RealtimeTransport {
       if (!this.identity) return {closeConfirmed:true,state:"not_dispatched"};
       // Preparation and its cookie may exist even when reading the identity body fails.
       await this.identity.catch(() => undefined);
+      if(this.identityRejected)return {closeConfirmed:true,state:"not_dispatched"};
       try { return await this.backend.cleanup(this.attemptId); }
       catch { return {closeConfirmed:false,state:"unknown"}; }
     })();

@@ -37,7 +37,7 @@ export class DialogueTranscript {
     stream.fragments.push(fragment);
     const fragments = orderTranscriptFragments(stream.fragments);
     const text = fragments.map(part => part.text).join("");
-    const runs = this.languageRuns(text, languages);
+    const runs = this.splitByLanguage(text, languages);
     let position = 0;
     const bounds = fragments.map(part => {
       const start = position;
@@ -87,7 +87,7 @@ export class DialogueTranscript {
     this.blocks = blocks;
   }
 
-  private languageRuns(text: string, languages: ConversationLanguages): Array<{ text: string; side?: Side }> {
+  splitByLanguage(text: string, languages: ConversationLanguages): Array<{ text: string; side?: Side }> {
     const scriptsA = languageScripts(languages.A), scriptsB = languageScripts(languages.B);
     const a = scriptPattern(scriptsA), b = scriptPattern(scriptsB);
     const runs: Array<{ text: string; side?: Side }> = [];

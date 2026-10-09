@@ -4,6 +4,7 @@ import type { RealtimeEvent,RealtimePolicy } from "./RealtimeEvents";
 import type { RealtimeTransport } from "./RealtimeClient";
 import type { RealtimeAudioOutput } from "./RealtimePlayback";
 import { WakeLockController } from "../platform/WakeLockController";
+import { AccountingRequestError } from "../api/AccountingBackend";
 const policy:RealtimePolicy={enabled:true,model:"gpt-realtime-2.1",transcriptionModel:"gpt-4o-transcribe",promptVersion:"v1",schemaVersion:1,maxSessionMs:900000,
   instructions:"Translate only",transcriptionPrompt:"Russian and English",maxOutputTokens:4096,
   vad:{type:"server_vad",threshold:.5,prefix_padding_ms:300,silence_duration_ms:700,create_response:false,interrupt_response:false}};
@@ -32,12 +33,21 @@ function harness(options:{connect?:()=>Promise<void>;capture?:()=>Promise<void>;
     return request.response.metadata;
   }
   async function start(){await controller.startWithLanguages({A:"ru",B:"en"});}
-  async function tick(){await vi.advanceTimersByTimeAsync(1);}
+  async function tick(){await vi.advanceTimersByTimeAsync(1001);}
   function drain(id:string) {output.onDrained?.(controller.items.get(id)!.requestId!);}
   return {controller,transport,output,capture,emit,commit,text,speech,response,start,tick,drain};
 }
 afterEach(()=>{vi.clearAllTimers();vi.useRealTimers();vi.restoreAllMocks();});
 describe("Realtime serialized conversation",()=> {
+  it("explains an older unconfirmed attempt instead of claiming the rejected start needs closure",async()=> {
+    const h=harness({connect:async()=>{throw new AccountingRequestError(409,"attempt_in_progress");}});
+    vi.mocked(h.transport.close).mockResolvedValue({state:"not_dispatched",closeConfirmed:true});
+    await h.start();await h.controller.endConversation();
+    expect(h.controller.ownerError).toContain("предыдущего разговора");
+    expect(h.controller.ownerError).not.toContain("Локальный разговор остановлен");
+    expect(h.controller.exportDiagnostics().events).toContainEqual(expect.objectContaining({name:"error",category:"attempt_in_progress"}));
+    expect(h.transport.send).not.toHaveBeenCalled();
+  });
   it("records ASR usage independently before translation, deduplicates and reports failed delivery honestly",async()=> {
     const h=harness();await h.start();vi.mocked(h.transport.reportUsage).mockRejectedValue(new Error("offline"));
     const event:RealtimeEvent={type:"conversation.item.input_audio_transcription.completed",item_id:"asr_only",content_index:0,transcript:"SECRET",
@@ -175,6 +185,76 @@ describe("Realtime serialized conversation",()=> {
     expect(h.controller.items.get("c")?.turn.speaker).toBeUndefined();expect(h.controller.items.get("d")?.turn.speaker).toBeUndefined();
     await h.controller.endConversation();
   });
+  it("routes short replies and fast bilingual captions using the shared dialogue rules",async()=> {
+    const h=harness();await h.start();
+    h.text("a","Привет!");h.text("b","Yes.");h.text("c","Где вокзал?The station is straight ahead.Спасибо, я понял.");
+    h.text("d","Сервис GPT работает хорошо.");h.text("e","Так, сейчас перевод работает, озвучка работает...");
+    expect(["a","b","c","d","e"].map(id=>h.controller.items.get(id)?.turn.speaker)).toEqual(["A","B",undefined,"A","A"]);
+    const captions=h.controller.captionBlocks.filter(block=>block.id.includes(":c:input"));
+    expect(captions.map(block=>[block.text.trim(),block.side])).toEqual([
+      ["Где вокзал?","A"],["The station is straight ahead.","B"],["Спасибо, я понял.","A"]]);
+    await h.controller.endConversation();
+  });
+  it.each([{A:"ru",B:"en"},{A:"en",B:"ru"}])("routes each translated phrase by its own language, including before final output: %j",async languages=> {
+    const h=harness();await h.controller.startWithLanguages(languages);h.commit("a");h.text("a","Спасибо за помощь.");await h.tick();
+    const request=vi.mocked(h.transport.send).mock.calls[0]![0] as {response:{metadata:Record<string,string>}};
+    h.emit({type:"response.created",response:{id:"r1",metadata:request.response.metadata}});
+    const value="Спасибо. Thank you for your help.";
+    h.emit({type:"response.output_audio_transcript.delta",response_id:"r1",item_id:"out_r1",content_index:0,delta:value});
+    const output=()=>h.controller.captionBlocks.filter(block=>block.kind==="output");
+    expect(output().map(block=>[block.text.trim(),block.language,block.side])).toEqual([
+      ["Спасибо.","ru",languages.A==="ru"?"A":"B"],["Thank you for your help.","en",languages.A==="en"?"A":"B"]]);
+    h.emit({type:"response.done",response:{id:"r1",metadata:request.response.metadata,status:"completed",
+      output:[{id:"out_r1",content:[{transcript:value}]}]}});
+    expect(output().map(block=>block.text).join("")).toBe(value);await h.controller.endConversation();
+  });
+  it("keeps spoken references to status messages verbatim while interruption stays in diagnostics",async()=> {
+    const h=harness();await h.start();h.commit("a");const source="На экране написано «озвучка прервана».";h.text("a",source);
+    await h.tick();const translated="The screen says 'audio interrupted'.";h.response("r1","completed",translated);
+    h.emit({type:"output_audio_buffer.cleared",response_id:"r1"});h.drain("a");
+    expect(h.controller.captionBlocks.map(block=>block.text)).toEqual([source,translated]);
+    expect(h.controller.exportDiagnostics().items[0]).toMatchObject({audioOutputInterrupted:true,requestState:"failed"});
+    await h.controller.endConversation();
+  });
+  it("waits briefly for final ASR and sets the opposite language without sending the transcript as instructions",async()=> {
+    const h=harness();await h.start();h.commit("a");await vi.advanceTimersByTimeAsync(200);
+    expect(h.transport.send).not.toHaveBeenCalled();h.text("a","Я проверю это прямо сейчас.",false);
+    await vi.advanceTimersByTimeAsync(1);expect(h.transport.send).not.toHaveBeenCalled();
+    h.text("a","Я проверю это прямо сейчас.");await vi.advanceTimersByTimeAsync(1);
+    expect(h.transport.send).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({response:expect.objectContaining({
+      instructions:"Translate only Output ONLY the translation in English.",input:[{type:"item_reference",id:"a"}]
+    })}));
+    expect(h.controller.exportDiagnostics().items[0]?.targetLanguage).toBe("en");await h.controller.endConversation();
+  });
+  it("keeps audio-based translation available when ASR is late or missing",async()=> {
+    const h=harness();await h.start();h.commit("a");await vi.advanceTimersByTimeAsync(999);
+    expect(h.transport.send).not.toHaveBeenCalled();await vi.advanceTimersByTimeAsync(2);
+    expect(h.transport.send).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({response:expect.objectContaining({instructions:"Translate only"})}));
+    await h.controller.endConversation();
+  });
+  it.each(["empty","wrong_language"])("continues after a confirmed %s translation without retrying that item",async issue=> {
+    const h=harness();await h.start();h.commit("a");h.text("a","Привет!");h.commit("b");h.text("b","I got it.");
+    await h.tick();h.response("r1","completed",issue==="empty"?"":"Спасибо!");
+    h.emit({type:"output_audio_buffer.stopped",response_id:"r1"});h.drain("a");await h.tick();
+    expect(h.controller.items.get("a")).toMatchObject({requestState:"failed",translationIssue:issue,turn:{status:"failed"}});
+    expect(h.controller.exportDiagnostics().events).toContainEqual(expect.objectContaining({name:`translation_${issue}`,itemId:"a"}));
+    expect(h.controller.captionBlocks.filter(block=>block.id.includes(":a:")).map(block=>[block.kind,block.text,block.side])).toEqual(
+      issue==="empty"?[["input","Привет!","A"]]:[["input","Привет!","A"],["output","Спасибо!","A"]]);
+    expect(h.transport.send).toHaveBeenCalledTimes(2);expect(h.transport.close).not.toHaveBeenCalled();
+    h.response("r2","completed","Я понял.");h.emit({type:"output_audio_buffer.stopped",response_id:"r2"});h.drain("b");
+    await vi.advanceTimersByTimeAsync(90001);expect(h.controller.items.get("b")?.requestState).toBe("completed");
+    expect(h.controller.inputReady).toBe(true);expect(h.controller.ownerError).toBeUndefined();expect(h.transport.send).toHaveBeenCalledTimes(2);
+    await h.controller.endConversation();
+  });
+  it("releases a completed response with no output only after local media drains",async()=> {
+    const h=harness();await h.start();h.commit("a");h.commit("b");await h.tick();
+    const request=vi.mocked(h.transport.send).mock.calls[0]![0] as {response:{metadata:Record<string,string>}};
+    h.emit({type:"response.done",response:{id:"r1",metadata:request.response.metadata,status:"completed",output:[]}});
+    await h.tick();expect(h.output.seal).toHaveBeenCalledOnce();expect(h.transport.send).toHaveBeenCalledTimes(1);
+    h.drain("a");await h.tick();expect(h.transport.send).toHaveBeenCalledTimes(2);
+    expect(h.controller.items.get("a")).toMatchObject({requestState:"failed",translationIssue:"empty",bufferStopped:false,drained:true});
+    expect(h.transport.close).not.toHaveBeenCalled();await h.controller.endConversation();
+  });
   it("preserves hold, waits for generation + buffer stopped + actual drain",async()=> {
     const h=harness();await h.start();h.commit("a");await h.tick();h.response("r1");
     h.output.onPcmRendered?.(h.controller.items.get("a")!.requestId!);
@@ -186,9 +266,39 @@ describe("Realtime serialized conversation",()=> {
     h.drain("a");await h.tick();expect(h.transport.send).toHaveBeenCalledTimes(2);
     expect(h.controller.items.get("a")?.requestState).toBe("completed");await h.controller.endConversation();
   });
-  it("does not finish when drain precedes response.done",async()=> {
+  it("continues after provider clear only after held PCM drains, without retrying interrupted audio",async()=> {
+    const h=harness();await h.start();h.commit("a");await h.tick();h.response("r1");
+    h.speech("b",true);h.text("b","OK");
+    h.emit({type:"output_audio_buffer.cleared",response_id:"alien"});
+    expect(h.controller.items.get("a")?.turn.audioOutputInterrupted).toBeUndefined();
+    h.emit({type:"output_audio_buffer.cleared",response_id:"r1"});
+    h.emit({type:"output_audio_buffer.cleared",response_id:"r1"});
+    await vi.advanceTimersByTimeAsync(1001);
+    expect(h.output.seal).toHaveBeenCalledOnce();expect(h.output.hold).toHaveBeenLastCalledWith(true);
+    expect(h.transport.send).toHaveBeenCalledTimes(1);expect(h.output.dispose).not.toHaveBeenCalled();
+    h.speech("b",false);h.commit("b");await h.tick();
+    expect(h.output.hold).toHaveBeenLastCalledWith(false);expect(h.transport.send).toHaveBeenCalledTimes(1);
+    h.drain("a");await h.tick();
+    expect(h.transport.send).toHaveBeenCalledTimes(2);expect(h.transport.send).toHaveBeenLastCalledWith(expect.objectContaining({
+      response:expect.objectContaining({input:[{type:"item_reference",id:"b"}]})}));
+    expect(h.controller.items.get("a")).toMatchObject({requestState:"failed",bufferStopped:false,drained:true,
+      turn:{status:"failed",audioOutputInterrupted:true}});
+    expect(h.controller.items.get("a")?.turn.turnCompletedAtMs).toBeUndefined();
+    expect(h.controller.exportDiagnostics().items[0]).toMatchObject({audioOutputInterrupted:true});
+    expect(h.controller.captionBlocks.find(b=>b.kind==="output")?.text).toBe("Hello");
+    expect(h.controller.items.get("b")?.turn.speaker).toBeUndefined();
+    h.response("r2");h.emit({type:"output_audio_buffer.cleared",response_id:"r1"});
+    expect(h.controller.items.get("b")?.turn.audioOutputInterrupted).toBeUndefined();
+    h.emit({type:"output_audio_buffer.stopped",response_id:"r2"});await vi.advanceTimersByTimeAsync(1001);h.drain("b");
+    await vi.advanceTimersByTimeAsync(90001);
+    expect(h.controller.items.get("b")?.requestState).toBe("completed");
+    expect(h.controller.inputReady).toBe(true);expect(h.controller.ownerError).toBeUndefined();
+    expect(h.transport.send).toHaveBeenCalledTimes(2);expect(h.transport.close).not.toHaveBeenCalled();
+    await h.controller.endConversation();
+  });
+  it.each(["output_audio_buffer.stopped","output_audio_buffer.cleared"] as const)("does not finish when %s and drain precede response.done",async type=> {
     const h=harness();await h.start();h.commit("a");h.commit("b");await h.tick();
-    const meta=h.response("r1");h.emit({type:"output_audio_buffer.stopped",response_id:"r1"});
+    const meta=h.response("r1");h.emit({type,response_id:"r1"});
     h.controller.items.get("a")!.generationDone=false;h.drain("a");await h.tick();expect(h.transport.send).toHaveBeenCalledTimes(1);
     h.emit({type:"response.done",response:{id:"r1",metadata:meta,status:"completed",output:[{id:"out_r1",content:[{transcript:"Hello"}]}]}});
     await h.tick();expect(h.transport.send).toHaveBeenCalledTimes(2);await h.controller.endConversation();
@@ -206,10 +316,12 @@ describe("Realtime serialized conversation",()=> {
   it("keeps transcription failure on its own source",async()=> {
     const h=harness();await h.start();h.commit("a");h.commit("b");h.text("b","Good morning everyone");
     h.emit({type:"conversation.item.input_audio_transcription.failed",item_id:"a",content_index:0});
-    expect(h.controller.captionBlocks.find(b=>b.id.includes(":a:input"))?.text).toBe("Исходный текст недоступен");
+    expect(h.controller.captionBlocks.find(b=>b.id.includes(":a:input"))).toBeUndefined();
+    expect(h.controller.exportDiagnostics().items.find(item=>item.inputItemId==="a")?.transcriptionStatus).toBe("failed");
     expect(h.controller.exportDiagnostics().events.filter(e=>e.name==="first_source_text").map(e=>e.itemId)).toEqual(["b"]);
     h.text("c","partial",false);h.emit({type:"conversation.item.input_audio_transcription.failed",item_id:"c",content_index:0});
-    expect(h.controller.captionBlocks.find(b=>b.id.includes(":c:input"))?.text).toContain("не подтверждён");
+    expect(h.controller.captionBlocks.find(b=>b.id.includes(":c:input"))?.text).toBe("partial");
+    expect(h.controller.exportDiagnostics().items.find(item=>item.inputItemId==="c")?.transcriptionStatus).toBe("failed");
     expect(h.controller.items.get("b")?.turn.originalText).toBe("Good morning everyone");await h.controller.endConversation();
   });
   it("Cancel retires pending capture; late capture never connects",async()=> {

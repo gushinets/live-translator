@@ -80,6 +80,16 @@ class FakeConversationController implements ConversationScreenController {
 describe("default independent captions", () => {
   afterEach(() => { window.history.replaceState({}, "", "/"); });
 
+  it("labels retained unknown Realtime captions as history while the next recognized phrase stays on its pane",()=> {
+    const controller=Object.assign(new FakeConversationController(),{engine:"realtime" as const,activityLabel:"Готов слушать"});
+    controller.captionBlocks=[{id:"unknown",kind:"input",text:"OK",receivedAtMs:1},
+      {id:"next",kind:"input",side:"B",language:"en",text:"Good morning everyone",receivedAtMs:2}];
+    render(<ConversationScreen controller={controller}/>);
+    expect(screen.getByText("Реплики без определённой стороны")).toBeInTheDocument();
+    expect(screen.queryByText("Сторона не определена")).not.toBeInTheDocument();
+    expect(screen.getByTestId("participant-pane-B")).toHaveTextContent("Good morning everyone");
+  });
+
   it("shows the full dialogue on each pane without legacy waiting rows or duplicated unknown text", () => {
     window.history.replaceState({}, "", "/");
     const controller = new FakeConversationController(session({
