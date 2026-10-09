@@ -321,6 +321,10 @@ export class AudioController {
   private releasePlaybackInput(): void {
     this.cancelPlaybackRelease();
     if (!this.inputBlocked) return;
+    if (!this.captureEnabled) {
+      this.blockPlaybackInput(false);
+      return;
+    }
     this.playbackReleaseTimer = window.setTimeout(() => {
       this.playbackReleaseTimer = null;
       this.blockPlaybackInput(false);
@@ -364,7 +368,10 @@ export class AudioController {
     if (!context.audioWorklet) return;
     this.workletPreparation = context.audioWorklet.addModule(playbackWorkletUrl)
       .then(() => { if (this.audioContext === context) this.workletReady = true; })
-      .catch(() => { console.warn("Buffered playback is unavailable in this browser"); });
+      .catch(() => {
+        if (this.audioContext === context) this.workletPreparation = null;
+        console.warn("Buffered playback is unavailable in this browser");
+      });
     return this.workletPreparation;
   }
 
@@ -509,12 +516,12 @@ export class AudioController {
 
   dispose(): void {
     this.captureEnabled = false;
-    this.detachRemoteStream();
-    this.workletReady = false;
-    this.workletPreparation = null;
     if (this.captureTrack !== null) {
       this.stopCapture();
     }
+    this.detachRemoteStream();
+    this.workletReady = false;
+    this.workletPreparation = null;
     this.cancelPlaybackRelease();
     this.blockPlaybackInput(false);
     this.stopSampler();

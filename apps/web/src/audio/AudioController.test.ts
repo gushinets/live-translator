@@ -519,6 +519,27 @@ describe("buffered audio output", () => {
       expect(observed).toHaveBeenCalledWith(expect.objectContaining({ active: true }));
     } finally { controller.dispose(); vi.useRealTimers(); }
   });
+  it.each(["active", "echo-tail"])("reopens capture on resume without waiting for a throttled timer after %s playback", async phase => {
+    vi.useFakeTimers();
+    const { controller, context, nodes } = setup();
+    try {
+      await controller.primeOutput(); await controller.startCapture();
+      controller.attachRemoteStream(fakeStream(new FakeAudioTrack())); controller.setOutputAudible(true);
+      const track = controller.getCaptureStream()!.getAudioTracks()[0]!;
+      const analysis = context.sourceStreams[0]!.getAudioTracks()[0]!;
+      const send = (value: boolean) => nodes[0]!.port.onmessage!({ data: { type: "playback", value } } as MessageEvent);
+      send(true);
+      if (phase === "echo-tail") send(false);
+      controller.setCaptureEnabled(false); controller.setOutputAudible(false);
+      expect(track.enabled).toBe(false); expect(analysis.enabled).toBe(false);
+      controller.setCaptureEnabled(true); controller.setOutputAudible(true);
+      expect(track.enabled).toBe(true); expect(analysis.enabled).toBe(true);
+      expect(controller.playbackInputBlocked).toBe(false);
+      send(true);
+      await vi.advanceTimersByTimeAsync(runtime.playbackEchoTailMs + 1);
+      expect(track.enabled).toBe(false); expect(analysis.enabled).toBe(false);
+    } finally { controller.dispose(); vi.useRealTimers(); }
+  });
   it.each(["suspend", "stop", "replace", "dispose"])("never lets an old playback timer reopen capture after %s", async boundary => {
     vi.useFakeTimers();
     const { controller, nodes } = setup();
@@ -682,6 +703,25 @@ describe("buffered audio output", () => {
     controller.attachRemoteStream(fakeStream(new FakeAudioTrack()));
     expect(nodes[1]?.port.postMessage).toHaveBeenCalledWith({ type: "enabled", value: true });
     controller.dispose();
+  });
+  it("retries a transient worklet load failure when priming the next conversation", async () => {
+    const { controller, context, element, nodes, destinationStream } = setup();
+    const addModule = vi.fn().mockRejectedValueOnce(new Error("Transient module fetch failure")).mockResolvedValue(undefined);
+    Object.assign(context, { audioWorklet: { addModule } });
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      const failed = vi.fn(); controller.onPlaybackBufferError = failed;
+      await controller.primeOutput();
+      controller.attachRemoteStream(fakeStream(new FakeAudioTrack()));
+      expect(element.muted).toBe(true); expect(element.srcObject).toBeNull();
+      expect(failed).toHaveBeenCalledOnce();
+      controller.detachRemoteStream();
+      await controller.primeOutput();
+      controller.attachRemoteStream(fakeStream(new FakeAudioTrack())); controller.setOutputAudible(true);
+      expect(element.srcObject).toBe(destinationStream); expect(element.muted).toBe(false);
+      expect(nodes).toHaveLength(1); expect(failed).toHaveBeenCalledOnce();
+      expect(addModule).toHaveBeenCalledTimes(2);
+    } finally { controller.dispose(); }
   });
   it("fails closed when buffering is unavailable instead of playing directly", async () => {
     const { controller, context, element } = setup();
