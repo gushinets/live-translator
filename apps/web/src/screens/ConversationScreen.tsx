@@ -1,5 +1,6 @@
 import { useEffect, useLayoutEffect, useReducer, useRef } from "react";
 import { ErrorOverlay } from "../components/ErrorOverlay";
+import { PttButton, type PttControl } from "../components/PttButton";
 import { RetainedRecovery, type RetainedRecoveryState } from "../components/RetainedRecovery";
 import "./ConversationScreen.css";
 import { ParticipantPane } from "../components/ParticipantPane";
@@ -19,6 +20,12 @@ export interface ConversationScreenController {
   readonly ownerError?: string;
   readonly suspendReason?: LifecycleSuspendReason;
   readonly retainedRecoveryState?: RetainedRecoveryState;
+  readonly pttHeld?: boolean;
+  readonly pttCanStart?: boolean;
+  readonly pttAwaitingRelease?: boolean;
+  readonly pttNotice?: string;
+  pressPtt?(): boolean;
+  releasePtt?(interrupted?: boolean): void;
   subscribe(listener: () => void): () => void;
   endConversation(): Promise<void>;
   cancel(): Promise<void>;
@@ -30,7 +37,8 @@ export interface ConversationScreenController {
 function uiSnapshot(controller: ConversationScreenController): unknown[] {
   return [controller.session, controller.inputReady, controller.recoveryPrompt, controller.ownerError,
     controller.suspendReason, controller.retainedRecoveryState,
-    controller.captionBlocks, controller.recoveryPromptIsTurnFailure];
+    controller.captionBlocks, controller.recoveryPromptIsTurnFailure,
+    controller.pttHeld, controller.pttCanStart, controller.pttAwaitingRelease, controller.pttNotice];
 }
 
 export function ConversationScreen({
@@ -110,6 +118,13 @@ export function ConversationScreen({
         alertLanguage={ownerLocale}
       />
       <div className="conversation-center">
+        {controller.pttNotice ? <p role="status">{t(controller.pttNotice)}</p> : null}
+        {captions.some(block => block.side === undefined) ? <details className="unassigned-captions">
+          <summary>{t("Непривязанные субтитры")}</summary>
+          <ol>{captions.filter(block => block.side === undefined).map(block => <li key={block.id}>
+            <span>{t(block.kind === "input" ? "Оригинал" : "Перевод")}: </span>{block.text}
+          </li>)}</ol>
+        </details> : null}
         {recoveryState !== undefined ? <RetainedRecovery
           state={recoveryState} surface="conversation" language={ownerLocale}
           onResume={controller.resumeRetainedConversation?.bind(controller)}
@@ -155,6 +170,7 @@ export function ConversationScreen({
       </div>
       <ParticipantPane
         side="A"
+        control={controller.pressPtt && !ended ? <PttButton controller={controller as PttControl} language={ownerLocale} /> : undefined}
         language={session.participantA.language}
         rotated={false}
         status={statusA}

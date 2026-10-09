@@ -112,10 +112,21 @@ document.querySelector("#start")!.addEventListener("click", async () => {
     session: { ...createInitialSession({ side: "A", language: "ru", hasAcceptedConversationSpeech: true },
       { side: "B", language: "en", hasAcceptedConversationSpeech: true }), state: "listening" as const },
     captionBlocks: [], inputReady: true,
+    pttHeld: false, pttAwaitingRelease: false,
+    get pttCanStart() { return !this.pttHeld && !controller.playbackInputBlocked; },
+    pressPtt() {
+      if (!this.pttCanStart || !controller.setPlaybackHold(true)) return false;
+      this.pttHeld = true; for (const listener of listeners) listener(); return true;
+    },
+    releasePtt() {
+      this.pttHeld = false; controller.setPlaybackHold(false);
+      for (const listener of listeners) listener();
+    },
     subscribe(listener: () => void) { listeners.add(listener); return () => { listeners.delete(listener); }; },
     async endConversation() { controller.setOutputAudible(false); },
     async resumeFromSourceTimeout() {},
   };
+  controller.onPlaybackActivity = () => { for (const listener of listeners) listener(); };
   const root = document.createElement("div");
   document.querySelector("#start")!.remove();
   document.body.append(root);

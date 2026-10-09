@@ -67,7 +67,7 @@ test("explicit direct playback streams during speech, lifecycle closure and repl
 test("conversation has no playback switch and keeps its actions usable on a narrow phone", async ({ page }, testInfo) => {
   await expect(page.getByRole("switch")).toHaveCount(0);
   await expect(page.getByRole("button", { name: "Язык собеседника" })).toHaveCount(0);
-  for (const width of [390, 320]) {
+  for (const width of [320, 360, 390, 430]) {
     await page.setViewportSize({ width, height: 844 });
     const end = (await page.getByRole("button", { name: "Завершить", exact: true }).boundingBox())!;
     expect(end.width).toBeGreaterThanOrEqual(44);
@@ -75,8 +75,41 @@ test("conversation has no playback switch and keeps its actions usable on a narr
     await page.getByRole("button", { name: "Завершить", exact: true }).focus();
     await expect(page.getByRole("button", { name: "Завершить", exact: true })).toBeFocused();
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+    const ptt = page.getByTestId("ptt-A");
+    const box = (await ptt.boundingBox())!;
+    const pane = (await page.getByTestId("participant-pane-A").boundingBox())!;
+    expect(box.width).toBeGreaterThanOrEqual(64);
+    expect(box.width).toBeLessThanOrEqual(68);
+    expect(box.x).toBeGreaterThan(pane.x + pane.width / 2);
+    expect(Math.abs(box.y + box.height / 2 - pane.y - pane.height / 2)).toBeLessThan(40);
   }
   await page.screenshot({ path: testInfo.outputPath("buffered-playback-dialogue.png") });
+});
+
+test("physical PTT holds real WebRTC PCM through a five-second pause, then drains with capture gated", async ({ page }, testInfo) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.evaluate(() => window.audioHarness.useWebRtc());
+  await page.evaluate(() => { window.audioHarness.mic.gain.value = .2; });
+  await expect.poll(() => page.evaluate(() => window.audioHarness.readReceivedMicRms())).toBeGreaterThan(.02);
+  const button = page.getByTestId("ptt-A");
+  await button.focus();
+  await page.keyboard.down("Space");
+  await expect(button).toHaveAttribute("aria-pressed", "true");
+  await page.evaluate(() => { window.audioHarness.remote.gain.value = .1; });
+  await page.waitForTimeout(1500);
+  await page.evaluate(() => { window.audioHarness.remote.gain.value = 0; window.audioHarness.mic.gain.value = 0; });
+  await page.waitForTimeout(5000);
+  expect(await page.evaluate(() => window.audioHarness.readRms())).toBeLessThan(.001);
+  expect(await page.evaluate(() => window.audioHarness.controller.hasPendingPlayback)).toBe(true);
+  expect(await page.evaluate(() => window.audioHarness.controller.getCaptureStream()!.getAudioTracks()[0]!.enabled)).toBe(true);
+  await page.screenshot({ path: testInfo.outputPath("ptt-held.png") });
+  await page.keyboard.up("Space");
+  await expect.poll(() => page.evaluate(() => window.audioHarness.readRms()), { intervals: [20] }).toBeGreaterThan(.02);
+  expect(await page.evaluate(() => window.audioHarness.controller.getCaptureStream()!.getAudioTracks()[0]!.enabled)).toBe(false);
+  expect(await page.evaluate(() => window.audioHarness.controller.setPlaybackHold(true))).toBe(false);
+  await expect.poll(() => page.evaluate(() => window.audioHarness.controller.hasPendingPlayback)).toBe(false);
+  await expect.poll(() => page.evaluate(() => window.audioHarness.controller.playbackInputBlocked)).toBe(false);
+  expect(await page.evaluate(() => window.audioHarness.errors)).toBe(0);
 });
 
 

@@ -118,6 +118,9 @@ export class AudioController {
   private lastSourceSpeaking: boolean | null = null;
   private captureEnabled = false;
   private inputBlocked = false;
+  private playbackHeld = false;
+  private holdEpoch = 0;
+  private playbackPermissionToken: number | undefined;
   private playbackReleaseTimer: number | null = null;
   get playbackInputBlocked(): boolean { return this.inputBlocked; }
   get hasPendingPlayback(): boolean { return this.queuedPlayback; }
@@ -350,6 +353,16 @@ export class AudioController {
     this.playbackNode?.port.postMessage({ type: "turn", turnId });
   }
 
+  /** Refuse a new hold once microphone closure has committed playback. */
+  setPlaybackHold(held: boolean): boolean {
+    if (held && (this.inputBlocked || !this.workletReady || !this.nonInterrupting)) return false;
+    if (this.playbackHeld === held) return true;
+    this.playbackHeld = held;
+    this.holdEpoch++;
+    this.playbackNode?.port.postMessage({ type: "hold", value: held, epoch: this.holdEpoch });
+    return true;
+  }
+
   setNonInterrupting(enabled: boolean): void {
     if (enabled && !this.playbackNode) throw new Error("Buffered playback unavailable");
     this.nonInterrupting = enabled;
@@ -396,6 +409,7 @@ export class AudioController {
     stopTracks(this.playbackDestination?.stream ?? null);
     this.playbackDestination = null;
     this.playedAnalyser = null;
+    this.playbackPermissionToken = undefined;
     this.queuedPlayback = false;
     this.lastSourceSpeaking = null;
   }
@@ -410,20 +424,23 @@ export class AudioController {
       this.onPlaybackBufferError?.();
     };
     node.onprocessorerror = fail;
-    node.port.onmessage = ({ data }: MessageEvent<{ type: string; value?: boolean; turnId?: string }>) => {
+    node.port.onmessage = ({ data }: MessageEvent<{ type: string; value?: boolean; turnId?: string; epoch?: number; token?: number }>) => {
       if (this.playbackNode !== node) return;
       if (data.type === "playback" && !this.audioElement.muted && this.nonInterrupting) {
+        if ((data.epoch ?? 0) !== this.holdEpoch) return;
         if (data.value === true) {
-          if (this.sourceSpeaking && !this.inputBlocked) {
-            node.port.postMessage({ type: "playback", value: false });
+          if (this.playbackHeld || (this.sourceSpeaking && !this.inputBlocked)) {
+            node.port.postMessage({ type: "playback", value: false, epoch: data.epoch, token: data.token });
             return;
           }
           this.cancelPlaybackRelease();
           try {
             this.blockPlaybackInput(true);
-            if (this.playbackNode === node && !this.audioElement.muted) node.port.postMessage({ type: "playback", value: true });
+            this.playbackPermissionToken = data.token;
+            if (this.playbackNode === node && !this.audioElement.muted && !this.playbackHeld)
+              node.port.postMessage({ type: "playback", value: true, epoch: data.epoch, token: data.token });
           } catch { fail(); }
-        } else this.releasePlaybackInput();
+        } else if (data.token === this.playbackPermissionToken) this.releasePlaybackInput();
       }
       if (data.type === "pending") this.queuedPlayback = !this.audioElement.muted && data.value === true;
       if (data.type === "turn" && !this.audioElement.muted) {
@@ -434,6 +451,7 @@ export class AudioController {
     };
     node.port.postMessage({ type: "enabled", value: this.nonInterrupting });
     node.port.postMessage({ type: "audible", value: !this.audioElement.muted });
+    node.port.postMessage({ type: "hold", value: this.playbackHeld, epoch: this.holdEpoch });
     this.sendSourceActivity();
     this.remoteSource!.connect(node);
     this.playedAnalyser = context.createAnalyser();

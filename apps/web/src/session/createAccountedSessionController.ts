@@ -3,7 +3,8 @@ import type { UsageObservation } from "../metrics/UsageTypes";
 import { BackendClient } from "../api/BackendClient";
 import { AudioController } from "../audio/AudioController";
 import { LiveClient, type LiveCloseResult, type LiveClientDeps } from "../live/LiveClient";
-import { SessionController, type SessionControllerDeps } from "./SessionController";
+import type { SessionControllerDeps } from "./SessionController";
+import { PttSessionController } from "./PttSessionController";
 import { AccountingRequestError, type ConversationMetadata, type ResumeAbortReason } from "../api/AccountingBackend";
 import { ConversationAccounting, type ProviderAccounting } from "./ConversationAccounting";
 import type { CleanupReason } from "./MetadataDeliveryBudget";
@@ -34,7 +35,7 @@ class LazyAccounting implements NonNullable<LiveClientDeps["accounting"]> {
   async finish(result: LiveCloseResult) { this.cancelled = true; await this.attempt?.finish(result); }
   async abandon(reason: CleanupReason) { this.cancelled = true; await this.attempt?.abandon(reason); }
 }
-export class AccountedSessionController extends SessionController {
+export class AccountedSessionController extends PttSessionController {
   private startWork: Promise<void> | null = null;
   private startGeneration = 0;
   private hiddenDuringStart = false;

@@ -18,10 +18,34 @@ beforeEach(async () => {
 });
 afterEach(() => { vi.unstubAllGlobals(); });
 function send(processor: Processor, type: string, value = true) {
-  processor.port.onmessage?.({ data: { type, value } } as MessageEvent);
+  const request = type === "playback" ? processor.port.postMessage.mock.calls.findLast(([message]) => message.type === "playback" && message.value)?.[0] : undefined;
+  processor.port.onmessage?.({ data: { ...request, type, value } } as MessageEvent);
 }
 
 describe("buffered playback processor lifetime", () => {
+  it("holds retained PCM through long silence and rejects old permissions after a new hold", () => {
+    const processor = new ProcessorClass();
+    const hold = (value: boolean, epoch: number) => processor.port.onmessage?.({ data: { type: "hold", value, epoch } } as MessageEvent);
+    send(processor, "audible"); send(processor, "enabled");
+    const output = new Float32Array(500);
+    processor.process([[new Float32Array(500).fill(.5)]], [[output]]);
+    const stale = processor.port.postMessage.mock.calls.findLast(([message]) => message.type === "playback" && message.value)![0];
+    hold(true, 1);
+    processor.port.onmessage?.({ data: { ...stale, value: true } } as MessageEvent);
+    for (let i = 0; i < 12; i++) {
+      processor.process([[]], [[output]]);
+      expect(output.every(x => x === 0)).toBe(true);
+    }
+    hold(false, 2);
+    processor.process([[]], [[output]]);
+    processor.port.onmessage?.({ data: { ...stale, value: true } } as MessageEvent);
+    processor.process([[]], [[output]]);
+    expect(output.every(x => x === 0)).toBe(true);
+    send(processor, "playback");
+    const played: number[] = [];
+    for (let i = 0; i < 5; i++) { processor.process([[]], [[output]]); played.push(...output.filter(x => x !== 0)); }
+    expect(played).toEqual(new Array(500).fill(.5));
+  });
   it("waits for microphone closure before the first sample, ignores speech during playback, and bridges short output gaps", () => {
     const processor = new ProcessorClass();
     send(processor, "audible"); send(processor, "enabled"); send(processor, "speaking");
@@ -33,7 +57,7 @@ describe("buffered playback processor lifetime", () => {
       processor.process([[]], [[output]]);
       expect(output.every(sample => sample === 0)).toBe(true);
     }
-    expect(processor.port.postMessage).toHaveBeenCalledWith({ type: "playback", value: true });
+    expect(processor.port.postMessage).toHaveBeenCalledWith(expect.objectContaining({ type: "playback", value: true }));
     expect(processor.port.postMessage.mock.calls.filter(([message]) => message.type === "playback")).toHaveLength(1);
     send(processor, "playback");
     send(processor, "speaking"); // Even a delayed source sample must not interrupt started playback.
@@ -41,11 +65,11 @@ describe("buffered playback processor lifetime", () => {
     for (let i = 0; i < 12; i++) { processor.process([[]], [[output]]); played.push(...output.filter(x => x !== 0)); }
     expect(played).toEqual([...received]);
     // New provider PCM after a short gap belongs to the same protected playback window.
-    expect(processor.port.postMessage).not.toHaveBeenCalledWith({ type: "playback", value: false });
+    expect(processor.port.postMessage).not.toHaveBeenCalledWith(expect.objectContaining({ type: "playback", value: false }));
     processor.process([[new Float32Array(100).fill(.7)]], [[output]]);
     expect(output.some(x => x > .6)).toBe(true);
     for (let i = 0; i < 15; i++) processor.process([[]], [[output]]);
-    expect(processor.port.postMessage).toHaveBeenCalledWith({ type: "playback", value: false });
+    expect(processor.port.postMessage).toHaveBeenCalledWith(expect.objectContaining({ type: "playback", value: false }));
   });
   it.each([true, false])("terminates after disposal, with incoming audio=%s", incoming => {
     const processor = new ProcessorClass();

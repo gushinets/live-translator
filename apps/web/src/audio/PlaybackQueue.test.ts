@@ -500,6 +500,19 @@ describe("PlaybackQueue", () => {
     expect(q.pending).toBe(false);
     expect(q.process(Float32Array.of(.7))[0]).toBeCloseTo(.7); // The queue did not latch terminal overflow.
   });
+  it("retains the existing 120-second 48kHz capacity during hold and fails visibly beyond it", () => {
+    const q = new PlaybackQueue(48_000);
+    q.setAudible(true); q.setEnabled(true); q.setPlaybackAllowed(false);
+    const chunk = new Float32Array(4800).fill(.5), out = new Float32Array(4800);
+    for (let index = 0; index < 1200; index++) {
+      q.process(chunk, out);
+      expect(out[0]).toBe(0);
+    }
+    expect(q.pending).toBe(true);
+    // Primary PCM storage remains 48,000 * 120 * 4 = 23,040,000 bytes.
+    expect(() => q.process(Float32Array.of(.6))).toThrow("Playback buffer full");
+    expect(q.pending).toBe(false);
+  });
   it("fails closed on overflow instead of silently dropping speech", () => {
     const q = new PlaybackQueue(1000, 10);
     q.setAudible(true); q.setEnabled(true); q.setSpeaking(true);

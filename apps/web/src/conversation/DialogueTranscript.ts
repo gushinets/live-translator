@@ -27,7 +27,21 @@ export class DialogueTranscript {
   private history: DialogueBlock[] = [];
   private streams: Partial<Record<DialogueBlock["kind"], Stream>> = {};
   private sequence = 0;
+  private readonly assigned = new Map<string, { block: DialogueBlock; fragments: TranscriptFragment[] }>();
   private readonly detector = eld.newInstance();
+
+  /** PTT ownership is authoritative, including unknown; language never reroutes it. */
+  pushAssigned(kind: DialogueBlock["kind"], fragment: TranscriptFragment, languages: ConversationLanguages,
+    key: string, side?: Side): void {
+    if (!fragment.text) return;
+    const id = `${kind}:${key}`;
+    const entry = this.assigned.get(id) ?? { block: { id: `ptt:${this.sequence++}`, kind,
+      text: "", side, language: side ? languages[side] : undefined, receivedAtMs: fragment.receivedAtMs }, fragments: [] };
+    entry.fragments.push(fragment);
+    entry.block = { ...entry.block, text: orderTranscriptFragments(entry.fragments).map(part => part.text).join("") };
+    this.assigned.set(id, entry);
+    this.publish();
+  }
 
   push(kind: DialogueBlock["kind"], fragment: TranscriptFragment, languages: ConversationLanguages): void {
     if (!fragment.text) return;
@@ -66,12 +80,14 @@ export class DialogueTranscript {
   seal(): void {
     this.history = [...this.blocks];
     this.streams = {};
+    this.assigned.clear();
   }
 
   clear(): void {
     this.history = [];
     this.streams = {};
     this.blocks = [];
+    this.assigned.clear();
   }
 
   private publish(): void {
@@ -84,7 +100,8 @@ export class DialogueTranscript {
       const next = available.reduce((a, b) => a.blocks[a.index]!.receivedAtMs <= b.blocks[b.index]!.receivedAtMs ? a : b);
       blocks.push(next.blocks[next.index++]!);
     }
-    this.blocks = blocks;
+    this.blocks = this.assigned.size ? [...blocks, ...Array.from(this.assigned.values(), entry => entry.block)]
+      .sort((a, b) => a.receivedAtMs - b.receivedAtMs) : blocks;
   }
 
   private languageRuns(text: string, languages: ConversationLanguages): Array<{ text: string; side?: Side }> {

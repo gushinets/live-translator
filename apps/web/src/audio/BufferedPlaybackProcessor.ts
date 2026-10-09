@@ -17,10 +17,13 @@ class BufferedPlaybackProcessor extends AudioWorkletProcessor {
   private requested = false;
   private permitted = false;
   private quietSamples = 0;
+  private held = false;
+  private holdEpoch = 0;
+  private permissionToken = 0;
   constructor() {
     super();
     this.queue.onPlaybackTurn = (turnId, active) => this.port.postMessage({ type: "turn", turnId, value: active });
-    this.port.onmessage = ({ data }: MessageEvent<{ type: string; value: boolean; turnId?: string }>) => {
+    this.port.onmessage = ({ data }: MessageEvent<{ type: string; value: boolean; turnId?: string; epoch?: number; token?: number }>) => {
       if (data.type === "dispose") {
         this.disposed = true;
         this.queue.clear();
@@ -41,20 +44,25 @@ class BufferedPlaybackProcessor extends AudioWorkletProcessor {
         if (!data.value) this.resetPermission();
       }
       if (data.type === "clear") { this.queue.clear(); this.resetPermission(); }
-      if (data.type === "playback" && this.requested) {
-        this.permitted = data.value && this.enabled && this.audible;
+      if (data.type === "hold" && data.epoch !== undefined && data.epoch >= this.holdEpoch) {
+        this.holdEpoch = data.epoch;
+        this.held = data.value;
+        this.resetPermission();
+      }
+      if (data.type === "playback" && this.requested && data.token === this.permissionToken && (data.epoch ?? 0) === this.holdEpoch) {
+        this.permitted = data.value && this.enabled && this.audible && !this.held;
         if (this.permitted) this.queue.setSpeaking(false);
         else this.requested = false;
-        this.queue.setPlaybackAllowed(this.permitted || !this.enabled);
+        this.queue.setPlaybackAllowed(!this.held && (this.permitted || !this.enabled));
       }
       this.reportPending();
     };
   }
   private resetPermission(): void {
-    if (this.requested) this.port.postMessage({ type: "playback", value: false });
+    if (this.requested) this.port.postMessage({ type: "playback", value: false, token: this.permissionToken, epoch: this.holdEpoch });
     this.requested = this.permitted = false;
     this.quietSamples = 0;
-    this.queue.setPlaybackAllowed(!this.enabled);
+    this.queue.setPlaybackAllowed(!this.held && !this.enabled);
   }
   private reportPending(): void {
     if (this.pending === this.queue.pending) return;
@@ -76,10 +84,11 @@ class BufferedPlaybackProcessor extends AudioWorkletProcessor {
       this.port.postMessage({ type: "error" });
     }
     this.reportPending();
-    if (this.enabled && !this.requested && this.queue.readyForPlayback) {
+    if (this.enabled && !this.held && !this.requested && this.queue.readyForPlayback) {
       this.requested = true;
+      this.permissionToken++;
       // PCM remains held until the main thread has closed microphone capture.
-      this.port.postMessage({ type: "playback", value: true });
+      this.port.postMessage({ type: "playback", value: true, token: this.permissionToken, epoch: this.holdEpoch });
     }
     if (this.permitted) {
       this.quietSamples = this.queue.pending || output.some(value => value !== 0) ? 0 : this.quietSamples + output.length;

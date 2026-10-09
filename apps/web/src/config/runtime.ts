@@ -16,6 +16,8 @@ export const runtime = {
   maxSessionMs: 900_000,
   /** Maximum duration for a single uninterrupted source turn. */
   maxSourceMs: 30_000,
+  /** Experimental A hold limit, including pauses. B keeps maxSourceMs. */
+  maxPttHoldMs: 120_000,
   /** Additional quiet time before reporting source end; model input remains open. */
   sourceTailGraceMs: 250,
   /** §10.2: local remote-audio inactivity window used to derive `playbackIdle`. */

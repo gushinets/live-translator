@@ -66,6 +66,7 @@ export type TranscriptDeltaType =
   | "session.output_transcript.delta";
 
 export interface TranscriptDeltaEvent {
+  event_id?: string;
   type: TranscriptDeltaType;
   delta: string;
   start_ms?: number;
@@ -240,6 +241,7 @@ function hasValidPayload(
     case "session.output_transcript.delta":
       return (
         typeof value.delta === "string" &&
+        hasOptionalString(value, "event_id") &&
         hasOptionalNumber(value, "start_ms") &&
         hasOptionalNumber(value, "end_ms")
       );

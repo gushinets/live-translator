@@ -10,6 +10,20 @@ function fragment(text: string, receivedAtMs = sequence++ * 900): TranscriptFrag
 const content = (transcript: DialogueTranscript) => transcript.blocks.map(({ kind, side, text }) => ({ kind, side, text: text.trim() }));
 
 describe("independent dialogue captions", () => {
+  it("honors explicit PTT ownership across scripts and orders uncertain packets without losing them", () => {
+    const transcript = new DialogueTranscript();
+    transcript.pushAssigned("input", fragment("Мне нужен iPhone Pro Max и Google Maps"), pair, "A", "A");
+    transcript.pushAssigned("output", fragment("Спасибо"), pair, "A", "B");
+    transcript.pushAssigned("input", { ...fragment("tail"), startMs: 20 }, pair, "unknown");
+    transcript.pushAssigned("input", { ...fragment("head "), startMs: 10 }, pair, "unknown");
+    expect(content(transcript)).toEqual([
+      { kind: "input", side: "A", text: "Мне нужен iPhone Pro Max и Google Maps" },
+      { kind: "output", side: "B", text: "Спасибо" },
+      { kind: "input", side: undefined, text: "head tail" },
+    ]);
+    transcript.seal();
+    expect(transcript.blocks).toHaveLength(3);
+  });
   it.each([1, 2, 7, 1000])("retains courier names and short suffixes regardless of packet size %i and idle gaps", size => {
     const transcript = new DialogueTranscript();
     const text = "Да, да, да. Я курьер, и у меня есть посылка для господина Михаила Гушина.";

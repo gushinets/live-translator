@@ -614,6 +614,42 @@ describe("buffered audio output", () => {
       expect(controller.getCaptureStream()!.getAudioTracks()[0]!.enabled).toBe(true);
     } finally { controller.dispose(); vi.useRealTimers(); }
   });
+  it("holds before the first remote track and initializes the worklet with that hold", async () => {
+    const { controller, nodes } = setup();
+    try {
+      await controller.primeOutput(); await controller.startCapture();
+      expect(controller.setPlaybackHold(true)).toBe(true);
+      controller.attachRemoteStream(fakeStream(new FakeAudioTrack()));
+      expect(nodes[0]!.port.postMessage).toHaveBeenCalledWith({ type: "hold", value: true, epoch: 1 });
+    } finally { controller.dispose(); }
+  });
+  it("rejects stale release tokens and permissions from an earlier hold or replaced node", async () => {
+    vi.useFakeTimers();
+    const { controller, nodes } = setup();
+    try {
+      await controller.primeOutput(); await controller.startCapture();
+      controller.attachRemoteStream(fakeStream(new FakeAudioTrack())); controller.setOutputAudible(true);
+      expect(controller.setPlaybackHold(true)).toBe(true);
+      const old = nodes[0]!.port.onmessage!;
+      old({ data: { type: "playback", value: true, epoch: 0, token: 1 } } as MessageEvent);
+      expect(controller.playbackInputBlocked).toBe(false);
+      controller.setPlaybackHold(false); // epoch 2
+      old({ data: { type: "playback", value: true, epoch: 2, token: 2 } } as MessageEvent);
+      old({ data: { type: "playback", value: true, epoch: 2, token: 3 } } as MessageEvent);
+      old({ data: { type: "playback", value: false, epoch: 2, token: 2 } } as MessageEvent);
+      await vi.advanceTimersByTimeAsync(runtime.playbackEchoTailMs + 1);
+      expect(controller.playbackInputBlocked).toBe(true);
+      expect(controller.getCaptureStream()!.getAudioTracks()[0]!.enabled).toBe(false);
+      old({ data: { type: "playback", value: false, epoch: 2, token: 3 } } as MessageEvent);
+      await vi.advanceTimersByTimeAsync(runtime.playbackEchoTailMs + 1);
+      expect(controller.playbackInputBlocked).toBe(false);
+      expect(controller.setPlaybackHold(true)).toBe(true); // epoch 3
+      controller.attachRemoteStream(fakeStream(new FakeAudioTrack()));
+      old({ data: { type: "playback", value: true, epoch: 3, token: 4 } } as MessageEvent);
+      expect(controller.playbackInputBlocked).toBe(false);
+      expect(nodes[1]!.port.postMessage).toHaveBeenCalledWith({ type: "hold", value: true, epoch: 3 });
+    } finally { controller.dispose(); vi.useRealTimers(); }
+  });
   it("never permits queued PCM when closing the microphone fails", async () => {
     const { controller, nodes, element } = setup();
     try {

@@ -309,7 +309,7 @@ describe("stage 4 transport/accounting integration", () => {
     channel.emit({ type: "session.input_transcript.delta", delta: "Could you tell me where the train station is?" });
     channel.emit({ type: "session.output_transcript.delta", delta: "¿Dónde está la estación de tren?" });
     const captions = f.controller.captionBlocks;
-    expect(captions.map(block => block.side)).toEqual(["A", "B"]);
+    expect(captions.map(block => block.side)).toEqual(["B", "A"]);
     if (paused) {
       f.setVisible(false);
       await vi.waitFor(() => expect(channel.sent).toContain("session.close"));
@@ -344,8 +344,9 @@ describe("stage 4 transport/accounting integration", () => {
     await f.controller.startWithLanguages({ A: "en", B: "es" });
     vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
     const channel = f.clients.at(-1)!.peer.channel;
-    channel.emit({ type: "session.input_transcript.delta", delta: "Could you tell me where the train station is?" });
-    channel.emit({ type: "session.output_transcript.delta", delta: "¿Dónde está la estación de tren?" });
+    f.audio.onVoiceActivity?.({ active: true, atMs: Date.now() });
+    channel.emit({ type: "session.input_transcript.delta", delta: "¿Dónde está la estación de tren?" });
+    channel.emit({ type: "session.output_transcript.delta", delta: "Could you tell me where the train station is?" });
     f.audio.onVoiceActivity?.({ active: false, atMs: Date.now() });
     await vi.advanceTimersByTimeAsync(runtime.audioStartGraceMs);
     await vi.waitFor(() => expect(f.controller.session.recentTurns).toHaveLength(1), { timeout: 2500 });
@@ -354,8 +355,8 @@ describe("stage 4 transport/accounting integration", () => {
     render(jsx(ConversationScreen, { controller: f.controller }));
     expect(screen.getByText("¿Dónde está la estación de tren?")).toHaveAttribute("lang", "es");
     await vi.advanceTimersByTimeAsync(runtime.captionIdleMs);
-    channel.emit({ type: "session.input_transcript.delta", delta: "Could you tell me where the nearest hotel is?" });
-    channel.emit({ type: "session.output_transcript.delta", delta: "Wo ist das nächste Hotel?" });
+    channel.emit({ type: "session.input_transcript.delta", delta: "Wo ist das nächste Hotel?" });
+    channel.emit({ type: "session.output_transcript.delta", delta: "Could you tell me where the nearest hotel is?" });
     cleanup();
     render(jsx(ConversationScreen, { controller: f.controller }));
     expect(screen.getByText("Wo ist das nächste Hotel?")).toHaveAttribute("lang", "de");

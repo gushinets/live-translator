@@ -99,6 +99,19 @@ body,
   scrollbar-color: #816333 #f1e8d7;
 }
 
+.participant-pane--ptt .participant-scroll { margin-right: 96px; }
+.ptt-control { position: absolute; right: 8px; top: 50%; transform: translateY(-50%); width: 92px;
+  display: flex; flex-direction: column; align-items: center; gap: 8px; text-align: center; }
+.ptt-button { width: 66px; height: 66px; flex: 0 0 66px; border-radius: 50%; border: 1px solid #ace2c9;
+  background: rgb(110 225 165 / 20%); color: #ace2c9; display: grid; place-items: center;
+  touch-action: none; user-select: none; -webkit-user-select: none; -webkit-touch-callout: none; cursor: pointer; }
+.ptt-button[aria-pressed="true"] { background: rgb(110 225 165 / 45%); box-shadow: 0 0 0 4px rgb(110 225 165 / 18%); }
+.ptt-button:disabled { opacity: 0.4; cursor: default; }
+.ptt-button:focus-visible { outline: 3px solid #f1f6f3; outline-offset: 3px; }
+.ptt-label { font-size: 12px; line-height: 1.25; color: #ace2c9; overflow-wrap: anywhere; }
+.unassigned-captions { flex: 1 1 100%; font-size: 0.875rem; }
+.unassigned-captions ol { padding-left: 1.5rem; white-space: pre-wrap; overflow-wrap: anywhere; }
+
 .participant-header {
   display: flex;
   flex-wrap: wrap;

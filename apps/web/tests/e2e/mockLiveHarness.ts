@@ -427,6 +427,10 @@ export class MockLiveHarness {
         setRemoteDescription(description: RTCSessionDescriptionInit): Promise<void> {
           this.remoteDescription = description;
           queueMicrotask(() => {
+            const remote = new FakeMediaStream();
+            const track = new Event("track");
+            Object.assign(track, { streams: [remote], track: remote.getAudioTracks()[0] });
+            this.dispatchEvent(track);
             this.channel?.dispatchEvent(
               new MessageEvent("message", {
                 data: JSON.stringify({
@@ -509,6 +513,7 @@ export class MockLiveHarness {
         },
       });
 
+      Object.defineProperty(HTMLMediaElement.prototype, "srcObject", { configurable: true, writable: true, value: null });
       HTMLMediaElement.prototype.play = async () => {};
     });
   }

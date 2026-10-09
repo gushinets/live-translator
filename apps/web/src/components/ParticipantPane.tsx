@@ -1,4 +1,4 @@
-import { useLayoutEffect, useRef } from "react";
+import { useLayoutEffect, useRef, type ReactNode } from "react";
 import { languageName } from "../side/SideResolver";
 import type { Side } from "../conversation/Turn";
 import { ParticipantStatus, type ParticipantStatusLabel } from "./ParticipantStatus";
@@ -14,6 +14,7 @@ export function ParticipantPane({
   alertText,
   alertLanguage,
   captions,
+  control,
 }: {
   side: Side;
   language?: string;
@@ -22,6 +23,7 @@ export function ParticipantPane({
   alertText?: string;
   alertLanguage?: string;
   captions: readonly DialogueBlock[];
+  control?: ReactNode;
 }) {
   const locale = uiLocale(language);
   const t = (text: string) => translate(text, locale);
@@ -35,7 +37,7 @@ export function ParticipantPane({
 
   return (
     <section
-      className={`participant-pane${rotated ? " participant-pane--rotated" : ""}`}
+      className={`participant-pane${rotated ? " participant-pane--rotated" : ""}${control ? " participant-pane--ptt" : ""}`}
       data-testid={`participant-pane-${side}`}
       lang={locale}
       aria-label={t("Участник {side}").replace("{side}", side)}
@@ -63,6 +65,7 @@ export function ParticipantPane({
       ) : null}
       <DialogueCaptions blocks={captions} language={language} />
       </div>
+      {control}
     </section>
   );
 }

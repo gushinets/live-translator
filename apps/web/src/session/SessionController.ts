@@ -73,6 +73,7 @@ export interface SessionControllerDeps {
     playbackInputBlocked?: boolean;
     meteringMediaReady?: boolean;
     setPlaybackTurn?: AudioController["setPlaybackTurn"];
+    setPlaybackHold?: AudioController["setPlaybackHold"];
     playOutput?: AudioController["playOutput"];
     detachRemoteStream?: AudioController["detachRemoteStream"];
     hasPendingPlayback?: boolean;
@@ -96,7 +97,7 @@ export interface SessionControllerDeps {
  * Binding spec 1.2.1 §3.1–§4.5, §5.4–§5.5, §9–§10.
  */
 export class SessionController {
-  private currentSession: TranslationSession;
+  protected currentSession: TranslationSession;
   private live: LiveClient;
   private contextBuffer = "";
   private bootstrapBuffer = "";
@@ -115,7 +116,7 @@ export class SessionController {
   private interpreterWork: Promise<void> | null = null;
   private pendingInterlocutorLanguage: string | undefined;
   private cancelWork: Promise<void> | null = null;
-  private sessionGeneration = 0;
+  protected sessionGeneration = 0;
   private liveProductGeneration = 0;
   private retiringLiveClose: Promise<{ finalized: boolean }> | null = null;
   private idleTimer: number | null = null;
@@ -130,7 +131,7 @@ export class SessionController {
   private leftoverDrainWaiters: Array<() => void> = [];
   private lifecycleEpoch = 0;
   private lifecycleQueue: Promise<void> = Promise.resolve();
-  private gateBMuted = false;
+  protected gateBMuted = false;
   private maxSourceMuteInFlight: { generation: number; promise: Promise<void> } | null = null;
   private sourceTimeoutResumeWork: Promise<void> | null = null;
   private playbackActive = false;
@@ -140,13 +141,13 @@ export class SessionController {
   private playbackTurnId: string | undefined;
   private readonly sourceRouter = new TranscriptRouter();
   private readonly outputRouter = new TranscriptRouter();
-  private readonly dialogueTranscript = new DialogueTranscript();
+  protected readonly dialogueTranscript = new DialogueTranscript();
   get captionBlocks() { return this.dialogueTranscript.blocks; }
   private sourceFragmentTimer: number | null = null;
   private outputFragmentTimer: number | null = null;
   private lastOutputSide: Side | undefined;
   private readonly routingTurnIds = new Set<string>();
-  private sourceVoiceActive: boolean | undefined;
+  protected sourceVoiceActive: boolean | undefined;
   private resumedSourceIdle: { turnId: string; atMs: number; observedThroughMs?: number } | undefined;
   private remotePlaybackGeneration = 0;
   private remotePlaybackState: RemotePlaybackState = "ready";
@@ -156,9 +157,9 @@ export class SessionController {
   private retainedProductDeadlineAt: number | null = null;
   private retainedPlaybackCommitted = false;
   private pendingRemotePlaybackActivity: PlaybackActivityEvent[] = [];
-  private turnClosing = false;
-  private speechInputReady = false;
-  private recoveryPromptKind: RecoveryPrompt | undefined;
+  protected turnClosing = false;
+  protected speechInputReady = false;
+  protected recoveryPromptKind: RecoveryPrompt | undefined;
   private turnFailurePrompt = false;
   private steeringDegradedFlag = false;
   private endWork: Promise<void> | null = null;
@@ -466,7 +467,7 @@ export class SessionController {
       this.currentSession.participantB.language !== undefined;
   }
 
-  private get languages(): ConversationLanguages {
+  protected get languages(): ConversationLanguages {
     const A = this.currentSession.participantA.language;
     const B = this.currentSession.participantB.language;
     if (A === undefined || B === undefined || A === B) {
@@ -628,7 +629,7 @@ export class SessionController {
       this.notify();
       return;
     }
-    if (this.currentSession.activeTurn || this.currentSession.pendingTurns?.length || this.turnClosing || this.playbackActive ||
+    if (this.sourceHeld || this.currentSession.activeTurn || this.currentSession.pendingTurns?.length || this.turnClosing || this.playbackActive ||
         this.sourceRouter.hasPending || this.outputRouter.hasPending) {
       this.pendingInterlocutorLanguage = language;
       this.notify();
@@ -1267,7 +1268,7 @@ export class SessionController {
     this.audio.audioElement.srcObject = null;
   }
 
-  private get audio(): SessionControllerDeps["audio"] {
+  protected get audio(): SessionControllerDeps["audio"] {
     return this.deps.audio;
   }
 
@@ -1359,7 +1360,7 @@ export class SessionController {
     this.handleConversationOutputDelta(event);
   }
 
-  private handleConversationInputDelta(event: TranscriptDeltaEvent): void {
+  protected handleConversationInputDelta(event: TranscriptDeltaEvent): void {
     if (!event.delta || !["listening", "outputting"].includes(this.currentSession.state) || this.turnClosing) return;
     const fragment = createTranscriptFragment({ text: event.delta, nowMs: Date.now(), startMs: event.start_ms, endMs: event.end_ms });
     this.dialogueTranscript.push("input", fragment, this.languages);
@@ -1488,7 +1489,7 @@ export class SessionController {
     if (previous) this.dispatch({ type: "SOURCE_BOUNDARY", turnId: previous.id, endMs: fragment.startMs });
   }
 
-  private handleConversationOutputDelta(event: TranscriptDeltaEvent): void {
+  protected handleConversationOutputDelta(event: TranscriptDeltaEvent): void {
     if (!event.delta || !["listening", "outputting"].includes(this.currentSession.state)) return;
     if (this.leftoverOutputDraining) { this.noteLeftoverCaption(); return; }
     const fragment = createTranscriptFragment({ text: event.delta, nowMs: Date.now(), startMs: event.start_ms, endMs: event.end_ms });
@@ -1587,7 +1588,7 @@ export class SessionController {
       turn.speaker !== this.lastOutputSide);
   }
 
-  private async handleVoiceActivity(event: AudioActivityEvent): Promise<void> {
+  protected async handleVoiceActivity(event: AudioActivityEvent): Promise<void> {
     if (this.backgroundPaused || this.turnClosing || this.audio.playbackInputBlocked ||
         !["listening", "outputting"].includes(this.currentSession.state)) return;
     this.sourceVoiceActive = event.active;
@@ -1677,7 +1678,8 @@ export class SessionController {
     if (considerCompletion) await this.considerTurnCompletion(Date.now());
   }
 
-  private async considerTurnCompletion(nowMs: number): Promise<void> {
+  protected async considerTurnCompletion(nowMs: number): Promise<void> {
+    if (this.sourceHeld) return;
     if (this.turnClosing || !["listening", "outputting"].includes(this.currentSession.state)) return;
     const playback = this.playbackTurnId ? findSessionTurn(this.currentSession, this.playbackTurnId) : undefined;
     if (this.playbackActive && (!playback || ["completed", "failed", "discarded"].includes(playback.status))) {
@@ -1911,7 +1913,7 @@ export class SessionController {
     }
   }
 
-  private armMaxSourceTimer(): void {
+  protected armMaxSourceTimer(): void {
     this.clearMaxSourceTimer();
     this.maxSourceTimer = window.setTimeout(() => {
       void this.handleMaxSourceTimeout();
@@ -1933,7 +1935,7 @@ export class SessionController {
     }, delayMs);
   }
 
-  private armCaptionIdleTimer(): void {
+  protected armCaptionIdleTimer(): void {
     this.clearCaptionIdleTimer();
     this.captionIdleTimer = window.setTimeout(() => {
       void this.considerTurnCompletion(Date.now());
@@ -2019,6 +2021,7 @@ export class SessionController {
   }
 
   private resetTranscriptRouting(): void {
+    this.resetSpeakerPolicy();
     this.dialogueTranscript.seal();
     if (this.sourceFragmentTimer !== null) window.clearTimeout(this.sourceFragmentTimer);
     if (this.outputFragmentTimer !== null) window.clearTimeout(this.outputFragmentTimer);
@@ -2044,7 +2047,7 @@ export class SessionController {
     this.routeOutput(output, false);
   }
 
-  private clearMaxSourceTimer(): void {
+  protected clearMaxSourceTimer(): void {
     if (this.maxSourceTimer === null) {
       return;
     }
@@ -3010,6 +3013,7 @@ export class SessionController {
   }
 
   protected dispatch(action: SessionAction): void {
+    if (["END", "ENDED", "SESSION_ERROR", "SUSPEND"].includes(action.type)) this.resetSpeakerPolicy();
     if ((action.type === "SOURCE_ACTIVE" || action.type === "SOURCE_HANDOFF") &&
         action.turnId !== this.latestSourceTurnId && this.outputRouter.hasPending) {
       // Seal old evidence before changing its source context. Ambiguity is retained.
@@ -3033,6 +3037,7 @@ export class SessionController {
       } else if (previousTurn.translatedText) this.conversationMetrics.recordTechnicalOutcome(previousTurn.id, "text_only");
     }
     if (previousTurn && !previousTurn.translationOnly && action.type === "TURN_FAILED") this.conversationMetrics.recordTechnicalOutcome(previousTurn.id, "failed");
+    if (previousTurn && !previousTurn.translationOnly && action.type === "TURN_DISCARDED") this.conversationMetrics.recordTechnicalOutcome(previousTurn.id, "discarded");
     if (["SUSPEND", "END", "SESSION_ERROR"].includes(action.type)) {
       for (const turn of previousUnfinished) if (!turn.translationOnly && turn.turnCompletedAtMs === undefined) {
         this.conversationMetrics.recordTechnicalOutcome(turn.id, action.type === "SESSION_ERROR" ? "failed" : "discarded");
@@ -3040,6 +3045,10 @@ export class SessionController {
     }
     this.notify(completedTurnId);
   }
+
+  /** Shared lifecycle hooks for a speaker policy, without duplicating media/accounting. */
+  protected get sourceHeld(): boolean { return false; }
+  protected resetSpeakerPolicy(): void {}
 
   /** Seed the new attempt before managed create so retained totals are a baseline, not a delta. */
   private publishRetainedCounterBaseline(): void {

@@ -115,9 +115,9 @@ export class PlaybackQueue {
       const voiced = this.observeEnergy(value);
       if (this.prerollHold > 0) this.prerollHold--;
       this.observeIncoming(voiced);
-      const held = this.enabled && (!this.playbackAllowed || this.speaking || this.quiet < this.sampleRate * .3);
+      const held = !this.playbackAllowed || (this.enabled && (this.speaking || this.quiet < this.sampleRate * .3));
       if (!this.speaking) this.quiet++;
-      if (!this.enabled && this.count === 0) {
+      if (!this.enabled && !held && this.count === 0) {
         // Default streaming path: no noise gate or added delay.
         output[i] = value;
         this.observePlayed(value, this.inputTurnId);

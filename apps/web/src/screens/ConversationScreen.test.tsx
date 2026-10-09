@@ -103,7 +103,7 @@ describe("default independent captions", () => {
     expect([...b.querySelectorAll("li")].map(row => row.textContent)).toEqual(["Him: Who are you?", "Me: I'm a courier."]);
     expect(a).not.toHaveTextContent("OK");
     expect(b).not.toHaveTextContent("OK");
-    expect(screen.queryByText("OK")).not.toBeInTheDocument();
+    expect(document.querySelector(".unassigned-captions")).toHaveTextContent("OK");
     expect(screen.queryByText(/Текст без определённого языка/)).not.toBeInTheDocument();
     expect(screen.queryByText("Legacy text")).not.toBeInTheDocument();
     expect(screen.queryByText("Повторите")).not.toBeInTheDocument();
@@ -118,14 +118,14 @@ describe("default independent captions", () => {
     expect(screen.getByText("Повторите")).toBeVisible();
   });
 
-  it.each(["/", "/?captions=blocks", "/?captions=legacy"])("hides uncertain text until the full phrase resolves at %s", url => {
+  it.each(["/", "/?captions=blocks", "/?captions=legacy"])("preserves uncertain text outside the panes until it resolves at %s", url => {
     window.history.replaceState({}, "", url);
     const controller = new FakeConversationController(session({
       participantB: { ...participant("B"), language: "en" },
     }));
     controller.captionBlocks = [{ id: "pending", kind: "output", text: "Um", receivedAtMs: 1 }];
     const view = render(<ConversationScreen controller={controller} />);
-    expect(screen.queryByText("Um")).not.toBeInTheDocument();
+    expect(document.querySelector(".unassigned-captions")).toHaveTextContent("Um");
     expect(document.querySelectorAll(".participant-pane li")).toHaveLength(0);
     expect(screen.queryByText(/Текст без определённого языка/)).not.toBeInTheDocument();
     controller.captionBlocks = [{ id: "pending", kind: "output", side: "B", language: "en", text: "Um, I have a package for you.", receivedAtMs: 1 }];
