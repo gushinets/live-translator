@@ -15,6 +15,7 @@ export type ParticipantStatusLabel =
   | "TRANSLATING"
   | "SPEAKING"
   | "PAUSED"
+  | "ENDED"
   | "ERROR";
 
 export function deriveParticipantStatus(input: {
@@ -27,6 +28,7 @@ export function deriveParticipantStatus(input: {
   hasOutputText: boolean;
   audioOutputStarted: boolean;
 }): ParticipantStatusLabel {
+  if (input.sessionState === "ended") return "ENDED";
   if (input.sessionState === "suspended") {
     return "PAUSED";
   }
@@ -82,6 +84,7 @@ export function ParticipantStatus({
     TRANSLATING: "Перевожу",
     SPEAKING: "Перевод",
     PAUSED: "Пауза",
+    ENDED: "Разговор завершён",
     ERROR: "Ошибка",
   };
 

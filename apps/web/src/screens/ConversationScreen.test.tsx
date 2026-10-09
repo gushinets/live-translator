@@ -54,6 +54,7 @@ class FakeConversationController implements ConversationScreenController {
   suspendReason: LifecycleSuspendReason | undefined;
   retainedRecoveryState: "paused" | "resuming" | "ending" | "failed" | "pending_end" | "pending_claim" | "blocked" | "unresolved_create" | undefined;
   readonly endConversation = vi.fn(async () => {});
+  readonly cancel = vi.fn(async () => {});
   readonly resumeFromSourceTimeout = vi.fn(async () => {});
   readonly resumeRetainedConversation = vi.fn(async () => {});
   readonly verifyRetainedConversation = vi.fn(async () => {});

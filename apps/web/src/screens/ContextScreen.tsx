@@ -169,6 +169,7 @@ export function ContextScreen({
   const snapshot = controller ? uiSnapshot(controller) : [];
   useLayoutEffect(() => { renderedSnapshot.current = snapshot; });
   const previousRecovery = useRef<RetainedRecoveryState | undefined>(undefined);
+  const previousSessionState = useRef(controller?.session.state);
   const recoveryState = controller?.retainedRecoveryState;
   useEffect(() => {
     if (!controller) return;
@@ -178,14 +179,17 @@ export function ContextScreen({
     return unsubscribe;
   }, [controller]);
   useEffect(() => {
+    if (controller?.isConnectInFlight === true) return;
     if (previousRecovery.current !== undefined && recoveryState === undefined) {
       const target = controller?.session.state === "bootstrap"
         ? [bootstrapPrimaryRef.current, bootstrapRepeatRef.current].find(button => button && !button.disabled)
         : startRef.current;
       if (target && !target.disabled) target.focus();
     }
+    if (previousSessionState.current === "ended" && controller?.session.state === "idle") startRef.current?.focus();
     previousRecovery.current = recoveryState;
-  }, [recoveryState]);
+    previousSessionState.current = controller?.session.state;
+  }, [recoveryState, controller?.session.state, controller?.isConnectInFlight]);
   useEffect(() => {
     const host = audioHostRef.current;
     const element = controller?.audioElement;
@@ -298,6 +302,7 @@ export function ContextScreen({
     sessionState === "outputting" ||
     sessionState === "suspended" ||
     sessionState === "ending" ||
+    sessionState === "ended" ||
     (sessionState === "error" && controller.hasEnteredInterpreter === true);
   const isOwnerSetup = !isConversation;
   const isBusy =

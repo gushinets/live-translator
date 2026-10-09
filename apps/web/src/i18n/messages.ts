@@ -21,6 +21,8 @@ const messages: Record<string, Translations> = {
   "Не удалось сохранить звук перевода. Начните новый разговор.": ["Translation audio could not be buffered. Start a new conversation.", "Le son de la traduction n'a pas pu être conservé. Commencez une nouvelle conversation.", "Impossibile conservare l'audio della traduzione. Inizia una nuova conversazione.", "Der Übersetzungston konnte nicht gespeichert werden. Starten Sie ein neues Gespräch.", "No se pudo guardar el audio de la traducción. Inicia una nueva conversación.", "Não foi possível guardar o áudio da tradução. Inicie uma nova conversa."],
   "Завершить": ["End", "Terminer", "Termina", "Beenden", "Finalizar", "Encerrar"],
   "Завершаю…": ["Ending…", "Fermeture…", "Chiusura…", "Beenden…", "Finalizando…", "Encerrando…"],
+  "Разговор завершён": ["Conversation ended", "Conversation terminée", "Conversazione terminata", "Gespräch beendet", "Conversación finalizada", "Conversa encerrada"],
+  "На начальный экран": ["Back to start", "Retour à l'accueil", "Torna all'inizio", "Zur Startseite", "Volver al inicio", "Voltar ao início"],
   "Язык собеседника": ["Partner's language", "Langue du partenaire", "Lingua dell'interlocutore", "Sprache des Partners", "Idioma del interlocutor", "Idioma do interlocutor"],
   "Поверните телефон вертикально": ["Turn your phone upright", "Tournez votre téléphone à la verticale", "Ruota il telefono in verticale", "Drehen Sie das Telefon ins Hochformat", "Gira el teléfono a la posición vertical", "Gire o telefone para a posição vertical"],
   "Продолжить / повторить": ["Continue / repeat", "Continuer / répéter", "Continua / ripeti", "Fortsetzen / wiederholen", "Continuar / repetir", "Continuar / repetir"],
