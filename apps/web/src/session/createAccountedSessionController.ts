@@ -13,7 +13,7 @@ const DEFINITIVE_PRECLAIM_CODES = new Set(["invalid_request", "unexpected_origin
   "not_found", "conversation_expired", "conversation_version_conflict", "attempt_in_progress",
   "resume_claim_conflict", "attempt_retired"]);
 
-/** Materialize the attempt at connect, not when resetToIdle preallocates its next LiveClient. */
+/** Materialize the attempt at connect, not when resetSession preallocates its next LiveClient. */
 class LazyAccounting implements NonNullable<LiveClientDeps["accounting"]> {
   private attempt: ProviderAccounting | undefined;
   private cancelled = false;

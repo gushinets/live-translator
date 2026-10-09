@@ -2,6 +2,7 @@ import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-libra
 import { Profiler } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createInitialSession, type TranslationSession } from "../session/SessionState";
+import type { DialogueBlock } from "../conversation/DialogueTranscript";
 import { STARTUP_TRACE_STORAGE_KEY } from "../live/StartupTrace";
 import { ContextScreen, type ContextScreenController } from "./ContextScreen";
 
@@ -19,7 +20,7 @@ function idleSession(): TranslationSession {
 }
 
 class FakeOwnerController implements ContextScreenController {
-  readonly captionBlocks = [];
+  captionBlocks: readonly DialogueBlock[] = [];
   session: TranslationSession = idleSession();
   inputReady = true;
   contextText = "";
@@ -91,6 +92,7 @@ class FakeOwnerController implements ContextScreenController {
 
   async cancel(): Promise<void> {
     this.session = { ...this.session, state: "idle" };
+    this.captionBlocks = [];
     this.notify();
   }
 
@@ -102,6 +104,49 @@ class FakeOwnerController implements ContextScreenController {
 }
 
 describe("ContextScreen", () => {
+  it("keeps both panes and their scroll positions after End until returning to the saved setup", async () => {
+    localStorage.setItem("live-translator-owner-language", "ru");
+    localStorage.setItem("live-translator-interlocutor-language", "en");
+    const controller = new FakeOwnerController();
+    controller.session = { ...controller.session, state: "listening",
+      participantA: { ...controller.session.participantA, language: "ru" },
+      participantB: { ...controller.session.participantB, language: "en" } };
+    controller.captionBlocks = [
+      { id: "a", kind: "input", side: "A", language: "ru", text: "Добрый день.", receivedAtMs: 1 },
+      { id: "b", kind: "output", side: "B", language: "en", text: "Good afternoon.", receivedAtMs: 2 },
+    ];
+    controller.endConversation.mockImplementation(async () => {
+      controller.session = { ...controller.session, state: "ended" };
+    });
+    const view = render(<ContextScreen controller={controller} />);
+    const scrollA = screen.getByTestId("participant-scroll-A");
+    const scrollB = screen.getByTestId("participant-scroll-B");
+    for (const scroll of [scrollA, scrollB]) {
+      Object.defineProperty(scroll, "scrollHeight", { value: 1000 });
+      Object.defineProperty(scroll, "clientHeight", { value: 200 });
+      scroll.scrollTop = 120;
+      fireEvent.scroll(scroll);
+    }
+    await act(async () => { fireEvent.click(screen.getByRole("button", { name: "Завершить" })); });
+    view.rerender(<ContextScreen controller={controller} />);
+    expect(screen.getByTestId("participant-scroll-A")).toBe(scrollA);
+    expect(screen.getByTestId("participant-scroll-B")).toBe(scrollB);
+    expect(scrollA.scrollTop).toBe(120);
+    expect(scrollB.scrollTop).toBe(120);
+    expect(screen.getByText("Добрый день.")).toBeInTheDocument();
+    expect(screen.getByText("Good afternoon.")).toBeInTheDocument();
+    expect(screen.getByTestId("participant-status-A")).toHaveTextContent("Разговор завершён");
+    expect(screen.getByTestId("participant-status-B")).toHaveTextContent("Conversation ended");
+    expect(screen.queryByRole("button", { name: "Завершить" })).not.toBeInTheDocument();
+    await act(async () => { fireEvent.click(screen.getByRole("button", { name: "На начальный экран" })); });
+    expect(screen.queryByTestId("participant-pane-A")).not.toBeInTheDocument();
+    expect(controller.captionBlocks).toEqual([]);
+    expect(screen.getByRole("button", { name: /^Ваш язык/ })).toHaveTextContent("русский");
+    expect(screen.getByRole("button", { name: /^Язык собеседника/ })).toHaveTextContent("английский");
+    expect(screen.getByRole("button", { name: "Начать перевод" })).toHaveFocus();
+    expect(controller.startWithLanguages).not.toHaveBeenCalled();
+  });
+
   it.each(["Ваш язык", "Язык собеседника"])("opens the saved language picker from the %s card", label => {
     localStorage.setItem("live-translator-owner-language", "ru");
     localStorage.setItem("live-translator-interlocutor-language", "en");

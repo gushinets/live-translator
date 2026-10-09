@@ -302,6 +302,43 @@ afterEach(() => {
 });
 
 describe("stage 4 transport/accounting integration", () => {
+  it.each([false, true])("retains an ended dialogue across hiding without resuming or billing again (paused=%s)", async paused => {
+    const f = fixture(40, true), server = useRealLedger(f);
+    await f.controller.startWithLanguages({ A: "en", B: "es" });
+    const channel = f.clients.at(-1)!.peer.channel;
+    channel.emit({ type: "session.input_transcript.delta", delta: "Could you tell me where the train station is?" });
+    channel.emit({ type: "session.output_transcript.delta", delta: "¿Dónde está la estación de tren?" });
+    const captions = f.controller.captionBlocks;
+    expect(captions.map(block => block.side)).toEqual(["A", "B"]);
+    if (paused) {
+      f.setVisible(false);
+      await vi.waitFor(() => expect(channel.sent).toContain("session.close"));
+      channel.emit({ type: "session.closed" });
+      await vi.waitFor(() => expect(f.c.status).toBe("paused"));
+    }
+    const ending = f.controller.endConversation();
+    if (!paused) channel.emit({ type: "session.closed" });
+    await ending;
+    expect(f.c.status).toBe("ended");
+    expect(f.controller.session.state).toBe("ended");
+    expect(f.controller.retainedRecoveryState).toBeUndefined();
+    expect(f.controller.captionBlocks).toBe(captions);
+    expect(f.audio.getCaptureStream()).toBeNull();
+    const pauses = f.api.pause.mock.calls.length;
+    f.setVisible(false); await settle();
+    f.setVisible(true); await settle();
+    expect(f.controller.session.state).toBe("ended");
+    expect(f.controller.captionBlocks).toBe(captions);
+    expect(f.api.pause).toHaveBeenCalledTimes(pauses);
+    expect(f.api.claimResume).not.toHaveBeenCalled();
+    expect(f.api.createSession).toHaveBeenCalledOnce();
+    await f.controller.cancel();
+    expect(f.controller.session.state).toBe("idle");
+    expect(f.controller.captionBlocks).toEqual([]);
+    expect(f.api.end).toHaveBeenCalledOnce();
+    await f.controller.dispose(); await f.budget.close(); server.db.close();
+  });
+
   it("preserves old speech languages across a real language switch", async () => {
     const f = fixture(40);
     await f.controller.startWithLanguages({ A: "en", B: "es" });

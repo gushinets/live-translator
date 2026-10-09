@@ -40,12 +40,15 @@ test.describe("mocked conversation runtime", () => {
     await expect(page.getByTestId("participant-pane-A")).toBeVisible();
     await expect(page.getByTestId("participant-pane-B")).toBeVisible();
     await harness.sessionClosed("user_requested", 1);
+    await expect(page.getByTestId("participant-status-A")).toHaveText("Conversation ended");
+    await expect(page.getByTestId("participant-status-B")).toHaveText("Conversación finalizada");
+    await page.getByRole("button", { name: "Back to start", exact: true }).click();
     await expect(page.getByRole("button", { name: "Start translation", exact: true })).toBeEnabled();
     await expect(page.locator(".conversation-screen")).toHaveCount(0);
   });
   test("courier flow alternates A/B, keeps B rotated, and retains every turn", async ({
     page,
-  }) => {
+  }, testInfo) => {
     const harness = await MockLiveHarness.attach(page);
     await harness.startListeningConversation();
     await expect(page.getByTestId("participant-pane-B")).toHaveAttribute(
@@ -86,6 +89,35 @@ test.describe("mocked conversation runtime", () => {
     await expect(page.getByText(COURIER_TURNS[6]!.original)).toHaveCount(1);
     await expect(page.getByText(COURIER_TURNS[7]!.original)).toHaveCount(1);
     await expect(page.getByText(COURIER_TURNS[9]!.original)).toHaveCount(1);
+    const captions = await page.locator(".recent-turn-primary").allTextContents();
+    const scrolls = page.locator(".participant-scroll");
+    await scrolls.evaluateAll(elements => elements.forEach(element => {
+      element.scrollTop = 120;
+      element.dispatchEvent(new Event("scroll"));
+    }));
+    const positions = await scrolls.evaluateAll(elements => elements.map(element => element.scrollTop));
+    await page.getByRole("button", { name: "End", exact: true }).click();
+    await expect(page.getByRole("button", { name: "Back to start", exact: true })).toBeVisible();
+    expect(await page.locator(".recent-turn-primary").allTextContents()).toEqual(captions);
+    expect(await scrolls.evaluateAll(elements => elements.map(element => element.scrollTop))).toEqual(positions);
+    await page.evaluate(() => {
+      Object.defineProperty(document, "visibilityState", { configurable: true, value: "hidden" });
+      document.dispatchEvent(new Event("visibilitychange"));
+      Object.defineProperty(document, "visibilityState", { configurable: true, value: "visible" });
+      document.dispatchEvent(new Event("visibilitychange"));
+    });
+    await expect(page.getByTestId("participant-status-A")).toHaveText("Conversation ended");
+    await expect(page.getByTestId("participant-status-B")).toHaveText("Conversación finalizada");
+    expect(await page.locator(".recent-turn-primary").allTextContents()).toEqual(captions);
+    expect(await scrolls.evaluateAll(elements => elements.map(element => element.scrollTop))).toEqual(positions);
+    expect(harness.liveSessionCreateCount()).toBe(liveSessionCreatesAfterSetup);
+    await page.screenshot({ path: testInfo.outputPath("ended-conversation.png") });
+    await page.getByRole("button", { name: "Back to start", exact: true }).click();
+    await expect(page.getByRole("button", { name: "Start translation", exact: true })).toBeFocused();
+    await page.getByRole("button", { name: "Start translation", exact: true }).click();
+    await expect(page.getByRole("button", { name: "End", exact: true })).toBeVisible();
+    await expect(page.locator(".recent-turn")).toHaveCount(0);
+    expect(harness.liveSessionCreateCount()).toBe(liveSessionCreatesAfterSetup + 1);
   });
 
   test("B starts and A speaks three times without alternating", async ({ page }) => {

@@ -222,7 +222,7 @@ export class SessionController {
     this.lifecycleSuspendReason = "visibility";
     this.notify();
   }
-  protected clearRetainedAfterEnd(): void { this.resetToIdle(); }
+  protected clearRetainedAfterEnd(): void { this.resetSession({ preserveDialogue: true }); }
   protected backgroundResumeCurrent(generation: number): boolean {
     return this.backgroundPaused && this.sessionGeneration === generation && !this.visibility.isHidden() &&
       this.orientation.isPortrait() && this.endWork === null && this.cancelWork === null;
@@ -416,7 +416,7 @@ export class SessionController {
   protected async awaitBackgroundPause(): Promise<void> {
     await this.backgroundCloseWork?.catch(() => undefined);
   }
-  protected resetAfterUnpausedBackground(): void { this.resetToIdle(); }
+  protected resetAfterUnpausedBackground(): void { this.resetSession(); }
   protected sampleInitialHidden(): boolean {
     if (!this.backgroundCloseEnabled) return false;
     if (this.backgroundPaused && !this.visibility.isHidden() && this.currentSession.state === "idle" &&
@@ -1190,7 +1190,7 @@ export class SessionController {
     }
     await prepared;
     try { await this.finishConversationRetirement("setup_cancel"); }
-    finally { this.resetToIdle(); }
+    finally { this.resetSession(); }
     if (shouldWaitForMic) {
       try {
         await pendingConnect;
@@ -1245,7 +1245,7 @@ export class SessionController {
     }
     await prepared;
     try { await this.finishConversationRetirement("user_end"); }
-    finally { this.resetToIdle({ preserveOwnerError: !finalized }); }
+    finally { this.resetSession({ preserveOwnerError: !finalized, preserveDialogue: true }); }
   }
 
   /** Saves recovery intent without holding open local media or finalizing its usage producer. */
@@ -2549,6 +2549,7 @@ export class SessionController {
 
   protected applyHiddenBackgroundClose(): Promise<void> { return this.handleVisibilityHidden(); }
   private async handleVisibilityHidden(): Promise<void> {
+    if (this.currentSession.state === "ended") return;
     if (this.backgroundCloseEnabled) {
       if (this.backgroundPaused) {
         if (this.retainedResumeInFlight) {
@@ -2618,6 +2619,7 @@ export class SessionController {
   }
 
   private async handleVisibilityVisible(): Promise<void> {
+    if (this.currentSession.state === "ended") return;
     if (this.backgroundPaused) {
       if (this.retainedResumeInFlight) { this.visibleAgainDuringResume = true; return; }
       this.beginRetainedResume();
@@ -2955,7 +2957,9 @@ export class SessionController {
     });
   }
 
-  private resetToIdle(options: { preserveOwnerError?: boolean } = {}): void {
+  private resetSession(options: { preserveOwnerError?: boolean; preserveDialogue?: boolean } = {}): void {
+    const review = options.preserveDialogue === true && (this.enteredInterpreter || this.currentSession.state === "ended");
+    const { participantA, participantB } = this.currentSession;
     this.retainedProductDeadlineAt = null;
     const preservedError =
       options.preserveOwnerError === true ? this.ownerErrorMessage : undefined;
@@ -2996,7 +3000,10 @@ export class SessionController {
     this.stopPlatformLifecycle();
     this.sessionGeneration += 1;
     this.currentSession = createEmptySession();
-    this.dialogueTranscript.clear();
+    if (review) {
+      this.currentSession = { ...this.currentSession, state: "ended", participantA, participantB };
+      this.dialogueTranscript.seal();
+    } else this.dialogueTranscript.clear();
     this.live = this.deps.createLive();
     this.bindLive();
     this.notify();

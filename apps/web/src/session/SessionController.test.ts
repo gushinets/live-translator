@@ -333,6 +333,7 @@ describe("SessionController", () => {
     const { controller } = createController({ audio });
     await controller.startWithLanguages({ A: "ru", B: "es" });
     await controller.endConversation();
+    await controller.cancel();
     await controller.startWithLanguages({ A: "ru", B: "es" });
     expect(controller.session.state).toBe("listening");
     expect(audio.setNonInterrupting).not.toHaveBeenCalled();
@@ -835,7 +836,7 @@ describe("SessionController", () => {
     controller.handleRemoteStream(fakeRemoteStream("remote"), live as unknown as LiveClient);
     await controller[action]();
     expect(audio.detachRemoteStream).toHaveBeenCalled();
-    expect(controller.session.state).toBe("idle");
+    expect(controller.session.state).toBe(action === "cancel" ? "idle" : "ended");
   });
   it("keeps remote media for draining during temporary orientation suspension", async () => {
     const audio = Object.assign(createFakeAudio(), { detachRemoteStream: vi.fn() });
@@ -912,7 +913,7 @@ describe("SessionController", () => {
       expect(live.disconnectImmediately).not.toHaveBeenCalled();
       error = { code: 3 } as MediaError;
       decoder.dispatchEvent(new Event("error"));
-      await vi.waitFor(() => expect(controller.session.state).toBe("idle"));
+      await vi.waitFor(() => expect(controller.session.state).toBe("ended"));
       expect(live.disconnectImmediately).toHaveBeenCalledExactlyOnceWith("abandoned_connect");
       expect(audio.audioElement.muted).toBe(true);
       expect(decoder.onerror).toBeNull();
@@ -3162,11 +3163,15 @@ describe("SessionController endConversation", () => {
     vi.setSystemTime(new Date("2026-01-01T00:00:00.000Z"));
   });
 
-  it("enters ending, closes Live, releases audio, and returns to idle start state", async () => {
+  it("closes Live and releases audio while retaining both sides until returning to setup", async () => {
     const { controller, live, audio } = createController();
     await enterListening(controller);
     live.close.mockClear();
     controller.setContextText("We are ordering lunch.");
+    live.emit({ type: "session.input_transcript.delta", delta: "Could you tell me where the train station is?" });
+    live.emit({ type: "session.output_transcript.delta", delta: "¿Dónde está la estación de tren?" });
+    const captions = controller.captionBlocks;
+    const participants = [controller.session.participantA, controller.session.participantB];
     live.close.mockImplementation(async () => {
       expect(controller.session.state).toBe("ending");
       live.callOrder.push("close");
@@ -3179,11 +3184,18 @@ describe("SessionController endConversation", () => {
     expect(audio.setOutputAudible).toHaveBeenLastCalledWith(false);
     expect(audio.stopCapture).toHaveBeenCalled();
     expect(audio.getCaptureStream()).toBeNull();
-    expect(controller.session.state).toBe("idle");
+    expect(controller.session.state).toBe("ended");
+    expect(controller.captionBlocks).toBe(captions);
+    expect(captions.map(block => block.side)).toEqual(["A", "B"]);
+    expect([controller.session.participantA, controller.session.participantB]).toEqual(participants);
     expect(controller.session.recentTurns).toEqual([]);
     expect(controller.session.activeTurn).toBeUndefined();
     expect(controller.contextText).toBe("");
     expect(controller.session.contextText).toBe("");
+    await controller.cancel();
+    expect(controller.session.state).toBe("idle");
+    expect(controller.captionBlocks).toEqual([]);
+    expect(live.close).toHaveBeenCalledOnce();
   });
 
   it("stops local capture before close and shows incomplete finalization after timeout", async () => {
@@ -3211,7 +3223,7 @@ describe("SessionController endConversation", () => {
 
     expect(order).toEqual(["release", "close", "shown"]);
     expect(controller.ownerError).toBe(INCOMPLETE_FINALIZATION_MESSAGE);
-    expect(controller.session.state).toBe("idle");
+    expect(controller.session.state).toBe("ended");
   });
 
   it("ignores session.closed while a local graceful end is already in progress", async () => {
@@ -3240,7 +3252,7 @@ describe("SessionController endConversation", () => {
     releaseClose();
     await ending;
 
-    expect(controller.session.state).toBe("idle");
+    expect(controller.session.state).toBe("ended");
     expect(controller.ownerError).toBeUndefined();
   });
 
@@ -3270,7 +3282,7 @@ describe("SessionController max session duration", () => {
 
     expect(live.close).toHaveBeenCalledOnce();
     expect(audio.stopCapture).toHaveBeenCalled();
-    expect(controller.session.state).toBe("idle");
+    expect(controller.session.state).toBe("ended");
   });
 
   it("ignores stale session.started callbacks after reset swaps the Live client", async () => {

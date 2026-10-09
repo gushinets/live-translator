@@ -21,6 +21,7 @@ export interface ConversationScreenController {
   readonly retainedRecoveryState?: RetainedRecoveryState;
   subscribe(listener: () => void): () => void;
   endConversation(): Promise<void>;
+  cancel(): Promise<void>;
   resumeFromSourceTimeout(): Promise<void>;
   resumeRetainedConversation?(): Promise<void>;
   verifyRetainedConversation?(): Promise<void>;
@@ -58,6 +59,7 @@ export function ConversationScreen({
   const ownerLocale = uiLocale(session.participantA.language);
   const t = (text: string) => translate(text, ownerLocale);
   const ending = session.state === "ending";
+  const ended = session.state === "ended";
   const recoveryState = controller.retainedRecoveryState;
   const active = session.activeTurn;
   const sourceSpeaker = active?.speaker;
@@ -79,7 +81,7 @@ export function ConversationScreen({
     });
   };
   const terminalAlert =
-    session.state === "error" || session.state === "ending"
+    session.state === "error" || session.state === "ending" || ended
       ? controller.ownerError === undefined ? undefined : t(controller.ownerError)
       : undefined;
   const statusA = statusForSide("A");
@@ -115,21 +117,21 @@ export function ConversationScreen({
           onEnd={() => controller.endConversation()} /> : null}
         {recoveryState === undefined ? <button
           ref={endRef}
-          className="conversation-end-action"
+          className={ended ? "conversation-home-action" : "conversation-end-action"}
           type="button"
           disabled={ending}
           aria-busy={ending}
           onClick={() => {
-            void controller.endConversation().catch((error: unknown) => {
-              console.error("End conversation failed", {
+            void (ended ? controller.cancel() : controller.endConversation()).catch((error: unknown) => {
+              console.error(ended ? "Return to setup failed" : "End conversation failed", {
                 error,
                 state: session.state,
               });
             });
           }}
         >
-          <span aria-hidden="true" className="conversation-end-size">{t("Завершаю…")}</span>
-          <span aria-live="polite" className="conversation-end-label"><i aria-hidden="true" />{t(ending ? "Завершаю…" : "Завершить")}</span>
+          <span aria-hidden="true" className="conversation-end-size">{t(ended ? "На начальный экран" : "Завершаю…")}</span>
+          <span aria-live="polite" className="conversation-end-label">{!ended ? <i aria-hidden="true" /> : null}{t(ended ? "На начальный экран" : ending ? "Завершаю…" : "Завершить")}</span>
         </button> : null}
         {controller.recoveryPrompt === "resume-repeat" ? (
           <button
