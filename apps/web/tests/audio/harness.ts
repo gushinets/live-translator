@@ -9,6 +9,7 @@ declare global {
     controller: AudioController; context: AudioContext; mic: GainNode; remote: GainNode;
     readRms(): number; errors: number; replaceRemote(): void;
     useWebRtc(): Promise<void>; receivedSamples(): Promise<number>;
+    readReceivedMicRms(): number;
   }; }
 }
 document.querySelector("#start")!.addEventListener("click", async () => {
@@ -40,9 +41,15 @@ document.querySelector("#start")!.addEventListener("click", async () => {
   }
   connectMeter();
   const samples = new Float32Array(analyser.fftSize);
+  const receivedMicAnalyser = context.createAnalyser();
+  const receivedMicSamples = new Float32Array(receivedMicAnalyser.fftSize);
+  let microphoneDecoder: HTMLAudioElement | null = null;
   let rtcReceiver: RTCPeerConnection | null = null;
   const rtcPeers: RTCPeerConnection[] = [];
-  window.addEventListener("pagehide", () => { for (const peer of rtcPeers) peer.close(); });
+  window.addEventListener("pagehide", () => {
+    for (const peer of rtcPeers) peer.close();
+    if (microphoneDecoder) { microphoneDecoder.pause(); microphoneDecoder.srcObject = null; }
+  });
   window.audioHarness = {
     controller, context, mic, remote, errors: 0,
     readRms() {
@@ -57,7 +64,12 @@ document.querySelector("#start")!.addEventListener("click", async () => {
       const received = new Promise<MediaStream>(resolve => {
         receiver.ontrack = event => resolve(new MediaStream([event.track]));
       });
+      const receivedMic = new Promise<MediaStream>(resolve => {
+        sender.ontrack = event => resolve(new MediaStream([event.track]));
+      });
       for (const track of remoteStream.stream.getTracks()) sender.addTrack(track, remoteStream.stream);
+      // The other peer receives the actual microphone track used by LiveClient.
+      for (const track of microphone.stream.getTracks()) receiver.addTrack(track, microphone.stream);
       async function gather(peer: RTCPeerConnection, description: RTCSessionDescriptionInit) {
         await peer.setLocalDescription(description);
         if (peer.iceGatheringState !== "complete") await new Promise<void>(resolve => {
@@ -72,6 +84,15 @@ document.querySelector("#start")!.addEventListener("click", async () => {
       controller.attachRemoteStream(await received);
       connectMeter();
       await controller.playOutput();
+      const sentMic = await receivedMic;
+      microphoneDecoder = document.createElement("audio");
+      microphoneDecoder.muted = true; microphoneDecoder.srcObject = sentMic;
+      await microphoneDecoder.play();
+      context.createMediaStreamSource(sentMic).connect(receivedMicAnalyser);
+    },
+    readReceivedMicRms() {
+      receivedMicAnalyser.getFloatTimeDomainData(receivedMicSamples);
+      return Math.sqrt(receivedMicSamples.reduce((sum, x) => sum + x * x, 0) / receivedMicSamples.length);
     },
     async receivedSamples() {
       const stats = await rtcReceiver!.getStats();
@@ -90,12 +111,7 @@ document.querySelector("#start")!.addEventListener("click", async () => {
   const uiController = {
     session: { ...createInitialSession({ side: "A", language: "ru", hasAcceptedConversationSpeech: true },
       { side: "B", language: "en", hasAcceptedConversationSpeech: true }), state: "listening" as const },
-    captionBlocks: [], inputReady: true, nonInterrupting: false,
-    setNonInterrupting(enabled: boolean) {
-      controller.setNonInterrupting(enabled);
-      this.nonInterrupting = enabled;
-      for (const listener of listeners) listener();
-    },
+    captionBlocks: [], inputReady: true,
     subscribe(listener: () => void) { listeners.add(listener); return () => { listeners.delete(listener); }; },
     async endConversation() { controller.setOutputAudible(false); },
     async resumeFromSourceTimeout() {},
@@ -103,6 +119,6 @@ document.querySelector("#start")!.addEventListener("click", async () => {
   const root = document.createElement("div");
   document.querySelector("#start")!.remove();
   document.body.append(root);
-  createRoot(root).render(createElement(ConversationScreen, { controller: uiController, onChangeLanguage: () => {} }));
+  createRoot(root).render(createElement(ConversationScreen, { controller: uiController }));
 
 });

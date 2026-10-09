@@ -40,7 +40,6 @@ export interface ContextScreenController {
   readonly recoveryPrompt?: RecoveryPrompt;
   readonly suspendReason?: LifecycleSuspendReason;
   readonly retainedRecoveryState?: RetainedRecoveryState;
-  readonly selectedInterlocutorLanguage?: string;
   subscribe(listener: () => void): () => void;
   startContextCapture(): Promise<void>;
   finishContextCapture(): void;
@@ -48,7 +47,6 @@ export interface ContextScreenController {
   clearContext(): void;
   startBootstrap(): Promise<void>;
   startWithLanguages(languages: { A: string; B: string }): Promise<void>;
-  changeInterlocutorLanguage(language: string): Promise<void>;
   readonly bootstrapSide: Side;
   readonly bootstrapRecording: boolean;
   acceptBootstrap(text: string): Promise<void>;
@@ -65,7 +63,7 @@ function uiSnapshot(controller: ContextScreenController): unknown[] {
     controller.bootstrapSide, controller.bootstrapRecording, controller.ownerError,
     controller.hasEnteredInterpreter, controller.isConnectInFlight, controller.isInterpreterStarting,
     controller.recoveryPrompt, controller.suspendReason, controller.retainedRecoveryState,
-    controller.audioElement, controller.selectedInterlocutorLanguage];
+    controller.audioElement];
 }
 
 let documentController: AccountedSessionController | null = null;
@@ -135,9 +133,8 @@ export function ContextScreen({
   const [ownerLanguage, setOwnerLanguage] = useState(initialOwnerLanguage);
   const [draftOwnerLanguage, setDraftOwnerLanguage] = useState<string>();
   const [interlocutorLanguage, setInterlocutorLanguage] = useState(savedInterlocutorLanguage);
-  const [pickerMode, setPickerMode] = useState<"start" | "owner" | "change" | null>(null);
+  const [pickerMode, setPickerMode] = useState<"start" | "owner" | null>(null);
   const [pickerBusy, setPickerBusy] = useState(false);
-  const [languageChangeError, setLanguageChangeError] = useState<string>();
   const [startingWithLanguages, setStartingWithLanguages] = useState(false);
   useEffect(() => {
     if (injectedController !== undefined) return;
@@ -165,7 +162,6 @@ export function ContextScreen({
 
   const [, rerender] = useReducer((count: number) => count + 1, 0);
   const audioHostRef = useRef<HTMLDivElement>(null);
-  const languageDialogRef = useRef<HTMLDialogElement>(null);
   const startRef = useRef<HTMLButtonElement>(null);
   const bootstrapPrimaryRef = useRef<HTMLButtonElement>(null);
   const bootstrapRepeatRef = useRef<HTMLButtonElement>(null);
@@ -203,20 +199,6 @@ export function ContextScreen({
       }
     };
   }, [controller?.audioElement]);
-  useEffect(() => {
-    if (pickerMode !== "change") return;
-    const dialog = languageDialogRef.current;
-    if (!dialog) return;
-    if (typeof dialog.showModal === "function") dialog.showModal();
-    else dialog.setAttribute("open", "");
-    return () => {
-      if (typeof dialog.close === "function") dialog.close();
-      else dialog.removeAttribute("open");
-    };
-  }, [pickerMode]);
-  useEffect(() => {
-    if (pickerMode === "change" && controller?.session.state === "idle") setPickerMode(null);
-  }, [controller?.session.state, pickerMode]);
 
   if (ownerFailed) return <main className="setup-screen" lang={ownerLocale} role="alert">
     <div className="setup-shell">
@@ -263,7 +245,6 @@ export function ContextScreen({
 
   async function handleLanguageConfirm(owner: string, interlocutor: string): Promise<void> {
     setPickerBusy(true);
-    setLanguageChangeError(undefined);
     setOwnerLanguage(owner);
     setDraftOwnerLanguage(undefined);
     setInterlocutorLanguage(interlocutor);
@@ -273,21 +254,15 @@ export function ContextScreen({
         localStorage.setItem(OWNER_LANGUAGE_KEY, owner);
       } else localStorage.removeItem(OWNER_LANGUAGE_KEY);
     } catch { /* This tab still remembers the choice when storage is unavailable. */ }
-    const changing = pickerMode === "change";
-    if (!changing) {
-      setStartingWithLanguages(true);
-      setPickerMode(null);
-    }
+    setStartingWithLanguages(true);
+    setPickerMode(null);
     try {
-      if (changing) await activeController.changeInterlocutorLanguage(interlocutor);
-      else await activeController.startWithLanguages({ A: owner, B: interlocutor });
-      if (changing) setPickerMode(null);
+      await activeController.startWithLanguages({ A: owner, B: interlocutor });
     } catch (error) {
-      if (changing) setLanguageChangeError("Не удалось сменить язык. Дождитесь возобновления разговора и повторите попытку.");
       console.error("Failed to apply language choice", { error });
     } finally {
       setPickerBusy(false);
-      if (!changing) setStartingWithLanguages(false);
+      setStartingWithLanguages(false);
     }
   }
 
@@ -353,28 +328,7 @@ export function ContextScreen({
     >
       <div ref={audioHostRef} hidden />
       {!isOwnerSetup ? (
-        <>
-          <ConversationScreen controller={controller} onChangeLanguage={() => {
-            setLanguageChangeError(undefined);
-            setPickerMode("change");
-          }} />
-          {pickerMode === "change" ? <dialog ref={languageDialogRef} className="language-picker-overlay"
-            aria-label={t("Сменить язык собеседника")} onCancel={event => {
-              event.preventDefault();
-              setPickerMode(null);
-            }}>
-            <div className="language-picker-overlay-content">
-              <header className="setup-header"><p className="setup-brand">Live Translator</p></header>
-              <LanguagePicker ownerLanguage={controller.session.participantA.language}
-                interlocutorLanguage={controller.selectedInterlocutorLanguage ?? controller.session.participantB.language}
-                allowOwnerChange={false}
-                busy={pickerBusy}
-                onConfirm={(owner, interlocutor) => { void handleLanguageConfirm(owner, interlocutor); }}
-                onCancel={() => setPickerMode(null)} />
-              {languageChangeError ? <p role="alert">{t(languageChangeError)}</p> : null}
-            </div>
-          </dialog> : null}
-        </>
+        <ConversationScreen controller={controller} />
       ) : (
         <div className={`setup-shell${showStartPicker ? " setup-shell--picker" : ""}${showStartLayout ? " setup-shell--start" : ""}`}>
           <header className="setup-header">

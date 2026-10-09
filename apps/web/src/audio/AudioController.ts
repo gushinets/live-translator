@@ -1,6 +1,7 @@
 import playbackWorkletUrl from "./BufferedPlaybackProcessor.ts?worker&url";
 import { PlaybackActivityDetector } from "./PlaybackActivityDetector";
 import { VAM_SAMPLE_INTERVAL_MS } from "./VoiceActivityEstimator";
+import { runtime } from "../config/runtime";
 import {
   VoiceActivityMonitor,
   type AudioActivityEvent,
@@ -74,6 +75,7 @@ export class AudioController {
   onSourceSample: ((event: AudioActivityEvent & { reset?: boolean }) => void) | null = null;
   onVoiceActivity: ((event: AudioActivityEvent) => void) | null = null;
   onPlaybackActivity: ((event: PlaybackActivityEvent) => void) | null = null;
+  onPlaybackInputBlocked: (() => void) | null = null;
   onRemoteAudioSample: ((event: AudioActivityEvent) => void) | null = null;
   onAudioInterruption: (() => void) | null = null;
   onAudioRestored: (() => void) | null = null;
@@ -111,9 +113,13 @@ export class AudioController {
   private playbackDestination: MediaStreamAudioDestinationNode | null = null;
   private remoteDecoder: HTMLAudioElement | null = null;
   private queuedPlayback = false;
-  private nonInterrupting = false;
+  private nonInterrupting = true;
   private sourceSpeaking = false;
   private lastSourceSpeaking: boolean | null = null;
+  private captureEnabled = false;
+  private inputBlocked = false;
+  private playbackReleaseTimer: number | null = null;
+  get playbackInputBlocked(): boolean { return this.inputBlocked; }
   get hasPendingPlayback(): boolean { return this.queuedPlayback; }
   get rawPlaybackActive(): boolean | undefined {
     return this.remoteAnalyser === null ? undefined : this.rawPlaybackDetector.active;
@@ -258,6 +264,8 @@ export class AudioController {
     this.micSource = micSource;
     this.micAnalyser = micAnalyser;
     this.microphoneSettings = readMicrophoneSettings(track);
+    this.captureEnabled = true;
+    this.applyCaptureGate();
     console.info("Microphone track settings", this.microphoneSettings);
     this.syncSampler();
   }
@@ -266,6 +274,7 @@ export class AudioController {
     if (this.captureTrack === null || this.captureStream === null || this.micSource === null) {
       throw new Error("Microphone capture has not started");
     }
+    this.captureEnabled = false;
     this.captureTrack.removeEventListener("ended", this.handleCaptureEnded);
     for (const track of this.captureStream.getTracks()) {
       track.stop();
@@ -285,11 +294,43 @@ export class AudioController {
     if (this.captureTrack === null || this.micAnalysisStream === null) {
       throw new Error("Microphone capture has not started");
     }
-    this.captureTrack.enabled = enabled;
-    for (const track of this.micAnalysisStream.getAudioTracks()) {
-      track.enabled = enabled;
-    }
+    this.captureEnabled = enabled;
+    this.applyCaptureGate();
     this.notifyMeteringBoundary();
+  }
+
+  private applyCaptureGate(): void {
+    const enabled = this.captureEnabled && !this.inputBlocked;
+    if (this.captureTrack) this.captureTrack.enabled = enabled;
+    for (const track of this.micAnalysisStream?.getAudioTracks() ?? []) track.enabled = enabled;
+  }
+
+  private blockPlaybackInput(blocked: boolean): void {
+    if (this.inputBlocked === blocked) return;
+    // Deliver the pending idle edge before consumers start ignoring gated microphone events.
+    if (blocked && this.voiceActivityMonitor.active) this.onVoiceActivity?.({ active: false, atMs: this.nowMs() });
+    this.inputBlocked = blocked;
+    this.applyCaptureGate();
+    this.resetVoiceActivityBaseline();
+    this.onPlaybackInputBlocked?.();
+  }
+
+  private cancelPlaybackRelease(): void {
+    if (this.playbackReleaseTimer !== null) window.clearTimeout(this.playbackReleaseTimer);
+    this.playbackReleaseTimer = null;
+  }
+
+  private releasePlaybackInput(): void {
+    this.cancelPlaybackRelease();
+    if (!this.inputBlocked) return;
+    if (!this.captureEnabled) {
+      this.blockPlaybackInput(false);
+      return;
+    }
+    this.playbackReleaseTimer = window.setTimeout(() => {
+      this.playbackReleaseTimer = null;
+      this.blockPlaybackInput(false);
+    }, runtime.playbackEchoTailMs);
   }
 
   /** Gate C: mute local GPT playback. Never uses Live input mute. */
@@ -297,6 +338,7 @@ export class AudioController {
     this.audioElement.muted = !audible;
     this.playbackNode?.port.postMessage({ type: "audible", value: audible });
     if (!audible) {
+      this.releasePlaybackInput();
       this.queuedPlayback = false;
       this.playbackDetector.reset();
       // Retire worklet activity even if sampled RMS stayed quiet; this is not normal playback completion.
@@ -313,6 +355,7 @@ export class AudioController {
     this.nonInterrupting = enabled;
     this.playbackNode?.port.postMessage({ type: "enabled", value: enabled });
     this.sendSourceActivity();
+    if (!enabled) this.releasePlaybackInput();
   }
 
   private sendSourceActivity(): void {
@@ -327,11 +370,15 @@ export class AudioController {
     if (!context.audioWorklet) return;
     this.workletPreparation = context.audioWorklet.addModule(playbackWorkletUrl)
       .then(() => { if (this.audioContext === context) this.workletReady = true; })
-      .catch(() => { console.warn("Buffered playback is unavailable in this browser"); });
+      .catch(() => {
+        if (this.audioContext === context) this.workletPreparation = null;
+        console.warn("Buffered playback is unavailable in this browser");
+      });
     return this.workletPreparation;
   }
 
   private releasePlayback(): void {
+    this.releasePlaybackInput();
     if (this.remoteDecoder) {
       this.remoteDecoder.onerror = null;
       this.remoteDecoder.pause();
@@ -365,6 +412,19 @@ export class AudioController {
     node.onprocessorerror = fail;
     node.port.onmessage = ({ data }: MessageEvent<{ type: string; value?: boolean; turnId?: string }>) => {
       if (this.playbackNode !== node) return;
+      if (data.type === "playback" && !this.audioElement.muted && this.nonInterrupting) {
+        if (data.value === true) {
+          if (this.sourceSpeaking && !this.inputBlocked) {
+            node.port.postMessage({ type: "playback", value: false });
+            return;
+          }
+          this.cancelPlaybackRelease();
+          try {
+            this.blockPlaybackInput(true);
+            if (this.playbackNode === node && !this.audioElement.muted) node.port.postMessage({ type: "playback", value: true });
+          } catch { fail(); }
+        } else this.releasePlaybackInput();
+      }
       if (data.type === "pending") this.queuedPlayback = !this.audioElement.muted && data.value === true;
       if (data.type === "turn" && !this.audioElement.muted) {
         this.onPlaybackActivity?.({ active: data.value === true, atMs: this.nowMs(), owned: true,
@@ -418,20 +478,18 @@ export class AudioController {
     this.remoteSource = context.createMediaStreamSource(analysisStream);
     this.remoteAnalyser = context.createAnalyser();
     this.remoteSource.connect(this.remoteAnalyser);
-    if (this.workletReady) {
-      try { this.connectPlayback(context, stream); }
-      catch {
-        this.releasePlayback();
-        // A selected non-interrupting mode must never silently become direct playback.
-        if (this.nonInterrupting) {
-          this.setOutputAudible(false);
-          this.onPlaybackBufferError?.();
-        } else {
-          this.audioElement.srcObject = stream;
-        }
+    try {
+      if (!this.workletReady) throw new Error("Buffered playback unavailable");
+      this.connectPlayback(context, stream);
+    } catch {
+      this.releasePlayback();
+      // Buffered playback must never silently become direct playback.
+      if (this.nonInterrupting) {
+        this.setOutputAudible(false);
+        this.onPlaybackBufferError?.();
+      } else {
+        this.audioElement.srcObject = stream;
       }
-    } else {
-      this.audioElement.srcObject = stream;
     }
     this.audioElement.load();
     this.syncSampler();
@@ -459,12 +517,15 @@ export class AudioController {
   }
 
   dispose(): void {
-    this.detachRemoteStream();
-    this.workletReady = false;
-    this.workletPreparation = null;
+    this.captureEnabled = false;
     if (this.captureTrack !== null) {
       this.stopCapture();
     }
+    this.detachRemoteStream();
+    this.workletReady = false;
+    this.workletPreparation = null;
+    this.cancelPlaybackRelease();
+    this.blockPlaybackInput(false);
     this.stopSampler();
     if (this.audioContext !== null) {
       const context = this.audioContext;
@@ -544,7 +605,7 @@ export class AudioController {
       this.playbackDetector.pushRms(playedRms, atMs);
       if (fresh) this.onRemoteAudioSample?.({ active: this.rawPlaybackDetector.active, atMs });
     }
-    if (this.micAnalyser !== null) {
+    if (this.micAnalyser !== null && this.captureTrack?.enabled) {
       this.voiceActivityMonitor.pushRms(
         rmsFromAnalyser(this.micAnalyser),
         !this.audioElement.muted && this.playbackDetector.active,

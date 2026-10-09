@@ -14,7 +14,7 @@ for (const name of ["Pixel 7 landscape", "iPhone 13 landscape", "Galaxy S24 land
   const { defaultBrowserType, ...descriptor } = devices[name]!;
   test.describe(name, () => {
     test.use(descriptor);
-    test("language lists remain usable in setup and the conversation dialog", async ({ page, browserName }) => {
+    test("setup language lists remain usable and the conversation keeps its end action", async ({ page, browserName }) => {
       test.skip(browserName !== defaultBrowserType, "Use the descriptor's browser engine");
       await MockLiveHarness.attach(page);
       // Defense in depth: unknown live endpoints cannot reach a paid backend.
@@ -36,18 +36,10 @@ for (const name of ["Pixel 7 landscape", "iPhone 13 landscape", "Galaxy S24 land
       await expect(page.locator('input[value="ru"]')).toBeChecked();
       await page.getByRole("button", { name: "Start translation", exact: true }).tap();
       await expect(page.locator(".conversation-screen")).toBeVisible();
-      await page.locator(".conversation-language-action").tap();
-      const dialog = page.locator("dialog[open]");
-      expect(await dialog.locator(".language-picker-options").evaluate(e => e.clientHeight)).toBeGreaterThanOrEqual(74);
-      const spanish = dialog.locator('.language-picker-option:has(input[value="es"])');
-      await spanish.scrollIntoViewIfNeeded();
-      await spanish.tap();
-      await dialog.getByRole("button", { name: "Confirm", exact: true }).tap();
-      await expect(dialog).toBeHidden();
-      await expect(page.getByTestId("participant-pane-B")).toHaveAttribute("lang", "es");
-      await page.locator(".conversation-language-action").tap();
-      await page.getByRole("button", { name: "Back", exact: true }).tap();
-      await expect(dialog).toBeHidden();
+      await expect(page.getByRole("button", { name: "Partner's language" })).toHaveCount(0);
+      await expect(page.getByRole("dialog")).toHaveCount(0);
+      await expect(page.getByRole("button", { name: "End", exact: true })).toBeVisible();
+      await expect(page.getByTestId("participant-pane-B")).toHaveAttribute("lang", "ru");
     });
   });
 }

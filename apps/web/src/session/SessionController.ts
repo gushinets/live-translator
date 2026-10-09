@@ -69,8 +69,9 @@ export interface SessionControllerDeps {
     | "resetVoiceActivityBaseline"
   > & {
     onSourceSample?: AudioController["onSourceSample"];
+    onPlaybackInputBlocked?: AudioController["onPlaybackInputBlocked"];
+    playbackInputBlocked?: boolean;
     meteringMediaReady?: boolean;
-    setNonInterrupting?: AudioController["setNonInterrupting"];
     setPlaybackTurn?: AudioController["setPlaybackTurn"];
     playOutput?: AudioController["playOutput"];
     detachRemoteStream?: AudioController["detachRemoteStream"];
@@ -493,26 +494,11 @@ export class SessionController {
     return this.steeringDegradedFlag;
   }
 
-  private nonInterruptingEnabled = false;
-  get nonInterrupting(): boolean { return this.nonInterruptingEnabled; }
-  setNonInterrupting(enabled: boolean): void {
-    if (!["listening", "outputting"].includes(this.currentSession.state)) return;
-    try {
-      if (!this.audio.setNonInterrupting) throw new Error("Buffered playback unavailable");
-      this.audio.setNonInterrupting(enabled);
-      this.nonInterruptingEnabled = enabled;
-      this.ownerErrorMessage = undefined;
-    } catch {
-      this.ownerErrorMessage = "Режим «Не перебивать» недоступен в этом браузере.";
-    }
-    this.notify();
-  }
-
   get inputReady(): boolean {
     return (
       (this.currentSession.state === "listening" || this.currentSession.state === "outputting") &&
       (this.currentSession.activeTurn === undefined || this.currentSession.activeTurn.sourceIdleAtMs !== undefined) &&
-      this.speechInputReady
+      this.speechInputReady && !this.audio.playbackInputBlocked
     );
   }
 
@@ -1326,6 +1312,7 @@ export class SessionController {
       });
     };
     this.audio.onSourceSample = sample => this.observeMetrics(undefined, sample);
+    this.audio.onPlaybackInputBlocked = () => this.notify();
     this.audio.onVoiceActivity = (event) => {
       void this.handleVoiceActivity(event);
     };
@@ -1601,7 +1588,7 @@ export class SessionController {
   }
 
   private async handleVoiceActivity(event: AudioActivityEvent): Promise<void> {
-    if (this.backgroundPaused || this.turnClosing ||
+    if (this.backgroundPaused || this.turnClosing || this.audio.playbackInputBlocked ||
         !["listening", "outputting"].includes(this.currentSession.state)) return;
     this.sourceVoiceActive = event.active;
     if (event.active) {
@@ -1635,7 +1622,7 @@ export class SessionController {
     this.clearMaxSourceTimer();
     this.dispatch({ type: "SOURCE_IDLE" });
     this.speechInputReady = true;
-    // GPT-Live must hear the next speaker, including interruptions during its output.
+    // Local queued playback independently blocks microphone capture until its echo tail ends.
     await this.considerTurnCompletion(Date.now());
   }
 
@@ -2969,8 +2956,6 @@ export class SessionController {
   }
 
   private resetToIdle(options: { preserveOwnerError?: boolean } = {}): void {
-    this.nonInterruptingEnabled = false;
-    this.audio.setNonInterrupting?.(false);
     this.retainedProductDeadlineAt = null;
     const preservedError =
       options.preserveOwnerError === true ? this.ownerErrorMessage : undefined;

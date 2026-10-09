@@ -43,20 +43,11 @@ test("compact participant headers leave room for four readable exchanges on each
       }
     }
     const end = (await page.getByRole("button", { name: "Завершить", exact: true }).boundingBox())!;
-    const mode = (await page.getByRole("switch", { name: "Не перебивать" }).boundingBox())!;
-    expect(Math.abs(mode.y + mode.height / 2 - end.y - end.height / 2)).toBeLessThan(2);
-    expect(mode.width).toBeGreaterThanOrEqual(44);
-    expect(mode.height).toBeGreaterThanOrEqual(44);
-    const labelLines = await page.locator(".conversation-playback-switch > span:last-child").evaluate(element =>
-      element.getBoundingClientRect().height / parseFloat(getComputedStyle(element).lineHeight));
-    expect(labelLines).toBeLessThanOrEqual(2.01);
-    for (const name of ["Язык собеседника", "Завершить"]) {
-      const button = page.getByRole("button", { name });
-      const box = (await button.boundingBox())!;
-      expect(box.width).toBeGreaterThanOrEqual(44);
-      expect(box.height).toBeGreaterThanOrEqual(44);
-      await expect(button).toBeInViewport({ ratio: 0.99 });
-    }
+    await expect(page.getByRole("switch")).toHaveCount(0);
+    await expect(page.getByRole("button", { name: "Язык собеседника" })).toHaveCount(0);
+    expect(end.width).toBeGreaterThanOrEqual(44);
+    expect(end.height).toBeGreaterThanOrEqual(44);
+    await expect(page.getByRole("button", { name: "Завершить", exact: true })).toBeInViewport({ ratio: 0.99 });
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
   }
   await expect(page.getByTestId("participant-pane-A")).toHaveCSS("background-color", "rgb(23, 35, 38)");
@@ -145,13 +136,11 @@ test("long captions stay readable, retain their size in pauses, and respect manu
   }
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
   const end = page.getByRole("button", { name: "End", exact: true });
-  const changeLanguage = page.getByRole("button", { name: "Partner's language" });
-  for (const button of [end, changeLanguage]) {
-    const box = (await button.boundingBox())!;
-    expect(box.width).toBeGreaterThanOrEqual(44);
-    expect(box.height).toBeGreaterThanOrEqual(44);
-    await expect(button).toBeInViewport();
-  }
+  await expect(page.getByRole("button", { name: "Partner's language" })).toHaveCount(0);
+  const box = (await end.boundingBox())!;
+  expect(box.width).toBeGreaterThanOrEqual(44);
+  expect(box.height).toBeGreaterThanOrEqual(44);
+  await expect(end).toBeInViewport();
   await page.screenshot({ path: testInfo.outputPath("conversation-200-percent.png") });
 });
 

@@ -20,6 +20,8 @@ export const runtime = {
   sourceTailGraceMs: 250,
   /** §10.2: local remote-audio inactivity window used to derive `playbackIdle`. */
   playbackIdleMs: 500,
+  /** Keep microphone input closed after queued playback stops for output latency and residual echo. */
+  playbackEchoTailMs: 300,
   /** §10.2: output-transcript inactivity window used to derive `captionIdle`. */
   captionIdleMs: 600,
   /** §10.1 branch B: grace period before falling back to text-only completion. */

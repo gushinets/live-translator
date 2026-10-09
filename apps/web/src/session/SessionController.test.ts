@@ -328,23 +328,14 @@ function createController<
 }
 
 describe("SessionController", () => {
-  it("switches local playback without changing Live instructions, then resets at end", async () => {
+  it("does not disable buffered playback when ending and starting another conversation", async () => {
     const audio = Object.assign(createFakeAudio(), { setNonInterrupting: vi.fn() });
-    const { controller, live, orientation } = createController({ audio });
-    expect(controller.nonInterrupting).toBe(false);
+    const { controller } = createController({ audio });
     await controller.startWithLanguages({ A: "ru", B: "es" });
-    const instructionCount = live.appendInstructions.mock.calls.length;
-    controller.setNonInterrupting(true);
-    expect(controller.nonInterrupting).toBe(true);
-    expect(audio.setNonInterrupting).toHaveBeenLastCalledWith(true);
-    expect(live.appendInstructions).toHaveBeenCalledTimes(instructionCount);
-    orientation.emit("landscape");
-    await flushMicrotasks();
-    controller.setNonInterrupting(false);
-    expect(controller.nonInterrupting).toBe(true);
     await controller.endConversation();
-    expect(controller.nonInterrupting).toBe(false);
-    expect(audio.setNonInterrupting).toHaveBeenLastCalledWith(false);
+    await controller.startWithLanguages({ A: "ru", B: "es" });
+    expect(controller.session.state).toBe("listening");
+    expect(audio.setNonInterrupting).not.toHaveBeenCalled();
   });
 
   beforeEach(() => {
@@ -908,7 +899,7 @@ describe("SessionController", () => {
       await flushMicrotasks();
       const readiness = () => (controller as unknown as { remotePlaybackState: string }).remotePlaybackState;
       expect(readiness()).toBe("ready");
-      controller.setNonInterrupting(enabled);
+      audio.setNonInterrupting(enabled);
       const decoder = vi.mocked(HTMLMediaElement.prototype.play).mock.contexts[0] as HTMLAudioElement;
       let error: MediaError | null = { code: 3 } as MediaError;
       Object.defineProperty(decoder, "error", { configurable: true, get: () => error });
@@ -1817,7 +1808,7 @@ describe("SessionController turn engine", () => {
       audio.playOutput.mockImplementationOnce(() => new Promise<void>(resolve => { ready = resolve; }));
       controller.handleRemoteStream(fakeRemoteStream("remote"), live as unknown as LiveClient);
     }
-    controller.setNonInterrupting(true);
+    audio.setNonInterrupting(true);
     queue.setSpeaking(true);
     emitVoice(audio, true);
     live.emit({ type: "session.input_transcript.delta", delta: "Подскажите, где находится вокзал?", start_ms: 0, end_ms: 500 });
@@ -2112,7 +2103,7 @@ describe("SessionController turn engine", () => {
     expect(controller.session.activeTurn?.firstAudibleOutputAtMs).toBeDefined();
   });
 
-  it("does not mute Gate B merely because audible output started", async () => {
+  it("does not use provider input mute merely because audible output started", async () => {
     const { controller, audio, live } = createController();
     await enterListening(controller);
     emitVoice(audio, true);
@@ -4259,7 +4250,7 @@ describe("SessionController PWA lifecycle suspension (§11.3 / §19)", () => {
       await controller.startWithLanguages({ A: "en", B: "es" });
       controller.handleRemoteStream(audio.getCaptureStream()!, live as unknown as LiveClient);
       await flushMicrotasks();
-      controller.setNonInterrupting(enabled);
+      audio.setNonInterrupting(enabled);
       emitVoice(audio, true);
       live.emit({ type: "session.input_transcript.delta", delta: "Where is the station?" });
       live.emit({ type: "session.output_transcript.delta", delta: "Dónde está la estación?" });
@@ -4297,7 +4288,7 @@ describe("SessionController PWA lifecycle suspension (§11.3 / §19)", () => {
     const orientation = new FakeOrientation();
     const { controller, live } = createController({ audio, orientation });
     await startSourceTurn(controller, live, audio);
-    controller.setNonInterrupting(true);
+    audio.setNonInterrupting(true);
     queue.setSpeaking(true);
     queue.process(new Float32Array(128).fill(.5));
     expect(queue.pending).toBe(true);
@@ -4337,7 +4328,7 @@ describe("SessionController PWA lifecycle suspension (§11.3 / §19)", () => {
     const orientation = new FakeOrientation();
     const { controller, live } = createController({ audio, orientation });
     await startSourceTurn(controller, live, audio);
-    controller.setNonInterrupting(true);
+    audio.setNonInterrupting(true);
     queue.setSpeaking(true);
     queue.process(new Float32Array(128).fill(.5));
     expect(queue.pending).toBe(true);
@@ -5041,7 +5032,7 @@ describe("open-input interpretation", () => {
     expect(controller.session.pendingTurns?.find(t => t.id === aId)?.originalText).toBe("Подскажите, где находится вокзал? Я хочу туда дойти пешком.");
   });
 
-  it("keeps model input open through quiet, playback and bookkeeping completion", async () => {
+  it("leaves provider input control unchanged through quiet, playback and bookkeeping completion", async () => {
     const { controller, live, audio } = createController();
     await enterListening(controller);
     const startupInstructions = live.appendInstructions.mock.calls.length;
@@ -5058,6 +5049,55 @@ describe("open-input interpretation", () => {
     expect(controller.inputReady).toBe(true);
     expect(live.setInputMuted).not.toHaveBeenCalled();
     expect(live.appendInstructions).toHaveBeenCalledTimes(startupInstructions);
+  });
+});
+
+
+describe("buffered playback microphone isolation", () => {
+  it("reports input unavailable during playback and its tail, preserves late source text, and still accepts generated output", async () => {
+    vi.useFakeTimers();
+    vi.spyOn(HTMLMediaElement.prototype, "play").mockResolvedValue(undefined);
+    vi.spyOn(HTMLMediaElement.prototype, "pause").mockImplementation(() => {});
+    vi.spyOn(HTMLMediaElement.prototype, "load").mockImplementation(() => {});
+    const node = Object.assign(new DispatchableAudioNode(), {
+      port: { postMessage: vi.fn(), close: vi.fn(), onmessage: null as ((event: MessageEvent) => void) | null },
+      onprocessorerror: null,
+    });
+    const { audio, audioContext, track } = createDispatchableAudio(undefined, () => node as unknown as AudioWorkletNode);
+    const playbackTrack = new DispatchableMicTrack();
+    Object.assign(audioContext, {
+      audioWorklet: { addModule: vi.fn(async () => {}) },
+      createMediaStreamDestination: () => ({ stream: {
+        getTracks: () => [playbackTrack], getAudioTracks: () => [playbackTrack],
+      } as unknown as MediaStream }),
+    });
+    const { controller, live } = createController({ audio });
+    try {
+      await controller.startWithLanguages({ A: "ru", B: "en" });
+      controller.handleRemoteStream(audio.getCaptureStream()!, live as unknown as LiveClient);
+      await flushMicrotasks();
+      emitVoice(audio, true);
+      live.emit({ type: "session.input_transcript.delta", delta: "Подскажите, где находится вокзал?" });
+      emitVoice(audio, false);
+      expect(controller.inputReady).toBe(true);
+      const changed = vi.fn(); const unsubscribe = controller.subscribe(changed);
+      node.port.onmessage!({ data: { type: "playback", value: true } } as MessageEvent);
+      expect(track.enabled).toBe(false); expect(controller.inputReady).toBe(false);
+      expect(changed).toHaveBeenCalled();
+      emitVoice(audio, true);
+      expect(controller.session.activeTurn?.sourceIdleAtMs).toBeDefined();
+      // Transcripts of audio sent before closure can arrive late and must not be dropped.
+      live.emit({ type: "session.input_transcript.delta", delta: " Я хочу туда дойти пешком." });
+      live.emit({ type: "session.output_transcript.delta", delta: "Where is the train station?" });
+      expect(controller.captionBlocks.some(block => block.text.includes("пешком"))).toBe(true);
+      expect(controller.captionBlocks.some(block => block.text.includes("train station"))).toBe(true);
+      node.port.onmessage!({ data: { type: "playback", value: false } } as MessageEvent);
+      await vi.advanceTimersByTimeAsync(runtime.playbackEchoTailMs - 1);
+      expect(controller.inputReady).toBe(false);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(track.enabled).toBe(true); expect(controller.inputReady).toBe(true);
+      unsubscribe();
+    } finally { await controller.endConversation(); audio.dispose(); }
   });
 });
 
