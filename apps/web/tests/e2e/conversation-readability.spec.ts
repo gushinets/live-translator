@@ -29,9 +29,12 @@ test("compact guidance keeps all exchanges readable in each participant scroller
   }
   // Wider fallback fonts must not wrap the conversation controls into a second row.
   await page.addStyleTag({ content: ".conversation-center { font-family: Verdana, sans-serif; }" });
-  for (const viewport of [page.viewportSize()!, { width: 320, height: 640 }]) {
+  const viewports = [{ width: 390, height: 844 }, { width: 320, height: 640 }];
+  const nativeViewport = page.viewportSize()!;
+  if (nativeViewport.height !== 844) viewports.push(nativeViewport);
+  for (const viewport of viewports) {
     await page.setViewportSize(viewport);
-    await page.screenshot({ path: testInfo.outputPath(`variant-four-dialogue-${viewport.width}.png`) });
+    await page.screenshot({ path: testInfo.outputPath(`variant-four-dialogue-${viewport.width}x${viewport.height}.png`) });
     for (const side of ["A", "B"] as const) {
       const pane = page.getByTestId(`participant-pane-${side}`);
       await expect(pane.locator(".participant-header")).toHaveCount(0);
@@ -40,8 +43,8 @@ test("compact guidance keeps all exchanges readable in each participant scroller
       for (const row of await rows.all()) {
         await expect(row).toHaveCSS("font-size", "22px");
       }
-      // Guidance must leave three complete history rows on a small phone, and all four at 390px.
-      for (const row of (await rows.all()).slice(viewport.width === 320 ? -3 : -4)) {
+      // Keep three complete rows with phone browser chrome, and all four in the full-height fixture.
+      for (const row of (await rows.all()).slice(viewport.height === 844 ? -4 : -3)) {
         await expect(row).toBeInViewport({ ratio: 0.99 });
       }
       await expect(pane.getByTestId(`participant-guidance-${side}`)).toBeInViewport({ ratio: 0.99 });
