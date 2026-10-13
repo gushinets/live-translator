@@ -53,14 +53,27 @@ test("localized guidance follows the capture gate through playback and its echo 
     })).toBe(true);
     const guidance = page.getByTestId(`participant-guidance-${side}`);
     await expect(guidance).toBeInViewport({ ratio: 0.99 });
+    await page.getByRole("button", { name: "Завершить", exact: true }).focus();
+    await page.keyboard.press(side === "A" ? "Tab" : "Shift+Tab");
+    if (side === "B") await page.keyboard.press("Shift+Tab");
+    await expect(guidance).toBeFocused();
+    await expect(guidance).toHaveAccessibleName(side === "A" ? "Идёт озвучка" : "Translation playing");
+    await expect(guidance).toHaveAccessibleDescription(side === "A"
+      ? "Подождите. Сейчас ваша речь не записывается."
+      : "Please wait. Your speech is not being recorded.");
+    await expect(guidance).toHaveCSS("outline-style", "solid");
+    await expect(guidance).toHaveCSS("outline-width", "2px");
+    await page.keyboard.press("Home");
+    await expect.poll(() => guidance.evaluate(el => el.scrollTop)).toBe(0);
     expect(await guidance.evaluate(el => {
-      el.scrollTop = 0;
       const title = el.querySelector(".participant-guidance-title")!.getBoundingClientRect();
       const box = el.getBoundingClientRect();
       return el.closest(".participant-pane--rotated") ? title.bottom <= box.bottom : title.top >= box.top;
     })).toBe(true);
+    await page.keyboard.press("End");
+    await expect.poll(() => guidance.evaluate(el => el.scrollTop)).toBeGreaterThan(0);
+    await expect.poll(() => guidance.evaluate(el => el.scrollHeight - el.scrollTop - el.clientHeight)).toBeLessThan(2);
     expect(await guidance.evaluate(el => {
-      el.scrollTop = el.scrollHeight;
       const detail = el.querySelector(".participant-guidance-detail")!.getBoundingClientRect();
       const box = el.getBoundingClientRect();
       return el.closest(".participant-pane--rotated") ? detail.top >= box.top : detail.bottom <= box.bottom;

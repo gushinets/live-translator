@@ -129,7 +129,9 @@ export function ParticipantGuidance({ side, label, language }: {
   const blocked = label === "PLAYBACK" || label === "PLAYBACK TAIL";
   return (
     <div ref={guidanceRef} className="participant-guidance" data-tone={listening ? "ready" : "wait"}
-      role="status" aria-atomic="true" data-testid={`participant-guidance-${side}`}>
+      role="status" aria-atomic="true" tabIndex={0}
+      aria-labelledby={`participant-guidance-title-${side}`} aria-describedby={`participant-guidance-detail-${side}`}
+      data-testid={`participant-guidance-${side}`}>
       <svg className="participant-guidance-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor"
         strokeWidth="2" strokeLinecap="round" aria-hidden="true">
         {listening || blocked ? <>
@@ -139,8 +141,8 @@ export function ParticipantGuidance({ side, label, language }: {
         </> : <path d="M9 5v14M15 5v14" />}
       </svg>
       <div className="participant-guidance-copy">
-        <p className="participant-guidance-title" data-testid={`participant-status-${side}`}>{translate(message[0], language)}</p>
-        <p className="participant-guidance-detail">{translate(message[1], language)}</p>
+        <p id={`participant-guidance-title-${side}`} className="participant-guidance-title" data-testid={`participant-status-${side}`}>{translate(message[0], language)}</p>
+        <p id={`participant-guidance-detail-${side}`} className="participant-guidance-detail">{translate(message[1], language)}</p>
       </div>
     </div>
   );

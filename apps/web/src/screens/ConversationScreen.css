@@ -70,7 +70,8 @@ body,
 .conversation-end-label i { flex: 0 0 auto; box-sizing: border-box; width: 0.8125rem; height: 0.8125rem; border: 1px solid currentColor; border-radius: 2px; background: #f5b2a4; }
 
 .conversation-center button:focus-visible { outline: 2px solid #ace2c9; outline-offset: -3px; }
-.participant-scroll:focus-visible { outline: 2px solid var(--participant-accent); outline-offset: -3px; }
+.participant-scroll:focus-visible,
+.participant-guidance:focus-visible { outline: 2px solid var(--participant-accent); outline-offset: -3px; }
 
 .participant-pane {
   --participant-accent: #ace2c9;
