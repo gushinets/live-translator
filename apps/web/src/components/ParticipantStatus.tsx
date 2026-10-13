@@ -1,3 +1,4 @@
+import { useLayoutEffect, useRef } from "react";
 import type { Side } from "../conversation/Turn";
 import type { SessionState } from "../session/SessionState";
 import { translate, uiLocale } from "../i18n/messages";
@@ -108,6 +109,10 @@ export function ParticipantGuidance({ side, label, language }: {
   label: ParticipantStatusLabel;
   language?: string;
 }) {
+  const guidanceRef = useRef<HTMLDivElement>(null);
+  useLayoutEffect(() => {
+    if (guidanceRef.current) guidanceRef.current.scrollTop = 0;
+  }, [label, language]);
   const messages: Partial<Record<ParticipantStatusLabel, readonly [string, string]>> = {
     DETECTING: ["Определяю язык", "Продолжайте говорить на своём языке."],
     "YOUR TURN": ["Можно говорить", "Микрофон включён. Говорите по очереди."],
@@ -123,7 +128,7 @@ export function ParticipantGuidance({ side, label, language }: {
   const listening = label === "YOUR TURN" || label === "LISTENING" || label === "DETECTING";
   const blocked = label === "PLAYBACK" || label === "PLAYBACK TAIL";
   return (
-    <div className="participant-guidance" data-tone={listening ? "ready" : "wait"}
+    <div ref={guidanceRef} className="participant-guidance" data-tone={listening ? "ready" : "wait"}
       role="status" aria-atomic="true" data-testid={`participant-guidance-${side}`}>
       <svg className="participant-guidance-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor"
         strokeWidth="2" strokeLinecap="round" aria-hidden="true">

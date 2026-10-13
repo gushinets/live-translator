@@ -40,6 +40,13 @@ test("localized guidance follows the capture gate through playback and its echo 
     await page.screenshot({ path: testInfo.outputPath(`playback-guidance-${width}.png`) });
   }
   const enlarged = await page.addStyleTag({ content: "html { font-size: 200% !important; }" });
+  const headingVisible = (el: HTMLElement) => {
+    const title = el.querySelector(".participant-guidance-title")!.getBoundingClientRect();
+    const box = el.getBoundingClientRect();
+    return el.closest(".participant-pane--rotated")
+      ? title.bottom <= box.bottom && title.bottom > box.top
+      : title.top >= box.top && title.top < box.bottom;
+  };
   for (const side of ["A", "B"] as const) {
     expect(await page.getByTestId(`participant-scroll-${side}`).evaluate(el => {
       return el.clientHeight >= parseFloat(getComputedStyle(el.querySelector("li")!).lineHeight);
@@ -58,23 +65,30 @@ test("localized guidance follows the capture gate through playback and its echo 
       const box = el.getBoundingClientRect();
       return el.closest(".participant-pane--rotated") ? detail.top >= box.top : detail.bottom <= box.bottom;
     })).toBe(true);
-    await guidance.evaluate(el => { el.scrollTop = 0; });
   }
   await expect(page.getByRole("button", { name: "Завершить", exact: true })).toBeInViewport();
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
   await page.screenshot({ path: testInfo.outputPath("playback-guidance-200-percent.png") });
-  await enlarged.evaluate(el => el.remove());
   await expect(page.getByTestId("participant-pane-B")).toHaveCSS("transform", "matrix(-1, 0, 0, -1, 0, 0)");
   await harness.bufferedPlayback(false);
   await harness.playbackIdle();
   await expect(page.getByTestId("participant-guidance-A")).toContainText("Ещё мгновение");
   await expect(page.getByTestId("participant-guidance-B")).toContainText("One moment");
+  for (const side of ["A", "B"] as const) {
+    const guidance = page.getByTestId(`participant-guidance-${side}`);
+    expect(await guidance.evaluate(headingVisible)).toBe(true);
+    await guidance.evaluate(el => { el.scrollTop = el.scrollHeight; });
+  }
   await harness.advance(runtime.playbackEchoTailMs - 1);
   await expect(page.getByTestId("participant-status-A")).toHaveText("Ещё мгновение");
   await expect(page.getByTestId("participant-status-B")).toHaveText("One moment");
   await harness.advance(1);
   await expect(page.getByTestId("participant-guidance-A")).toContainText("Можно говорить");
   await expect(page.getByTestId("participant-guidance-B")).toContainText("You can speak");
+  for (const side of ["A", "B"] as const) {
+    expect(await page.getByTestId(`participant-guidance-${side}`).evaluate(headingVisible)).toBe(true);
+  }
+  await enlarged.evaluate(el => el.remove());
   await page.getByRole("button", { name: "Завершить", exact: true }).click();
   await expect(page.getByTestId("participant-guidance-A")).toHaveCount(0);
   await expect(page.getByTestId("participant-guidance-B")).toHaveCount(0);
