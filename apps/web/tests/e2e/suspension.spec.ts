@@ -249,7 +249,7 @@ async function startListeningConversation(page: Page): Promise<void> {
   await page.goto("/");
   await completeLanguageSetup(page);
   await expect(page.getByRole("button", { name: "End" })).toBeVisible();
-  await expect(page.getByTestId("participant-status-A")).toHaveText("Speak");
+  await expect(page.getByTestId("participant-status-A")).toHaveText("You can speak");
 }
 
 async function emitSourceTranscript(page: Page, delta: string): Promise<void> {
@@ -310,7 +310,7 @@ test.describe("PWA suspension", () => {
       window.__setVisibility?.("visible");
     });
     await expect(page.getByText("Please repeat")).toBeVisible();
-    await expect(page.getByTestId("participant-status-A")).toHaveText("Speak");
+    await expect(page.getByTestId("participant-status-A")).toHaveText("You can speak");
   });
 
   test("landscape suspends an active source turn until portrait is restored", async ({ page }) => {
@@ -330,6 +330,6 @@ test.describe("PWA suspension", () => {
       window.__setOrientation?.("portrait-primary");
     });
     await expect(page.getByText("Please repeat")).toBeVisible();
-    await expect(page.getByTestId("participant-status-A")).toHaveText("Speak");
+    await expect(page.getByTestId("participant-status-A")).toHaveText("You can speak");
   });
 });

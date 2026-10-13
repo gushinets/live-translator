@@ -1,7 +1,6 @@
 import { useLayoutEffect, useRef } from "react";
-import { languageName } from "../side/SideResolver";
 import type { Side } from "../conversation/Turn";
-import { ParticipantStatus, type ParticipantStatusLabel } from "./ParticipantStatus";
+import { ParticipantGuidance, ParticipantStatus, type ParticipantStatusLabel } from "./ParticipantStatus";
 import { translate, uiLocale } from "../i18n/messages";
 import type { DialogueBlock } from "../conversation/DialogueTranscript";
 import { DialogueCaptions } from "./DialogueCaptions";
@@ -25,13 +24,21 @@ export function ParticipantPane({
 }) {
   const locale = uiLocale(language);
   const t = (text: string) => translate(text, locale);
-  const languageLabel = language === undefined ? undefined : languageName(language, locale);
   const scrollRef = useRef<HTMLDivElement>(null);
   const followEnd = useRef(true);
   useLayoutEffect(() => {
     const scroll = scrollRef.current;
     if (scroll && followEnd.current) scroll.scrollTop = scroll.scrollHeight;
-  }, [captions]);
+  }, [captions, status]);
+  useLayoutEffect(() => {
+    const scroll = scrollRef.current;
+    if (!scroll || typeof ResizeObserver === "undefined") return;
+    const observer = new ResizeObserver(() => {
+      if (followEnd.current) scroll.scrollTop = scroll.scrollHeight;
+    });
+    observer.observe(scroll);
+    return () => observer.disconnect();
+  }, []);
 
   return (
     <section
@@ -45,10 +52,8 @@ export function ParticipantPane({
           : { overflow: "hidden" }
       }
     >
-      <div className="participant-header">
-        {languageLabel !== undefined ? <span className="participant-language">{languageLabel}</span> : null}
-        <ParticipantStatus side={side} label={status} language={locale} />
-      </div>
+      <ParticipantStatus side={side} label={status} language={locale} />
+      <ParticipantGuidance side={side} label={status} language={locale} />
       <div className="participant-scroll" ref={scrollRef} tabIndex={0} role="region"
         aria-label={t("Реплики участника {side}").replace("{side}", side)}
         data-testid={`participant-scroll-${side}`}

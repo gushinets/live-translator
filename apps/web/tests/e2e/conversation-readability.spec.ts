@@ -2,7 +2,7 @@ import { expect, test } from "@playwright/test";
 import { runtime } from "../../src/config/runtime";
 import { MockLiveHarness } from "./mockLiveHarness";
 
-test("compact participant headers leave room for four readable exchanges on each side", async ({ page }, testInfo) => {
+test("compact guidance keeps all exchanges readable in each participant scroller", async ({ page }, testInfo) => {
   const harness = await MockLiveHarness.attach(page);
   await page.addInitScript(() => {
     localStorage.setItem("live-translator-owner-language", "ru");
@@ -34,13 +34,15 @@ test("compact participant headers leave room for four readable exchanges on each
     await page.screenshot({ path: testInfo.outputPath(`variant-four-dialogue-${viewport.width}.png`) });
     for (const side of ["A", "B"] as const) {
       const pane = page.getByTestId(`participant-pane-${side}`);
-      expect((await pane.locator(".participant-header").boundingBox())!.height).toBeLessThanOrEqual(32);
+      await expect(pane.locator(".participant-header")).toHaveCount(0);
       const rows = pane.locator("li");
       await expect(rows).toHaveCount(4);
       for (const row of await rows.all()) {
-        await expect(row).toBeInViewport({ ratio: 0.99 });
         await expect(row).toHaveCSS("font-size", "22px");
       }
+      await expect(rows.last()).toBeInViewport({ ratio: 0.99 });
+      await expect(pane.getByTestId(`participant-guidance-${side}`)).toBeInViewport({ ratio: 0.99 });
+      expect(await page.getByTestId(`participant-scroll-${side}`).evaluate(el => el.clientHeight)).toBeGreaterThan(0);
     }
     const end = (await page.getByRole("button", { name: "Завершить", exact: true }).boundingBox())!;
     await expect(page.getByRole("switch")).toHaveCount(0);
@@ -67,10 +69,8 @@ test("long captions stay readable, retain their size in pauses, and respect manu
     const scroll = page.getByTestId(`participant-scroll-${side}`);
     await expect(message).toHaveCSS("font-size", "22px");
     const pane = page.getByTestId(`participant-pane-${side}`);
-    for (const label of [pane.locator(".participant-language"), pane.getByTestId(`participant-status-${side}`)]) {
-      await expect(label).toHaveCSS("font-family", "system-ui, sans-serif");
-      await expect(label).toHaveCSS("font-size", "15px");
-    }
+    await expect(pane.getByTestId(`participant-status-${side}`)).toHaveCSS("font-family", "system-ui, sans-serif");
+    await expect(pane.getByTestId(`participant-status-${side}`)).toHaveCSS("font-size", /^(18|22)px$/);
     expect(await message.evaluate(el => {
       const author = el.previousElementSibling!.getBoundingClientRect();
       const firstLetter = document.createRange();
@@ -158,7 +158,7 @@ test("keeps all history and the reading position when another turn arrives", asy
     await harness.outputDelta(caption.translation);
     await harness.sourceQuiet();
     await harness.advance(runtime.noOutputTimeoutMs);
-    await expect(page.getByTestId("participant-status-A")).toHaveText("Speak");
+    await expect(page.getByTestId("participant-status-A")).toHaveText("You can speak");
     await harness.waitForGateBUnmuted();
     await harness.advance(runtime.captionIdleMs);
   }

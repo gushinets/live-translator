@@ -21,11 +21,13 @@ declare global {
       emitPlaybackActivity(active: boolean, atMs: number): void;
       isOutputMuted(): boolean;
     };
+    __liveTranslatorTestPlayback?: { emit(active: boolean): void };
     __liveTranslatorTestLive?: {
       channel: EventTarget | null;
       sent: LiveHarnessSentEvent[];
       peerCreateCount: number;
       emit(payload: unknown): void;
+      emitRemoteAudio?(): void;
     };
   }
 }
@@ -99,6 +101,18 @@ export class MockLiveHarness {
     await this.emitPlaybackActivity(false);
   }
 
+  async bufferedPlayback(active: boolean): Promise<void> {
+    await this.page.evaluate(() => {
+      if (window.__liveTranslatorTestPlayback === undefined) window.__liveTranslatorTestLive?.emitRemoteAudio?.();
+    });
+    await this.page.waitForFunction(() => window.__liveTranslatorTestPlayback !== undefined);
+    await this.page.evaluate(isActive => {
+      const playback = window.__liveTranslatorTestPlayback;
+      if (playback === undefined) throw new Error("Playback worklet was not installed");
+      playback.emit(isActive);
+    }, active);
+  }
+
   async ack(clientEventId: string, type: LiveAckType): Promise<void> {
     await this.emitLiveEvent({
       type,
@@ -125,7 +139,7 @@ export class MockLiveHarness {
     await this.page.goto("/");
     await completeLanguageSetup(this.page);
     await expect(this.page.getByRole("button", { name: "End" })).toBeVisible();
-    await expect(this.page.getByTestId("participant-status-A")).toHaveText("Speak");
+    await expect(this.page.getByTestId("participant-status-A")).toHaveText("You can speak");
     await this.page.waitForFunction(
       () =>
         window.__liveTranslatorTestAudio !== undefined &&
@@ -329,7 +343,13 @@ export class MockLiveHarness {
       }
 
       class FakeAudioWorkletNode extends FakeAudioNode {
-        readonly port = { postMessage: () => {}, close: () => {}, onmessage: null };
+        readonly port = { postMessage: () => {}, close: () => {}, onmessage: null as ((event: MessageEvent) => void) | null };
+        constructor() {
+          super();
+          window.__liveTranslatorTestPlayback = {
+            emit: active => this.port.onmessage?.(new MessageEvent("message", { data: { type: "playback", value: active } })),
+          };
+        }
       }
 
       class FakeAudioContext extends EventTarget {
@@ -406,6 +426,7 @@ export class MockLiveHarness {
         constructor() {
           super();
           liveState.peerCreateCount += 1;
+          liveState.emitRemoteAudio = () => this.dispatchEvent(Object.assign(new Event("track"), { streams: [new FakeMediaStream()] }));
         }
         createDataChannel(label: string): FakeDataChannel {
           this.channel = new FakeDataChannel(label);
@@ -510,6 +531,7 @@ export class MockLiveHarness {
       });
 
       HTMLMediaElement.prototype.play = async () => {};
+      Object.defineProperty(HTMLMediaElement.prototype, "srcObject", { configurable: true, writable: true, value: null });
     });
   }
 }

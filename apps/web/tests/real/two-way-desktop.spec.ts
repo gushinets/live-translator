@@ -473,8 +473,8 @@ test.describe("real GPT-Live desktop conversation", () => {
     await page.getByRole("button", { name: "Сохранить образец" }).click();
     await page.getByRole("button", { name: "Начать разговор" }).click();
     await expect(page.getByRole("button", { name: "Завершить" })).toBeVisible();
-    await expect(page.getByTestId("participant-status-A")).toHaveText("Говорите");
-    await expect(page.getByTestId("participant-status-B")).toHaveText("Speak");
+    await expect(page.getByTestId("participant-status-A")).toHaveText("Можно говорить");
+    await expect(page.getByTestId("participant-status-B")).toHaveText("You can speak");
     expect(liveSessionStatuses).toEqual([201]);
     safeStage("interpreter_ready");
 
@@ -499,8 +499,8 @@ test.describe("real GPT-Live desktop conversation", () => {
       if (!(await repeat.isVisible())) {
         throw error;
       }
-      await expect(page.getByTestId("participant-status-A")).toHaveText("Говорите");
-      await expect(page.getByTestId("participant-status-B")).toHaveText("Speak");
+      await expect(page.getByTestId("participant-status-A")).toHaveText("Можно говорить");
+      await expect(page.getByTestId("participant-status-B")).toHaveText("You can speak");
       safeStage("a_no_output_repeat");
       await startMicrophoneFixture(page, PARTICIPANT_A_AUDIO);
       await expect(page.getByTestId("participant-status-A")).toHaveText("Слушаю");
@@ -522,7 +522,7 @@ test.describe("real GPT-Live desktop conversation", () => {
     safeStage("a_to_b_text_and_audio");
 
     try {
-      await expect(page.getByTestId("participant-status-B")).toHaveText("Speak");
+      await expect(page.getByTestId("participant-status-B")).toHaveText("You can speak");
     } catch (error) {
       const inboundBytesBeforeRmsSample = await inboundAudioBytesReceived(page);
       const rms = await remoteAudioRmsSummary(page, 2_000);
@@ -540,7 +540,7 @@ test.describe("real GPT-Live desktop conversation", () => {
       );
       throw error;
     }
-    await expect(page.getByTestId("participant-status-A")).toHaveText("Говорите");
+    await expect(page.getByTestId("participant-status-A")).toHaveText("Можно говорить");
     await expect
       .poll(() => page.getByTestId("participant-pane-A").locator(".recent-turn").count())
       .toBeGreaterThanOrEqual(1);
@@ -586,8 +586,8 @@ test.describe("real GPT-Live desktop conversation", () => {
       if (!(await repeat.isVisible())) {
         throw error;
       }
-      await expect(page.getByTestId("participant-status-B")).toHaveText("Speak");
-      await expect(page.getByTestId("participant-status-A")).toHaveText("Говорите");
+      await expect(page.getByTestId("participant-status-B")).toHaveText("You can speak");
+      await expect(page.getByTestId("participant-status-A")).toHaveText("Можно говорить");
       safeStage("b_no_output_repeat");
       await startMicrophoneFixture(page, PARTICIPANT_B_AUDIO);
       await expect(page.getByTestId("participant-status-B")).toHaveText("Listening");
@@ -608,8 +608,8 @@ test.describe("real GPT-Live desktop conversation", () => {
     await expect.poll(() => hasLiveAudibleRemoteAudio(page)).toBe(true);
     safeStage("b_to_a_text_and_audio");
 
-    await expect(page.getByTestId("participant-status-A")).toHaveText("Говорите");
-    await expect(page.getByTestId("participant-status-B")).toHaveText("Speak");
+    await expect(page.getByTestId("participant-status-A")).toHaveText("Можно говорить");
+    await expect(page.getByTestId("participant-status-B")).toHaveText("You can speak");
     await expect
       .poll(() => page.getByTestId("participant-pane-A").locator(".recent-turn").count())
       .toBeGreaterThanOrEqual(2);

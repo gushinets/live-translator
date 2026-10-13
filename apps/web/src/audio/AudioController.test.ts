@@ -494,6 +494,8 @@ describe("buffered audio output", () => {
       const track = controller.getCaptureStream()!.getAudioTracks()[0]!;
       const analysis = context.sourceStreams[0]!.getAudioTracks()[0]!;
       const observed = vi.fn(); controller.onVoiceActivity = observed;
+      const inputStates: string[] = [];
+      controller.onPlaybackInputBlocked = () => inputStates.push(controller.playbackInputState);
       const send = (value: boolean) => nodes[0]!.port.onmessage!({ data: { type: "playback", value } } as MessageEvent);
       nodes[0]!.port.postMessage.mockImplementation((message: { type: string }) => {
         if (message.type === "playback") {
@@ -503,17 +505,20 @@ describe("buffered audio output", () => {
       send(true);
       expect(nodes[0]!.port.postMessage).toHaveBeenCalledWith({ type: "playback", value: true });
       expect(controller.playbackInputBlocked).toBe(true);
+      expect(inputStates).toEqual(["playing"]);
       context.analysers[0]!.fill(.8);
       controller.setCaptureEnabled(true); // Other lifecycle callers cannot bypass playback protection.
       await vi.advanceTimersByTimeAsync(1000);
       expect(track.enabled).toBe(false); expect(observed).not.toHaveBeenCalled();
       context.analysers[0]!.fill(0);
       send(false);
+      expect(inputStates).toEqual(["playing", "tail"]);
       await vi.advanceTimersByTimeAsync(runtime.playbackEchoTailMs - 1);
       expect(track.enabled).toBe(false);
       await vi.advanceTimersByTimeAsync(1);
       expect(track.enabled).toBe(true); expect(analysis.enabled).toBe(true);
       expect(controller.playbackInputBlocked).toBe(false);
+      expect(inputStates).toEqual(["playing", "tail", "idle"]);
       context.analysers[0]!.fill(.8);
       await vi.advanceTimersByTimeAsync(150);
       expect(observed).toHaveBeenCalledWith(expect.objectContaining({ active: true }));
@@ -552,6 +557,26 @@ describe("buffered audio output", () => {
       context.analysers[0]!.fill(.08);
       await vi.advanceTimersByTimeAsync(150);
       expect(observed).toHaveBeenLastCalledWith(expect.objectContaining({ active: true }));
+    } finally { controller.dispose(); vi.useRealTimers(); }
+  });
+  it("reports resumed playback during the echo tail without reopening the microphone", async () => {
+    vi.useFakeTimers();
+    const { controller, nodes } = setup();
+    try {
+      await controller.primeOutput(); await controller.startCapture();
+      controller.attachRemoteStream(fakeStream(new FakeAudioTrack())); controller.setOutputAudible(true);
+      const states: string[] = [];
+      controller.onPlaybackInputBlocked = () => states.push(controller.playbackInputState);
+      const send = (value: boolean) => nodes[0]!.port.onmessage!({ data: { type: "playback", value } } as MessageEvent);
+      send(true); send(false);
+      await vi.advanceTimersByTimeAsync(runtime.playbackEchoTailMs - 1);
+      send(true);
+      await vi.advanceTimersByTimeAsync(runtime.playbackEchoTailMs);
+      expect(states).toEqual(["playing", "tail", "playing"]);
+      expect(controller.getCaptureStream()!.getAudioTracks()[0]!.enabled).toBe(false);
+      send(false);
+      await vi.advanceTimersByTimeAsync(runtime.playbackEchoTailMs);
+      expect(states).toEqual(["playing", "tail", "playing", "tail", "idle"]);
     } finally { controller.dispose(); vi.useRealTimers(); }
   });
   it.each(["active", "echo-tail"])("reopens capture on resume without waiting for a throttled timer after %s playback", async phase => {

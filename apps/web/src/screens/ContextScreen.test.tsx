@@ -23,6 +23,7 @@ class FakeOwnerController implements ContextScreenController {
   captionBlocks: readonly DialogueBlock[] = [];
   session: TranslationSession = idleSession();
   inputReady = true;
+  playbackInputState: ContextScreenController["playbackInputState"] = "idle";
   contextText = "";
   bootstrapText = "";
   bootstrapSide = "A" as const;
