@@ -1867,7 +1867,7 @@ describe("stage 5 hidden boundary", () => {
     expect(resumed.peer.close).toHaveBeenCalled();
     await f.budget.close();
   });
-  it("shows retained participant languages and the owner locale before reload resume", async () => {
+  it("restores participant locales and localized paused statuses before reload resume", async () => {
     const f = fixture(40, true); configureResume(f);
     await f.controller.startWithLanguages({ A: "en", B: "es" });
     f.setVisible(false);
@@ -1884,8 +1884,10 @@ describe("stage 5 hidden boundary", () => {
     expect(controller.session.participantB.language).toBe("es");
     expect(document.querySelector(".conversation-screen")).toHaveAttribute("lang", "en");
     expect(screen.getByRole("button", { name: "Continue conversation" })).toBeEnabled();
-    expect(screen.getByTestId("participant-pane-A")).toHaveTextContent("English");
-    expect(screen.getByTestId("participant-pane-B")).toHaveTextContent("español");
+    expect(screen.getByTestId("participant-pane-A")).toHaveAttribute("lang", "en");
+    expect(screen.getByTestId("participant-pane-B")).toHaveAttribute("lang", "es");
+    expect(screen.getByTestId("participant-status-A")).toHaveTextContent("Paused");
+    expect(screen.getByTestId("participant-status-B")).toHaveTextContent("En pausa");
     expect(controller.inputReady).toBe(false);
     expect(f.track.enabled).toBe(false);
     expect(f.api.createSession).toHaveBeenCalledTimes(1);

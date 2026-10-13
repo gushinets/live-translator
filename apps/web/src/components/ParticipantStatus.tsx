@@ -84,6 +84,7 @@ export function ParticipantStatus({
   label: ParticipantStatusLabel;
   language?: string;
 }) {
+  // Keep these labels disjoint from ParticipantGuidance to avoid duplicate status IDs and announcements.
   const visibleLabel: Partial<Record<ParticipantStatusLabel, string>> = {
     PAUSED: "Пауза",
     ENDING: "Завершаю…",
