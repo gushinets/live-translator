@@ -52,7 +52,7 @@ export function ParticipantPane({
           : { overflow: "hidden" }
       }
     >
-      <ParticipantStatus side={side} label={status} language={locale} />
+      <ParticipantStatus side={side} label={status} language={language} />
       <ParticipantGuidance side={side} label={status} language={locale} />
       <div className="participant-scroll" ref={scrollRef} tabIndex={0} role="region"
         aria-label={t("Реплики участника {side}").replace("{side}", side)}

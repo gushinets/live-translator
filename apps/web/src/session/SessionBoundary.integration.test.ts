@@ -1886,6 +1886,8 @@ describe("stage 5 hidden boundary", () => {
     expect(screen.getByRole("button", { name: "Continue conversation" })).toBeEnabled();
     expect(screen.getByTestId("participant-pane-A")).toHaveAttribute("lang", "en");
     expect(screen.getByTestId("participant-pane-B")).toHaveAttribute("lang", "es");
+    expect(screen.getByTestId("participant-pane-A")).toHaveTextContent("English");
+    expect(screen.getByTestId("participant-pane-B")).toHaveTextContent("español");
     expect(screen.getByTestId("participant-status-A")).toHaveTextContent("Paused");
     expect(screen.getByTestId("participant-status-B")).toHaveTextContent("En pausa");
     expect(controller.inputReady).toBe(false);

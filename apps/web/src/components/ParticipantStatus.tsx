@@ -1,7 +1,8 @@
 import type { Side } from "../conversation/Turn";
 import type { SessionState } from "../session/SessionState";
-import { translate } from "../i18n/messages";
+import { translate, uiLocale } from "../i18n/messages";
 import type { PlaybackInputState } from "../audio/AudioController";
+import { languageName } from "../side/SideResolver";
 
 /**
  * Participant-facing labels derived from authoritative session state.
@@ -95,8 +96,9 @@ export function ParticipantStatus({
   if (message === undefined) return null;
 
   return (
-    <span className="participant-status" role="status" data-testid={`participant-status-${side}`}>
-      {translate(message, language)}
+    <span className="participant-status" role="status">
+      {label === "PAUSED" && language !== undefined ? `${languageName(language, uiLocale(language))} · ` : null}
+      <span data-testid={`participant-status-${side}`}>{translate(message, language)}</span>
     </span>
   );
 }

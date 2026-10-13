@@ -40,7 +40,10 @@ test("compact guidance keeps all exchanges readable in each participant scroller
       for (const row of await rows.all()) {
         await expect(row).toHaveCSS("font-size", "22px");
       }
-      await expect(rows.last()).toBeInViewport({ ratio: 0.99 });
+      // Guidance must leave three complete history rows on a small phone, and all four at 390px.
+      for (const row of (await rows.all()).slice(viewport.width === 320 ? -3 : -4)) {
+        await expect(row).toBeInViewport({ ratio: 0.99 });
+      }
       await expect(pane.getByTestId(`participant-guidance-${side}`)).toBeInViewport({ ratio: 0.99 });
       expect(await page.getByTestId(`participant-scroll-${side}`).evaluate(el => el.clientHeight)).toBeGreaterThan(0);
     }
