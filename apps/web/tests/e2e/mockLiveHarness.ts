@@ -87,10 +87,11 @@ export class MockLiveHarness {
     await this.emitVoiceActivity(false);
   }
 
-  async outputDelta(text: string): Promise<void> {
+  async outputDelta(text: string, startMs?: number): Promise<void> {
     await this.emitLiveEvent({
       type: "session.output_transcript.delta",
       delta: text,
+      start_ms: startMs,
     });
   }
 

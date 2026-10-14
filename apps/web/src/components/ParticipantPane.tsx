@@ -33,7 +33,9 @@ export function ParticipantPane({
     scroll.scrollTop = followEnd.current ? scroll.scrollHeight : scrollState.current.readingTop;
     scrollState.current.appliedTop = scroll.scrollTop;
   }, []);
-  useLayoutEffect(syncScroll, [captions, status, syncScroll]);
+  useLayoutEffect(() => {
+    if (followEnd.current) syncScroll();
+  }, [captions, status, syncScroll]);
   useLayoutEffect(() => {
     const scroll = scrollRef.current;
     if (!scroll || typeof ResizeObserver === "undefined") return;

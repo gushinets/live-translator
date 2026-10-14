@@ -193,6 +193,53 @@ test("keeps all history and the reading position when another turn arrives", asy
   }
 });
 
+test("keeps a later caption in place when a late delta extends an earlier translation", async ({ page }) => {
+  const harness = await MockLiveHarness.attach(page);
+  await page.addInitScript(() => {
+    localStorage.setItem("live-translator-owner-language", "ru");
+    localStorage.setItem("live-translator-interlocutor-language", "en");
+  });
+  await page.setViewportSize({ width: 390, height: 664 });
+  await page.goto("/");
+  await page.getByRole("button", { name: "Начать перевод" }).click();
+  await expect(page.getByRole("button", { name: "Завершить" })).toBeVisible();
+  const russian = "Подскажите, как пройти к вокзалу? ".repeat(8);
+  const english = "Could you tell me where the train station is? ".repeat(8);
+  const exchanges = [
+    ["Первая реплика. " + russian, "First translation. " + english],
+    ["Second source. " + english, "Второй перевод. " + russian],
+    ["Третья реплика. " + russian, "Third translation. " + english],
+    ["Fourth source. " + english, "Четвертый перевод. " + russian],
+  ];
+  for (const [index, [source, translation]] of exchanges.entries()) {
+    await harness.sourceActive();
+    await harness.inputDelta(source!, index * 10_000);
+    await harness.outputDelta(translation!, index * 10_000);
+    await harness.sourceQuiet();
+    await harness.advance(runtime.noOutputTimeoutMs);
+    await harness.waitForGateBUnmuted();
+  }
+  await page.clock.resume();
+  const anchors = [
+    page.getByTestId("participant-scroll-A").locator("li").filter({ hasText: "Третья реплика." }),
+    page.getByTestId("participant-scroll-B").locator("li").filter({ hasText: "Second source." }),
+  ];
+  const positions: number[] = [];
+  for (const anchor of anchors) {
+    await anchor.evaluate(el => {
+      const scroll = el.closest<HTMLElement>(".participant-scroll")!;
+      scroll.scrollTop = (el as HTMLElement).offsetTop - scroll.offsetTop + 40;
+      scroll.dispatchEvent(new Event("scroll"));
+    });
+    positions.push((await anchor.boundingBox())!.y);
+  }
+  await harness.outputDelta(" Additional information about the first translation. ".repeat(14), 1_000);
+  await harness.outputDelta(" Дополнение ко второму переводу. ".repeat(14), 11_000);
+  for (const [index, anchor] of anchors.entries()) {
+    await expect.poll(async () => Math.abs((await anchor.boundingBox())!.y - positions[index]!)).toBeLessThan(2);
+  }
+});
+
 test("keeps the first keyboard scroll after caption-only reflow", async ({ page }) => {
   const harness = await MockLiveHarness.attach(page);
   await page.setViewportSize({ width: 390, height: 664 });
