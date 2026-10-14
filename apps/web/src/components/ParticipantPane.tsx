@@ -1,4 +1,4 @@
-import { useLayoutEffect, useRef } from "react";
+import { useCallback, useLayoutEffect, useRef } from "react";
 import type { Side } from "../conversation/Turn";
 import { ParticipantStatus, type ParticipantStatusLabel } from "./ParticipantStatus";
 import { translate, uiLocale } from "../i18n/messages";
@@ -26,19 +26,23 @@ export function ParticipantPane({
   const t = (text: string) => translate(text, locale);
   const scrollRef = useRef<HTMLDivElement>(null);
   const followEnd = useRef(true);
-  useLayoutEffect(() => {
+  const scrollState = useRef({ readingTop: 0, appliedTop: 0, height: 0, contentHeight: 0 });
+  const syncScroll = useCallback(() => {
     const scroll = scrollRef.current;
-    if (scroll && followEnd.current) scroll.scrollTop = scroll.scrollHeight;
-  }, [captions, status]);
+    if (!scroll) return;
+    scroll.scrollTop = followEnd.current ? scroll.scrollHeight : scrollState.current.readingTop;
+    scrollState.current.appliedTop = scroll.scrollTop;
+    scrollState.current.height = scroll.clientHeight;
+    scrollState.current.contentHeight = scroll.scrollHeight;
+  }, []);
+  useLayoutEffect(syncScroll, [captions, status, syncScroll]);
   useLayoutEffect(() => {
     const scroll = scrollRef.current;
     if (!scroll || typeof ResizeObserver === "undefined") return;
-    const observer = new ResizeObserver(() => {
-      if (followEnd.current) scroll.scrollTop = scroll.scrollHeight;
-    });
+    const observer = new ResizeObserver(syncScroll);
     observer.observe(scroll);
     return () => observer.disconnect();
-  }, []);
+  }, [syncScroll]);
 
   return (
     <section
@@ -58,6 +62,15 @@ export function ParticipantPane({
         data-testid={`participant-scroll-${side}`}
         onScroll={event => {
           const scroll = event.currentTarget;
+          const previous = scrollState.current;
+          if (scroll.clientHeight !== previous.height || scroll.scrollHeight !== previous.contentHeight) {
+            syncScroll();
+            return;
+          }
+          // Layout clamping and our own scroll writes must not re-enable auto-follow.
+          if (scroll.scrollTop === previous.appliedTop) return;
+          previous.readingTop = scroll.scrollTop;
+          previous.appliedTop = scroll.scrollTop;
           followEnd.current = scroll.scrollHeight - scroll.scrollTop - scroll.clientHeight <= 2;
         }}>
       {alertText !== undefined ? (

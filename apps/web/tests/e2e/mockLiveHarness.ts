@@ -16,6 +16,7 @@ export type LiveAckType =
 declare global {
   interface Window {
     __LIVE_TRANSLATOR_E2E?: boolean;
+    __setAudioState?: (state: "interrupted" | "running") => void;
     __liveTranslatorTestAudio?: {
       emitVoiceActivity(active: boolean, atMs: number): void;
       emitPlaybackActivity(active: boolean, atMs: number): void;
@@ -353,7 +354,14 @@ export class MockLiveHarness {
       }
 
       class FakeAudioContext extends EventTarget {
-        state: AudioContextState = "running";
+        state: AudioContextState | "interrupted" = "running";
+        constructor() {
+          super();
+          window.__setAudioState = state => {
+            this.state = state;
+            this.dispatchEvent(new Event("statechange"));
+          };
+        }
         readonly audioWorklet = { addModule: async () => {} };
         resume(): Promise<void> {
           this.state = "running";

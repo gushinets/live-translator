@@ -193,6 +193,64 @@ test("keeps all history and the reading position when another turn arrives", asy
   }
 });
 
+for (const { width, height, textSize } of [
+  { width: 390, height: 664, textSize: 100 },
+  { width: 320, height: 640, textSize: 100 },
+  { width: 390, height: 664, textSize: 200 },
+  { width: 320, height: 640, textSize: 200 },
+]) {
+  test(`preserves a near-end reading position through pause/resume at ${width}x${height} with ${textSize}% text`, async ({ page }) => {
+    const harness = await MockLiveHarness.attach(page);
+    await page.setViewportSize({ width, height });
+    await harness.startListeningConversation();
+    await page.addStyleTag({ content: `html { font-size: ${textSize}% !important; }` });
+    await harness.sourceActive();
+    await harness.inputDelta("Could you tell me where the train station is? ".repeat(14));
+    await harness.outputDelta("¿Podría decirme dónde está la estación de tren? ".repeat(14));
+    await harness.sourceQuiet();
+    await harness.advance(runtime.noOutputTimeoutMs);
+    await harness.waitForGateBUnmuted();
+    await expect(page.getByTestId("participant-status-A")).toHaveText("You can speak");
+    await page.clock.resume();
+    const scrolls = ["A", "B"].map(side => page.getByTestId(`participant-scroll-${side}`));
+    const positions: number[] = [];
+    for (const scroll of scrolls) {
+      await scroll.evaluate(el => {
+        el.scrollTop = el.scrollHeight - el.clientHeight - 32;
+        el.dispatchEvent(new Event("scroll"));
+      });
+      positions.push(await scroll.evaluate(el => el.scrollTop));
+      expect(positions.at(-1)).toBeGreaterThan(0);
+    }
+
+    await page.evaluate(() => window.__setAudioState?.("interrupted"));
+    await expect(page.getByTestId("participant-status-A")).toHaveText("Paused");
+    await expect(page.getByTestId("participant-status-B")).toHaveText("En pausa");
+    await page.evaluate(() => new Promise<void>(resolve => requestAnimationFrame(() => requestAnimationFrame(() => resolve()))));
+    for (const [index, scroll] of scrolls.entries()) {
+      const maximum = await scroll.evaluate(el => el.scrollHeight - el.clientHeight);
+      expect(await scroll.evaluate(el => el.scrollTop)).toBe(Math.min(positions[index]!, maximum));
+      if (textSize === 100) expect(maximum).toBeLessThan(positions[index]!);
+    }
+
+    await page.evaluate(() => window.__setAudioState?.("running"));
+    await expect(page.getByTestId("participant-status-A")).toHaveText("You can speak");
+    await expect(page.getByTestId("participant-status-B")).toHaveText("Puedes hablar");
+    await page.evaluate(() => new Promise<void>(resolve => requestAnimationFrame(() => requestAnimationFrame(() => resolve()))));
+    for (const [index, scroll] of scrolls.entries()) {
+      await expect.poll(async () => Math.abs(await scroll.evaluate(el => el.scrollTop) - positions[index]!)).toBeLessThan(1);
+    }
+    await harness.sourceActive();
+    await harness.inputDelta("Please show me the way.");
+    await harness.outputDelta("Por favor, muéstreme el camino.");
+    await page.evaluate(() => new Promise<void>(resolve => requestAnimationFrame(() => requestAnimationFrame(() => resolve()))));
+    for (const [index, scroll] of scrolls.entries()) {
+      await expect.poll(async () => Math.abs(await scroll.evaluate(el => el.scrollTop) - positions[index]!)).toBeLessThan(1);
+      expect(await scroll.evaluate(el => el.scrollHeight - el.scrollTop - el.clientHeight)).toBeGreaterThan(32);
+    }
+  });
+}
+
 test("a long dialogue keeps all resolved captions and translation-only output while hiding unknown text", async ({ page }, testInfo) => {
   const harness = await MockLiveHarness.attach(page);
   await harness.startListeningConversation();
