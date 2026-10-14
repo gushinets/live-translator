@@ -86,34 +86,11 @@ export function ParticipantStatus({
   label: ParticipantStatusLabel;
   language?: string;
 }) {
-  // Keep these labels disjoint from ParticipantGuidance to avoid duplicate status IDs and announcements.
-  const visibleLabel: Partial<Record<ParticipantStatusLabel, string>> = {
-    PAUSED: "Пауза",
-    ENDING: "Завершаю…",
-    ENDED: "Разговор завершён",
-    ERROR: "Ошибка",
-  };
-  const message = visibleLabel[label];
-  if (message === undefined) return null;
-
-  return (
-    <span className="participant-status" role="status">
-      {label === "PAUSED" && language !== undefined ? `${languageName(language, uiLocale(language))} · ` : null}
-      <span data-testid={`participant-status-${side}`}>{translate(message, language)}</span>
-    </span>
-  );
-}
-
-export function ParticipantGuidance({ side, label, language }: {
-  side: Side;
-  label: ParticipantStatusLabel;
-  language?: string;
-}) {
   const guidanceRef = useRef<HTMLDivElement>(null);
   useLayoutEffect(() => {
     if (guidanceRef.current) guidanceRef.current.scrollTop = 0;
   }, [label, language]);
-  const messages: Partial<Record<ParticipantStatusLabel, readonly [string, string]>> = {
+  const messages: Record<ParticipantStatusLabel, readonly [string, string?]> = {
     DETECTING: ["Определяю язык", "Продолжайте говорить на своём языке."],
     "YOUR TURN": ["Можно говорить", "Микрофон включён. Говорите по очереди."],
     LISTENING: ["Слушаю", "Я слушаю и записываю вашу речь."],
@@ -122,28 +99,40 @@ export function ParticipantGuidance({ side, label, language }: {
     SPEAKING: ["Слушайте перевод", "Дождитесь окончания озвучки."],
     PLAYBACK: ["Идёт озвучка", "Подождите. Сейчас ваша речь не записывается."],
     "PLAYBACK TAIL": ["Ещё мгновение", "Пока не говорите. Микрофон скоро включится."],
+    PAUSED: ["Пауза"],
+    ENDING: ["Завершаю…"],
+    ENDED: ["Разговор завершён"],
+    ERROR: ["Ошибка"],
   };
-  const message = messages[label];
-  if (message === undefined) return null;
+  const [title, detail] = messages[label];
+  const hasGuidance = detail !== undefined;
   const listening = label === "YOUR TURN" || label === "LISTENING" || label === "DETECTING";
   const blocked = label === "PLAYBACK" || label === "PLAYBACK TAIL";
+  // Keep this live-region node mounted so pause and resume are announced as updates.
   return (
-    <div ref={guidanceRef} className="participant-guidance" data-tone={listening ? "ready" : "wait"}
-      role="status" aria-atomic="true" tabIndex={0}
-      aria-labelledby={`participant-guidance-title-${side}`} aria-describedby={`participant-guidance-detail-${side}`}
-      data-testid={`participant-guidance-${side}`}>
-      <svg className="participant-guidance-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor"
-        strokeWidth="2" strokeLinecap="round" aria-hidden="true">
-        {listening || blocked ? <>
-          <rect x="9" y="2" width="6" height="12" rx="3" />
-          <path d="M5 10v2a7 7 0 0 0 14 0v-2M12 19v3m-4 0h8" />
-          {blocked ? <path d="M2 2l20 20" /> : null}
-        </> : <path d="M9 5v14M15 5v14" />}
-      </svg>
-      <div className="participant-guidance-copy">
-        <p id={`participant-guidance-title-${side}`} className="participant-guidance-title" data-testid={`participant-status-${side}`}>{translate(message[0], language)}</p>
-        <p id={`participant-guidance-detail-${side}`} className="participant-guidance-detail">{translate(message[1], language)}</p>
-      </div>
+    <div ref={guidanceRef} className={hasGuidance ? "participant-guidance" : "participant-status"}
+      data-tone={hasGuidance ? (listening ? "ready" : "wait") : undefined}
+      role="status" aria-atomic="true" tabIndex={hasGuidance ? 0 : undefined}
+      aria-labelledby={hasGuidance ? `participant-guidance-title-${side}` : undefined}
+      aria-describedby={hasGuidance ? `participant-guidance-detail-${side}` : undefined}
+      data-testid={hasGuidance ? `participant-guidance-${side}` : undefined}>
+      {hasGuidance ? <>
+        <svg className="participant-guidance-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+          strokeWidth="2" strokeLinecap="round" aria-hidden="true">
+          {listening || blocked ? <>
+            <rect x="9" y="2" width="6" height="12" rx="3" />
+            <path d="M5 10v2a7 7 0 0 0 14 0v-2M12 19v3m-4 0h8" />
+            {blocked ? <path d="M2 2l20 20" /> : null}
+          </> : <path d="M9 5v14M15 5v14" />}
+        </svg>
+        <div className="participant-guidance-copy">
+          <p id={`participant-guidance-title-${side}`} className="participant-guidance-title" data-testid={`participant-status-${side}`}>{translate(title, language)}</p>
+          <p id={`participant-guidance-detail-${side}`} className="participant-guidance-detail">{translate(detail, language)}</p>
+        </div>
+      </> : <>
+        {label === "PAUSED" && language !== undefined ? `${languageName(language, uiLocale(language))} · ` : null}
+        <span data-testid={`participant-status-${side}`}>{translate(title, language)}</span>
+      </>}
     </div>
   );
 }

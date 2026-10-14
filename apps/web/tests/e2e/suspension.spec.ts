@@ -5,6 +5,7 @@ declare global {
   interface Window {
     __setVisibility?: (state: DocumentVisibilityState) => void;
     __setOrientation?: (type: string) => void;
+    __setAudioState?: (state: "interrupted" | "running") => void;
     __testLiveChannel?: EventTarget;
   }
 }
@@ -54,7 +55,14 @@ async function installLiveStubs(page: Page): Promise<void> {
     }
 
     class FakeAudioContext extends EventTarget {
-      state: AudioContextState = "running";
+      state: AudioContextState | "interrupted" = "running";
+      constructor() {
+        super();
+        window.__setAudioState = state => {
+          this.state = state;
+          this.dispatchEvent(new Event("statechange"));
+        };
+      }
       resume(): Promise<void> {
         this.state = "running";
         return Promise.resolve();
@@ -270,6 +278,34 @@ async function emitSourceTranscript(page: Page, delta: string): Promise<void> {
 }
 
 test.describe("PWA suspension", () => {
+  test("keeps each live-region node through an idle audio interruption and automatic resume", async ({ page }) => {
+    await installLiveStubs(page);
+    await startListeningConversation(page);
+    const panes = ["A", "B"].map(side => page.getByTestId(`participant-pane-${side}`));
+    const regions = await Promise.all(panes.map(pane => pane.getByRole("status").elementHandle()));
+    const readyText = await Promise.all(panes.map(pane => pane.getByRole("status").textContent()));
+
+    await page.evaluate(() => window.__setAudioState?.("interrupted"));
+    await expect(page.getByTestId("participant-status-A")).toHaveText("Paused");
+    await expect(page.getByTestId("participant-status-B")).toHaveText("En pausa");
+    for (const [index, pane] of panes.entries()) {
+      await expect(pane.getByRole("status")).toHaveCount(1);
+      expect(await pane.getByRole("status").evaluate((node, original) => node === original, regions[index])).toBe(true);
+    }
+    await expect(page.getByRole("dialog")).toHaveCount(0);
+    await expect(page.getByRole("alert")).toHaveCount(0);
+
+    await page.evaluate(() => window.__setAudioState?.("running"));
+    await expect(page.getByTestId("participant-status-A")).toHaveText("You can speak");
+    await expect(page.getByTestId("participant-status-B")).toHaveText("Puedes hablar");
+    for (const [index, pane] of panes.entries()) {
+      await expect(pane.getByRole("status")).toHaveCount(1);
+      await expect(pane.getByRole("status")).toHaveText(readyText[index]!);
+      expect(await pane.getByRole("status").evaluate((node, original) => node === original, regions[index])).toBe(true);
+    }
+    await expect(page.getByRole("alert")).toHaveCount(0);
+  });
+
   test("serves a portrait standalone manifest", async ({ page }) => {
     await page.goto("/");
     const href = await page.locator('link[rel="manifest"]').getAttribute("href");

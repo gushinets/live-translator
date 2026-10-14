@@ -1,6 +1,6 @@
 import { useLayoutEffect, useRef } from "react";
 import type { Side } from "../conversation/Turn";
-import { ParticipantGuidance, ParticipantStatus, type ParticipantStatusLabel } from "./ParticipantStatus";
+import { ParticipantStatus, type ParticipantStatusLabel } from "./ParticipantStatus";
 import { translate, uiLocale } from "../i18n/messages";
 import type { DialogueBlock } from "../conversation/DialogueTranscript";
 import { DialogueCaptions } from "./DialogueCaptions";
@@ -53,7 +53,6 @@ export function ParticipantPane({
       }
     >
       <ParticipantStatus side={side} label={status} language={language} />
-      <ParticipantGuidance side={side} label={status} language={locale} />
       <div className="participant-scroll" ref={scrollRef} tabIndex={0} role="region"
         aria-label={t("Реплики участника {side}").replace("{side}", side)}
         data-testid={`participant-scroll-${side}`}
