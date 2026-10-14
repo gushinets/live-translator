@@ -125,6 +125,10 @@ describe("ContextScreen", () => {
     for (const scroll of [scrollA, scrollB]) {
       Object.defineProperty(scroll, "scrollHeight", { value: 1000 });
       Object.defineProperty(scroll, "clientHeight", { value: 200 });
+    }
+    // jsdom does not notify ResizeObserver when these mocked dimensions change.
+    view.rerender(<ContextScreen controller={controller} />);
+    for (const scroll of [scrollA, scrollB]) {
       scroll.scrollTop = 120;
       fireEvent.scroll(scroll);
     }
