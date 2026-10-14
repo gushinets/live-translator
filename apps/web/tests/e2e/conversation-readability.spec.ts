@@ -193,6 +193,34 @@ test("keeps all history and the reading position when another turn arrives", asy
   }
 });
 
+test("keeps the first keyboard scroll after caption-only reflow", async ({ page }) => {
+  const harness = await MockLiveHarness.attach(page);
+  await page.setViewportSize({ width: 390, height: 664 });
+  await harness.startListeningConversation();
+  await harness.sourceActive();
+  await harness.inputDelta("Could you tell me where the train station is? ".repeat(14));
+  await harness.outputDelta("¿Podría decirme dónde está la estación de tren? ".repeat(14));
+  await harness.sourceQuiet();
+  await harness.advance(runtime.noOutputTimeoutMs);
+  await harness.waitForGateBUnmuted();
+  await page.clock.resume();
+  for (const side of ["A", "B"]) {
+    const scroll = page.getByTestId(`participant-scroll-${side}`);
+    await scroll.focus();
+    const before = await scroll.evaluate(el => ({ top: el.scrollTop, height: el.clientHeight, content: el.scrollHeight }));
+    await scroll.evaluate(el => {
+      el.querySelector<HTMLElement>(".participant-recent")!.style.paddingBottom = "400px";
+    });
+    expect(await scroll.evaluate(el => el.clientHeight)).toBe(before.height);
+    expect(await scroll.evaluate(el => el.scrollHeight)).toBe(before.content + 400);
+    const firstScroll = scroll.evaluate(el => new Promise<number>(resolve => {
+      el.addEventListener("scroll", () => resolve(el.scrollTop), { once: true });
+    }));
+    await scroll.press("ArrowUp");
+    expect(await firstScroll).toBeLessThan(before.top);
+  }
+});
+
 for (const { width, height, textSize } of [
   { width: 390, height: 664, textSize: 100 },
   { width: 320, height: 640, textSize: 100 },
