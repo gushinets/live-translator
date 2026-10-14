@@ -26,14 +26,12 @@ export function ParticipantPane({
   const t = (text: string) => translate(text, locale);
   const scrollRef = useRef<HTMLDivElement>(null);
   const followEnd = useRef(true);
-  const scrollState = useRef({ readingTop: 0, appliedTop: 0, height: 0, contentHeight: 0 });
+  const scrollState = useRef({ readingTop: 0, appliedTop: 0 });
   const syncScroll = useCallback(() => {
     const scroll = scrollRef.current;
     if (!scroll) return;
     scroll.scrollTop = followEnd.current ? scroll.scrollHeight : scrollState.current.readingTop;
     scrollState.current.appliedTop = scroll.scrollTop;
-    scrollState.current.height = scroll.clientHeight;
-    scrollState.current.contentHeight = scroll.scrollHeight;
   }, []);
   useLayoutEffect(syncScroll, [captions, status, syncScroll]);
   useLayoutEffect(() => {
@@ -63,12 +61,9 @@ export function ParticipantPane({
         onScroll={event => {
           const scroll = event.currentTarget;
           const previous = scrollState.current;
-          if (scroll.clientHeight !== previous.height || scroll.scrollHeight !== previous.contentHeight) {
-            syncScroll();
-            return;
-          }
           // Layout clamping and our own scroll writes must not re-enable auto-follow.
-          if (scroll.scrollTop === previous.appliedTop) return;
+          const maximum = Math.max(0, scroll.scrollHeight - scroll.clientHeight);
+          if (scroll.scrollTop === Math.min(Math.max(0, previous.appliedTop), maximum)) return;
           previous.readingTop = scroll.scrollTop;
           previous.appliedTop = scroll.scrollTop;
           followEnd.current = scroll.scrollHeight - scroll.scrollTop - scroll.clientHeight <= 2;
