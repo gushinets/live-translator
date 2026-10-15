@@ -193,52 +193,82 @@ test("keeps all history and the reading position when another turn arrives", asy
   }
 });
 
-test("keeps a later caption in place when a late delta extends an earlier translation", async ({ page }) => {
-  const harness = await MockLiveHarness.attach(page);
-  await page.addInitScript(() => {
-    localStorage.setItem("live-translator-owner-language", "ru");
-    localStorage.setItem("live-translator-interlocutor-language", "en");
-  });
-  await page.setViewportSize({ width: 390, height: 664 });
-  await page.goto("/");
-  await page.getByRole("button", { name: "Начать перевод" }).click();
-  await expect(page.getByRole("button", { name: "Завершить" })).toBeVisible();
-  const russian = "Подскажите, как пройти к вокзалу? ".repeat(8);
-  const english = "Could you tell me where the train station is? ".repeat(8);
-  const exchanges = [
-    ["Первая реплика. " + russian, "First translation. " + english],
-    ["Second source. " + english, "Второй перевод. " + russian],
-    ["Третья реплика. " + russian, "Third translation. " + english],
-    ["Fourth source. " + english, "Четвертый перевод. " + russian],
-  ];
-  for (const [index, [source, translation]] of exchanges.entries()) {
-    await harness.sourceActive();
-    await harness.inputDelta(source!, index * 10_000);
-    await harness.outputDelta(translation!, index * 10_000);
-    await harness.sourceQuiet();
-    await harness.advance(runtime.noOutputTimeoutMs);
-    await harness.waitForGateBUnmuted();
-  }
-  await page.clock.resume();
-  const anchors = [
-    page.getByTestId("participant-scroll-A").locator("li").filter({ hasText: "Третья реплика." }),
-    page.getByTestId("participant-scroll-B").locator("li").filter({ hasText: "Second source." }),
-  ];
-  const positions: number[] = [];
-  for (const anchor of anchors) {
-    await anchor.evaluate(el => {
-      const scroll = el.closest<HTMLElement>(".participant-scroll")!;
-      scroll.scrollTop = (el as HTMLElement).offsetTop - scroll.offsetTop + 40;
-      scroll.dispatchEvent(new Event("scroll"));
+for (const resizeGuidance of [false, true]) {
+  test(`keeps a later caption in place when an earlier translation grows${resizeGuidance ? " alongside a guidance resize" : ""}`, async ({ page }) => {
+    const harness = await MockLiveHarness.attach(page);
+    await page.addInitScript(() => {
+      localStorage.setItem("live-translator-owner-language", "ru");
+      localStorage.setItem("live-translator-interlocutor-language", "en");
     });
-    positions.push((await anchor.boundingBox())!.y);
-  }
-  await harness.outputDelta(" Additional information about the first translation. ".repeat(14), 1_000);
-  await harness.outputDelta(" Дополнение ко второму переводу. ".repeat(14), 11_000);
-  for (const [index, anchor] of anchors.entries()) {
-    await expect.poll(async () => Math.abs((await anchor.boundingBox())!.y - positions[index]!)).toBeLessThan(2);
-  }
-});
+    await page.setViewportSize({ width: 390, height: 664 });
+    await page.goto("/");
+    await page.getByRole("button", { name: "Начать перевод" }).click();
+    await expect(page.getByRole("button", { name: "Завершить" })).toBeVisible();
+    const russian = "Подскажите, как пройти к вокзалу? ".repeat(8);
+    const english = "Could you tell me where the train station is? ".repeat(8);
+    const exchanges = [
+      ["Первая реплика. " + russian, "First translation. " + english],
+      ["Second source. " + english, "Второй перевод. " + russian],
+      ["Третья реплика. " + russian, "Third translation. " + english],
+      ["Fourth source. " + english, "Четвертый перевод. " + russian],
+    ];
+    for (const [index, [source, translation]] of exchanges.entries()) {
+      await harness.sourceActive();
+      await harness.inputDelta(source!, index * 10_000);
+      await harness.outputDelta(translation!, index * 10_000);
+      await harness.sourceQuiet();
+      await harness.advance(runtime.noOutputTimeoutMs);
+      await harness.waitForGateBUnmuted();
+    }
+    if (resizeGuidance) {
+      await harness.bufferedPlayback(true);
+      await harness.playbackActive();
+      await expect(page.getByTestId("participant-guidance-B")).toContainText("Translation playing");
+    }
+    await page.clock.resume();
+    const anchors = [
+      page.getByTestId("participant-scroll-A").locator("li").filter({ hasText: "Третья реплика." }),
+      page.getByTestId("participant-scroll-B").locator("li").filter({ hasText: "Second source." }),
+    ];
+    const positions: number[] = [];
+    for (const anchor of anchors) {
+      await anchor.evaluate(el => {
+        const scroll = el.closest<HTMLElement>(".participant-scroll")!;
+        scroll.scrollTop = (el as HTMLElement).offsetTop - scroll.offsetTop + 40;
+        scroll.dispatchEvent(new Event("scroll"));
+      });
+      positions.push((await anchor.boundingBox())!.y);
+    }
+    const guidance = page.getByTestId("participant-guidance-B");
+    const height = (await guidance.boundingBox())!.height;
+    // Deliver both updates before the next paint, including the playback-to-tail transition.
+    await page.evaluate(({ resize, height }) => new Promise<void>(resolve => requestAnimationFrame(() => {
+      window.__liveTranslatorTestLive!.emit({
+        type: "session.output_transcript.delta",
+        delta: " Additional information about the first translation. ".repeat(14), start_ms: 1_000,
+      });
+      window.__liveTranslatorTestLive!.emit({
+        type: "session.output_transcript.delta",
+        delta: " Дополнение ко второму переводу. ".repeat(14), start_ms: 11_000,
+      });
+      if (resize) {
+        window.__liveTranslatorTestPlayback!.emit(false);
+        window.__liveTranslatorTestAudio!.emitPlaybackActivity(false, Date.now());
+        // Model a one-pixel wrap difference independently of the browser's fallback font.
+        document.querySelector<HTMLElement>('[data-testid="participant-guidance-B"]')!.style.minHeight = `${height + 1}px`;
+      }
+      resolve();
+    })), { resize: resizeGuidance, height });
+    await page.evaluate(() => new Promise<void>(resolve => requestAnimationFrame(() => requestAnimationFrame(() => resolve()))));
+    if (resizeGuidance) {
+      await expect(guidance).toContainText("One moment");
+      expect((await guidance.boundingBox())!.height).not.toBe(height);
+    }
+    for (const [index, anchor] of anchors.entries()) {
+      await expect.poll(async () => Math.abs((await anchor.boundingBox())!.y - positions[index]!)).toBeLessThan(2);
+    }
+  });
+}
 
 test("keeps the first keyboard scroll after caption-only reflow", async ({ page }) => {
   const harness = await MockLiveHarness.attach(page);

@@ -30,8 +30,19 @@ export function ParticipantPane({
   const syncScroll = useCallback(() => {
     const scroll = scrollRef.current;
     if (!scroll) return;
-    scroll.scrollTop = followEnd.current ? scroll.scrollHeight : scrollState.current.readingTop;
-    scrollState.current.appliedTop = scroll.scrollTop;
+    const previous = scrollState.current;
+    if (followEnd.current) {
+      scroll.scrollTop = scroll.scrollHeight;
+    } else {
+      const maximum = Math.max(0, scroll.scrollHeight - scroll.clientHeight);
+      if (scroll.scrollTop !== Math.min(Math.max(0, previous.appliedTop), maximum)) {
+        previous.readingTop = scroll.scrollTop;
+      } else if (previous.readingTop > previous.appliedTop) {
+        // Only restore a position lost to clamping; leave native caption anchoring alone.
+        scroll.scrollTop = previous.readingTop;
+      }
+    }
+    previous.appliedTop = scroll.scrollTop;
   }, []);
   useLayoutEffect(() => {
     if (followEnd.current) syncScroll();

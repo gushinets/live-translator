@@ -82,6 +82,43 @@ class FakeConversationController implements ConversationScreenController {
 describe("default independent captions", () => {
   afterEach(() => { window.history.replaceState({}, "", "/"); });
 
+  it("keeps native caption anchoring when resize arrives before its scroll notification", () => {
+    const resizeCallbacks: (() => void)[] = [];
+    vi.stubGlobal("ResizeObserver", class {
+      constructor(callback: () => void) { resizeCallbacks.push(callback); }
+      observe() {}
+      disconnect() {}
+    });
+    try {
+      const controller = new FakeConversationController();
+      controller.playbackInputState = "playing";
+      controller.captionBlocks = [{ id: "earlier", kind: "output", side: "B", language: "en", text: "Earlier translation.", receivedAtMs: 1 }];
+      render(<ConversationScreen controller={controller} />);
+      const scrolls = ["A", "B"].map(side => screen.getByTestId(`participant-scroll-${side}`));
+      for (const scroll of scrolls) {
+        Object.defineProperty(scroll, "scrollHeight", { value: 1000, configurable: true });
+        Object.defineProperty(scroll, "clientHeight", { value: 200, configurable: true });
+        scroll.scrollTop = 120;
+        fireEvent.scroll(scroll);
+      }
+      act(() => {
+        controller.playbackInputState = "tail";
+        controller.captionBlocks = [{ ...controller.captionBlocks[0]!, text: "Earlier translation with a late addition." }];
+        controller.notify();
+      });
+      for (const scroll of scrolls) {
+        Object.defineProperty(scroll, "scrollHeight", { value: 1144 });
+        Object.defineProperty(scroll, "clientHeight", { value: 199 });
+        // Native anchoring has moved the viewport; its scroll event is still pending.
+        scroll.scrollTop = 264;
+      }
+      act(() => { for (const callback of resizeCallbacks) callback(); });
+      for (const scroll of scrolls) expect(scroll.scrollTop).toBe(264);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
   it("shows the full dialogue on each pane without legacy waiting rows or duplicated unknown text", () => {
     window.history.replaceState({}, "", "/");
     const controller = new FakeConversationController(session({
