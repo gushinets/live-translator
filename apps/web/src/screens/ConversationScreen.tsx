@@ -9,11 +9,13 @@ import type { TranslationSession } from "../session/SessionState";
 import { translate, uiLocale } from "../i18n/messages";
 import type { Side, Turn } from "../conversation/Turn";
 import type { DialogueBlock } from "../conversation/DialogueTranscript";
+import type { PlaybackInputState } from "../audio/AudioController";
 
 export interface ConversationScreenController {
   readonly session: TranslationSession;
   readonly captionBlocks: readonly DialogueBlock[];
   readonly inputReady: boolean;
+  readonly playbackInputState: PlaybackInputState;
   readonly recoveryPrompt?: RecoveryPrompt;
   readonly recoveryPromptIsTurnFailure?: boolean;
   readonly ownerError?: string;
@@ -30,7 +32,7 @@ export interface ConversationScreenController {
 function uiSnapshot(controller: ConversationScreenController): unknown[] {
   return [controller.session, controller.inputReady, controller.recoveryPrompt, controller.ownerError,
     controller.suspendReason, controller.retainedRecoveryState,
-    controller.captionBlocks, controller.recoveryPromptIsTurnFailure];
+    controller.captionBlocks, controller.recoveryPromptIsTurnFailure, controller.playbackInputState];
 }
 
 export function ConversationScreen({
@@ -74,7 +76,8 @@ export function ConversationScreen({
     const output = outputs.find(turn => turn.speaker !== side && isPlaying(turn))
       ?? outputs.find(turn => turn.speaker !== side) ?? outputs[0];
     return deriveParticipantStatus({
-      sessionState: session.state, inputReady: controller.inputReady, side, sourceSpeaker, sourceActive,
+      sessionState: session.state, inputReady: controller.inputReady, playbackInputState: controller.playbackInputState,
+      side, sourceSpeaker, sourceActive,
       outputSpeaker: output?.speaker,
       hasOutputText: (output?.translatedText ?? "").length > 0,
       audioOutputStarted: output !== undefined && isPlaying(output),

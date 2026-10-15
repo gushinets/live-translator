@@ -5095,6 +5095,7 @@ describe("buffered playback microphone isolation", () => {
       const changed = vi.fn(); const unsubscribe = controller.subscribe(changed);
       node.port.onmessage!({ data: { type: "playback", value: true } } as MessageEvent);
       expect(track.enabled).toBe(false); expect(controller.inputReady).toBe(false);
+      expect(controller.playbackInputState).toBe("playing");
       expect(changed).toHaveBeenCalled();
       emitVoice(audio, true);
       expect(controller.session.activeTurn?.sourceIdleAtMs).toBeDefined();
@@ -5104,10 +5105,12 @@ describe("buffered playback microphone isolation", () => {
       expect(controller.captionBlocks.some(block => block.text.includes("пешком"))).toBe(true);
       expect(controller.captionBlocks.some(block => block.text.includes("train station"))).toBe(true);
       node.port.onmessage!({ data: { type: "playback", value: false } } as MessageEvent);
+      expect(controller.playbackInputState).toBe("tail");
       await vi.advanceTimersByTimeAsync(runtime.playbackEchoTailMs - 1);
       expect(controller.inputReady).toBe(false);
       await vi.advanceTimersByTimeAsync(1);
       expect(track.enabled).toBe(true); expect(controller.inputReady).toBe(true);
+      expect(controller.playbackInputState).toBe("idle");
       unsubscribe();
     } finally { await controller.endConversation(); audio.dispose(); }
   });

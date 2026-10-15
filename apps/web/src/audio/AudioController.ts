@@ -9,6 +9,7 @@ import {
 
 /** `owned` events identify the PCM currently leaving the queue, including an unknown owner. */
 export type PlaybackActivityEvent = AudioActivityEvent & { owned?: boolean; turnId?: string; retired?: boolean };
+export type PlaybackInputState = "idle" | "playing" | "tail";
 
 export interface MicrophoneSettingsDiagnostics {
   echoCancellation: boolean | undefined;
@@ -120,6 +121,9 @@ export class AudioController {
   private inputBlocked = false;
   private playbackReleaseTimer: number | null = null;
   get playbackInputBlocked(): boolean { return this.inputBlocked; }
+  get playbackInputState(): PlaybackInputState {
+    return !this.inputBlocked ? "idle" : this.playbackReleaseTimer === null ? "playing" : "tail";
+  }
   get hasPendingPlayback(): boolean { return this.queuedPlayback; }
   get rawPlaybackActive(): boolean | undefined {
     return this.remoteAnalyser === null ? undefined : this.rawPlaybackDetector.active;
@@ -331,6 +335,7 @@ export class AudioController {
       this.playbackReleaseTimer = null;
       this.blockPlaybackInput(false);
     }, runtime.playbackEchoTailMs);
+    this.onPlaybackInputBlocked?.();
   }
 
   /** Gate C: mute local GPT playback. Never uses Live input mute. */
@@ -418,9 +423,11 @@ export class AudioController {
             node.port.postMessage({ type: "playback", value: false });
             return;
           }
+          const wasTail = this.playbackReleaseTimer !== null;
           this.cancelPlaybackRelease();
           try {
             this.blockPlaybackInput(true);
+            if (wasTail) this.onPlaybackInputBlocked?.();
             if (this.playbackNode === node && !this.audioElement.muted) node.port.postMessage({ type: "playback", value: true });
           } catch { fail(); }
         } else this.releasePlaybackInput();

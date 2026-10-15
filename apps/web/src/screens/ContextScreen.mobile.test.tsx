@@ -17,6 +17,7 @@ class MobileUiController implements ContextScreenController {
   readonly captionBlocks = [];
   session: TranslationSession = idleSession();
   inputReady = true;
+  playbackInputState: ContextScreenController["playbackInputState"] = "idle";
   contextText = "";
   bootstrapText = "";
   bootstrapSide = "A" as const;
