@@ -163,7 +163,7 @@ function createDeferred<T>() {
 
 describe("LiveClient.connect", () => {
   let peer: FakePeerConnection;
-  let onRemoteStream: ReturnType<typeof vi.fn>;
+  let onRemoteStream: ReturnType<typeof vi.fn<(stream: MediaStream, source: LiveClient) => void>>;
 
   beforeEach(() => {
     peer = new FakePeerConnection();

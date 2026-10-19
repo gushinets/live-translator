@@ -85,4 +85,14 @@ describe("API configuration", () => {
     const { apiConfig } = await import("../src/config.js");
     expect(apiConfig.webOrigin).toBe("https://example.test");
   });
+
+  it("accepts the API environment used by the local real-Live test harness", async () => {
+    const { default: liveConfig } = await import("../../web/playwright.real.config.js");
+    const servers = Array.isArray(liveConfig.webServer) ? liveConfig.webServer : [liveConfig.webServer];
+    const apiServer = servers.find(server => server?.cwd === "../api");
+    expect(apiServer).toBeDefined();
+    for (const [name, value] of Object.entries(apiServer!.env ?? {})) vi.stubEnv(name, value);
+    const { apiConfig } = await import("../src/config.js");
+    expect(apiConfig.webOrigin).toBe(liveConfig.use?.baseURL);
+  });
 });

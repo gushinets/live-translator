@@ -106,7 +106,7 @@ describe("AudioController with explicit direct playback", () => {
   let track: FakeAudioTrack;
   let audioContext: FakeAudioContext;
   let audioElement: HTMLAudioElement;
-  let getUserMedia: ReturnType<typeof vi.fn>;
+  let getUserMedia: ReturnType<typeof vi.fn<MediaDevices["getUserMedia"]>>;
   let nowMs: number;
   let controller: AudioController;
 
