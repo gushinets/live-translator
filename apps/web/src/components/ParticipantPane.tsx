@@ -1,5 +1,4 @@
-import { useLayoutEffect, useRef } from "react";
-import { languageName } from "../side/SideResolver";
+import { useCallback, useLayoutEffect, useRef } from "react";
 import type { Side } from "../conversation/Turn";
 import { ParticipantStatus, type ParticipantStatusLabel } from "./ParticipantStatus";
 import { translate, uiLocale } from "../i18n/messages";
@@ -25,13 +24,36 @@ export function ParticipantPane({
 }) {
   const locale = uiLocale(language);
   const t = (text: string) => translate(text, locale);
-  const languageLabel = language === undefined ? undefined : languageName(language, locale);
   const scrollRef = useRef<HTMLDivElement>(null);
   const followEnd = useRef(true);
+  const scrollState = useRef({ readingTop: 0, appliedTop: 0 });
+  const syncScroll = useCallback(() => {
+    const scroll = scrollRef.current;
+    if (!scroll) return;
+    const previous = scrollState.current;
+    if (followEnd.current) {
+      scroll.scrollTop = scroll.scrollHeight;
+    } else {
+      const maximum = Math.max(0, scroll.scrollHeight - scroll.clientHeight);
+      if (scroll.scrollTop !== Math.min(Math.max(0, previous.appliedTop), maximum)) {
+        previous.readingTop = scroll.scrollTop;
+      } else if (previous.readingTop > previous.appliedTop) {
+        // Only restore a position lost to clamping; leave native caption anchoring alone.
+        scroll.scrollTop = previous.readingTop;
+      }
+    }
+    previous.appliedTop = scroll.scrollTop;
+  }, []);
+  useLayoutEffect(() => {
+    if (followEnd.current) syncScroll();
+  }, [captions, status, syncScroll]);
   useLayoutEffect(() => {
     const scroll = scrollRef.current;
-    if (scroll && followEnd.current) scroll.scrollTop = scroll.scrollHeight;
-  }, [captions]);
+    if (!scroll || typeof ResizeObserver === "undefined") return;
+    const observer = new ResizeObserver(syncScroll);
+    observer.observe(scroll);
+    return () => observer.disconnect();
+  }, [syncScroll]);
 
   return (
     <section
@@ -45,15 +67,18 @@ export function ParticipantPane({
           : { overflow: "hidden" }
       }
     >
-      <div className="participant-header">
-        {languageLabel !== undefined ? <span className="participant-language">{languageLabel}</span> : null}
-        <ParticipantStatus side={side} label={status} language={locale} />
-      </div>
+      <ParticipantStatus side={side} label={status} language={language} />
       <div className="participant-scroll" ref={scrollRef} tabIndex={0} role="region"
         aria-label={t("Реплики участника {side}").replace("{side}", side)}
         data-testid={`participant-scroll-${side}`}
         onScroll={event => {
           const scroll = event.currentTarget;
+          const previous = scrollState.current;
+          // Layout clamping and our own scroll writes must not re-enable auto-follow.
+          const maximum = Math.max(0, scroll.scrollHeight - scroll.clientHeight);
+          if (scroll.scrollTop === Math.min(Math.max(0, previous.appliedTop), maximum)) return;
+          previous.readingTop = scroll.scrollTop;
+          previous.appliedTop = scroll.scrollTop;
           followEnd.current = scroll.scrollHeight - scroll.scrollTop - scroll.clientHeight <= 2;
         }}>
       {alertText !== undefined ? (

@@ -31,7 +31,7 @@ export default defineConfig({
       timeout: 120_000,
       env: {
         ...process.env,
-        NODE_ENV: "production",
+        NODE_ENV: "development",
         WEB_ORIGIN,
       },
     },
@@ -50,7 +50,7 @@ export default defineConfig({
       use: {
         ...devices["Desktop Chrome"],
         viewport: PORTRAIT_VIEWPORT,
-        screen: PORTRAIT_VIEWPORT,
+        contextOptions: { screen: PORTRAIT_VIEWPORT },
       },
     },
   ],

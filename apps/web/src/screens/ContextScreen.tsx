@@ -30,6 +30,7 @@ export interface ContextScreenController {
   readonly session: TranslationSession;
   readonly captionBlocks: readonly DialogueBlock[];
   readonly inputReady: boolean;
+  readonly playbackInputState: SessionController["playbackInputState"];
   readonly contextText: string;
   readonly bootstrapText: string;
   readonly ownerError?: string;
@@ -63,7 +64,7 @@ function uiSnapshot(controller: ContextScreenController): unknown[] {
     controller.bootstrapSide, controller.bootstrapRecording, controller.ownerError,
     controller.hasEnteredInterpreter, controller.isConnectInFlight, controller.isInterpreterStarting,
     controller.recoveryPrompt, controller.suspendReason, controller.retainedRecoveryState,
-    controller.audioElement];
+    controller.audioElement, controller.playbackInputState];
 }
 
 let documentController: AccountedSessionController | null = null;

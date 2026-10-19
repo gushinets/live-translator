@@ -77,8 +77,8 @@ test.describe("mocked conversation runtime", () => {
       expect(await harness.peerCreateCount()).toBe(peerCreatesAfterSetup);
     }
 
-    await expect(page.getByTestId("participant-status-A")).toHaveText("Speak");
-    await expect(page.getByTestId("participant-status-B")).toHaveText("Habla");
+    await expect(page.getByTestId("participant-status-A")).toHaveText("You can speak");
+    await expect(page.getByTestId("participant-status-B")).toHaveText("Puedes hablar");
     await expect(page.getByTestId("participant-pane-A").locator(".recent-turn")).toHaveCount(
       COURIER_TURNS.length,
     );
@@ -149,24 +149,24 @@ test.describe("mocked conversation runtime", () => {
     await harness.inputDelta("Where is apartment 12?", 100, 400);
     await expect(page.getByTestId("participant-pane-A").locator(".recent-turn-primary").last()).toHaveText("Where is apartment 12?");
     await expect(page.getByTestId("participant-status-A")).toHaveText("Listening");
-    await expect(page.getByTestId("participant-status-B")).toHaveText("Esperando");
+    await expect(page.getByTestId("participant-status-B")).toHaveText("Espera");
 
     await harness.outputDelta("¿Dónde está el apartamento 12?");
     await harness.playbackActive();
 
     await expect(page.getByTestId("participant-status-A")).toHaveText("Listening");
-    await expect(page.getByTestId("participant-status-B")).toHaveText("Traducción");
+    await expect(page.getByTestId("participant-status-B")).toHaveText("Escucha la traducción");
     await expect(page.getByTestId("participant-pane-B").locator(".recent-turn-primary").last()).toHaveText(
       "¿Dónde está el apartamento 12?",
     );
     expect(await harness.lastGateBCommand()).toBe("unmute");
-    await expect(page.getByTestId("participant-status-B")).not.toHaveText("Habla");
-    await expect(page.getByTestId("participant-status-A")).not.toHaveText("Waiting");
+    await expect(page.getByTestId("participant-status-B")).not.toHaveText("Puedes hablar");
+    await expect(page.getByTestId("participant-status-A")).not.toHaveText("Please wait");
 
     await harness.sourceQuiet();
     expect(await harness.lastGateBCommand()).toBe("unmute");
-    await expect(page.getByTestId("participant-status-A")).toHaveText("Waiting");
-    await expect(page.getByTestId("participant-status-B")).toHaveText("Traducción");
+    await expect(page.getByTestId("participant-status-A")).toHaveText("Please wait");
+    await expect(page.getByTestId("participant-status-B")).toHaveText("Escucha la traducción");
   });
 
   test("text-only captions close after audio grace without playback", async ({ page }) => {
@@ -178,8 +178,8 @@ test.describe("mocked conversation runtime", () => {
       original: "Hello from A.",
       translation: "Hola desde A.",
     });
-    await expect(page.getByTestId("participant-status-B")).toHaveText("Habla");
-    await expect(page.getByTestId("participant-status-A")).toHaveText("Speak");
+    await expect(page.getByTestId("participant-status-B")).toHaveText("Puedes hablar");
+    await expect(page.getByTestId("participant-status-A")).toHaveText("You can speak");
     await expect(page.getByText("Hello from A")).toHaveCount(1);
     await expect(page.getByText("Hola desde A")).toHaveCount(1);
   });
@@ -196,14 +196,14 @@ test.describe("mocked conversation runtime", () => {
     await harness.sourceQuiet();
     expect(await harness.lastGateBCommand()).toBe("unmute");
     await expect(page.getByText("Please repeat")).toHaveCount(0);
-    await expect(page.getByTestId("participant-status-B")).toHaveText("Habla");
+    await expect(page.getByTestId("participant-status-B")).toHaveText("Puedes hablar");
 
     await harness.advance(runtime.noOutputTimeoutMs);
     await expect(page.getByText("Please repeat")).toHaveCount(0);
     await expect(page.getByText("Hello, where is the nearest train station?", { exact: true })).toBeVisible();
     expect(await harness.lastGateBCommand()).toBe("unmute");
-    await expect(page.getByTestId("participant-status-A")).toHaveText("Speak");
-    await expect(page.getByTestId("participant-status-B")).toHaveText("Habla");
+    await expect(page.getByTestId("participant-status-A")).toHaveText("You can speak");
+    await expect(page.getByTestId("participant-status-B")).toHaveText("Puedes hablar");
     expect(await harness.lastSteeringContent()).toBe(steeringBefore);
   });
 });
@@ -234,8 +234,8 @@ async function completeTextOnlyTurn(
   await harness.sourceQuiet();
   expect(await harness.lastGateBCommand()).toBe("unmute");
   await harness.advance(runtime.noOutputTimeoutMs);
-  await expect(page.getByTestId(`participant-status-${turn.recipient}`)).toHaveText(turn.recipient === "A" ? "Speak" : "Habla");
-  await expect(page.getByTestId(`participant-status-${turn.speaker}`)).toHaveText(turn.speaker === "A" ? "Speak" : "Habla");
+  await expect(page.getByTestId(`participant-status-${turn.recipient}`)).toHaveText(turn.recipient === "A" ? "You can speak" : "Puedes hablar");
+  await expect(page.getByTestId(`participant-status-${turn.speaker}`)).toHaveText(turn.speaker === "A" ? "You can speak" : "Puedes hablar");
   await harness.waitForGateBUnmuted();
   await harness.advance(runtime.captionIdleMs);
 }

@@ -21,7 +21,7 @@ export class LedgerRuntime {
   private readonly network = new Map<string, Creation>();
   private readonly createWaiters = new Map<string, number>();
   private readonly pendingFences = new Map<string, CleanupReason>();
-  private readonly emergencyResults = new Map<string, { providerId: string; expiresAt?: number; outcome?: CleanupOutcome }>();
+  private readonly emergencyResults = new Map<string, { providerId: string; expiresAt?: number; outcome?: CleanupOutcome; closeAttempts: number; nextCloseAt: number }>();
   private readonly logger: Pick<Console, "error">;
   private readonly closer: OrphanCloser;
   private accepting = true;
@@ -135,7 +135,7 @@ export class LedgerRuntime {
     } catch (error) {
       if (error instanceof LedgerError) throw error;
       this.pendingFences.set(id, this.pendingFences.get(id) ?? "response_not_received");
-      this.emergencyResults.set(id, { providerId: result.session.id,
+      this.emergencyResults.set(id, { providerId: result.session.id, closeAttempts: 0, nextCloseAt: 0,
         ...(result.session.expires_at !== undefined ? { expiresAt: result.session.expires_at * 1000 } : {}) });
       await this.reconcileEmergency();
       entry.safe = !this.emergencyResults.has(id) && !this.pendingFences.has(id);
@@ -160,12 +160,15 @@ export class LedgerRuntime {
         this.cleanup(id, this.pendingFences.get(id) ?? "response_not_received");
         this.ledger.recordProviderCreated(id, value.providerId, value.expiresAt);
         if (value.outcome?.kind === "closed_observed") this.ledger.recordProviderClosed(id, value.outcome.observation, "sideband");
+        else if (value.outcome?.kind === "terminal_not_live") this.ledger.recordProviderTerminalNotLive(id);
         this.emergencyResults.delete(id); const entry = this.network.get(id); if (entry) entry.safe = true;
         this.network.delete(id); this.syncAdmission(); this.wake();
       } catch {
-        if (!value.outcome) {
+        if ((!value.outcome || value.outcome.kind === "retryable_error") && this.ledger.now() >= value.nextCloseAt) {
+          value.closeAttempts++;
           try { value.outcome = await this.closer(value.providerId, AbortSignal.timeout(this.ledger.policy.sessionCloseTimeoutMs)); }
           catch { value.outcome = { kind: "retryable_error", code: "emergency_transport" }; }
+          value.nextCloseAt = this.ledger.now() + Math.min(30000, 1000 * 2 ** Math.min(value.closeAttempts - 1, 5));
         }
         this.logger.error("Ambiguous provider result awaiting ledger recovery", { localId: id });
       }

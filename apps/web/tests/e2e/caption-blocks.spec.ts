@@ -197,7 +197,7 @@ test("same-script replies retain quoted captions and pending translation status"
   await harness.sourceQuiet();
   await harness.outputDelta("Sí.");
   await expect(page.getByTestId("participant-status-B")).toHaveText("Traduciendo");
-  await expect(page.getByTestId("participant-status-A")).toHaveText("Waiting");
+  await expect(page.getByTestId("participant-status-A")).toHaveText("Please wait");
   await expect(page.getByTestId("participant-pane-B").locator("li")).toHaveText([
     "Yo: La estación está cerca del supermercado.", "Él: Sí.",
   ]);
@@ -245,9 +245,9 @@ test("stopped playback with retained translated text does not keep an output ind
   await harness.sourceQuiet();
   await harness.playbackActive();
   const status = page.getByTestId("participant-status-B");
-  await expect(status).toHaveText("Traducción");
+  await expect(status).toHaveText("Escucha la traducción");
   await harness.playbackIdle();
-  await expect(status).not.toHaveText("Traducción");
+  await expect(status).not.toHaveText("Escucha la traducción");
   await expect(status).not.toHaveText("Traduciendo");
   await expect(page.getByTestId("participant-pane-B").locator("li")).toHaveText("Él: Sí.");
 });

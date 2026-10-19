@@ -2,7 +2,7 @@ import { expect, test } from "@playwright/test";
 import { runtime } from "../../src/config/runtime";
 import { MockLiveHarness } from "./mockLiveHarness";
 
-test("compact participant headers leave room for four readable exchanges on each side", async ({ page }, testInfo) => {
+test("compact guidance keeps all exchanges readable in each participant scroller", async ({ page }, testInfo) => {
   const harness = await MockLiveHarness.attach(page);
   await page.addInitScript(() => {
     localStorage.setItem("live-translator-owner-language", "ru");
@@ -29,18 +29,26 @@ test("compact participant headers leave room for four readable exchanges on each
   }
   // Wider fallback fonts must not wrap the conversation controls into a second row.
   await page.addStyleTag({ content: ".conversation-center { font-family: Verdana, sans-serif; }" });
-  for (const viewport of [page.viewportSize()!, { width: 320, height: 640 }]) {
+  const viewports = [{ width: 390, height: 844 }, { width: 320, height: 640 }];
+  const nativeViewport = page.viewportSize()!;
+  if (nativeViewport.height !== 844) viewports.push(nativeViewport);
+  for (const viewport of viewports) {
     await page.setViewportSize(viewport);
-    await page.screenshot({ path: testInfo.outputPath(`variant-four-dialogue-${viewport.width}.png`) });
+    await page.screenshot({ path: testInfo.outputPath(`variant-four-dialogue-${viewport.width}x${viewport.height}.png`) });
     for (const side of ["A", "B"] as const) {
       const pane = page.getByTestId(`participant-pane-${side}`);
-      expect((await pane.locator(".participant-header").boundingBox())!.height).toBeLessThanOrEqual(32);
+      await expect(pane.locator(".participant-header")).toHaveCount(0);
       const rows = pane.locator("li");
       await expect(rows).toHaveCount(4);
       for (const row of await rows.all()) {
-        await expect(row).toBeInViewport({ ratio: 0.99 });
         await expect(row).toHaveCSS("font-size", "22px");
       }
+      // Keep three complete rows with phone browser chrome, and all four in the full-height fixture.
+      for (const row of (await rows.all()).slice(viewport.height === 844 ? -4 : -3)) {
+        await expect(row).toBeInViewport({ ratio: 0.99 });
+      }
+      await expect(pane.getByTestId(`participant-guidance-${side}`)).toBeInViewport({ ratio: 0.99 });
+      expect(await page.getByTestId(`participant-scroll-${side}`).evaluate(el => el.clientHeight)).toBeGreaterThan(0);
     }
     const end = (await page.getByRole("button", { name: "Завершить", exact: true }).boundingBox())!;
     await expect(page.getByRole("switch")).toHaveCount(0);
@@ -67,10 +75,8 @@ test("long captions stay readable, retain their size in pauses, and respect manu
     const scroll = page.getByTestId(`participant-scroll-${side}`);
     await expect(message).toHaveCSS("font-size", "22px");
     const pane = page.getByTestId(`participant-pane-${side}`);
-    for (const label of [pane.locator(".participant-language"), pane.getByTestId(`participant-status-${side}`)]) {
-      await expect(label).toHaveCSS("font-family", "system-ui, sans-serif");
-      await expect(label).toHaveCSS("font-size", "15px");
-    }
+    await expect(pane.getByTestId(`participant-status-${side}`)).toHaveCSS("font-family", "system-ui, sans-serif");
+    await expect(pane.getByTestId(`participant-status-${side}`)).toHaveCSS("font-size", /^(18|22)px$/);
     expect(await message.evaluate(el => {
       const author = el.previousElementSibling!.getBoundingClientRect();
       const firstLetter = document.createRange();
@@ -158,7 +164,7 @@ test("keeps all history and the reading position when another turn arrives", asy
     await harness.outputDelta(caption.translation);
     await harness.sourceQuiet();
     await harness.advance(runtime.noOutputTimeoutMs);
-    await expect(page.getByTestId("participant-status-A")).toHaveText("Speak");
+    await expect(page.getByTestId("participant-status-A")).toHaveText("You can speak");
     await harness.waitForGateBUnmuted();
     await harness.advance(runtime.captionIdleMs);
   }
@@ -186,6 +192,169 @@ test("keeps all history and the reading position when another turn arrives", asy
     await expect.poll(async () => Math.abs((await retained.boundingBox())!.y - before[index]!)).toBeLessThan(2);
   }
 });
+
+for (const resizeGuidance of [false, true]) {
+  test(`keeps a later caption in place when an earlier translation grows${resizeGuidance ? " alongside a guidance resize" : ""}`, async ({ page }) => {
+    const harness = await MockLiveHarness.attach(page);
+    await page.addInitScript(() => {
+      localStorage.setItem("live-translator-owner-language", "ru");
+      localStorage.setItem("live-translator-interlocutor-language", "en");
+    });
+    await page.setViewportSize({ width: 390, height: 664 });
+    await page.goto("/");
+    await page.getByRole("button", { name: "Начать перевод" }).click();
+    await expect(page.getByRole("button", { name: "Завершить" })).toBeVisible();
+    const russian = "Подскажите, как пройти к вокзалу? ".repeat(8);
+    const english = "Could you tell me where the train station is? ".repeat(8);
+    const exchanges = [
+      ["Первая реплика. " + russian, "First translation. " + english],
+      ["Second source. " + english, "Второй перевод. " + russian],
+      ["Третья реплика. " + russian, "Third translation. " + english],
+      ["Fourth source. " + english, "Четвертый перевод. " + russian],
+    ];
+    for (const [index, [source, translation]] of exchanges.entries()) {
+      await harness.sourceActive();
+      await harness.inputDelta(source!, index * 10_000);
+      await harness.outputDelta(translation!, index * 10_000);
+      await harness.sourceQuiet();
+      await harness.advance(runtime.noOutputTimeoutMs);
+      await harness.waitForGateBUnmuted();
+    }
+    if (resizeGuidance) {
+      await harness.bufferedPlayback(true);
+      await harness.playbackActive();
+      await expect(page.getByTestId("participant-guidance-B")).toContainText("Translation playing");
+    }
+    await page.clock.resume();
+    const anchors = [
+      page.getByTestId("participant-scroll-A").locator("li").filter({ hasText: "Третья реплика." }),
+      page.getByTestId("participant-scroll-B").locator("li").filter({ hasText: "Second source." }),
+    ];
+    const positions: number[] = [];
+    for (const anchor of anchors) {
+      await anchor.evaluate(el => {
+        const scroll = el.closest<HTMLElement>(".participant-scroll")!;
+        scroll.scrollTop = (el as HTMLElement).offsetTop - scroll.offsetTop + 40;
+        scroll.dispatchEvent(new Event("scroll"));
+      });
+      positions.push((await anchor.boundingBox())!.y);
+    }
+    const guidance = page.getByTestId("participant-guidance-B");
+    const height = (await guidance.boundingBox())!.height;
+    // Deliver both updates before the next paint, including the playback-to-tail transition.
+    await page.evaluate(({ resize, height }) => new Promise<void>(resolve => requestAnimationFrame(() => {
+      window.__liveTranslatorTestLive!.emit({
+        type: "session.output_transcript.delta",
+        delta: " Additional information about the first translation. ".repeat(14), start_ms: 1_000,
+      });
+      window.__liveTranslatorTestLive!.emit({
+        type: "session.output_transcript.delta",
+        delta: " Дополнение ко второму переводу. ".repeat(14), start_ms: 11_000,
+      });
+      if (resize) {
+        window.__liveTranslatorTestPlayback!.emit(false);
+        window.__liveTranslatorTestAudio!.emitPlaybackActivity(false, Date.now());
+        // Model a one-pixel wrap difference independently of the browser's fallback font.
+        document.querySelector<HTMLElement>('[data-testid="participant-guidance-B"]')!.style.minHeight = `${height + 1}px`;
+      }
+      resolve();
+    })), { resize: resizeGuidance, height });
+    await page.evaluate(() => new Promise<void>(resolve => requestAnimationFrame(() => requestAnimationFrame(() => resolve()))));
+    if (resizeGuidance) {
+      await expect(guidance).toContainText("One moment");
+      expect((await guidance.boundingBox())!.height).not.toBe(height);
+    }
+    for (const [index, anchor] of anchors.entries()) {
+      await expect.poll(async () => Math.abs((await anchor.boundingBox())!.y - positions[index]!)).toBeLessThan(2);
+    }
+  });
+}
+
+test("keeps the first keyboard scroll after caption-only reflow", async ({ page }) => {
+  const harness = await MockLiveHarness.attach(page);
+  await page.setViewportSize({ width: 390, height: 664 });
+  await harness.startListeningConversation();
+  await harness.sourceActive();
+  await harness.inputDelta("Could you tell me where the train station is? ".repeat(14));
+  await harness.outputDelta("¿Podría decirme dónde está la estación de tren? ".repeat(14));
+  await harness.sourceQuiet();
+  await harness.advance(runtime.noOutputTimeoutMs);
+  await harness.waitForGateBUnmuted();
+  await page.clock.resume();
+  for (const side of ["A", "B"]) {
+    const scroll = page.getByTestId(`participant-scroll-${side}`);
+    await scroll.focus();
+    const before = await scroll.evaluate(el => ({ top: el.scrollTop, height: el.clientHeight, content: el.scrollHeight }));
+    await scroll.evaluate(el => {
+      el.querySelector<HTMLElement>(".participant-recent")!.style.paddingBottom = "400px";
+    });
+    expect(await scroll.evaluate(el => el.clientHeight)).toBe(before.height);
+    expect(await scroll.evaluate(el => el.scrollHeight)).toBe(before.content + 400);
+    const firstScroll = scroll.evaluate(el => new Promise<number>(resolve => {
+      el.addEventListener("scroll", () => resolve(el.scrollTop), { once: true });
+    }));
+    await scroll.press("ArrowUp");
+    expect(await firstScroll).toBeLessThan(before.top);
+  }
+});
+
+for (const { width, height, textSize } of [
+  { width: 390, height: 664, textSize: 100 },
+  { width: 320, height: 640, textSize: 100 },
+  { width: 390, height: 664, textSize: 200 },
+  { width: 320, height: 640, textSize: 200 },
+]) {
+  test(`preserves a near-end reading position through pause/resume at ${width}x${height} with ${textSize}% text`, async ({ page }) => {
+    const harness = await MockLiveHarness.attach(page);
+    await page.setViewportSize({ width, height });
+    await harness.startListeningConversation();
+    await page.addStyleTag({ content: `html { font-size: ${textSize}% !important; }` });
+    await harness.sourceActive();
+    await harness.inputDelta("Could you tell me where the train station is? ".repeat(14));
+    await harness.outputDelta("¿Podría decirme dónde está la estación de tren? ".repeat(14));
+    await harness.sourceQuiet();
+    await harness.advance(runtime.noOutputTimeoutMs);
+    await harness.waitForGateBUnmuted();
+    await expect(page.getByTestId("participant-status-A")).toHaveText("You can speak");
+    await page.clock.resume();
+    const scrolls = ["A", "B"].map(side => page.getByTestId(`participant-scroll-${side}`));
+    const positions: number[] = [];
+    for (const scroll of scrolls) {
+      await scroll.evaluate(el => {
+        el.scrollTop = el.scrollHeight - el.clientHeight - 32;
+        el.dispatchEvent(new Event("scroll"));
+      });
+      positions.push(await scroll.evaluate(el => el.scrollTop));
+      expect(positions.at(-1)).toBeGreaterThan(0);
+    }
+
+    await page.evaluate(() => window.__setAudioState?.("interrupted"));
+    await expect(page.getByTestId("participant-status-A")).toHaveText("Paused");
+    await expect(page.getByTestId("participant-status-B")).toHaveText("En pausa");
+    await page.evaluate(() => new Promise<void>(resolve => requestAnimationFrame(() => requestAnimationFrame(() => resolve()))));
+    for (const [index, scroll] of scrolls.entries()) {
+      const maximum = await scroll.evaluate(el => el.scrollHeight - el.clientHeight);
+      expect(await scroll.evaluate(el => el.scrollTop)).toBe(Math.min(positions[index]!, maximum));
+      if (textSize === 100) expect(maximum).toBeLessThan(positions[index]!);
+    }
+
+    await page.evaluate(() => window.__setAudioState?.("running"));
+    await expect(page.getByTestId("participant-status-A")).toHaveText("You can speak");
+    await expect(page.getByTestId("participant-status-B")).toHaveText("Puedes hablar");
+    await page.evaluate(() => new Promise<void>(resolve => requestAnimationFrame(() => requestAnimationFrame(() => resolve()))));
+    for (const [index, scroll] of scrolls.entries()) {
+      await expect.poll(async () => Math.abs(await scroll.evaluate(el => el.scrollTop) - positions[index]!)).toBeLessThan(1);
+    }
+    await harness.sourceActive();
+    await harness.inputDelta("Please show me the way.");
+    await harness.outputDelta("Por favor, muéstreme el camino.");
+    await page.evaluate(() => new Promise<void>(resolve => requestAnimationFrame(() => requestAnimationFrame(() => resolve()))));
+    for (const [index, scroll] of scrolls.entries()) {
+      await expect.poll(async () => Math.abs(await scroll.evaluate(el => el.scrollTop) - positions[index]!)).toBeLessThan(1);
+      expect(await scroll.evaluate(el => el.scrollHeight - el.scrollTop - el.clientHeight)).toBeGreaterThan(32);
+    }
+  });
+}
 
 test("a long dialogue keeps all resolved captions and translation-only output while hiding unknown text", async ({ page }, testInfo) => {
   const harness = await MockLiveHarness.attach(page);

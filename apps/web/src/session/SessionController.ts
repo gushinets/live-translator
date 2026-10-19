@@ -1,6 +1,6 @@
 import { COUNTER_NAMES, type MetricCounters } from "../metrics/UsageTypes";
 import { BackendClient } from "../api/BackendClient";
-import { AudioController, type PlaybackActivityEvent } from "../audio/AudioController";
+import { AudioController, type PlaybackActivityEvent, type PlaybackInputState } from "../audio/AudioController";
 import type { AudioActivityEvent } from "../audio/VoiceActivityMonitor";
 import { runtime } from "../config/runtime";
 import {
@@ -71,6 +71,7 @@ export interface SessionControllerDeps {
     onSourceSample?: AudioController["onSourceSample"];
     onPlaybackInputBlocked?: AudioController["onPlaybackInputBlocked"];
     playbackInputBlocked?: boolean;
+    playbackInputState?: PlaybackInputState;
     meteringMediaReady?: boolean;
     setPlaybackTurn?: AudioController["setPlaybackTurn"];
     playOutput?: AudioController["playOutput"];
@@ -500,6 +501,10 @@ export class SessionController {
       (this.currentSession.activeTurn === undefined || this.currentSession.activeTurn.sourceIdleAtMs !== undefined) &&
       this.speechInputReady && !this.audio.playbackInputBlocked
     );
+  }
+
+  get playbackInputState(): PlaybackInputState {
+    return this.audio.playbackInputState ?? (this.audio.playbackInputBlocked ? "playing" : "idle");
   }
 
   get isConnectInFlight(): boolean {
