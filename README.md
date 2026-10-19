@@ -6,8 +6,6 @@
 
 ## Дизайн и состояния приложения
 
-Сохранённая серия макетов от **16 октября 2026 года** показывает разговор на русском и английском в шести состояниях. Нажмите на изображение, чтобы открыть его целиком.
-
 | Говорит участник A | Говорит участник B | Идёт озвучка перевода |
 |---|---|---|
 | [<img src="docs/images/app-states/01-source-a-speaking.png" width="220" alt="Участник A говорит по-русски; собеседник ждёт перевода">](docs/images/app-states/01-source-a-speaking.png) | [<img src="docs/images/app-states/02-source-b-speaking.png" width="220" alt="Участник B говорит по-английски; владелец телефона ждёт перевода">](docs/images/app-states/02-source-b-speaking.png) | [<img src="docs/images/app-states/03-translation-playing.png" width="220" alt="Идёт озвучка перевода; микрофон выключен">](docs/images/app-states/03-translation-playing.png) |
@@ -15,8 +13,6 @@
 | Пауза после озвучки | Микрофон готов | Разговор завершён |
 |---|---|---|
 | [<img src="docs/images/app-states/04-post-playback-pause.png" width="220" alt="Короткая пауза после перевода; микрофон скоро включится">](docs/images/app-states/04-post-playback-pause.png) | [<img src="docs/images/app-states/05-microphone-ready.png" width="220" alt="Микрофон включён; можно говорить">](docs/images/app-states/05-microphone-ready.png) | [<img src="docs/images/app-states/06-conversation-ended.png" width="220" alt="Разговор завершён; текст остаётся на экране">](docs/images/app-states/06-conversation-ended.png) |
-
-Изображения перенесены без изменений из локальной серии `output/status-next-to-text-2026-10-16/` в [docs/images/app-states](docs/images/app-states), чтобы ссылки работали в репозитории. Это зафиксированный вариант дизайна; подписи, расположение статусов и кнопок могут отличаться от текущей сборки. Описание палитры, типографики и компонентов находится в [DESIGN.md](DESIGN.md); фактический интерфейс задают компоненты и CSS в `apps/web/src`.
 
 ## Как пользоваться
 
