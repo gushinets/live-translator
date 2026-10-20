@@ -42,7 +42,7 @@ test.describe("mocked conversation runtime", () => {
     await expect(page.getByRole("button", { name: "Start translation", exact: true })).toBeEnabled();
     await expect(page.locator(".conversation-screen")).toHaveCount(0);
   });
-  test("courier flow alternates A/B and retains every turn", async ({
+  test("courier flow alternates A/B, faces each participant and retains every turn", async ({
     page,
   }, testInfo) => {
     const harness = await MockLiveHarness.attach(page);
@@ -73,6 +73,15 @@ test.describe("mocked conversation runtime", () => {
     await expect(page.getByTestId("participant-pane-B").locator(".recent-turn")).toHaveCount(
       COURIER_TURNS.length,
     );
+    const facing = await page.getByTestId("participant-pane-B").locator(".recent-turn-primary").last().evaluate(element => {
+      let orientation = new DOMMatrix();
+      for (let node: Element | null = element; node; node = node.parentElement) {
+        orientation = new DOMMatrix(getComputedStyle(node).transform).multiply(orientation);
+      }
+      return { horizontal: orientation.a, vertical: orientation.d };
+    });
+    expect(facing.horizontal).toBeLessThan(0);
+    expect(facing.vertical).toBeLessThan(0);
     await expect(page.getByText(COURIER_TURNS[0]!.original)).toHaveCount(1);
     await expect(page.getByText(COURIER_TURNS[6]!.original)).toHaveCount(1);
     await expect(page.getByText(COURIER_TURNS[7]!.original)).toHaveCount(1);

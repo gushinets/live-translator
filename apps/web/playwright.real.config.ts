@@ -2,9 +2,11 @@ import { defineConfig, devices } from "@playwright/test";
 import { randomUUID } from "node:crypto";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 
 const WEB_ORIGIN = "http://127.0.0.1:4173";
 const PORTRAIT_VIEWPORT = { width: 390, height: 844 };
+const databasePath = join(tmpdir(), `live-translator-real-${randomUUID()}.sqlite`);
 
 export default defineConfig({
   testDir: "./tests/real",
@@ -15,7 +17,7 @@ export default defineConfig({
   expect: {
     timeout: 30_000,
   },
-  reporter: [["list"]],
+  reporter: [["list"], [fileURLToPath(new URL("./tests/real/cleanup-ledger-reporter.ts", import.meta.url)), { databasePath }]],
   outputDir: "test-results/real-live",
   use: {
     baseURL: WEB_ORIGIN,
@@ -36,7 +38,7 @@ export default defineConfig({
         ...process.env,
         NODE_ENV: "development",
         WEB_ORIGIN,
-        USAGE_DB_PATH: join(tmpdir(), `live-translator-real-${randomUUID()}.sqlite`),
+        USAGE_DB_PATH: databasePath,
         USAGE_LEDGER_ENABLED: "true",
         BACKGROUND_SESSION_CLOSE_ENABLED: "true",
         SESSION_CLOSE_TIMEOUT_MS: "15000",

@@ -1,6 +1,7 @@
 import { readFileSync } from "node:fs";
 import { expect, test, type Page } from "@playwright/test";
 import { emulatePortraitScreen } from "./portrait-screen";
+import { cleanupRealSessions } from "./cleanup";
 
 const PARTICIPANT_A_AUDIO = readAudioFixture("participant-a.mp3.b64"); // Russian
 const PARTICIPANT_B_AUDIO = readAudioFixture("participant-b.mp3.b64"); // English
@@ -451,25 +452,7 @@ test.describe("real GPT-Live desktop conversation", () => {
 
   test.afterEach(async ({ page, baseURL }) => {
     test.setTimeout(60000);
-    const headers = { Origin: baseURL! };
-    const results = await Promise.allSettled(Array.from(attempts, async ([id, conversationId]) => {
-      const cleanup = await page.request.post(`/api/live/session/${id}/cleanup`, { headers, data: { reason: "user_end" }, timeout: 5000 });
-      expect([200, 404]).toContain(cleanup.status());
-      const conversation = await page.request.get(`/api/conversations/${conversationId}`, { timeout: 5000 });
-      expect(conversation.ok()).toBe(true);
-      const { version } = await conversation.json() as { version: number };
-      const ended = await page.request.post(`/api/conversations/${conversationId}/end`, { headers, data: { expectedVersion: version, reason: "user_end" }, timeout: 5000 });
-      expect(ended.ok()).toBe(true);
-      if (cleanup.status() === 200) {
-        await expect.poll(async () => {
-          const response = await page.request.get(`/api/live/session/${id}`, { timeout: 2000 });
-          const attempt = await response.json() as { state: string };
-          return response.ok() && ["closed", "failed"].includes(attempt.state);
-        }, { timeout: 30000 }).toBe(true);
-      }
-    }));
-    const failures = results.flatMap(result => result.status === "rejected" ? [result.reason] : []);
-    if (failures.length) throw new AggregateError(failures, "Real Live session cleanup failed");
+    await cleanupRealSessions(page.request, baseURL!, attempts);
   });
 
   test("translates Russian A to English B and English B to Russian A with remote audio", async ({

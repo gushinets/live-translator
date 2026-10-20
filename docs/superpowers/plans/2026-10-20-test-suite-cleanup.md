@@ -79,3 +79,10 @@
 - `serverLifecycle.test.ts`: keep the accurately named limiter unit test; add the actual worker/emergency integration with a SQLite persistence fault and held provider close.
 - Browser startup/mobile/recovery/conversation/guidance tests: remove copy-only, color, font, style and decorative geometry assertions; retain keyboard focus, accessibility, disabled/busy states, caption ownership/history and reading-position behavior.
 - Paid real-Live harness: explicit saved ru/en pair, current one-click start and retained-history End flow, unique temporary SQLite, and bounded cleanup after failures. Browser audio calibration and network/media assertions remain.
+
+## PR review follow-up
+
+- Retain one browser regression for B's opposite-facing captions. It reads the composed visual orientation through all ancestors instead of fixing an inline style or CSS class. Disabling rotation made the test fail in Chromium and WebKit.
+- Remove the temporary real-Live database and its WAL/SHM files in a reporter's finalization hook, after Playwright stops the web servers. Ordinary global teardown runs before web-server teardown. Integration probes with a real SQLite-owning subprocess verify successful tests, failed tests and API startup failure.
+- Run session cleanup and conversation End independently, collect all failures afterward, and end each conversation once. Two HTTP/SQLite regressions verify that both conversations end and the failed session receives a durable cleanup fence even when its cleanup request times out or returns 503.
+- Follow-up verification: 1884 Vitest tests passed in 63 files; 108 Chromium/WebKit E2E tests passed with retries disabled and the existing 3 device-engine skips. API/web/real-harness TypeScript, ESLint and diff checks passed. Paid Live tests were collected only; the working database was never opened.
