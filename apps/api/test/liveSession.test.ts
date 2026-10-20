@@ -2,6 +2,7 @@ import OpenAI from "openai";
 import request from "supertest";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createApp } from "../src/app.js";
+import { SessionLeaseRegistry } from "../src/security/SessionLeaseRegistry.js";
 
 const sessionResult = {
   session: { id: "session-1" },
@@ -274,22 +275,18 @@ describe("POST /api/live/session", () => {
   });
 
   it("releases the lease when session creation fails", async () => {
-    const release = vi.fn();
-    const leaseRegistry = {
-      acquire: vi.fn().mockReturnValue({ leaseId: "lease-1", release }),
-      bindSession: vi.fn(),
-      releaseSession: vi.fn(),
-    };
-    const createLiveSession = vi.fn().mockRejectedValue(new Error("failure"));
+    const leaseRegistry = new SessionLeaseRegistry(1, 900000);
+    const createLiveSession = vi.fn().mockRejectedValueOnce(new Error("failure")).mockResolvedValue(sessionResult);
     const logger = { error: vi.fn() };
     const app = createApp({ createLiveSession, leaseRegistry, logger });
 
     await request(app)
       .post("/api/live/session")
       .set("Origin", "http://localhost:5173")
-      .send({ sdp: "v=0\r\n..." });
+      .send({ sdp: "v=0\r\n..." }).expect(500);
 
-    expect(release).toHaveBeenCalledOnce();
+    await request(app).post("/api/live/session").set("Origin", "http://localhost:5173").send({ sdp: "retry" }).expect(201);
+    await request(app).post("/api/live/session").set("Origin", "http://localhost:5173").send({ sdp: "still-full" }).expect(429);
     expect(logger.error).toHaveBeenCalledWith(
       "Unexpected Live session creation failure",
       { errorType: "Error" },
@@ -324,27 +321,22 @@ describe("POST /api/live/session", () => {
   });
 
   it("maps status-less OpenAI API errors to 502 and releases the lease", async () => {
-    const release = vi.fn();
-    const leaseRegistry = {
-      acquire: vi.fn().mockReturnValue({ leaseId: "lease-1", release }),
-      bindSession: vi.fn(),
-      releaseSession: vi.fn(),
-    };
+    const leaseRegistry = new SessionLeaseRegistry(1, 900000);
     const connectionError = new OpenAI.APIConnectionError({
       message: "sensitive connection failure",
     });
-    const createLiveSession = vi.fn().mockRejectedValue(connectionError);
+    const createLiveSession = vi.fn().mockRejectedValueOnce(connectionError).mockResolvedValue(sessionResult);
     const logger = { error: vi.fn() };
-    const response = await request(
-      createApp({ createLiveSession, leaseRegistry, logger }),
-    )
+    const app = createApp({ createLiveSession, leaseRegistry, logger });
+    const response = await request(app)
       .post("/api/live/session")
       .set("Origin", "http://localhost:5173")
       .send({ sdp: "sensitive-sdp" });
 
     expect(response.status).toBe(502);
     expect(response.body).toEqual({ error: "Live session creation failed" });
-    expect(release).toHaveBeenCalledOnce();
+    await request(app).post("/api/live/session").set("Origin", "http://localhost:5173").send({ sdp: "retry" }).expect(201);
+    await request(app).post("/api/live/session").set("Origin", "http://localhost:5173").send({ sdp: "still-full" }).expect(429);
     expect(logger.error).toHaveBeenCalledWith(
       "OpenAI Live session creation failed",
       {

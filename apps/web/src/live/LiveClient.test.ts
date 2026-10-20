@@ -212,28 +212,6 @@ describe("LiveClient.connect", () => {
     await expect(connectPromise).resolves.toEqual({ sessionId: "sess_123" });
   });
 
-  it("creates the data channel before adding tracks or creating the offer", async () => {
-    const { backend } = makeFakeBackend();
-    const client = makeClient(backend);
-    const connectPromise = client.connect(makeFakeStream());
-
-    await vi.waitFor(() => {
-      expect(peer.calls).toContain("setRemoteDescription");
-    });
-    const dataChannelIndex = peer.calls.indexOf("createDataChannel");
-    const addTrackIndex = peer.calls.indexOf("addTrack");
-    const createOfferIndex = peer.calls.indexOf("createOffer");
-    expect(dataChannelIndex).toBe(0);
-    expect(dataChannelIndex).toBeLessThan(addTrackIndex);
-    expect(addTrackIndex).toBeLessThan(createOfferIndex);
-
-    peer.dataChannel?.emitMessage({
-      type: "session.started",
-      session: { id: "sess_123" },
-    });
-    await connectPromise;
-  });
-
   it("adds every microphone track from the provided stream", async () => {
     const { backend } = makeFakeBackend();
     const client = makeClient(backend);

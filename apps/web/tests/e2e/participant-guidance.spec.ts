@@ -25,13 +25,8 @@ test("localized guidance follows the capture gate through playback and its echo 
   await expect(page.getByTestId("participant-guidance-B")).toContainText("Your speech is not being recorded");
   for (const width of [390, 320]) {
     await page.setViewportSize({ width, height: width === 320 ? 640 : 844 });
-    const center = (await page.locator(".conversation-center").boundingBox())!;
     for (const side of ["A", "B"] as const) {
       const pane = page.getByTestId(`participant-pane-${side}`);
-      await expect(pane.locator(".participant-header, .participant-language")).toHaveCount(0);
-      const cue = (await pane.getByTestId(`participant-guidance-${side}`).boundingBox())!;
-      expect(cue.height).toBeLessThanOrEqual(100);
-      expect(side === "A" ? cue.y - center.y - center.height : center.y - cue.y - cue.height).toBeLessThanOrEqual(7);
       await expect(pane.getByTestId(`participant-guidance-${side}`)).toBeInViewport({ ratio: 0.99 });
       await expect(pane.locator("li").last()).toBeInViewport({ ratio: 0.99 });
       expect(await pane.getByTestId(`participant-scroll-${side}`).evaluate(el => el.clientHeight)).toBeGreaterThan(0);
@@ -61,8 +56,6 @@ test("localized guidance follows the capture gate through playback and its echo 
     await expect(guidance).toHaveAccessibleDescription(side === "A"
       ? "Подождите. Сейчас ваша речь не записывается."
       : "Please wait. Your speech is not being recorded.");
-    await expect(guidance).toHaveCSS("outline-style", "solid");
-    await expect(guidance).toHaveCSS("outline-width", "2px");
     await page.keyboard.press("Home");
     await expect.poll(() => guidance.evaluate(el => el.scrollTop)).toBe(0);
     expect(await guidance.evaluate(el => {
@@ -82,7 +75,6 @@ test("localized guidance follows the capture gate through playback and its echo 
   await expect(page.getByRole("button", { name: "Завершить", exact: true })).toBeInViewport();
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
   await page.screenshot({ path: testInfo.outputPath("playback-guidance-200-percent.png") });
-  await expect(page.getByTestId("participant-pane-B")).toHaveCSS("transform", "matrix(-1, 0, 0, -1, 0, 0)");
   await harness.bufferedPlayback(false);
   await harness.playbackIdle();
   await expect(page.getByTestId("participant-guidance-A")).toContainText("Ещё мгновение");

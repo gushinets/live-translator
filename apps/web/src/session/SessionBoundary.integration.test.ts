@@ -1,4 +1,5 @@
 import { IDBFactory } from "fake-indexeddb";
+import { setImmediate as settle } from "node:timers/promises";
 import { cleanup, render, screen } from "@testing-library/react";
 import { jsx } from "react/jsx-runtime";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -142,7 +143,6 @@ function fixture(closeTimeoutMs = 2000, background = false, initialHidden = fals
 }
 let restoreDocumentVisibility = () => {};
 const fixtureVisibilities: VisibilityController[] = [];
-async function settle() { for (let i = 0; i < 15; i++) await Promise.resolve(); }
 async function reloadAfterPause(f: ReturnType<typeof fixture>, dispose = true, pendingEnd = false) {
   if (dispose) await f.controller.dispose();
   const store = ResumeSnapshotStore.open({ indexedDB: f.snapshotDb, sessionStorage,

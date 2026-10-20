@@ -1,4 +1,7 @@
 import { defineConfig, devices } from "@playwright/test";
+import { randomUUID } from "node:crypto";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
 const WEB_ORIGIN = "http://127.0.0.1:4173";
 const PORTRAIT_VIEWPORT = { width: 390, height: 844 };
@@ -33,6 +36,10 @@ export default defineConfig({
         ...process.env,
         NODE_ENV: "development",
         WEB_ORIGIN,
+        USAGE_DB_PATH: join(tmpdir(), `live-translator-real-${randomUUID()}.sqlite`),
+        USAGE_LEDGER_ENABLED: "true",
+        BACKGROUND_SESSION_CLOSE_ENABLED: "true",
+        SESSION_CLOSE_TIMEOUT_MS: "15000",
       },
     },
     {

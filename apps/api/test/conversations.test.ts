@@ -5,12 +5,14 @@ import { openUsageDatabase } from "../src/persistence/database.js";
 import { UsageLedger } from "../src/accounting/UsageLedger.js";
 import { createApp } from "../src/app.js";
 import { LedgerRuntime } from "../src/accounting/LedgerRuntime.js";
+import { apiConfig } from "../src/config.js";
 import type { LiveSessionCreator } from "../src/openai/createLiveSession.js";
 const origin = "http://localhost:5173";
 const answer = (id: string) => ({ session: { id }, transport: { type: "webrtc" as const, sdp: "answer-sdp" } });
 const dbs: ReturnType<typeof openUsageDatabase>[] = [];
+const originalConfig = { ...apiConfig };
 beforeEach(() => vi.stubEnv("OPENAI_API_KEY", "fake-key"));
-afterEach(() => { vi.unstubAllEnvs(); for (const db of dbs.splice(0)) if (db.isOpen) db.close(); });
+afterEach(() => { Object.assign(apiConfig, originalConfig); vi.unstubAllEnvs(); for (const db of dbs.splice(0)) if (db.isOpen) db.close(); });
 function fixture(creator: LiveSessionCreator = async () => answer(randomUUID())) {
   const db = openUsageDatabase(":memory:"); dbs.push(db);
   const ledger = new UsageLedger(db), provider = vi.fn(creator), closeOrphan = vi.fn(async () => ({ kind: "closed_observed" as const, observation: {} }));
@@ -21,6 +23,95 @@ function fixture(creator: LiveSessionCreator = async () => answer(randomUUID()))
 }
 const payload = (c: { conversationId: string; version: number }) => ({ sdp: "offer-sdp", conversationId: c.conversationId,
   conversationVersion: c.version, liveSessionId: randomUUID(), initialMode: "setup", startReason: "initial" });
+
+describe("managed admission and resume HTTP contracts with SQLite", () => {
+  it("retains capacity until confirmed closure and releases it once despite duplicate reports", async () => {
+    apiConfig.maxConcurrentSessions = 1;
+    const f = fixture();
+    try {
+      const first = payload(await f.conversation()), second = await f.conversation();
+      await f.agent.post("/api/live/session").set("Origin", origin).send(first).expect(201);
+      const denied = payload(second);
+      await f.agent.post("/api/live/session").set("Origin", origin).send(denied).expect(429);
+      expect(f.ledger.getAttemptInternal(denied.liveSessionId).provider_request_dispatched_at).toBeNull();
+
+      await f.agent.post(`/api/live/session/${first.liveSessionId}/closed`).set("Origin", "https://evil.test").send({ seconds: 12 }).expect(403);
+      expect(f.ledger.getAttemptInternal(first.liveSessionId).close_confirmed).toBe(0);
+      expect(f.ledger.reservations()).toHaveLength(1);
+      await f.agent.post(`/api/live/session/${first.liveSessionId}/cleanup`).set("Origin", origin).send({ reason: "user_end" }).expect(200);
+      await f.agent.post("/api/live/session").set("Origin", origin).send(payload(second)).expect(429);
+
+      for (let report = 0; report < 2; report++) {
+        await f.agent.post(`/api/live/session/${first.liveSessionId}/closed`).set("Origin", origin).send({ seconds: 12 }).expect(200);
+      }
+      await f.agent.post("/api/live/session").set("Origin", origin).send(payload(second)).expect(201);
+      expect(f.provider).toHaveBeenCalledTimes(2);
+      expect(f.ledger.reservations()).toHaveLength(1);
+      expect(f.ledger.getAttemptInternal(first.liveSessionId).provider_final_seconds).toBe(12);
+    } finally {
+      await (f.app.locals.ledgerRuntime as LedgerRuntime).shutdown({ drainMs: 0, timeoutMs: 100 });
+    }
+  });
+
+  it("accepts cleanup, final usage and repeated End after creation quota is exhausted", async () => {
+    apiConfig.creationLimit = 1;
+    const f = fixture();
+    try {
+      const c = await f.conversation(), p = payload(c);
+      await f.agent.post("/api/live/session").set("Origin", origin).send(p).expect(201);
+      await f.agent.post("/api/live/session").set("Origin", origin).send(payload(c)).expect(429);
+      await f.agent.post(`/api/live/session/${p.liveSessionId}/cleanup`).set("Origin", origin).send({ reason: "user_end" }).expect(200);
+      await f.agent.put(`/api/live/session/${p.liveSessionId}/usage`).set("Origin", origin)
+        .send({ conversationId: c.conversationId, schemaVersion: 1, providerClosed: { seconds: 12 } }).expect(200);
+      for (let end = 0; end < 2; end++) {
+        await f.agent.post(`/api/conversations/${c.conversationId}/end`).set("Origin", origin)
+          .send({ expectedVersion: c.version, reason: "user_end" }).expect(200);
+      }
+      const restored = await f.agent.get(`/api/conversations/${c.conversationId}`).expect(200);
+      expect(restored.body.status).toBe("ended");
+      expect(restored.body.summary.usage.totalProviderSeconds).toBe(12);
+      expect(f.ledger.reservations()).toHaveLength(0);
+      expect(f.provider).toHaveBeenCalledOnce();
+    } finally {
+      await (f.app.locals.ledgerRuntime as LedgerRuntime).shutdown({ drainMs: 0, timeoutMs: 100 });
+    }
+  });
+
+  it("recovers a lost resume completion response without recreating the provider or undoing a later pause", async () => {
+    const f = fixture();
+    try {
+      const c = await f.conversation(), id = randomUUID();
+      const paused = await f.agent.post(`/api/conversations/${c.conversationId}/pause`).set("Origin", origin)
+        .send({ expectedVersion: c.version }).expect(200);
+      const claimBody = { expectedVersion: paused.body.version, resumeAttemptId: id, initialMode: "setup" };
+      const claim = await f.agent.post(`/api/conversations/${c.conversationId}/resume`).set("Origin", origin).send(claimBody).expect(200);
+      const createBody = { ...payload(c), conversationVersion: claim.body.version, liveSessionId: id, startReason: "resume" };
+      await f.agent.post("/api/live/session").set("Origin", origin).send(createBody).expect(201);
+      const completion = { expectedVersion: claim.body.version, resumeAttemptId: id, providerStartedObservedAt: Date.now(), readyStage: "setup" };
+      await f.agent.post(`/api/conversations/${c.conversationId}/resume/complete`).set("Origin", origin).send(completion).expect(409);
+      await f.agent.post(`/api/live/session/${id}/handoff`).set("Origin", origin).send({}).expect(200);
+      await f.agent.post(`/api/conversations/${c.conversationId}/resume/complete`).set("Origin", origin).send(completion).expect(200);
+
+      const recovered = await f.agent.post(`/api/conversations/${c.conversationId}/resume`).set("Origin", origin).send(claimBody).expect(200);
+      expect(recovered.body.status).toBe("active");
+      expect(recovered.body.attempt).toMatchObject({ liveSessionId: id, resumeOutcome: "committed" });
+      const repeated = await f.agent.post(`/api/conversations/${c.conversationId}/resume/complete`).set("Origin", origin).send(completion).expect(200);
+      expect(repeated.body.version).toBe(recovered.body.version);
+      await f.agent.post("/api/live/session").set("Origin", origin).send(createBody).expect(409);
+      expect(f.provider).toHaveBeenCalledOnce();
+      expect(f.db.prepare("SELECT COUNT(*) AS n FROM live_sessions").get()!.n).toBe(1);
+
+      const pausedAgain = await f.agent.post(`/api/conversations/${c.conversationId}/pause`).set("Origin", origin)
+        .send({ expectedVersion: recovered.body.version }).expect(200);
+      const replay = await f.agent.post(`/api/conversations/${c.conversationId}/resume/complete`).set("Origin", origin).send(completion).expect(200);
+      expect(replay.body).toMatchObject({ status: "paused", version: pausedAgain.body.version });
+      await f.agent.post(`/api/conversations/${c.conversationId}/resume/complete`).set("Origin", origin)
+        .send({ ...completion, providerStartedObservedAt: completion.providerStartedObservedAt + 1 }).expect(409);
+    } finally {
+      await (f.app.locals.ledgerRuntime as LedgerRuntime).shutdown({ drainMs: 0, timeoutMs: 100 });
+    }
+  });
+});
 
 describe("conversation HTTP ownership and handoff", () => {
   it("issues a persistent HttpOnly identity, deduplicates conversation key, never exposes owner JSON", async () => {

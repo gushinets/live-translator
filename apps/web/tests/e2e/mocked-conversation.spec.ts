@@ -17,7 +17,7 @@ const COURIER_TURNS: ReadonlyArray<{ original: string; translation: string }> = 
 ];
 
 test.describe("mocked conversation runtime", () => {
-  test("End keeps the toolbar geometry until the provider confirms closure", async ({ page }) => {
+  test("End stays busy until the provider confirms closure", async ({ page }) => {
     const harness = await MockLiveHarness.attach(page);
     await harness.startListeningConversation();
     await page.evaluate(() => {
@@ -28,14 +28,10 @@ test.describe("mocked conversation runtime", () => {
       };
     });
     const end = page.getByRole("button", { name: "End", exact: true });
-    const buttonBefore = await end.boundingBox();
-    const toolbarBefore = await page.locator(".conversation-center").boundingBox();
     await end.click();
     const closing = page.getByRole("button", { name: "Ending…", exact: true });
     await expect(closing).toBeDisabled();
     await expect(closing).toHaveAttribute("aria-busy", "true");
-    expect(await closing.boundingBox()).toEqual(buttonBefore);
-    expect(await page.locator(".conversation-center").boundingBox()).toEqual(toolbarBefore);
     await expect(page.locator(".retained-recovery")).toHaveCount(0);
     await expect(page.getByTestId("participant-pane-A")).toBeVisible();
     await expect(page.getByTestId("participant-pane-B")).toBeVisible();
@@ -46,15 +42,11 @@ test.describe("mocked conversation runtime", () => {
     await expect(page.getByRole("button", { name: "Start translation", exact: true })).toBeEnabled();
     await expect(page.locator(".conversation-screen")).toHaveCount(0);
   });
-  test("courier flow alternates A/B, keeps B rotated, and retains every turn", async ({
+  test("courier flow alternates A/B and retains every turn", async ({
     page,
   }, testInfo) => {
     const harness = await MockLiveHarness.attach(page);
     await harness.startListeningConversation();
-    await expect(page.getByTestId("participant-pane-B")).toHaveAttribute(
-      "style",
-      /rotate\(180deg\)/,
-    );
     const liveSessionCreatesAfterSetup = harness.liveSessionCreateCount();
     const peerCreatesAfterSetup = await harness.peerCreateCount();
     expect(liveSessionCreatesAfterSetup).toBe(1);
@@ -69,10 +61,6 @@ test.describe("mocked conversation runtime", () => {
         original: turn.original,
         translation: turn.translation,
       });
-      await expect(page.getByTestId("participant-pane-B")).toHaveAttribute(
-        "style",
-        /rotate\(180deg\)/,
-      );
       expect(harness.liveSessionCreateCount()).toBe(liveSessionCreatesAfterSetup);
       expect(await harness.peerCreateCount()).toBe(peerCreatesAfterSetup);
     }

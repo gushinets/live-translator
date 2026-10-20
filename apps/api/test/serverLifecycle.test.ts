@@ -1,10 +1,12 @@
 import { randomUUID } from "node:crypto";
 import { once } from "node:events";
+import { setImmediate } from "node:timers/promises";
 import express from "express";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { openUsageDatabase } from "../src/persistence/database.js";
 import { UsageLedger } from "../src/accounting/UsageLedger.js";
 import { LedgerRuntime } from "../src/accounting/LedgerRuntime.js";
+import { boundOrphanCloser } from "../src/accounting/BoundedOrphanCloser.js";
 import type { CleanupOutcome, OrphanCloser } from "../src/accounting/CleanupWorker.js";
 import type { CleanupReason } from "../src/accounting/types.js";
 import { startApiServer } from "../src/serverLifecycle.js";
@@ -106,13 +108,66 @@ describe("bounded API shutdown ownership", () => {
     expect(f.ledger.db.isOpen).toBe(false);
   });
 
-  it("shares one global Sideband budget between worker and emergency paths", async () => {
-    const modulePath = "../src/accounting/BoundedOrphanCloser.js";
-    const module = await import(modulePath).catch(() => undefined); expect(module, "shared network budget").toBeDefined();
+  it("bounds concurrent orphan-close calls", async () => {
     let count = 0, peak = 0;
-    const closer = module!.boundOrphanCloser(async () => { peak = Math.max(peak, ++count); await new Promise(r => setTimeout(r, 3)); count--; return { kind: "closed_observed", observation: {} }; }, 2);
+    const closer = boundOrphanCloser(async () => { peak = Math.max(peak, ++count); await new Promise(r => setTimeout(r, 3)); count--; return { kind: "closed_observed", observation: {} }; }, 2);
     await Promise.all(Array.from({ length: 8 }, (_, i) => closer(String(i), new AbortController().signal)));
     expect(peak).toBe(2);
+  });
+
+  it("shares one Sideband budget between durable worker and emergency storage-failure cleanup", async () => {
+    const f = fixture();
+    let releaseWorker!: () => void, workerStarted!: () => void;
+    const workerGate = new Promise<void>(resolve => { releaseWorker = resolve; });
+    const started = new Promise<void>(resolve => { workerStarted = resolve; });
+    const calls: string[] = [];
+    let active = 0, peak = 0;
+    const c = f.ledger.createConversation(f.owner, randomUUID(), "test");
+    const input = { ...f.input, conversationId: c.id, conversationVersion: c.version, liveSessionId: randomUUID() };
+    const runtime = new LedgerRuntime(f.ledger, {
+      startWorker: false, workerConcurrency: 1, logger: { error: () => undefined },
+      closeOrphan: async providerId => {
+        calls.push(providerId); peak = Math.max(peak, ++active);
+        try {
+          if (providerId === "worker-provider") { workerStarted(); await workerGate; }
+          return { kind: "closed_observed", observation: {} };
+        } finally { active--; }
+      },
+      creator: async () => {
+        f.ledger.db.exec(`CREATE TEMP TRIGGER fail_emergency_provider BEFORE UPDATE ON live_sessions
+          WHEN NEW.id = '${input.liveSessionId}' AND NEW.openai_session_id IS NOT NULL
+          BEGIN SELECT RAISE(FAIL, 'simulated provider persistence outage'); END`);
+        return { session: { id: "emergency-provider" }, transport: { type: "webrtc", sdp: "answer" } };
+      },
+    });
+    f.ledger.registerAttempt(f.owner, f.input);
+    f.ledger.dispatchProviderAttempt(f.owner, f.input.liveSessionId, f.input.conversationVersion, randomUUID(), f.ledger.now() + 900000);
+    f.ledger.recordProviderCreated(f.input.liveSessionId, "worker-provider");
+    f.ledger.requestCleanup(f.input.liveSessionId, "primary_startup_failed");
+    const work = runtime.worker.drain();
+    let creation: Promise<unknown> | undefined;
+    try {
+      await started;
+      creation = runtime.create(f.owner, input, "offer", () => false).catch(error => error);
+      await vi.waitFor(() => expect(f.ledger.getAttemptInternal(input.liveSessionId).cleanup_requested_at).not.toBeNull());
+      await setImmediate();
+      expect(calls).toEqual(["worker-provider"]);
+      releaseWorker();
+      await work;
+      expect(await creation).toMatchObject({ code: "provider_result_unpersisted" });
+      expect(calls).toEqual(["worker-provider", "emergency-provider"]);
+      expect(peak).toBe(1);
+
+      f.ledger.db.exec("DROP TRIGGER fail_emergency_provider");
+      await runtime.reconcileEmergency();
+      expect(f.ledger.getAttemptInternal(input.liveSessionId)).toMatchObject({ openai_session_id: "emergency-provider", close_confirmed: 1 });
+      expect(calls).toHaveLength(2);
+    } finally {
+      releaseWorker();
+      f.ledger.db.exec("DROP TRIGGER IF EXISTS fail_emergency_provider");
+      await Promise.allSettled([work, creation]);
+      await runtime.shutdown({ drainMs: 0, timeoutMs: 100 });
+    }
   });
 });
 
