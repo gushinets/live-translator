@@ -1,12 +1,54 @@
 // @vitest-environment node
 import { execFile } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import { fileURLToPath } from "node:url";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
+import { UsageLedger } from "../../../api/src/accounting/UsageLedger";
+import { openUsageDatabase } from "../../../api/src/persistence/database";
+import CleanupLedgerReporter from "../../tests/real/cleanup-ledger-reporter";
 
 describe("real-Live ledger lifetime", () => {
+  it.each(["pending cleanup", "unreadable database"])("preserves recovery data and reports its path for %s", condition => {
+    const directory = mkdtempSync(join(tmpdir(), "live-translator-real-harness-"));
+    const databasePath = join(directory, "usage.sqlite"), id = randomUUID();
+    const notice = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      if (condition === "pending cleanup") {
+        const db = openUsageDatabase(databasePath);
+        try {
+          const ledger = new UsageLedger(db), owner = randomUUID();
+          const c = ledger.createConversation(owner, randomUUID(), "test");
+          ledger.registerAttempt(owner, { liveSessionId: id, conversationId: c.id, conversationVersion: c.version,
+            initialMode: "setup", startReason: "initial", fingerprint: "test" });
+          ledger.dispatchProviderAttempt(owner, id, c.version, randomUUID(), Date.now() + 900000);
+          ledger.recordProviderCreated(id, "pending-provider");
+          ledger.endConversation(owner, c.id, c.version, "user_end");
+          ledger.recordCleanupFailure(id, "blocked_auth_config", "unauthorized");
+        } finally { db.close(); }
+      } else writeFileSync(databasePath, "unreadable ledger");
+
+      new CleanupLedgerReporter({ databasePath }).onEnd();
+      expect(existsSync(databasePath)).toBe(true);
+      expect(notice.mock.calls.flat().join(" ")).toContain(databasePath);
+      if (condition === "pending cleanup") {
+        const retained = new DatabaseSync(databasePath, { readOnly: true });
+        try {
+          expect(retained.prepare("SELECT state,openai_session_id,close_confirmed,cleanup_reason FROM live_sessions WHERE id=?").get(id))
+            .toMatchObject({ state: "unknown", openai_session_id: "pending-provider", close_confirmed: 0, cleanup_reason: "user_end" });
+        } finally { retained.close(); }
+      } else expect(readFileSync(databasePath, "utf8")).toBe("unreadable ledger");
+    } finally {
+      notice.mockRestore();
+      expect(dirname(resolve(directory))).toBe(resolve(tmpdir()));
+      expect(basename(directory)).toMatch(/^live-translator-real-harness-/);
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
   it.each(["passed", "failed", "startup failed"])("removes the database and sidecars after the API exits when the run %s", async outcome => {
     const directory = mkdtempSync(join(tmpdir(), "live-translator-real-harness-"));
     const markerPath = join(directory, "api.json"), configPath = join(directory, "playwright.config.ts");
@@ -20,7 +62,7 @@ import { createServer } from 'node:http';
 import { existsSync, writeFileSync } from 'node:fs';
 const databasePath = process.env.USAGE_DB_PATH;
 const db = new DatabaseSync(databasePath);
-db.exec('PRAGMA journal_mode=WAL; CREATE TABLE probe(value); INSERT INTO probe VALUES(1)');
+db.exec("PRAGMA journal_mode=WAL; CREATE TABLE live_sessions(state TEXT); INSERT INTO live_sessions VALUES('${outcome === "failed" ? "failed" : "closed"}')");
 const marker = { databasePath, pid: process.pid };
 writeFileSync(process.env.PROBE_MARKER, JSON.stringify(marker));
 process.on('SIGTERM', () => {

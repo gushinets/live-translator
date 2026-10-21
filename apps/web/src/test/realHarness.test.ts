@@ -1,7 +1,8 @@
 // @vitest-environment node
+import "../../../api/test/setup";
 import { randomUUID } from "node:crypto";
 import { once } from "node:events";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { describe, expect, it } from "vitest";
 import { request as httpRequest } from "@playwright/test";
 import { cleanupRealSessions } from "../../tests/real/cleanup";
 import { createApp } from "../../../api/src/app";
@@ -11,8 +12,6 @@ import type { LedgerRuntime } from "../../../api/src/accounting/LedgerRuntime";
 import { apiConfig } from "../../../api/src/config";
 
 const origin = apiConfig.webOrigin;
-beforeEach(() => vi.stubEnv("OPENAI_API_KEY", "test-placeholder-not-a-real-key"));
-afterEach(() => vi.unstubAllEnvs());
 const payload = (c: { conversationId: string; version: number }) => ({ sdp: "offer-sdp", conversationId: c.conversationId,
   conversationVersion: c.version, liveSessionId: randomUUID(), initialMode: "setup", startReason: "initial" });
 

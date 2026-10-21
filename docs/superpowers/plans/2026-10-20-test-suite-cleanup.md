@@ -83,6 +83,15 @@
 ## PR review follow-up
 
 - Retain one browser regression for B's opposite-facing captions. It reads the composed visual orientation through all ancestors instead of fixing an inline style or CSS class. Disabling rotation made the test fail in Chromium and WebKit.
-- Remove the temporary real-Live database and its WAL/SHM files in a reporter's finalization hook, after Playwright stops the web servers. Ordinary global teardown runs before web-server teardown. Integration probes with a real SQLite-owning subprocess verify successful tests, failed tests and API startup failure.
+- Remove the temporary real-Live database and its WAL/SHM files in a reporter's finalization hook, after Playwright stops the web servers and every provider attempt is terminal. Ordinary global teardown runs before web-server teardown. Integration probes with a real SQLite-owning subprocess verify successful tests, failed tests and API startup failure.
 - Run session cleanup and conversation End independently, collect all failures afterward, and end each conversation once. Two HTTP/SQLite regressions verify that both conversations end and the failed session receives a durable cleanup fence even when its cleanup request times out or returns 503.
 - Follow-up verification: 1884 Vitest tests passed in 63 files; 108 Chromium/WebKit E2E tests passed with retries disabled and the existing 3 device-engine skips. API/web/real-harness TypeScript, ESLint and diff checks passed. Paid Live tests were collected only; the working database was never opened.
+
+## PR review: recovery ledger and inherited environment
+
+- [x] Reproduce the HTTP fixture's 401 failure under inherited production settings, then load the existing isolated API setup before API/config imports in that fixture.
+- [x] Add SQLite regressions for pending provider cleanup and an unreadable database; verify they fail before changing the reporter.
+- [x] Inspect only the run's generated database in read-only mode after server exit. Remove it only when every attempt is terminal; preserve it and report its path when closure cannot be verified.
+- [x] Verify the fixes under inherited production settings, run the full isolated Vitest suite and relevant static checks, and record the results.
+
+Verification: both HTTP cases failed with 401 under inherited production settings before the setup import and passed afterward. Both new preservation cases failed before the reporter fix; all 5 ledger-lifecycle cases now pass, including deletion after passed/failed/startup-failed runs with terminal attempts. The full suite passed 1886 tests in 63 files with an unrelated parent database sentinel unchanged. API/web/real-harness TypeScript, scoped ESLint and diff checks passed; paid tests were collected only. No paid Live session or working database was opened.
