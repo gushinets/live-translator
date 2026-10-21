@@ -85,6 +85,9 @@ test.describe("mocked conversation runtime", () => {
     });
     expect(facing.horizontal).toBeCloseTo(-1);
     expect(facing.vertical).toBeCloseTo(-1);
+    const a = (await page.getByTestId("participant-pane-A").boundingBox())!;
+    const b = (await page.getByTestId("participant-pane-B").boundingBox())!;
+    expect(b.y + b.height).toBeLessThanOrEqual(a.y);
     await expect(page.getByText(COURIER_TURNS[0]!.original)).toHaveCount(1);
     await expect(page.getByText(COURIER_TURNS[6]!.original)).toHaveCount(1);
     await expect(page.getByText(COURIER_TURNS[7]!.original)).toHaveCount(1);

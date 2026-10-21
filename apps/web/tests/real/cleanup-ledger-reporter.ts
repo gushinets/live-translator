@@ -1,9 +1,10 @@
 import { existsSync, rmSync } from "node:fs";
 import { DatabaseSync } from "node:sqlite";
-import type { FullConfig, Reporter } from "@playwright/test/reporter";
+import type { FullConfig, FullResult, Reporter } from "@playwright/test/reporter";
 
 export default class CleanupLedgerReporter implements Reporter {
   private canRemoveLedger = false;
+  private hasRunnerError = false;
 
   constructor(private readonly options: { databasePath: string }) {}
 
@@ -12,10 +13,14 @@ export default class CleanupLedgerReporter implements Reporter {
       !argv.some(arg => /^--ui(?:$|[-=])/.test(arg));
   }
 
-  onEnd(): void {
+  onError(): void {
+    this.hasRunnerError = true;
+  }
+
+  onEnd({ status }: Pick<FullResult, "status">): void {
     if (!existsSync(this.options.databasePath)) return;
-    // shortcut: preserve persistent ledgers until Playwright exposes a post-webServer cleanup hook.
-    if (!this.canRemoveLedger) {
+    // shortcut: preserve uncertain teardown until Playwright exposes a post-webServer cleanup hook.
+    if (!this.canRemoveLedger || this.hasRunnerError || (status !== "passed" && status !== "failed")) {
       console.error(`Playwright server shutdown could not be verified; real-Live ledger preserved for recovery: ${this.options.databasePath}`);
       return;
     }

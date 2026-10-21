@@ -33,7 +33,7 @@ describe("real-Live ledger lifetime", () => {
 
       const reporter = new CleanupLedgerReporter({ databasePath });
       reporter.onBegin({ argv: [process.execPath, "playwright", "test"] });
-      reporter.onEnd();
+      reporter.onEnd({ status: "passed" });
       expect(existsSync(databasePath)).toBe(true);
       expect(notice.mock.calls.flat().join(" ")).toContain(databasePath);
       if (condition === "pending cleanup") {
@@ -57,6 +57,10 @@ describe("real-Live ledger lifetime", () => {
     { name: "watch", args: ["test"] },
     { name: "test server", args: ["test-server"] },
     { name: "programmatic runner", args: [] },
+    { name: "timedout", args: ["test"] },
+    { name: "interrupted", args: ["test"] },
+    { name: "runner error before begin", args: ["test"] },
+    { name: "runner error after begin", args: ["test"] },
   ])("preserves terminal ledgers and reports the recovery path for $name", ({ name, args }) => {
     const directory = mkdtempSync(join(tmpdir(), "live-translator-real-harness-"));
     const databasePath = join(directory, "usage.sqlite");
@@ -68,8 +72,10 @@ describe("real-Live ledger lifetime", () => {
       finally { db.close(); }
       for (const suffix of ["-wal", "-shm"]) writeFileSync(databasePath + suffix, "leftover journal");
       const reporter = new CleanupLedgerReporter({ databasePath });
+      if (name === "runner error before begin") reporter.onError();
       reporter.onBegin({ argv: args.length ? [process.execPath, "playwright", ...args] : [] });
-      reporter.onEnd();
+      if (name === "runner error after begin") reporter.onError();
+      reporter.onEnd({ status: name === "timedout" || name === "interrupted" ? name : "failed" });
       for (const suffix of ["", "-wal", "-shm"]) expect(existsSync(databasePath + suffix)).toBe(true);
       expect(notice.mock.calls.flat().join(" ")).toContain(databasePath);
     } finally {
@@ -81,7 +87,7 @@ describe("real-Live ledger lifetime", () => {
     }
   });
 
-  it.each(["passed", "failed", "startup failed", "persistent UI"])("handles the ledger safely through the %s Playwright lifecycle", async outcome => {
+  it.each(["passed", "failed", "startup failed", "persistent UI", "overall timeout"])("handles the ledger safely through the %s Playwright lifecycle", async outcome => {
     const directory = mkdtempSync(join(tmpdir(), "live-translator-real-harness-"));
     const markerPath = join(directory, "api.json"), configPath = join(directory, "playwright.config.ts");
     const serverPath = join(directory, "api.mjs");
@@ -119,12 +125,24 @@ server.listen(0, '127.0.0.1', () => {
       const realConfig = new URL("../../playwright.real.config.ts", import.meta.url).href;
       const playwright = new URL("../../node_modules/@playwright/test/index.mjs", import.meta.url).href;
       const testMarker = join(directory, "test-ran");
-      writeFileSync(join(directory, "probe.spec.ts"), `import { test, expect } from ${JSON.stringify(playwright)}; import { writeFileSync } from 'node:fs'; test('probe', () => { writeFileSync(${JSON.stringify(testMarker)}, 'ran'); expect(${outcome !== "failed"}).toBe(true); });`);
+      writeFileSync(join(directory, "probe.spec.ts"), `import { test, expect } from ${JSON.stringify(playwright)}; import { writeFileSync } from 'node:fs'; test('probe', async () => { writeFileSync(${JSON.stringify(testMarker)}, 'ran'); expect(${outcome !== "failed"}).toBe(true); ${outcome === "overall timeout" ? "await new Promise(() => {});" : ""} });`);
+      const endSnapshotPath = join(directory, "on-end.json"), observerPath = join(directory, "observer.ts");
+      writeFileSync(observerPath, `
+import { readFileSync, writeFileSync } from 'node:fs';
+export default class Observer {
+  async onEnd({ status }) {
+    const { port } = JSON.parse(readFileSync(${JSON.stringify(markerPath)}, 'utf8'));
+    const response = await fetch('http://127.0.0.1:' + port, { signal: AbortSignal.timeout(2000) });
+    writeFileSync(${JSON.stringify(endSnapshotPath)}, JSON.stringify({ status, apiStatus: response.status, api: await response.json() }));
+  }
+}
+`);
       const command = `"${process.execPath}" "${serverPath}"`;
       writeFileSync(configPath, `
 import realConfig from ${JSON.stringify(realConfig)};
 const api = realConfig.webServer.find(server => server.cwd === '../api');
 export default { ...realConfig, testDir: ${JSON.stringify(directory)}, testMatch: 'probe.spec.ts',
+  reporter: [...realConfig.reporter, ${outcome === "overall timeout" ? `[${JSON.stringify(observerPath)}]` : ""}],
   outputDir: ${JSON.stringify(join(directory, "results"))}, projects: [{ name: 'lifecycle' }],
   webServer: { command: ${JSON.stringify(command)}, wait: { stdout: /READY/ }, timeout: 5000,
     gracefulShutdown: { signal: 'SIGTERM', timeout: 2000 },
@@ -165,17 +183,28 @@ writeFileSync(${JSON.stringify(snapshotsPath)}, JSON.stringify({ snapshots, reac
 `);
       const result = await new Promise<{ code: number; output: string }>(finish => {
         const args = outcome === "persistent UI" ? [persistentRunnerPath] : [cli, "test", "--config", configPath];
+        if (outcome === "overall timeout") args.push("--global-timeout=4000");
         execFile(process.execPath, args, { timeout: 20000 }, (error, stdout, stderr) => {
           finish({ code: error ? typeof error.code === "number" ? error.code : -1 : 0, output: stdout + stderr });
         });
       });
       expect(result.code, result.output).toBe(outcome === "passed" || outcome === "persistent UI" ? 0 : 1);
       expect(existsSync(testMarker), result.output).toBe(outcome !== "startup failed");
-      const marker = JSON.parse(readFileSync(markerPath, "utf8")) as { databasePath: string; exited?: boolean; filesAtShutdown?: boolean };
+      const marker = JSON.parse(readFileSync(markerPath, "utf8")) as { databasePath: string; port?: number; exited?: boolean; filesAtShutdown?: boolean };
       databasePath = marker.databasePath;
-      // Windows force-kills webServer; graceful shutdown and startup failure can acknowledge exit.
-      if (process.platform !== "win32" || outcome === "startup failed") expect(marker.exited).toBe(true);
-      if (process.platform !== "win32" && outcome !== "startup failed") expect(marker.filesAtShutdown).toBe(true);
+      if (outcome === "overall timeout") {
+        expect(JSON.parse(readFileSync(endSnapshotPath, "utf8")), result.output).toEqual({
+          status: "timedout", apiStatus: 200, api: { sessions: 1, filesPresent: true },
+        });
+        expect(result.output).not.toContain("EPERM");
+      }
+      if (marker.port) {
+        const reachableAfterExit = await fetch(`http://127.0.0.1:${marker.port}`, { signal: AbortSignal.timeout(2000) }).then(() => true, () => false);
+        expect(reachableAfterExit, "Playwright CLI must terminate its server before fixture cleanup").toBe(false);
+      }
+      // Windows and timed-out teardown can force-kill webServer without an exit acknowledgement.
+      if ((process.platform !== "win32" && outcome !== "overall timeout") || outcome === "startup failed") expect(marker.exited).toBe(true);
+      if (process.platform !== "win32" && outcome !== "startup failed" && outcome !== "overall timeout") expect(marker.filesAtShutdown).toBe(true);
       if (outcome === "persistent UI") {
         const batches = JSON.parse(readFileSync(snapshotsPath, "utf8"));
         expect(batches.snapshots, result.output).toEqual([
@@ -185,7 +214,9 @@ writeFileSync(${JSON.stringify(snapshotsPath)}, JSON.stringify({ snapshots, reac
         expect(batches.reachableAfterTeardown).toBe(false);
         expect(result.output).toContain(databasePath);
       }
-      for (const suffix of ["", "-wal", "-shm"]) expect(existsSync(databasePath + suffix), `database${suffix}`).toBe(outcome === "persistent UI");
+      const preserved = outcome === "persistent UI" || outcome === "startup failed" || outcome === "overall timeout";
+      if (preserved) expect(result.output).toContain(`ledger preserved for recovery: ${databasePath}`);
+      for (const suffix of ["", "-wal", "-shm"]) expect(existsSync(databasePath + suffix), `database${suffix}`).toBe(preserved);
     } finally {
       if (!databasePath && existsSync(markerPath)) databasePath = (JSON.parse(readFileSync(markerPath, "utf8")) as { databasePath: string }).databasePath;
       if (databasePath) {

@@ -65,9 +65,21 @@ test("long captions remain accessible through pauses and manual scrolling on bot
   const translated = "¿Podría decirme dónde está la estación de tren? ".repeat(14);
   await harness.inputDelta(original);
   await harness.outputDelta(translated);
+  const authorCaptionOverlap = (row: Element) => {
+    const author = document.createRange();
+    author.selectNodeContents(row.querySelector(".turn-author")!);
+    const caption = document.createRange();
+    const text = document.createTreeWalker(row.querySelector(".recent-turn-primary")!, NodeFilter.SHOW_TEXT).nextNode()!;
+    caption.setStart(text, 0);
+    caption.setEnd(text, 1);
+    const a = author.getBoundingClientRect();
+    const b = caption.getBoundingClientRect();
+    return Math.min(a.bottom, b.bottom) - Math.max(a.top, b.top);
+  };
   for (const side of ["A", "B"] as const) {
     const scroll = page.getByTestId(`participant-scroll-${side}`);
     await expect(page.getByTestId(`participant-pane-${side}`).locator(".recent-turn-primary").last()).toHaveText(side === "A" ? original : translated);
+    expect(await scroll.locator("li").last().evaluate(authorCaptionOverlap)).toBeGreaterThan(0);
 
     await expect(scroll).toHaveAttribute("tabindex", "0");
     await expect.poll(() => scroll.evaluate(el => el.scrollHeight > el.clientHeight)).toBe(true);
@@ -100,8 +112,8 @@ test("long captions remain accessible through pauses and manual scrolling on bot
   await harness.sourceQuiet();
   await harness.advance(runtime.audioStartGraceMs + runtime.captionIdleMs);
   for (const side of ["A", "B"] as const) {
-
     const scroll = page.getByTestId(`participant-scroll-${side}`);
+    expect(await scroll.locator("li").last().evaluate(authorCaptionOverlap)).toBeGreaterThan(0);
     expect(await scroll.evaluate(el => el.scrollHeight - el.scrollTop - el.clientHeight)).toBeLessThan(2);
     expect(await scroll.evaluate(el => el.scrollWidth <= el.clientWidth)).toBe(true);
   }

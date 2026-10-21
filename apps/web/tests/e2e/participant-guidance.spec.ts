@@ -49,6 +49,8 @@ test("localized guidance follows the capture gate through playback and its echo 
     const guidance = page.getByTestId(`participant-guidance-${side}`);
     await expect(guidance).toBeInViewport({ ratio: 0.99 });
     await page.getByRole("button", { name: "Завершить", exact: true }).focus();
+    await guidance.evaluate(el => { el.scrollTop = 0; });
+    const unfocused = await guidance.screenshot();
     await page.keyboard.press(side === "A" ? "Tab" : "Shift+Tab");
     if (side === "B") await page.keyboard.press("Shift+Tab");
     await expect(guidance).toBeFocused();
@@ -58,6 +60,8 @@ test("localized guidance follows the capture gate through playback and its echo 
       : "Please wait. Your speech is not being recorded.");
     await page.keyboard.press("Home");
     await expect.poll(() => guidance.evaluate(el => el.scrollTop)).toBe(0);
+    // Compare the same region and content in this run, without a stored screenshot baseline.
+    expect((await guidance.screenshot()).equals(unfocused), `${side} needs a visible keyboard focus indicator`).toBe(false);
     expect(await guidance.evaluate(el => {
       const title = el.querySelector(".participant-guidance-title")!.getBoundingClientRect();
       const box = el.getBoundingClientRect();
@@ -93,7 +97,7 @@ test("localized guidance follows the capture gate through playback and its echo 
   for (const side of ["A", "B"] as const) {
     expect(await page.getByTestId(`participant-guidance-${side}`).evaluate(headingVisible)).toBe(true);
   }
-  await enlarged.evaluate(el => el.remove());
+  await enlarged.evaluate(el => el.parentNode?.removeChild(el));
   await page.getByRole("button", { name: "Завершить", exact: true }).click();
   await expect(page.getByTestId("participant-guidance-A")).toHaveCount(0);
   await expect(page.getByTestId("participant-guidance-B")).toHaveCount(0);
