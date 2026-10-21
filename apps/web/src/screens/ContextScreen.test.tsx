@@ -26,7 +26,7 @@ class FakeOwnerController implements ContextScreenController {
   playbackInputState: ContextScreenController["playbackInputState"] = "idle";
   contextText = "";
   bootstrapText = "";
-  bootstrapSide = "A" as const;
+  bootstrapSide: ContextScreenController["bootstrapSide"] = "A";
   bootstrapRecording = true;
   ownerError: string | undefined;
   hasEnteredInterpreter = false;
@@ -500,11 +500,14 @@ describe("ContextScreen", () => {
     expect(screen.getByRole("status")).toBeInTheDocument();
   });
 
-  it("announces bootstrap recording through a live region", () => {
+  it.each(["A", "B"] as const)("announces bootstrap recording for participant %s through a live region", side => {
     const controller = new FakeOwnerController();
     controller.session = { ...controller.session, state: "bootstrap" };
+    controller.bootstrapSide = side;
     render(<ContextScreen controller={controller} />);
-    expect(screen.getByRole("status")).toBeInTheDocument();
+    const status = screen.getByRole("status");
+    expect(status).toHaveTextContent(/слуш|запис/i);
+    expect(status).toHaveTextContent(new RegExp(`\\b${side}\\b`));
     expect(screen.getByRole("button", { name: "Записать заново" })).toBeEnabled();
   });
 

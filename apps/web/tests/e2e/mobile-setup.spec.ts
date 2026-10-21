@@ -33,7 +33,7 @@ async function contrastRatio(locator: Locator): Promise<number> {
 test.describe("mobile setup controls", () => {
   test.use({ viewport: { width: 390, height: 844 } });
 
-  test("keeps primary controls touch friendly and allows selecting a language after scrolling", async ({ page }) => {
+  test("shows four priority languages and Start immediately and allows selecting a language after scrolling", async ({ page }) => {
     await page.goto("/");
 
     const setup = page.getByRole("region", { name: "Translator setup" });
@@ -41,6 +41,20 @@ test.describe("mobile setup controls", () => {
 
     const start = page.getByRole("button", { name: "Start translation" });
     await expect(start).toBeEnabled();
+    await expect(start).toBeInViewport({ ratio: 1 });
+
+    const visibility = await page.getByRole("radio").evaluateAll(radios => Promise.all(
+      radios.map(radio => new Promise<number>(resolve => {
+        const observer = new IntersectionObserver(([entry]) => {
+          observer.disconnect();
+          resolve(entry.intersectionRatio);
+        });
+        // Observe visible labels; native radio inputs may be visually hidden.
+        observer.observe((radio as HTMLInputElement).labels?.[0] ?? radio);
+      })),
+    ));
+    expect(visibility.slice(0, 4)).toEqual([1, 1, 1, 1]);
+    expect(visibility.some(ratio => ratio > 0 && ratio < 1)).toBe(true);
 
     const startBox = await start.boundingBox();
     expect(startBox).not.toBeNull();

@@ -106,3 +106,10 @@ Verification: both HTTP cases failed with 401 under inherited production setting
 
 - Replace the PID-disappearance assertion with an exit acknowledgement written by the exact fixture process. Linux zombies and unrelated PID reuse no longer affect the result; shutdown/file-removal checks remain. Windows force-termination is verified through resource cleanup, while explicit startup failure also requires the exit acknowledgement.
 - The acknowledgement assertion failed before the fixture emitted it; all 5 lifecycle cases pass afterward. Web TypeScript and scoped ESLint passed.
+
+## Initial mobile choices and recording announcements
+
+- Restore the initial mobile availability contract: the first four language choices and Start are fully in view before scrolling, and a partially visible next row signals more choices. Native intersection observation measures the visible radio labels without CSS selectors or fixed row dimensions. The existing touch-target and scroll/select checks remain.
+- Check the recording live region for both A and B. It must announce listening/recording and identify the current participant; partial text patterns avoid fixing the full sentence or surrounding copy.
+- Mutation verification: showing only one initial choice or removing the partial-row cue passed the former scroll-only assertions and failed the strengthened checks in both Chromium and WebKit. Empty or wrong-side announcements passed the former presence-only check and failed the strengthened checks. All temporary mutations were removed.
+- Verification: 1887 Vitest tests passed in 63 files with the unrelated parent database sentinel unchanged; 108 Chromium/WebKit E2E tests passed with retries disabled and the existing 3 engine skips. Web TypeScript, standalone E2E TypeScript and scoped ESLint passed.
