@@ -43,18 +43,23 @@ test.describe("mobile setup controls", () => {
     await expect(start).toBeEnabled();
     await expect(start).toBeInViewport({ ratio: 1 });
 
-    const visibility = await page.getByRole("radio").evaluateAll(radios => Promise.all(
-      radios.map(radio => new Promise<number>(resolve => {
+    const choices = await page.getByRole("radio").evaluateAll(radios => Promise.all(
+      radios.map(radio => new Promise<{ visibility: number; width: number; height: number }>(resolve => {
         const observer = new IntersectionObserver(([entry]) => {
           observer.disconnect();
-          resolve(entry.intersectionRatio);
+          resolve({ visibility: entry.intersectionRatio,
+            width: entry.boundingClientRect.width, height: entry.boundingClientRect.height });
         });
         // Observe visible labels; native radio inputs may be visually hidden.
         observer.observe((radio as HTMLInputElement).labels?.[0] ?? radio);
       })),
     ));
-    expect(visibility.slice(0, 4)).toEqual([1, 1, 1, 1]);
-    expect(visibility.some(ratio => ratio > 0 && ratio < 1)).toBe(true);
+    expect(choices.slice(0, 4).map(choice => choice.visibility)).toEqual([1, 1, 1, 1]);
+    expect(choices.some(choice => choice.visibility > 0 && choice.visibility < 1)).toBe(true);
+    for (const choice of choices) {
+      expect(choice.width).toBeGreaterThanOrEqual(44);
+      expect(choice.height).toBeGreaterThanOrEqual(44);
+    }
 
     const startBox = await start.boundingBox();
     expect(startBox).not.toBeNull();

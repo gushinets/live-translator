@@ -358,11 +358,18 @@ describe("ContextScreen", () => {
     } finally { Reflect.deleteProperty(navigator, "languages"); }
   });
 
-  it("offers every supported language exactly once", () => {
+  it.each(["ru", "en"])("keeps priority languages first and the remaining %s names sorted without duplicates", locale => {
+    localStorage.setItem("live-translator-owner-language", locale);
     render(<ContextScreen controller={new FakeOwnerController()} />);
     const radios = screen.getAllByRole("radio", { name: /.+/ }) as HTMLInputElement[];
     expect(new Set(radios.map(radio => radio.value)).size).toBe(radios.length);
     expect(new Set(radios.map(radio => radio.value))).toEqual(new Set(supportedLanguageCodes()));
+    const priority = ["es", "en", "fr", "de", "it", "pt"];
+    expect(radios.slice(0, priority.length).map(radio => radio.value)).toEqual(priority);
+    const remaining = radios.slice(priority.length).map(radio => radio.labels![0]!.textContent!);
+    for (let index = 1; index < remaining.length; index++) {
+      expect(remaining[index - 1]!.localeCompare(remaining[index]!, locale)).toBeLessThanOrEqual(0);
+    }
   });
 
   it("starts on first tap without recording samples", () => {
@@ -497,7 +504,7 @@ describe("ContextScreen", () => {
     expect(screen.getByRole("button", { name: "Записать заново" })).toBeDisabled();
     expect(screen.getByRole("button", { name: "Сохранить образец" })).toBeDisabled();
     expect(screen.getByRole("button", { name: "Отмена" })).toBeEnabled();
-    expect(screen.getByRole("status")).toBeInTheDocument();
+    expect(screen.getByRole("status")).toHaveTextContent(/сохран/i);
   });
 
   it.each(["A", "B"] as const)("announces bootstrap recording for participant %s through a live region", side => {

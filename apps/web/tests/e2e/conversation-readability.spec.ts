@@ -108,9 +108,16 @@ test("long captions remain accessible through pauses and manual scrolling on bot
   await page.screenshot({ path: testInfo.outputPath("conversation-22px.png") });
   await page.setViewportSize({ width: 320, height: 640 });
   await expect(page.getByRole("button", { name: "End", exact: true })).toBeVisible();
+  const captionSizes = await Promise.all((["A", "B"] as const).map(side =>
+    page.getByTestId(`participant-pane-${side}`).locator(".recent-turn-primary").last()
+      .evaluate(el => parseFloat(getComputedStyle(el).fontSize)),
+  ));
   // Text-only enlargement exercises reflow without shrinking the CSS viewport.
   await page.addStyleTag({ content: "html { font-size: 200% !important; }" });
-  for (const side of ["A", "B"] as const) {
+  for (const [index, side] of (["A", "B"] as const).entries()) {
+    const enlarged = await page.getByTestId(`participant-pane-${side}`).locator(".recent-turn-primary").last()
+      .evaluate(el => parseFloat(getComputedStyle(el).fontSize));
+    expect(enlarged / captionSizes[index]!).toBeCloseTo(2, 1);
     const scroll = page.getByTestId(`participant-scroll-${side}`);
     expect(await scroll.evaluate(el => el.clientHeight)).toBeGreaterThan(0);
     expect(await scroll.evaluate(el => el.scrollWidth <= el.clientWidth)).toBe(true);
