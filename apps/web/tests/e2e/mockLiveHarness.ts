@@ -523,7 +523,7 @@ export class MockLiveHarness {
       });
       Object.defineProperty(document, "hidden", {
         configurable: true,
-        get: () => visibilityState === "hidden",
+        get: () => document.visibilityState === "hidden",
       });
 
       Object.defineProperty(navigator, "wakeLock", {

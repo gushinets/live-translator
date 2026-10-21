@@ -78,10 +78,13 @@ test.describe("mocked conversation runtime", () => {
       for (let node: Element | null = element; node; node = node.parentElement) {
         orientation = new DOMMatrix(getComputedStyle(node).transform).multiply(orientation);
       }
-      return { horizontal: orientation.a, vertical: orientation.d };
+      return {
+        horizontal: orientation.a / Math.hypot(orientation.a, orientation.b),
+        vertical: orientation.d / Math.hypot(orientation.c, orientation.d),
+      };
     });
-    expect(facing.horizontal).toBeLessThan(0);
-    expect(facing.vertical).toBeLessThan(0);
+    expect(facing.horizontal).toBeCloseTo(-1);
+    expect(facing.vertical).toBeCloseTo(-1);
     await expect(page.getByText(COURIER_TURNS[0]!.original)).toHaveCount(1);
     await expect(page.getByText(COURIER_TURNS[6]!.original)).toHaveCount(1);
     await expect(page.getByText(COURIER_TURNS[7]!.original)).toHaveCount(1);

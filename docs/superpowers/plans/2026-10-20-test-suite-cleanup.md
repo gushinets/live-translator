@@ -95,3 +95,9 @@
 - [x] Verify the fixes under inherited production settings, run the full isolated Vitest suite and relevant static checks, and record the results.
 
 Verification: both HTTP cases failed with 401 under inherited production settings before the setup import and passed afterward. Both new preservation cases failed before the reporter fix; all 5 ledger-lifecycle cases now pass, including deletion after passed/failed/startup-failed runs with terminal attempts. The full suite passed 1886 tests in 63 files with an unrelated parent database sentinel unchanged. API/web/real-harness TypeScript, scoped ESLint and diff checks passed; paid tests were collected only. No paid Live session or working database was opened.
+
+## Final browser review
+
+- Normalize the composed caption axes before checking an approximately 180-degree orientation, so scale changes do not affect the result. A temporary 120-degree mutation passed the former sign checks and timed out later at the obscured End button; the corrected assertion rejects it immediately in Chromium and WebKit. The mutation was removed.
+- Make the browser fixture's `document.hidden` follow `document.visibilityState`, fixing the pre-existing TS2367 exposed by standalone E2E typechecking and keeping the mocked browser properties consistent.
+- Verification after both changes: 108 browser tests passed, 3 existing device-engine skips, retries disabled. Standalone E2E TypeScript and scoped ESLint passed.
