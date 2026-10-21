@@ -50,7 +50,15 @@ test("localized guidance follows the capture gate through playback and its echo 
     await expect(guidance).toBeInViewport({ ratio: 0.99 });
     await page.getByRole("button", { name: "Завершить", exact: true }).focus();
     await guidance.evaluate(el => { el.scrollTop = 0; });
-    const unfocused = await guidance.screenshot();
+    const box = (await guidance.boundingBox())!;
+    const viewport = page.viewportSize()!;
+    const x = Math.max(0, box.x - 8), y = Math.max(0, box.y - 8);
+    // Include external focus paint in the same fixed, viewport-clamped region for both captures.
+    const clip = { x, y,
+      width: Math.min(viewport.width, box.x + box.width + 8) - x,
+      height: Math.min(viewport.height, box.y + box.height + 8) - y,
+    };
+    const unfocused = await page.screenshot({ clip });
     await page.keyboard.press(side === "A" ? "Tab" : "Shift+Tab");
     if (side === "B") await page.keyboard.press("Shift+Tab");
     await expect(guidance).toBeFocused();
@@ -60,8 +68,7 @@ test("localized guidance follows the capture gate through playback and its echo 
       : "Please wait. Your speech is not being recorded.");
     await page.keyboard.press("Home");
     await expect.poll(() => guidance.evaluate(el => el.scrollTop)).toBe(0);
-    // Compare the same region and content in this run, without a stored screenshot baseline.
-    expect((await guidance.screenshot()).equals(unfocused), `${side} needs a visible keyboard focus indicator`).toBe(false);
+    expect((await page.screenshot({ clip })).equals(unfocused), `${side} needs a visible keyboard focus indicator`).toBe(false);
     expect(await guidance.evaluate(el => {
       const title = el.querySelector(".participant-guidance-title")!.getBoundingClientRect();
       const box = el.getBoundingClientRect();
