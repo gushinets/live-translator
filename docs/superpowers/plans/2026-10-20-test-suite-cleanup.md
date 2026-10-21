@@ -101,3 +101,8 @@ Verification: both HTTP cases failed with 401 under inherited production setting
 - Normalize the composed caption axes before checking an approximately 180-degree orientation, so scale changes do not affect the result. A temporary 120-degree mutation passed the former sign checks and timed out later at the obscured End button; the corrected assertion rejects it immediately in Chromium and WebKit. The mutation was removed.
 - Make the browser fixture's `document.hidden` follow `document.visibilityState`, fixing the pre-existing TS2367 exposed by standalone E2E typechecking and keeping the mocked browser properties consistent.
 - Verification after both changes: 108 browser tests passed, 3 existing device-engine skips, retries disabled. Standalone E2E TypeScript and scoped ESLint passed.
+
+## Process exit portability
+
+- Replace the PID-disappearance assertion with an exit acknowledgement written by the exact fixture process. Linux zombies and unrelated PID reuse no longer affect the result; shutdown/file-removal checks remain. Windows force-termination is verified through resource cleanup, while explicit startup failure also requires the exit acknowledgement.
+- The acknowledgement assertion failed before the fixture emitted it; all 5 lifecycle cases pass afterward. Web TypeScript and scoped ESLint passed.

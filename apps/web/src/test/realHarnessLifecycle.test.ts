@@ -63,8 +63,9 @@ import { existsSync, writeFileSync } from 'node:fs';
 const databasePath = process.env.USAGE_DB_PATH;
 const db = new DatabaseSync(databasePath);
 db.exec("PRAGMA journal_mode=WAL; CREATE TABLE live_sessions(state TEXT); INSERT INTO live_sessions VALUES('${outcome === "failed" ? "failed" : "closed"}')");
-const marker = { databasePath, pid: process.pid };
+const marker = { databasePath };
 writeFileSync(process.env.PROBE_MARKER, JSON.stringify(marker));
+process.once('exit', () => writeFileSync(process.env.PROBE_MARKER, JSON.stringify({ ...marker, exited: true })));
 process.on('SIGTERM', () => {
   marker.filesAtShutdown = ['', '-wal', '-shm'].every(suffix => existsSync(databasePath + suffix));
   db.close();
@@ -97,9 +98,10 @@ export default { ...realConfig, testDir: ${JSON.stringify(directory)}, testMatch
       });
       expect(result.code, result.output).toBe(outcome === "passed" ? 0 : 1);
       expect(existsSync(testMarker), result.output).toBe(outcome !== "startup failed");
-      const marker = JSON.parse(readFileSync(markerPath, "utf8")) as { databasePath: string; pid: number; filesAtShutdown?: boolean };
+      const marker = JSON.parse(readFileSync(markerPath, "utf8")) as { databasePath: string; exited?: boolean; filesAtShutdown?: boolean };
       databasePath = marker.databasePath;
-      expect(() => process.kill(marker.pid, 0)).toThrow();
+      // Windows force-kills webServer; graceful shutdown and startup failure can acknowledge exit.
+      if (process.platform !== "win32" || outcome === "startup failed") expect(marker.exited).toBe(true);
       if (process.platform !== "win32" && outcome !== "startup failed") expect(marker.filesAtShutdown).toBe(true);
       for (const suffix of ["", "-wal", "-shm"]) expect(existsSync(databasePath + suffix), `leftover database${suffix}`).toBe(false);
     } finally {
