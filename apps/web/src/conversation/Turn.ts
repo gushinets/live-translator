@@ -18,7 +18,8 @@ export type TurnStatus =
   | "outputting"
   | "completed"
   | "discarded"
-  | "failed";
+  | "failed"
+  | "unresolved";
 
 export interface Turn {
   id: string;
@@ -35,6 +36,8 @@ export interface Turn {
   /** Session-timeline boundary established by the next source speaker. */
   sourceEndMs?: number;
   status: TurnStatus;
+  /** Immutable deadline observation; later attribution does not rewrite it. */
+  outputDeadline?: { atMs: number; outcome: "no_observed_output" | "unresolved" };
 
   speechStartAtMs?: number;
   sourceIdleAtMs?: number;

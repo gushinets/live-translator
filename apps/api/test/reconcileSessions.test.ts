@@ -129,3 +129,38 @@ describe("late final reconciliation", () => {
       provider_final_seconds: 120, cleanup_reason: "user_end", close_confirmed: 1 });
   });
 });
+
+describe("attribution counter coverage", () => {
+  const names = ["noObservedOutputDeadlineCount", "unresolvedSourceOutcomeCount", "lateOutputAfterDeadlineCount", "attributionRevokedCount"];
+  it.each([
+    { values: [undefined, 0], finalized: [true, true], subtotal: 0, total: null, measured: 1, finalMeasured: 1, coverage: "partial" },
+    { values: [undefined, undefined], finalized: [true, true], subtotal: null, total: null, measured: 0, finalMeasured: 0, coverage: "unavailable" },
+    { values: [0, 0], finalized: [true, true], subtotal: 0, total: 0, measured: 2, finalMeasured: 2, coverage: "complete" },
+    { values: [2, 0], finalized: [true, false], subtotal: 2, total: null, measured: 2, finalMeasured: 1, coverage: "partial" },
+    { values: [], finalized: [], subtotal: null, total: null, measured: 0, finalMeasured: 0, coverage: "not_applicable" },
+  ])("distinguishes missing, provisional and measured zero: $coverage $values", ({ values, finalized, subtotal, total, measured, finalMeasured, coverage }) => {
+    const f = fixture(), c = f.ledger.createConversation(f.owner, randomUUID(), "old-app-version");
+    const id = f.start(c.id, c.version), original = f.ledger.getAttemptInternal(id)!;
+    const rows = values.map((value, index) => ({ ...original, app_metrics_finalized: finalized[index] ? 1 : 0,
+      measurement_version: "active-time-v1", metrics_json: JSON.stringify(value === undefined ? {} : Object.fromEntries(names.map(name => [name, value]))) }));
+    rows.push({ ...original, measurement_version: "active-time-v1", provider_request_dispatched_at: null, metrics_json: JSON.stringify(Object.fromEntries(names.map(name => [name, 999]))) });
+    for (const name of names) expect(conversationSummary(rows).attributionMetrics[name]).toEqual({
+      observedSubtotal: subtotal, total, eligibleAttempts: values.length, measuredAttempts: measured,
+      finalizedMeasuredAttempts: finalMeasured, coverage,
+    });
+  });
+  it("retains a once-measured zero and accepts provider usage independently from a rejected app snapshot", () => {
+    const f = fixture(), c = f.ledger.createConversation(f.owner, randomUUID(), "old-app-version"), id = f.start(c.id, c.version);
+    const app = { activityReportSeq: 1, measurementVersion: "active-time-v1", observedWallMs: 0, setupMs: 0,
+      activeInterpreterMs: 0, visiblePausedMs: 0, acceptedSourceSpeechMs: null, completedSourceSpeechMs: null,
+      speechMeasurementVersion: "vam-pre-tail-v1", speechMeasurementStatus: "unavailable", appMetricsFinalized: false,
+      counters: { noObservedOutputDeadlineCount: 0 } };
+    f.ledger.recordUsage(f.owner, id, c.id, usageReportSchema.parse({ schemaVersion: 1, app }));
+    expect(JSON.parse(f.ledger.getAttemptInternal(id)!.metrics_json!)).toEqual({ noObservedOutputDeadlineCount: 0 });
+    const result = f.ledger.recordUsage(f.owner, id, c.id, usageReportSchema.parse({ schemaVersion: 1, checkpointSeconds: 15,
+      app: { ...app, activityReportSeq: 2, counters: {} } }));
+    expect(result.appAccepted).toBe(false);
+    expect(f.ledger.getAttemptInternal(id)).toMatchObject({ provider_checkpoint_seconds: 15, activity_report_seq: 1 });
+    expect(JSON.parse(f.ledger.getAttemptInternal(id)!.metrics_json!)).toEqual({ noObservedOutputDeadlineCount: 0 });
+  });
+});

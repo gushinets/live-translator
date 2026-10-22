@@ -1,3 +1,4 @@
+import { DialogueCaptions } from "../components/DialogueCaptions";
 import { useEffect, useLayoutEffect, useReducer, useRef } from "react";
 import { ErrorOverlay } from "../components/ErrorOverlay";
 import { RetainedRecovery, type RetainedRecoveryState } from "../components/RetainedRecovery";
@@ -113,6 +114,9 @@ export function ConversationScreen({
         alertLanguage={ownerLocale}
       />
       <div className="conversation-center">
+        {captions.some(block => block.kind === "output" && block.side === undefined) ?
+          <div className="unattributed-output"><DialogueCaptions
+            blocks={captions.filter(block => block.kind === "output" && block.side === undefined)} language={ownerLocale} /></div> : null}
         {recoveryState !== undefined ? <RetainedRecovery
           state={recoveryState} surface="conversation" language={ownerLocale}
           onResume={controller.resumeRetainedConversation?.bind(controller)}
@@ -151,7 +155,7 @@ export function ConversationScreen({
             {t("Продолжить / повторить")}
           </button>
         ) : null}
-        {controller.recoveryPrompt === "repeat" && !controller.recoveryPromptIsTurnFailure ? <p>{t("Повторите")}</p> : null}
+        {controller.recoveryPrompt === "repeat" && controller.inputReady ? <p>{t("Повторите")}</p> : null}
         {controller.retainedRecoveryState === undefined && terminalAlert === undefined && controller.ownerError !== undefined ? (
           <ErrorOverlay message={controller.ownerError} language={ownerLocale} />
         ) : null}

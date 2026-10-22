@@ -1,3 +1,4 @@
+import { LiveDiagnostics } from "./LiveDiagnostics";
 import type { ProductObservation } from "../metrics/UsageReporter";
 import type { UsageObservation } from "../metrics/UsageTypes";
 import type { ProviderAccounting } from "../session/ConversationAccounting";
@@ -136,6 +137,7 @@ function raceAgainstAbort<T>(
  * this class never talks to OpenAI directly.
  */
 export class LiveClient {
+  readonly diagnostics = new LiveDiagnostics();
   onSessionStarted: ((event: SessionStartedEvent) => void) | null = null;
   onTranscriptDelta: ((event: TranscriptDeltaEvent) => void) | null = null;
   onAppendAcknowledged:
@@ -724,8 +726,11 @@ export class LiveClient {
       this.handleMalformedServerEvent("Received malformed Live event JSON");
       return;
     }
+    if (typeof parsed === "object" && parsed !== null && "type" in parsed && parsed.type === "error")
+      this.diagnostics.observe("provider_error", "error", Date.now());
     const serverEvent = parseLiveServerEvent(parsed);
     if (serverEvent.kind === "unknown") {
+      this.diagnostics.observe("unknown_event", (parsed as { type: string }).type, Date.now());
       return;
     }
     if (serverEvent.kind === "invalid") {
