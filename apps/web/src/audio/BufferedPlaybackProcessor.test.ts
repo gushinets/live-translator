@@ -62,7 +62,7 @@ describe("buffered playback processor lifetime", () => {
     const output = new Float32Array(128);
     for (let n = 0; n < 3; n++) processor.process([[]], [[output]]);
     expect(output.some(x => x !== 0)).toBe(true);
-    expect(processor.port.postMessage).toHaveBeenCalledWith({ type: "pending", value: false });
+    expect(processor.port.postMessage).toHaveBeenCalledWith({ type: "pending", value: false, generation: 0 });
     expect(processor.port.postMessage.mock.calls.some(([m]) => m.type === "playback" && !m.value)).toBe(false);
     processor.process([[]], [[new Float32Array(128)]]);
     expect(processor.port.postMessage.mock.calls.some(([m]) => m.type === "playback" && !m.value)).toBe(true);
@@ -101,7 +101,7 @@ describe("buffered playback processor lifetime", () => {
     const output = new Float32Array(128);
     processor.process([[new Float32Array(128).fill(.5)]], [[output]]);
     expect(output.every(sample => sample === 0)).toBe(true);
-    expect(processor.port.postMessage.mock.calls.filter(([m]) => m.type === "pending").at(-1)).toEqual([{ type: "pending", value: true }]);
+    expect(processor.port.postMessage.mock.calls.filter(([m]) => m.type === "pending").at(-1)).toEqual([{ type: "pending", value: true, generation: 0 }]);
     send(processor, "speaking", false); send(processor, "enabled", enabled);
     const played: number[] = [];
     for (let quantum = 0; quantum < 100; quantum++) {
@@ -110,7 +110,7 @@ describe("buffered playback processor lifetime", () => {
       if (processor.port.postMessage.mock.calls.some(([message]) => message.type === "playback" && message.value)) send(processor, "playback");
     }
     expect(played).toEqual(new Array(128).fill(.5));
-    expect(processor.port.postMessage).toHaveBeenCalledWith({ type: "pending", value: false });
+    expect(processor.port.postMessage).toHaveBeenCalledWith({ type: "pending", value: false, generation: 0 });
     expect(processor.port.close).not.toHaveBeenCalled();
   });
   it.each([[false, 1000], [true, 1000], [false, 300], [true, 300]] as const)("sends conservative FIFO owner transitions despite caption continuation, second delayed=%s, gap=%s ms", (captionDelayed, gapMs) => {

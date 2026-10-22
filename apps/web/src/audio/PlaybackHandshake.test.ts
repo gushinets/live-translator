@@ -476,3 +476,58 @@ describe("physical playback permission with independent render/main queues", () 
     harness.assertProtected();
   });
 });
+
+
+describe("pending observations across a reset barrier", () => {
+  it("keeps fresh PCM pending before and after the reset ACK without opening Gate C early", () => {
+    harness.controller.setCaptureEnabled(false); harness.controller.setOutputAudible(false);
+    harness.controller.setCaptureEnabled(true); harness.controller.setOutputAudible(true);
+    harness.flushWorklet();
+    harness.frame(.7, false);
+    while (harness.node.toMain.length && harness.node.toMain[0]?.type !== "reset") harness.deliverMain();
+    expect(harness.node.toMain[0]?.type).toBe("reset");
+    expect(harness.controller.audioElement.muted).toBe(true);
+    expect(harness.controller.hasPendingPlayback).toBe(true);
+    expect(harness.played).toHaveLength(0);
+    harness.deliverMain();
+    expect(harness.controller.audioElement.muted).toBe(false);
+    expect(harness.controller.hasPendingPlayback).toBe(true);
+    harness.until(() => harness.capture.enabled && harness.played.length > 0);
+    expect(harness.played).toEqual([...new Float32Array(QUANTUM).fill(.7)]);
+    expect(harness.controller.hasPendingPlayback).toBe(false);
+    harness.assertProtected();
+  });
+
+  it("does not let SessionController complete text-only while fresh PCM awaits its request and ACK", async () => {
+    const { SessionController } = await import("../session/SessionController");
+    harness.controller.setCaptureEnabled(false); harness.controller.setOutputAudible(false);
+    harness.controller.setCaptureEnabled(true); harness.controller.setOutputAudible(true);
+    harness.flushWorklet(); harness.frame(.7, false); harness.flushMain();
+    const session = new SessionController({ audio: harness.controller, createLive: () => ({}) as never });
+    Object.assign(session.session, { state: "outputting", activeTurn: {
+      id: "fresh-turn", speaker: "A", sideSource: "language", sourceFragments: [], originalText: "test",
+      translatedText: "prueba", outputFragments: [], status: "outputting", sourceIdleAtMs: harness.now,
+      firstOutputTextAtMs: harness.now, outputTextEndAtMs: harness.now, audioOutputStarted: false,
+    }});
+    harness.render(1500, 0, false); // Render runs while main delays the playback request beyond text completion.
+    expect(harness.node.toMain.some(m => m.type === "playback" && m.value)).toBe(true);
+    expect(harness.played).toHaveLength(0);
+    await (session as unknown as { considerTurnCompletion(atMs: number): Promise<void> }).considerTurnCompletion(harness.now);
+    expect(session.session.activeTurn?.id).toBe("fresh-turn");
+    expect(session.session.recentTurns).toHaveLength(0);
+  });
+
+  it("repeats held pending in a new mode generation when its previous observation was delayed", () => {
+    harness.render(40, .7, false);
+    harness.controller.setNonInterrupting(true);
+    harness.flushMain(); // The old generation's pending must not populate the new one.
+    expect(harness.controller.hasPendingPlayback).toBe(false);
+    harness.flushWorklet(); harness.flushMain();
+    expect(harness.controller.hasPendingPlayback).toBe(true); // Same queue value, fresh generation.
+    expect(harness.played).toHaveLength(0);
+    harness.until(() => harness.capture.enabled && harness.played.length > 0);
+    expect(harness.played).toEqual([...new Float32Array(Math.ceil(40 / FRAME_MS) * QUANTUM).fill(.7)]);
+    expect(harness.controller.hasPendingPlayback).toBe(false);
+    harness.assertProtected();
+  });
+});

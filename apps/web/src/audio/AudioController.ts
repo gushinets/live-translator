@@ -467,7 +467,10 @@ export class AudioController {
           this.releasePlaybackInput();
         }
       }
-      if (data.type === "pending") this.queuedPlayback = !this.audioElement.muted && data.value === true;
+      if (data.type === "pending" && data.generation === this.playbackGeneration) {
+        // A reset barrier mutes output temporarily; fresh held PCM still prevents logical completion.
+        this.queuedPlayback = this.outputAudible && data.value === true;
+      }
       if (data.type === "turn" && !this.audioElement.muted) {
         this.onPlaybackActivity?.({ active: data.value === true, atMs: this.nowMs(), owned: true,
           turnId: typeof data.turnId === "string" ? data.turnId : undefined });

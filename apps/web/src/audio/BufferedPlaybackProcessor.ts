@@ -9,6 +9,7 @@ declare function registerProcessor(name: string, processor: typeof AudioWorkletP
 class BufferedPlaybackProcessor extends AudioWorkletProcessor {
   private readonly queue = new PlaybackQueue(sampleRate);
   private pending = false;
+  private pendingGeneration = 0;
   private failed = false;
   private disposed = false;
   private enabled = false;
@@ -64,9 +65,10 @@ class BufferedPlaybackProcessor extends AudioWorkletProcessor {
     this.queue.setPlaybackAllowed(!this.enabled);
   }
   private reportPending(): void {
-    if (this.pending === this.queue.pending) return;
+    if (this.pending === this.queue.pending && this.pendingGeneration === this.generation) return;
     this.pending = this.queue.pending;
-    this.port.postMessage({ type: "pending", value: this.pending });
+    this.pendingGeneration = this.generation;
+    this.port.postMessage({ type: "pending", value: this.pending, generation: this.generation });
   }
   process(inputs: Float32Array[][], outputs: Float32Array[][]): boolean {
     const output = outputs[0]?.[0];

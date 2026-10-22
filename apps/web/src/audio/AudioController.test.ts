@@ -870,13 +870,35 @@ describe("buffered audio output", () => {
     controller.attachRemoteStream(fakeStream(new FakeAudioTrack()));
     controller.setOutputAudible(true);
     const stale = nodes[0]!.port.onmessage!;
-    stale({ data: { type: "pending", value: true } } as MessageEvent);
+    stale({ data: { type: "pending", value: true, generation: 1 } } as MessageEvent);
     expect(controller.hasPendingPlayback).toBe(true);
     controller.setOutputAudible(false);
     expect(controller.hasPendingPlayback).toBe(false);
     controller.attachRemoteStream(fakeStream(new FakeAudioTrack()));
-    stale({ data: { type: "pending", value: true } } as MessageEvent);
+    stale({ data: { type: "pending", value: true, generation: 1 } } as MessageEvent);
     expect(controller.hasPendingPlayback).toBe(false);
+    controller.dispose();
+  });
+  it("ignores obsolete or unversioned pending observations and intentional mute", async () => {
+    const { controller, nodes, element } = setup();
+    await controller.primeOutput();
+    controller.attachRemoteStream(fakeStream(new FakeAudioTrack()));
+    controller.setOutputAudible(true);
+    const deliver = (value: boolean, generation?: number) =>
+      nodes[0]!.port.onmessage!({ data: { type: "pending", value, generation } } as MessageEvent);
+    controller.setOutputAudible(false); controller.setOutputAudible(true);
+    nodes[0]!.port.onmessage!({ data: { type: "reset", generation: 2 } } as MessageEvent);
+    expect(element.muted).toBe(false);
+    deliver(true, 1); deliver(true);
+    expect(controller.hasPendingPlayback).toBe(false);
+    deliver(true, 2);
+    expect(controller.hasPendingPlayback).toBe(true);
+    deliver(false, 1); deliver(false);
+    expect(controller.hasPendingPlayback).toBe(true);
+    controller.setOutputAudible(false);
+    deliver(true, 3);
+    expect(controller.hasPendingPlayback).toBe(false);
+    expect(element.muted).toBe(true);
     controller.dispose();
   });
   it("observes incoming audio while muted and played audio after reopening", async () => {
