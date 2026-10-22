@@ -87,7 +87,9 @@ describe("real-Live ledger lifetime", () => {
     }
   });
 
-  it.each(["passed", "failed", "startup failed", "persistent UI", "overall timeout"])("handles the ledger safely through the %s Playwright lifecycle", async outcome => {
+  it.each(["passed", "failed", "startup failed", "persistent UI", "UI startup failed", "overall timeout"])("handles the ledger safely through the %s Playwright lifecycle", async outcome => {
+    const startupFailed = outcome.endsWith("startup failed");
+    const persistent = outcome === "persistent UI" || outcome === "UI startup failed";
     const directory = mkdtempSync(join(tmpdir(), "live-translator-real-harness-"));
     const markerPath = join(directory, "api.json"), configPath = join(directory, "playwright.config.ts");
     const serverPath = join(directory, "api.mjs");
@@ -146,11 +148,11 @@ export default { ...realConfig, testDir: ${JSON.stringify(directory)}, testMatch
   outputDir: ${JSON.stringify(join(directory, "results"))}, projects: [{ name: 'lifecycle' }],
   webServer: { command: ${JSON.stringify(command)}, wait: { stdout: /READY/ }, timeout: 5000,
     gracefulShutdown: { signal: 'SIGTERM', timeout: 2000 },
-    env: { ...api.env, PROBE_MARKER: ${JSON.stringify(markerPath)}, PROBE_STARTUP_FAILURE: '${outcome === "startup failed"}' } },
+    env: { ...api.env, PROBE_MARKER: ${JSON.stringify(markerPath)}, PROBE_STARTUP_FAILURE: '${startupFailed}' } },
 };`);
       const cli = fileURLToPath(new URL("../../node_modules/@playwright/test/cli.js", import.meta.url));
       const snapshotsPath = join(directory, "batches.json"), persistentRunnerPath = join(directory, "persistent.mjs");
-      if (outcome === "persistent UI") writeFileSync(persistentRunnerPath, `
+      if (persistent) writeFileSync(persistentRunnerPath, `
 import { createRequire } from 'node:module';
 import { readFileSync, realpathSync, writeFileSync } from 'node:fs';
 const requirePlaywright = createRequire(realpathSync(new URL(${JSON.stringify(playwright)})));
@@ -166,7 +168,7 @@ const snapshots = [];
 let apiURL;
 try {
   const setup = await dispatcher.runGlobalSetup({});
-  if (setup.status !== 'passed') throw new Error(JSON.stringify(setup));
+  if (setup.status !== 'passed') throw new Error('Playwright global setup failed: ' + setup.status);
   const { port } = JSON.parse(readFileSync(${JSON.stringify(markerPath)}, 'utf8'));
   apiURL = 'http://127.0.0.1:' + port;
   for (let batch = 0; batch < 2; batch++) {
@@ -181,15 +183,19 @@ try {
 const reachableAfterTeardown = await fetch(apiURL, { signal: AbortSignal.timeout(2000) }).then(() => true, () => false);
 writeFileSync(${JSON.stringify(snapshotsPath)}, JSON.stringify({ snapshots, reachableAfterTeardown }));
 `);
+      const canary = `synthetic-secret-${randomUUID()}`;
+      const childEnv = Object.fromEntries(Object.entries(process.env).filter(([name]) => /^(path|systemroot|comspec|temp|tmp|tmpdir|home|userprofile)$/i.test(name)));
       const result = await new Promise<{ code: number; output: string }>(finish => {
-        const args = outcome === "persistent UI" ? [persistentRunnerPath] : [cli, "test", "--config", configPath];
+        const args = persistent ? [persistentRunnerPath] : [cli, "test", "--config", configPath];
         if (outcome === "overall timeout") args.push("--global-timeout=4000");
-        execFile(process.execPath, args, { timeout: 20000 }, (error, stdout, stderr) => {
+        execFile(process.execPath, args, { timeout: 20000, env: { ...childEnv, REVIEW_CANARY_SECRET: canary } }, (error, stdout, stderr) => {
           finish({ code: error ? typeof error.code === "number" ? error.code : -1 : 0, output: stdout + stderr });
         });
       });
+      expect(result.output.includes(canary), "Subprocess diagnostics must not expose inherited credentials").toBe(false);
       expect(result.code, result.output).toBe(outcome === "passed" || outcome === "persistent UI" ? 0 : 1);
-      expect(existsSync(testMarker), result.output).toBe(outcome !== "startup failed");
+      if (outcome === "UI startup failed") expect(result.output).toContain("Playwright global setup failed: failed");
+      expect(existsSync(testMarker), result.output).toBe(!startupFailed);
       const marker = JSON.parse(readFileSync(markerPath, "utf8")) as { databasePath: string; port?: number; exited?: boolean; filesAtShutdown?: boolean };
       databasePath = marker.databasePath;
       if (outcome === "overall timeout") {
@@ -203,8 +209,8 @@ writeFileSync(${JSON.stringify(snapshotsPath)}, JSON.stringify({ snapshots, reac
         expect(reachableAfterExit, "Playwright CLI must terminate its server before fixture cleanup").toBe(false);
       }
       // Windows and timed-out teardown can force-kill webServer without an exit acknowledgement.
-      if ((process.platform !== "win32" && outcome !== "overall timeout") || outcome === "startup failed") expect(marker.exited).toBe(true);
-      if (process.platform !== "win32" && outcome !== "startup failed" && outcome !== "overall timeout") expect(marker.filesAtShutdown).toBe(true);
+      if ((process.platform !== "win32" && outcome !== "overall timeout") || startupFailed) expect(marker.exited).toBe(true);
+      if (process.platform !== "win32" && !startupFailed && outcome !== "overall timeout") expect(marker.filesAtShutdown).toBe(true);
       if (outcome === "persistent UI") {
         const batches = JSON.parse(readFileSync(snapshotsPath, "utf8"));
         expect(batches.snapshots, result.output).toEqual([
@@ -214,8 +220,8 @@ writeFileSync(${JSON.stringify(snapshotsPath)}, JSON.stringify({ snapshots, reac
         expect(batches.reachableAfterTeardown).toBe(false);
         expect(result.output).toContain(databasePath);
       }
-      const preserved = outcome === "persistent UI" || outcome === "startup failed" || outcome === "overall timeout";
-      if (preserved) expect(result.output).toContain(`ledger preserved for recovery: ${databasePath}`);
+      const preserved = persistent || startupFailed || outcome === "overall timeout";
+      if (preserved && outcome !== "UI startup failed") expect(result.output).toContain(`ledger preserved for recovery: ${databasePath}`);
       for (const suffix of ["", "-wal", "-shm"]) expect(existsSync(databasePath + suffix), `database${suffix}`).toBe(preserved);
     } finally {
       if (!databasePath && existsSync(markerPath)) databasePath = (JSON.parse(readFileSync(markerPath, "utf8")) as { databasePath: string }).databasePath;
