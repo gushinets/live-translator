@@ -1506,6 +1506,8 @@ export class SessionController {
     if (this.leftoverOutputDraining) { this.noteLeftoverCaption(); return; }
     const fragment = createTranscriptFragment({ text: event.delta, nowMs: Date.now(), startMs: event.start_ms, endMs: event.end_ms });
 
+    // Settle past deadlines before new language evidence changes what was known at D.
+    this.expireOutputDeadlines(fragment.receivedAtMs, false);
     if (!this.outputRouter.hasPending && /^[\p{P}\s]+$/u.test(fragment.text)) {
       this.routeOutput([{ side: undefined, fragments: [fragment] }]);
     } else {
@@ -1541,12 +1543,14 @@ export class SessionController {
       this.audio.setPlaybackTurn?.(this.outputTurnId);
       this.lastOutputSide = side;
     }
-    if (groups.length) this.projectAttribution();
+    this.attribution.observePending(this.outputRouter.pendingFragments, this.routingTurns(), Date.now(), this.latestSourceTurnId);
+    if (groups.length || this.outputRouter.hasPending) this.projectAttribution();
     this.armCaptionIdleTimer();
     if (considerCompletion) void this.considerTurnCompletion(Date.now());
   }
 
   private projectAttribution(): void {
+    this.expireOutputDeadlines(Date.now());
     const changes = this.attribution.reconcile(this.routingTurns(), Date.now());
     for (const { output, previousSourceId } of changes) {
       if (output.lateOutput) this.conversationMetrics.recordAttributionEvent("lateOutputAfterDeadlineCount", `${output.id}:${output.revision}`);
@@ -1558,7 +1562,7 @@ export class SessionController {
       this.dialogueTranscript.setOutput(output.id, output.fragments, this.languages, output.sourceId);
     }
     if (this.attribution.outputs.length) this.currentSession = sessionReducer(this.currentSession,
-      { type: "OUTPUT_ATTRIBUTION", outputs: this.attribution.outputs, sourceIds: this.routingTurns().map(turn => turn.id) });
+      { type: "OUTPUT_ATTRIBUTION", outputs: this.attribution.outputs.filter(output => !output.languagePending), sourceIds: this.routingTurns().map(turn => turn.id) });
     const hint = this.noOutputHint;
     const source = hint && findSessionTurn(this.currentSession, hint.sourceId);
     if (hint && source && hint.generation === this.sessionGeneration && this.attribution.hasCompatibleOutput(source)) {
@@ -1662,15 +1666,7 @@ export class SessionController {
   private async considerTurnCompletion(nowMs: number): Promise<void> {
     if (this.turnClosing || !["listening", "outputting"].includes(this.currentSession.state)) return;
     this.attribution.observePendingPlayback(this.audio.hasPendingPlayback === true, nowMs, this.routingTurns());
-    // Source uncertainty has its own deadline; a busy PCM queue cannot extend it.
-    const waiting = [...(this.currentSession.pendingTurns ?? []), ...(this.currentSession.activeTurn ? [this.currentSession.activeTurn] : [])]
-      .filter(turn => !turn.translationOnly && !turn.translatedText && turn.sourceIdleAtMs !== undefined);
-    let nextDeadline: number | undefined;
-    for (const turn of waiting) {
-      const deadline = turn.sourceIdleAtMs! + runtime.noOutputTimeoutMs;
-      if (nowMs >= deadline) this.failTurnNoOutput(turn);
-      else nextDeadline = Math.min(nextDeadline ?? Infinity, deadline);
-    }
+    const nextDeadline = this.expireOutputDeadlines(nowMs);
     const playback = this.playbackTurnId ? findSessionTurn(this.currentSession, this.playbackTurnId) : undefined;
     if (this.playbackActive && (!playback || ["completed", "failed", "discarded", "unresolved"].includes(playback.status))) {
       // Audio before its caption is not silence. Wait for the idle edge rather
@@ -1710,6 +1706,22 @@ export class SessionController {
     }
   }
 
+  private expireOutputDeadlines(nowMs: number, inclusive = true): number | undefined {
+    // Source uncertainty has its own deadline; a busy PCM queue cannot extend it.
+    const waiting = [...(this.currentSession.pendingTurns ?? []), ...(this.currentSession.activeTurn ? [this.currentSession.activeTurn] : [])]
+      .filter(turn => !turn.translationOnly && !turn.translatedText && !turn.outputDeadline && turn.sourceIdleAtMs !== undefined);
+    let nextDeadline: number | undefined;
+    for (const turn of waiting) {
+      const deadline = turn.sourceIdleAtMs! + runtime.noOutputTimeoutMs;
+      // An on-time receipt already matched by D needs no absence/uncertainty outcome.
+      if (this.attribution.outputs.some(output => output.sourceId === turn.id &&
+          output.firstReceivedAtMs <= deadline && output.matchedAtMs !== undefined && output.matchedAtMs <= deadline)) continue;
+      if (nowMs > deadline || (inclusive && nowMs === deadline)) this.failTurnNoOutput(turn);
+      else nextDeadline = Math.min(nextDeadline ?? Infinity, deadline);
+    }
+    return nextDeadline;
+  }
+
   private closeCompletedTurn(turn: Turn): void {
     const replacingLanguage = this.pendingInterlocutorLanguage !== undefined &&
       (!this.currentSession.activeTurn || this.currentSession.activeTurn.id === turn.id) &&
@@ -1728,8 +1740,9 @@ export class SessionController {
   }
 
   private failTurnNoOutput(turn: Turn): void {
-    const unresolved = this.attribution.hasCompatibleOutput(turn);
+    if (findSessionTurn(this.currentSession, turn.id)?.outputDeadline) return;
     const atMs = (turn.sourceIdleAtMs ?? Date.now()) + runtime.noOutputTimeoutMs;
+    const unresolved = this.attribution.hasCompatibleOutput(turn, atMs);
     this.attribution.observeDeadline(turn, atMs);
     const replacingLanguage = this.pendingInterlocutorLanguage !== undefined &&
       (!this.currentSession.activeTurn || this.currentSession.activeTurn.id === turn.id) &&

@@ -14,6 +14,7 @@ export interface AttributedOutput {
   revision: number;
   lateOutput?: boolean;
   technicalCompleted?: boolean;
+  languagePending?: boolean;
   streamKey: string;
   sourceIdsAtReceipt: string[];
 }
@@ -34,6 +35,7 @@ export class OutputAttribution {
   readonly trace: AttributionTraceEntry[] = [];
   private readonly generation = crypto.randomUUID();
   private changes: AttributionChange[] = [];
+  private pendingOutput?: AttributedOutput;
 
   /** A reassignment changes current evidence, never repeats a technical completion. */
   claimTechnicalCompletion(turnId: string): boolean {
@@ -47,7 +49,7 @@ export class OutputAttribution {
     this.trace.push({ generation: this.generation, ...entry });
   }
   observeDeadline(source: Turn, atMs: number): void {
-    this.record({ kind: "deadline", atMs, sourceId: source.id, compatibleOutput: this.hasCompatibleOutput(source) });
+    this.record({ kind: "deadline", atMs, sourceId: source.id, compatibleOutput: this.hasCompatibleOutput(source, atMs) });
   }
   private playback: Array<{ atMs: number; sourceIds: string[]; played: boolean }> = [];
   private queuedPcm = false;
@@ -58,27 +60,54 @@ export class OutputAttribution {
   }
 
   receive(fragments: TranscriptFragment[], side: Side | undefined, sources: Turn[], nowMs: number, streamKey = ""): AttributedOutput {
+    // Router splits keep the packet ID as a prefix and preserve its original clocks.
+    const pending = this.pendingOutput && fragments.some(part => this.pendingOutput!.fragments.some(known =>
+      part.id === known.id || part.id.startsWith(known.id + ":"))) ? this.pendingOutput : undefined;
+    const neutral = fragments.every(part => /^[\p{P}\s]+$/u.test(part.text));
     const overlaps = this.outputs.filter(output => {
+      if (output === this.pendingOutput) return false;
       const start = earliestFragmentStart(output.fragments);
       const end = Math.max(...output.fragments.map(part => part.endMs ?? part.startMs ?? -Infinity));
-      return start !== undefined && fragments.every(part => part.startMs !== undefined && part.startMs >= start &&
+      return (output.side === side || (side === undefined && neutral)) && start !== undefined && fragments.every(part => part.startMs !== undefined && part.startMs >= start &&
         part.startMs <= end && (/^[\p{P}\s]+$/u.test(part.text) || (part.endMs !== undefined && part.endMs <= end)));
     });
     const last = this.outputs.at(-1);
-    const tail = last && last.streamKey === streamKey && (last.side === side || side === undefined) &&
-      fragments.every(part => part.startMs === undefined) &&
-      (nowMs - last.fragments.at(-1)!.receivedAtMs < runtime.captionIdleMs ||
-        !hasSentenceTerminator(last.fragments.map(part => part.text).join(""))) ? last : undefined;
-    const output = overlaps.length === 1 ? overlaps[0]! : tail ?? {
+    const unfinished = last && !hasSentenceTerminator(last.fragments.map(part => part.text).join(""));
+    const adjacent = last && last.fragments.at(-1)!.endMs !== undefined &&
+      fragments[0]?.startMs === last.fragments.at(-1)!.endMs;
+    const tail = last && last !== this.pendingOutput && last.streamKey === streamKey && (last.side === side || (side === undefined && neutral)) &&
+      ((fragments.every(part => part.startMs === undefined) &&
+        (nowMs - last.fragments.at(-1)!.receivedAtMs < runtime.captionIdleMs || unfinished)) ||
+        (adjacent && unfinished)) ? last : undefined;
+    const output = pending ?? (overlaps.length === 1 ? overlaps[0]! : tail) ?? {
       id: crypto.randomUUID(), fragments: [], side, firstReceivedAtMs: Math.min(...fragments.map(part => part.receivedAtMs)),
       candidateIds: [], revision: 0, streamKey, sourceIdsAtReceipt: sources.filter(turn => !turn.translationOnly).map(turn => turn.id),
     };
+    if (pending) {
+      output.fragments = [];
+      output.side = side;
+      output.languagePending = false;
+      this.pendingOutput = undefined;
+    }
     if (!this.outputs.includes(output)) this.outputs.push(output);
     for (const part of fragments) if (!output.fragments.some(known => known.id === part.id)) output.fragments.push(part);
     output.side ??= side;
     this.record({ kind: "text", atMs: nowMs, outputId: output.id });
     this.decide(output, sources, nowMs);
     return output;
+  }
+
+  /** Observe the unresolved router tail now; later language evidence refines the same receipt. */
+  observePending(fragments: readonly TranscriptFragment[], sources: Turn[], nowMs: number, streamKey = ""): void {
+    if (!fragments.length) return;
+    const output = this.pendingOutput ??= {
+      id: crypto.randomUUID(), fragments: [], languagePending: true, firstReceivedAtMs: Math.min(...fragments.map(part => part.receivedAtMs)),
+      candidateIds: [], revision: 0, streamKey, sourceIdsAtReceipt: sources.filter(turn => !turn.translationOnly).map(turn => turn.id),
+    };
+    output.fragments = [...fragments];
+    if (!this.outputs.includes(output)) this.outputs.push(output);
+    this.record({ kind: "text", atMs: nowMs, outputId: output.id });
+    this.decide(output, sources, nowMs);
   }
 
   reconcile(sources: Turn[], nowMs: number): AttributionChange[] {
@@ -137,10 +166,10 @@ export class OutputAttribution {
       (turn.speechStartAtMs ?? Infinity) <= atMs).map(turn => turn.id) });
   }
 
-  hasCompatibleOutput(source: Turn): boolean {
-    return this.outputs.some(output => this.possible(source, output) &&
+  hasCompatibleOutput(source: Turn, atMs = Infinity): boolean {
+    return this.outputs.some(output => output.firstReceivedAtMs <= atMs && this.possible(source, output) &&
       (output.side === undefined || source.speaker === undefined || source.speaker !== output.side)) ||
-      this.playback.some(receipt => receipt.sourceIds.includes(source.id));
+      this.playback.some(receipt => receipt.atMs <= atMs && receipt.sourceIds.includes(source.id));
   }
 
   current() {

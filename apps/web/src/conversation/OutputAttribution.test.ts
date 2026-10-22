@@ -35,7 +35,7 @@ describe("output attribution evidence", () => {
     const output = ledger.receive([fragment("o1", 100, 500)], "B", [a], 1000);
     a.status = "completed";
     const b = source("b", 600, "B");
-    expect(ledger.receive([fragment("punct", 450, 450, 1200)], undefined, [a, b], 1200).id).toBe(output.id);
+    expect(ledger.receive([{ ...fragment("punct", 450, 450, 1200), text: "." }], undefined, [a, b], 1200).id).toBe(output.id);
     const next = ledger.receive([fragment("o2", 700, 800, 1300)], "B", [a, b], 1300);
     expect(next.id).not.toBe(output.id);
     expect(next.sourceId).toBeUndefined();
@@ -195,4 +195,27 @@ it("preserves published speech and counters through revisions while both evidenc
   expect(otherOrder.current()).toEqual(ledger.current());
   expect(ledger.current().confirmedSourceSpeechMs).toBeNull();
   expect(output.firstReceivedAtMs).toBe(1000);
+});
+
+
+it("does not inherit a known direction for an unknown lexical group sharing its packet interval", () => {
+  const ledger = new OutputAttribution(), a = source("a", 0);
+  const known = ledger.receive([{ ...fragment("packet:head", 100, 500), text: "¿Dónde está la estación? " }], "B", [a], 1000);
+  const unknown = ledger.receive([{ ...fragment("packet:tail", 100, 500), text: "OK." }], undefined, [a], 1000);
+  expect(unknown.id).not.toBe(known.id);
+  expect(unknown.sourceId).toBeUndefined();
+  expect(known.fragments.map(part => part.text).join("")).toBe("¿Dónde está la estación? ");
+});
+
+it("preserves pending packet identity and clocks when language evidence splits its tail", () => {
+  const ledger = new OutputAttribution(), a = source("a", 0);
+  const raw = { ...fragment("packet", 100, 500), text: "Thank y" };
+  ledger.observePending([raw], [a], 1000, "a");
+  const id = ledger.outputs[0]!.id;
+  const first = ledger.receive([{ ...raw, id: "packet:head", text: "Thank " }], "B", [a], 2000, "a");
+  ledger.observePending([{ ...raw, id: "packet:tail", text: "y" }], [a], 2000, "a");
+  expect(first.id).toBe(id);
+  expect(ledger.outputs.flatMap(output => output.fragments).map(part => part.text).join("")).toBe("Thank y");
+  expect(ledger.outputs.map(output => output.firstReceivedAtMs)).toEqual([1000, 1000]);
+  expect(ledger.outputs.at(-1)?.sourceId).toBeUndefined();
 });

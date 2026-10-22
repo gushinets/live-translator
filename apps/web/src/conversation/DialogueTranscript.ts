@@ -87,7 +87,19 @@ export class DialogueTranscript {
   private publish(): void {
     const blocks = [...this.history];
     const cursors = Object.values(this.streams).map(stream => ({ blocks: stream.blocks, index: 0 }));
-    for (const [id, output] of this.outputs) {
+    const outputs = [...this.outputs].map(([id, output]) => ({ id, ...output, fragments: [...output.fragments] }));
+    const phrases: typeof outputs = [];
+    for (const output of outputs) {
+      const previous = phrases.at(-1);
+      // Late language evidence may confirm a continuation without merging journal identities.
+      if (previous && output.sourceId !== undefined && previous.sourceId === output.sourceId &&
+          previous.languages.A === output.languages.A && previous.languages.B === output.languages.B &&
+          previous.fragments.at(-1)?.endMs !== undefined && previous.fragments.at(-1)!.endMs === output.fragments[0]?.startMs &&
+          !hasSentenceTerminator(previous.fragments.map(part => part.text).join(""))) {
+        previous.fragments.push(...output.fragments);
+      } else phrases.push(output);
+    }
+    for (const { id, ...output } of phrases) {
       const outputBlocks: DialogueBlock[] = [];
       const fragments = orderTranscriptFragments(output.fragments);
       const runs = this.languageRuns(fragments.map(part => part.text).join(""), output.languages);
