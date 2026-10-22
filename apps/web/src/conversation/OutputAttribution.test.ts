@@ -285,3 +285,82 @@ it.each([false, true])("refines PCM episode bounds when ASR reveals more of the 
   expect(ledger.hasCompatibleOutput(delayed)).toBe(true);
   expect(ledger.current().matchedAudioOutputs).toBe(0);
 });
+
+
+it.each([false, true])("separates timely historical evidence from fresh late isolation, sourceFirst=%s", sourceFirst => {
+  const late = source("a", 0, "A", "failed");
+  late.outputDeadline = { atMs: 6000, outcome: "no_observed_output" };
+  late.turnCompletedAtMs = 6000;
+  const future = source("b", 2000, "B");
+  const ledger = new OutputAttribution();
+  const out = ledger.receive([fragment("late", 500, 1500, 7000)], "B", sourceFirst ? [late, future] : [late], 7000);
+  ledger.reconcile([late, future], 7000);
+  expect(out.sourceId).toBeUndefined();
+  expect(out.candidateIds).toEqual(["a"]);
+  // A sole failed source is allowed only under the documented isolated-episode policy.
+  expect(new OutputAttribution().receive([fragment("isolated", 500, 1500, 7000)], "B", [late], 7000).sourceId).toBe("a");
+  const timely = { ...late, status: "completed" as const, outputDeadline: undefined, turnCompletedAtMs: 6000 };
+  const earlier = new OutputAttribution();
+  const known = earlier.receive([fragment("on-time", 500, 1500, 5000)], "B", [timely, future], 7000);
+  expect(known.sourceId).toBe("a");
+  earlier.reconcile([timely, future, source("old-competitor", 100, "A", "failed")], 7000);
+  expect(known.sourceId).toBeUndefined();
+  expect(known.firstReceivedAtMs).toBe(5000);
+});
+
+it.each([undefined, 100, 2000])("evaluates pending speech clocks without inventing a source, start=%s", startMs => {
+  const ledger = new OutputAttribution(), a = source("a", 0);
+  const pending = [{ ...fragment("raw-input", 100, 2500, 1000), text: "No.", startMs }];
+  const out = ledger.receive([fragment("output", 500, 1500, 1000)], "B", [a], 1000, "a", pending);
+  expect(out.sourceId).toBe(startMs === 2000 ? "a" : undefined);
+  expect(out.candidateIds).toEqual(["a"]);
+  expect(a.originalText).toBe("Source");
+  ledger.reconcile([a], 1100);
+  expect(out.sourceId).toBe("a");
+  expect(out.firstReceivedAtMs).toBe(1000);
+});
+
+it("does not use pending-uncertain output as an opposite-direction witness", () => {
+  const ledger = new OutputAttribution(), a = source("a", 0), b = source("b", 2000, "B");
+  const pending = [{ ...fragment("unknown", 200, 600), text: "No." }];
+  ledger.receive([fragment("early", 500, 1500)], "B", [a, b], 1000, "", pending);
+  const later = ledger.receive([fragment("later", 2500, 3500)], "A", [a, b], 1000, "", pending);
+  expect(later.candidateIds).toEqual(["a", "b"]);
+  expect(later.sourceId).toBeUndefined();
+  ledger.reconcile([a, b], 2000);
+  expect(later.sourceId).toBe("b");
+});
+
+
+it.each([false, true])("retains same-clock untimed source uncertainty in either receipt order, sourceFirst=%s", sourceFirst => {
+  const ledger = new OutputAttribution();
+  const a = { ...source("a", 0), sourceFragments: [{ id: "a-in", text: "Source", receivedAtMs: 1000 }], speechStartAtMs: 1000 };
+  const b = { ...a, id: "b", speaker: "B" as const };
+  const out = ledger.receive([{ id: "out", text: "Texto.", receivedAtMs: 1000 }], "B", sourceFirst ? [a, b] : [a], 1000);
+  ledger.reconcile([a, b], 1000);
+  expect(out.sourceId).toBeUndefined();
+  expect(out.candidateIds).toEqual(["a", "b"]);
+});
+
+it("does not certify a first late isolated result before a pending later episode is admitted", () => {
+  const ledger = new OutputAttribution(), a = source("a", 0, "A", "failed");
+  a.outputDeadline = { atMs: 6000, outcome: "no_observed_output" };
+  const pending = [{ ...fragment("unknown", 2000, 3000, 7000), text: "No." }];
+  const out = ledger.receive([fragment("output", 500, 1500, 7000)], "B", [a], 7000, "", pending);
+  expect(out.sourceId).toBeUndefined();
+  const unknown = { ...source("unknown", 2000), speaker: undefined };
+  ledger.reconcile([a, unknown], 7600);
+  expect(out.sourceId).toBeUndefined();
+  expect(ledger.trace.some(entry => entry.kind === "revoked")).toBe(false);
+});
+
+
+it.each([false, true])("distinguishes delayed untimed ASR receipt from an observed new speech start, vad=%s", vad => {
+  const ledger = new OutputAttribution(), a = source("a", 0);
+  const out = ledger.receive([{ id: "out", text: "Texto.", receivedAtMs: 1000 }], "B", [a], 1000);
+  const delayed = { ...source("b", 0, "B"), sourceFragments: [{ id: "asr", text: "Source", receivedAtMs: 2000 }], speechStartAtMs: 2000 };
+  if (vad) ledger.observeSourceStart("b", 2000);
+  ledger.reconcile([a, delayed], 2000);
+  expect(out.sourceId).toBe(vad ? "a" : undefined);
+  expect(out.firstReceivedAtMs).toBe(1000);
+});

@@ -1382,7 +1382,6 @@ export class SessionController {
     if (!event.delta || !["listening", "outputting"].includes(this.currentSession.state) || this.turnClosing) return;
     const fragment = createTranscriptFragment({ text: event.delta, nowMs: Date.now(), startMs: event.start_ms, endMs: event.end_ms });
     this.dialogueTranscript.push("input", fragment, this.languages);
-    this.notify();
     const active = this.currentSession.activeTurn;
     const activeStart = earliestFragmentStart(active?.sourceFragments);
     const currentSide = fragment.startMs === undefined || activeStart === undefined || fragment.startMs >= activeStart
@@ -1448,7 +1447,7 @@ export class SessionController {
         }
       }
     }
-    if (groups.length) this.projectAttribution();
+    if (groups.length || this.sourceRouter.hasPending) this.projectAttribution();
     if (considerCompletion) void this.considerTurnCompletion(Date.now());
   }
 
@@ -1543,7 +1542,7 @@ export class SessionController {
     // Includes timer and source-handoff flushes, not only newly received deltas.
     this.expireOutputDeadlines(Date.now(), false);
     for (const { side, fragments } of groups) {
-      const output = this.attribution.receive(fragments, side, this.routingTurns(), Date.now(), this.latestSourceTurnId);
+      const output = this.attribution.receive(fragments, side, this.routingTurns(), Date.now(), this.latestSourceTurnId, this.sourceRouter.pendingFragments);
       if (output.lateOutput) this.conversationMetrics.recordAttributionEvent("lateOutputAfterDeadlineCount", `${output.id}:${output.revision}`);
       this.outputTurnId = output.sourceId ?? output.id;
       this.outputSourceTurnId = output.sourceId ?? this.latestSourceTurnId;
@@ -1551,7 +1550,7 @@ export class SessionController {
       this.audio.setPlaybackTurn?.(this.outputTurnId);
       this.lastOutputSide = side;
     }
-    this.attribution.observePending(this.outputRouter.pendingFragments, this.routingTurns(), Date.now(), this.latestSourceTurnId);
+    this.attribution.observePending(this.outputRouter.pendingFragments, this.routingTurns(), Date.now(), this.latestSourceTurnId, this.sourceRouter.pendingFragments);
     if (groups.length || this.outputRouter.hasPending) this.projectAttribution();
     this.armCaptionIdleTimer();
     if (considerCompletion) void this.considerTurnCompletion(Date.now());
@@ -1559,7 +1558,7 @@ export class SessionController {
 
   private projectAttribution(): void {
     this.expireOutputDeadlines(Date.now());
-    const changes = this.attribution.reconcile(this.routingTurns(), Date.now());
+    const changes = this.attribution.reconcile(this.routingTurns(), Date.now(), this.sourceRouter.pendingFragments);
     for (const { output, previousSourceId } of changes) {
       if (output.lateOutput) this.conversationMetrics.recordAttributionEvent("lateOutputAfterDeadlineCount", `${output.id}:${output.revision}`);
       if (previousSourceId && previousSourceId !== output.sourceId)

@@ -63,7 +63,7 @@ export class OutputAttribution {
     this.observePcm(atMs, sources, false);
   }
 
-  receive(fragments: TranscriptFragment[], side: Side | undefined, sources: Turn[], nowMs: number, streamKey = ""): AttributedOutput {
+  receive(fragments: TranscriptFragment[], side: Side | undefined, sources: Turn[], nowMs: number, streamKey = "", pendingSources: readonly TranscriptFragment[] = []): AttributedOutput {
     // Router splits keep the packet ID as a prefix and preserve its original clocks.
     const pending = this.pendingOutput && fragments.some(part => this.pendingOutput!.fragments.some(known =>
       part.id === known.id || part.id.startsWith(known.id + ":"))) ? this.pendingOutput : undefined;
@@ -100,12 +100,12 @@ export class OutputAttribution {
     for (const part of fragments) if (!output.fragments.some(known => known.id === part.id)) output.fragments.push(part);
     output.side ??= side;
     this.record({ kind: "text", atMs: nowMs, outputId: output.id });
-    this.decide(output, sources, nowMs);
+    this.decide(output, sources, nowMs, pendingSources);
     return output;
   }
 
   /** Observe the unresolved router tail now; later language evidence refines the same receipt. */
-  observePending(fragments: readonly TranscriptFragment[], sources: Turn[], nowMs: number, streamKey = ""): void {
+  observePending(fragments: readonly TranscriptFragment[], sources: Turn[], nowMs: number, streamKey = "", pendingSources: readonly TranscriptFragment[] = []): void {
     if (!fragments.length) return;
     const output = this.pendingOutput ??= {
       id: crypto.randomUUID(), fragments: [], languagePending: true, firstReceivedAtMs: Math.min(...fragments.map(part => part.receivedAtMs)),
@@ -114,13 +114,13 @@ export class OutputAttribution {
     output.fragments = [...fragments];
     if (!this.outputs.includes(output)) this.outputs.push(output);
     this.record({ kind: "text", atMs: nowMs, outputId: output.id });
-    this.decide(output, sources, nowMs);
+    this.decide(output, sources, nowMs, pendingSources);
   }
 
-  reconcile(sources: Turn[], nowMs: number): AttributionChange[] {
+  reconcile(sources: Turn[], nowMs: number, pendingSources: readonly TranscriptFragment[] = []): AttributionChange[] {
     this.sources = sources;
-    const isolatedDirections = this.isolatedDirections(sources.filter(turn => !turn.translationOnly));
-    for (const output of this.outputs) this.decide(output, sources, nowMs, isolatedDirections);
+    const isolatedDirections = this.isolatedDirections(sources.filter(turn => !turn.translationOnly), pendingSources);
+    for (const output of this.outputs) this.decide(output, sources, nowMs, pendingSources, isolatedDirections);
     return this.changes.splice(0);
   }
 
@@ -128,13 +128,20 @@ export class OutputAttribution {
     const sourceStart = earliestFragmentStart(source.sourceFragments), outputStart = earliestFragmentStart(output.fragments);
     if (sourceStart !== undefined && outputStart !== undefined && output.fragments.every(part => part.endMs !== undefined))
       return sourceStart <= Math.max(...output.fragments.map(part => part.endMs!));
-    return output.sourceIdsAtReceipt.includes(source.id) || (source.speechStartAtMs ?? Infinity) < output.firstReceivedAtMs;
+    // ASR receipt time is not speech onset; only an observed VAD boundary can exclude untimed later speech.
+    return output.sourceIdsAtReceipt.includes(source.id) || (this.speechStarts.get(source.id) ?? -Infinity) <= output.firstReceivedAtMs;
   }
 
-  private isolatedDirections(sources: Turn[]): Map<string, Set<Side>> {
+  private hasPendingSource(output: AttributedOutput, pendingSources: readonly TranscriptFragment[]): boolean {
+    return pendingSources.some(part => !/^[\p{P}\s]+$/u.test(part.text) &&
+      (part.startMs === undefined || output.fragments.some(fragment => fragment.endMs === undefined) ||
+        part.startMs <= Math.max(...output.fragments.map(fragment => fragment.endMs!))));
+  }
+
+  private isolatedDirections(sources: Turn[], pendingSources: readonly TranscriptFragment[]): Map<string, Set<Side>> {
     const directions = new Map<string, Set<Side>>();
     for (const previous of this.outputs) {
-      if (previous.side === undefined) continue;
+      if (previous.side === undefined || this.hasPendingSource(previous, pendingSources)) continue;
       const candidates = sources.filter(source => this.possible(source, previous));
       if (candidates.length !== 1) continue;
       const id = candidates[0]!.id;
@@ -144,8 +151,8 @@ export class OutputAttribution {
     return directions;
   }
 
-  private decide(output: AttributedOutput, turns: Turn[], nowMs: number,
-    isolatedDirections = this.isolatedDirections(turns.filter(turn => !turn.translationOnly))): boolean {
+  private decide(output: AttributedOutput, turns: Turn[], nowMs: number, pendingSources: readonly TranscriptFragment[],
+    isolatedDirections = this.isolatedDirections(turns.filter(turn => !turn.translationOnly), pendingSources)): boolean {
     const sources = turns.filter(turn => !turn.translationOnly);
     // Retired episodes remain competitors. A late transcript may add a previously unknown episode.
     const possible = sources.filter(source => this.possible(source, output) &&
@@ -156,8 +163,12 @@ export class OutputAttribution {
     const sole = possible.length === 1 ? possible[0] : undefined;
     // Isolation is established before direction: language alone never selects among sources.
     // First late output requires the only retained episode, known source language and compatible clocks.
-    const admissible = sole && (sole.status === "streaming" || sole.status === "outputting" ||
-      sole.id === output.sourceId || (sources.length === 1 && (sole.outputDeadline !== undefined || sole.audioOutputStarted)));
+    const observedWhileOpen = sole?.turnCompletedAtMs !== undefined && output.firstReceivedAtMs <= sole.turnCompletedAtMs &&
+      (sole.outputDeadline === undefined || output.firstReceivedAtMs <= sole.outputDeadline.atMs);
+    // Retain on-time historical evidence, not a previous assignment of this output.
+    const admissible = !this.hasPendingSource(output, pendingSources) && sole &&
+      (sole.status === "streaming" || sole.status === "outputting" || observedWhileOpen ||
+        (sources.length === 1 && pendingSources.length === 0 && (sole.outputDeadline !== undefined || sole.audioOutputStarted)));
     const sourceId = admissible && output.side !== undefined && sole.speaker !== undefined && sole.speaker !== output.side
       ? sole.id : undefined;
     const lateOutput = sourceId && sole?.outputDeadline ? output.firstReceivedAtMs > sole.outputDeadline.atMs : undefined;

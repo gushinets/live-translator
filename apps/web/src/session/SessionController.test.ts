@@ -4581,9 +4581,9 @@ describe("open-input interpretation", () => {
     const { controller, live, audio } = createController();
     await controller.startWithLanguages({ A: "en", B: "es" });
     emitVoice(audio, true);
-    live.emit({ type: "session.input_transcript.delta", delta: "Where is the nearest station?" });
-    live.emit({ type: "session.output_transcript.delta", delta: "¿Dónde está la estación de tren, por favor?" });
-    live.emit({ type: "session.input_transcript.delta", delta: " Thank y" });
+    live.emit({ type: "session.input_transcript.delta", delta: "Where is the nearest station?", start_ms: 0, end_ms: 1000 });
+    live.emit({ type: "session.output_transcript.delta", delta: "¿Dónde está la estación de tren, por favor?", start_ms: 500, end_ms: 1500 });
+    live.emit({ type: "session.input_transcript.delta", delta: " Thank y", start_ms: 2000, end_ms: 2500 });
     await controller.changeInterlocutorLanguage("de");
     emitVoice(audio, false);
     await vi.advanceTimersByTimeAsync(runtime.audioStartGraceMs + runtime.captionIdleMs);
@@ -4599,9 +4599,9 @@ describe("open-input interpretation", () => {
     const { controller, live, audio } = createController();
     await controller.startWithLanguages({ A: "en", B: "es" });
     emitVoice(audio, true);
-    live.emit({ type: "session.input_transcript.delta", delta: "Where is the nearest station?" });
-    live.emit({ type: "session.output_transcript.delta", delta: "¿Dónde está la estación de tren, por favor?" });
-    live.emit({ type: "session.input_transcript.delta", delta: " Thank y" });
+    live.emit({ type: "session.input_transcript.delta", delta: "Where is the nearest station?", start_ms: 0, end_ms: 1000 });
+    live.emit({ type: "session.output_transcript.delta", delta: "¿Dónde está la estación de tren, por favor?", start_ms: 500, end_ms: 1500 });
+    live.emit({ type: "session.input_transcript.delta", delta: " Thank y", start_ms: 2000, end_ms: 2500 });
     emitVoice(audio, false);
     await vi.advanceTimersByTimeAsync(runtime.audioStartGraceMs + runtime.captionIdleMs);
     expect(controller.session.activeTurn).toBeUndefined();
@@ -4613,14 +4613,14 @@ describe("open-input interpretation", () => {
   it("does not prefer A2 over completed A1 for an ambiguous late translation", async () => {
     const { controller, live, audio } = await startRussianEnglish();
     emitVoice(audio, true);
-    live.emit({ type: "session.input_transcript.delta", delta: "Подскажите, где находится вокзал?" });
+    live.emit({ type: "session.input_transcript.delta", delta: "Подскажите, где находится вокзал?", start_ms: 0, end_ms: 500 });
     const a1 = controller.session.activeTurn?.id;
-    live.emit({ type: "session.output_transcript.delta", delta: "Where is the train station?" });
+    live.emit({ type: "session.output_transcript.delta", delta: "Where is the train station?", start_ms: 500, end_ms: 900 });
     emitVoice(audio, false);
     await vi.advanceTimersByTimeAsync(runtime.audioStartGraceMs + runtime.captionIdleMs);
     emitVoice(audio, true);
-    live.emit({ type: "session.input_transcript.delta", delta: "The station is straight ahead." });
-    live.emit({ type: "session.input_transcript.delta", delta: "Спасибо, я пойду туда пешком." });
+    live.emit({ type: "session.input_transcript.delta", delta: "The station is straight ahead.", start_ms: 1000, end_ms: 1500 });
+    live.emit({ type: "session.input_transcript.delta", delta: "Спасибо, я пойду туда пешком.", start_ms: 1600, end_ms: 2000 });
     live.emit({ type: "session.output_transcript.delta", delta: " I want to walk there." });
     expect(controller.session.activeTurn?.translatedText).toBeUndefined();
     expect(controller.session.recentTurns.find(turn => turn.id === a1)?.translatedText).toBe("Where is the train station?");
@@ -4859,11 +4859,11 @@ describe("open-input interpretation", () => {
     const { controller, live, audio } = await startRussianEnglish();
     Object.defineProperty(audio.audioElement, "muted", { value: false, writable: true });
     emitVoice(audio, true);
-    live.emit({ type: "session.input_transcript.delta", delta: "Подскажите, где находится вокзал?" });
-    live.emit({ type: "session.output_transcript.delta", delta: "Where is the train station?" });
+    live.emit({ type: "session.input_transcript.delta", delta: "Подскажите, где находится вокзал?", start_ms: 0, end_ms: 500 });
+    live.emit({ type: "session.output_transcript.delta", delta: "Where is the train station?", start_ms: 500, end_ms: 900 });
     emitPlayback(audio, true);
-    live.emit({ type: "session.input_transcript.delta", delta: "The station is straight ahead." });
-    live.emit({ type: "session.output_transcript.delta", delta: "Вокзал находится прямо впереди." });
+    live.emit({ type: "session.input_transcript.delta", delta: "The station is straight ahead.", start_ms: 1000, end_ms: 1500 });
+    live.emit({ type: "session.output_transcript.delta", delta: "Вокзал находится прямо впереди.", start_ms: 1600, end_ms: 1900 });
     emitPlayback(audio, false);
     emitVoice(audio, false);
     await vi.advanceTimersByTimeAsync(runtime.audioStartGraceMs + runtime.captionIdleMs);
@@ -5567,10 +5567,10 @@ describe("PR32 pending-source ownership", () => {
     const { controller, live, audio } = createController();
     await controller.startWithLanguages({ A: "ru", B: "en" });
     emitVoice(audio, true);
-    live.emit({ type: "session.input_transcript.delta", delta: "I use Google every day." });
+    live.emit({ type: "session.input_transcript.delta", delta: "I use Google every day.", start_ms: 0, end_ms: 500 });
     const b = controller.session.activeTurn!.id;
     live.emit({ type: "session.output_transcript.delta", delta: "Я использую ", start_ms: 0, end_ms: 500 });
-    live.emit({ type: "session.input_transcript.delta", delta: "Гугл." });
+    live.emit({ type: "session.input_transcript.delta", delta: "Гугл.", start_ms: 600, end_ms: 900 });
     const a = controller.session.activeTurn!.id;
     if (timestamp === "late correction") live.emit({ type: "session.output_transcript.delta", delta: "Каждый день я использую ", start_ms: 100, end_ms: 400 });
     live.emit({ type: "session.output_transcript.delta", delta: "Google.", start_ms: typeof timestamp === "number" ? timestamp : undefined });
@@ -5582,14 +5582,14 @@ describe("PR32 pending-source ownership", () => {
     const { controller, live, audio } = createController();
     await controller.startWithLanguages({ A: "ru", B: "en" });
     emitVoice(audio, true);
-    live.emit({ type: "session.input_transcript.delta", delta: "Подскажите, где находится вокзал?" });
+    live.emit({ type: "session.input_transcript.delta", delta: "Подскажите, где находится вокзал?", start_ms: 0, end_ms: 500 });
     const a = controller.session.activeTurn!.id;
-    live.emit({ type: "session.output_transcript.delta", delta: "Where is the train station?" });
-    live.emit({ type: "session.input_transcript.delta", delta: "The station is straight ahead." });
+    live.emit({ type: "session.output_transcript.delta", delta: "Where is the train station?", start_ms: 500, end_ms: 900 });
+    live.emit({ type: "session.input_transcript.delta", delta: "The station is straight ahead.", start_ms: 1000, end_ms: 1500 });
     const b = controller.session.activeTurn!.id;
     const activity = { active: true, atMs: Date.now(), owned };
     audio.onPlaybackActivity?.(activity);
-    live.emit({ type: "session.output_transcript.delta", delta: "Вокзал находится прямо впереди." });
+    live.emit({ type: "session.output_transcript.delta", delta: "Вокзал находится прямо впереди.", start_ms: 1600, end_ms: 1900 });
     emitVoice(audio, false);
     await vi.advanceTimersByTimeAsync(runtime.audioStartGraceMs + runtime.captionIdleMs);
     expect(controller.session.activeTurn?.id).toBe(b);
@@ -5692,13 +5692,17 @@ describe("PR32 buffered output boundaries", () => {
     await controller.startWithLanguages({ A: "ru", B: "en" });
     emitVoice(audio, true);
     live.emit({ type: "session.input_transcript.delta", delta: "Подскажите, где находится вокзал?" });
-    const a = controller.session.activeTurn!.id;
     live.emit({ type: "session.output_transcript.delta", delta: "Where is the train station", start_ms: 600 });
+    const original = controller.captionBlocks.find(block => block.kind === "output")!;
     live.emit({ type: "session.input_transcript.delta", delta: "The station is straight ahead." });
     live.emit({ type: "session.output_transcript.delta", delta: "Вокзал находится прямо впереди.", start_ms: 1600, end_ms: 1900 });
     live.emit({ type: "session.output_transcript.delta", delta: "?", start_ms: 600 });
-    expect(controller.session.pendingTurns?.find(turn => turn.id === a)?.translatedText).toBe("Where is the train station?");
-    expect(controller.session.pendingTurns?.some(turn => turn.translationOnly)).toBe(false);
+    // Missing output end/source timing cannot prove an owner, but punctuation retains its packet group.
+    expect(controller.captionBlocks.find(block => block.outputId === original.outputId)).toMatchObject({
+      text: "Where is the train station?", receivedAtMs: original.receivedAtMs, attribution: "unattributed",
+    });
+    expect(controller.captionBlocks.filter(block => block.kind === "output")).toHaveLength(2);
+    expect(controller.currentAttribution.matchedTextOutputs).toBe(0);
   });
 });
 
@@ -6560,4 +6564,77 @@ it("retains unique historical lexical continuation after a different interval", 
   expect(source?.translatedText).toBe("Quiero ir a la estación a pie.");
   if (original.outputId !== undefined) expect(controller.captionBlocks.find(block => block.outputId === original.outputId)?.text).toBe("Quiero ir a la estación a pie.");
   expect(controller.metrics.snapshot().textOnlyCompletedTurnCount).toBe(completedBefore);
+});
+
+it.each([false, true])("recomputes first late isolation from facts regardless of later-source callback order, sourceFirst=%s", async sourceFirst => {
+  vi.useFakeTimers(); vi.setSystemTime(1000);
+  const { controller, live, audio } = createController();
+  await controller.startWithLanguages({ A: "ru", B: "es" });
+  emitVoice(audio, true);
+  live.emit({ type: "session.input_transcript.delta", delta: "Подскажите, где находится вокзал?", start_ms: 0, end_ms: 1000 });
+  const sourceId = controller.session.activeTurn!.id;
+  emitVoice(audio, false);
+  await vi.advanceTimersByTimeAsync(5001);
+  vi.setSystemTime(7000);
+  const nextSource = () => live.emit({ type: "session.input_transcript.delta", delta: "La estación está cerca del supermercado.", start_ms: 2000, end_ms: 3000 });
+  const oldOutput = () => live.emit({ type: "session.output_transcript.delta", delta: "¿Dónde está la estación?", start_ms: 500, end_ms: 1500 });
+  if (sourceFirst) nextSource();
+  oldOutput();
+  const original = controller.captionBlocks.find(block => block.kind === "output")!;
+  const intermediate = controller.currentAttribution;
+  const published = structuredClone(intermediate);
+  if (!sourceFirst) nextSource();
+  // D precedes the first receipt; the second retained episode rules out fresh isolation.
+  expect(controller.currentAttribution).toMatchObject({ matchedTextOutputs: 0, unattributedTextOutputs: 1 });
+  expect(controller.session.recentTurns.find(turn => turn.id === sourceId)).toMatchObject({
+    status: "failed", outputDeadline: { atMs: 6000, outcome: "no_observed_output" },
+  });
+  expect(controller.session.recentTurns.find(turn => turn.id === sourceId)?.translatedText).toBeUndefined();
+  expect(controller.captionBlocks.filter(block => block.kind === "output")).toEqual([
+    expect.objectContaining({ outputId: original.outputId, receivedAtMs: 7000, text: "¿Dónde está la estación?", attribution: "unattributed" }),
+  ]);
+  expect(intermediate).toEqual(published);
+  expect(controller.currentAttribution.matchedAudioOutputs).toBe(0);
+  await controller.endConversation();
+});
+
+it.each([false, true])("observes pending unknown source before caption flush and preserves output identity, outputFirst=%s", async outputFirst => {
+  vi.useFakeTimers(); vi.setSystemTime(1000);
+  const { controller, live, audio } = createController();
+  await controller.startWithLanguages({ A: "en", B: "es" });
+  emitVoice(audio, true);
+  live.emit({ type: "session.input_transcript.delta", delta: "Where is the nearest train station?", start_ms: 0, end_ms: 1000 });
+  const sourceId = controller.session.activeTurn!.id;
+  emitVoice(audio, false);
+  await vi.advanceTimersByTimeAsync(5001);
+  vi.setSystemTime(7000);
+  const output = () => live.emit({ type: "session.output_transcript.delta", delta: "La estación está cerca de aquí.", start_ms: 2500, end_ms: 3500 });
+  if (outputFirst) output();
+  const publishedMatches: number[] = [];
+  const unsubscribe = controller.subscribe(() => {
+    if (controller.captionBlocks.some(block => block.text === "No.")) publishedMatches.push(controller.currentAttribution.matchedTextOutputs);
+  });
+  live.emit({ type: "session.input_transcript.delta", delta: "No.", start_ms: 2000, end_ms: 3000 });
+  if (!outputFirst) output();
+  const original = controller.captionBlocks.find(block => block.kind === "output")!;
+  const before = controller.currentAttribution;
+  unsubscribe();
+  expect(publishedMatches.length).toBeGreaterThan(0);
+  expect(publishedMatches.every(count => count === 0)).toBe(true);
+  const metrics = controller.metrics.snapshot();
+  expect(before).toMatchObject({ matchedTextOutputs: 0, unattributedTextOutputs: 1, matchedAudioOutputs: 0 });
+  expect(controller.session.activeTurn).toBeUndefined();
+  expect(controller.session.recentTurns.find(turn => turn.id === sourceId)?.translatedText).toBeUndefined();
+  expect(controller.captionBlocks.find(block => block.text === "No.")?.side).toBeUndefined();
+  if (!outputFirst) expect(metrics).toMatchObject({ lateOutputAfterDeadlineCount: 0, attributionRevokedCount: 0 });
+  await vi.advanceTimersByTimeAsync(601);
+  expect(controller.currentAttribution).toEqual(before);
+  expect(controller.metrics.snapshot()).toMatchObject({ lateOutputAfterDeadlineCount: metrics.lateOutputAfterDeadlineCount,
+    attributionRevokedCount: metrics.attributionRevokedCount, completedTurnCount: metrics.completedTurnCount });
+  expect(controller.session.activeTurn).toMatchObject({ speaker: undefined, originalText: "No." });
+  expect(controller.session.activeTurn?.sourceFragments).toEqual([expect.objectContaining({ text: "No.", startMs: 2000, endMs: 3000, receivedAtMs: 7000 })]);
+  expect(controller.captionBlocks.find(block => block.outputId === original.outputId)).toMatchObject({
+    text: original.text, receivedAtMs: 7000, attribution: "unattributed",
+  });
+  await controller.endConversation();
 });
