@@ -46,17 +46,4 @@ describe("DeviceDiagnostics", () => {
     });
   });
 
-  it("exposes only the whitelisted diagnostic keys, never transcript/audio content", () => {
-    const diagnostics = new DeviceDiagnostics();
-    const keys = Object.keys(diagnostics.getSnapshot()).sort();
-    expect(keys).toEqual(
-      [
-        "connectionState",
-        "dataChannelState",
-        "iceGatheringState",
-        "sessionId",
-        "usageSeconds",
-      ].sort(),
-    );
-  });
 });

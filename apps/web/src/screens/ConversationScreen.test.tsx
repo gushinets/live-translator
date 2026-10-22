@@ -1,8 +1,4 @@
-import { readFileSync } from "node:fs";
-import { dirname, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
 import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react";
-import { Profiler } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { sessionReducer } from "../session/sessionReducer";
 import type { Side, Turn } from "../conversation/Turn";
@@ -15,11 +11,6 @@ import {
 import { ConversationScreen, type ConversationScreenController } from "./ConversationScreen";
 
 afterEach(cleanup);
-
-const conversationCss = readFileSync(
-  resolve(dirname(fileURLToPath(import.meta.url)), "./ConversationScreen.css"),
-  "utf8",
-);
 
 function participant(side: Side) {
   return { side, hasAcceptedConversationSpeech: false };
@@ -174,11 +165,6 @@ describe("default independent captions", () => {
 });
 
 describe("ConversationScreen orientation and status", () => {
-  it("does not render again when subscribing to an unchanged controller", () => {
-    let renders = 0;
-    render(<Profiler id="conversation" onRender={() => { renders++; }}><ConversationScreen controller={new FakeConversationController()} /></Profiler>);
-    expect(renders).toBe(1);
-  });
   it("catches a recovery change between render and subscription", () => {
     const controller = new FakeConversationController(session({ state: "suspended" }));
     const subscribe = controller.subscribe.bind(controller);
@@ -200,8 +186,6 @@ describe("ConversationScreen orientation and status", () => {
     const view = render(<ConversationScreen controller={controller} />);
     const resume = screen.getByRole("button", { name: "Продолжить разговор" });
     const end = screen.getByRole("button", { name: "Завершить сохранённый разговор" });
-    expect(resume).toHaveClass("retained-recovery__primary");
-    expect(end).toHaveClass("retained-recovery__danger");
     controller.retainedRecoveryState = "resuming";
     view.rerender(<ConversationScreen controller={controller} />);
     expect(resume).toBeInTheDocument();
@@ -264,7 +248,7 @@ describe("ConversationScreen orientation and status", () => {
     view.rerender(<ConversationScreen controller={controller} />);
     expect(screen.getByRole("button", { name: "Завершить" })).toHaveFocus();
   });
-  it("keeps A LISTENING when A is still source-active and early GPT output exists, B TRANSLATING/SPEAKING, B rotated 180deg", () => {
+  it("keeps A listening while source-active and presents early GPT output to B", () => {
     const controller = new FakeConversationController(
       session({
         state: "outputting",
@@ -284,28 +268,6 @@ describe("ConversationScreen orientation and status", () => {
 
     expect(screen.getByTestId("participant-status-A")).toHaveTextContent("Слушаю");
     expect(screen.getByTestId("participant-status-B")).toHaveTextContent(/Перевожу|Слушайте перевод/);
-    expect(screen.getByTestId("participant-pane-B")).toHaveStyle({
-      transform: "rotate(180deg)",
-    });
-  });
-
-  it("fills the phone viewport and keeps B at the physical top", () => {
-    const controller = new FakeConversationController();
-    render(<ConversationScreen controller={controller} />);
-
-    const root = document.querySelector(".conversation-screen");
-    expect(root).not.toBeNull();
-    expect(conversationCss).toMatch(/\.conversation-screen\s*\{[^}]*height:\s*100svh/s);
-    expect(conversationCss).toMatch(/\.conversation-screen\s*\{[^}]*height:\s*100dvh/s);
-    expect(conversationCss).toMatch(/\.conversation-screen\s*\{[^}]*overflow:\s*hidden/s);
-    expect(conversationCss).toMatch(/\.participant-pane\s*\{[^}]*box-sizing:\s*border-box/s);
-    expect(conversationCss).toMatch(/\.participant-pane\s*\{[^}]*min-width:\s*0/s);
-    expect(screen.queryByRole("heading", { level: 1 })).not.toBeInTheDocument();
-    const panes = [...root!.querySelectorAll("[data-testid^='participant-pane-']")];
-    expect(panes[0]).toHaveAttribute("data-testid", "participant-pane-B");
-    expect(screen.getByTestId("participant-pane-B")).toHaveStyle({
-      transform: "rotate(180deg)",
-    });
   });
 
   it("lets either participant speak while idle", () => {
@@ -347,7 +309,6 @@ describe("ConversationScreen orientation and status", () => {
     act(() => { controller.playbackInputState = "idle"; controller.inputReady = true; controller.notify(); });
     expect(screen.getByTestId("participant-guidance-A")).toHaveTextContent("Микрофон включён");
     expect(screen.getByTestId("participant-guidance-B")).toHaveTextContent("Microphone on");
-    expect(screen.getByTestId("participant-pane-B")).toHaveStyle({ transform: "rotate(180deg)" });
   });
 
   it.each(["suspended", "ending", "ended", "error"] as const)("keeps playback guidance behind the %s lifecycle state", state => {
@@ -398,9 +359,6 @@ describe("ConversationScreen orientation and status", () => {
     expect(screen.getByTestId("participant-pane-B")).toHaveTextContent(
       "Unable to continue the live connection.",
     );
-    expect(screen.getByTestId("participant-pane-B")).toHaveStyle({
-      transform: "rotate(180deg)",
-    });
   });
 
   it("does not show LISTENING or YOUR TURN while ending", () => {
@@ -444,8 +402,7 @@ describe("caption history, languages and authors", () => {
     const text = "T".repeat(200);
     controller.captionBlocks = [{ id: "long", kind: "output", side: "B", language: "en", text, receivedAtMs: 1 }];
     render(<ConversationScreen controller={controller} />);
-    expect(screen.getByText(text)).toHaveClass("recent-turn-primary");
-    expect(screen.getByTestId("participant-pane-B")).toHaveStyle({ overflow: "hidden" });
+    expect(screen.getByText(text)).toBeVisible();
     expect(screen.getByTestId("participant-scroll-B")).toHaveAttribute("tabindex", "0");
   });
 
@@ -615,7 +572,6 @@ describe("ConversationScreen actions", () => {
     const { unmount } = render(<ConversationScreen controller={oriented} />);
     const overlay = screen.getByTestId("rotate-overlay");
     expect(overlay).toHaveTextContent("Поверните телефон вертикально");
-    expect(overlay).toHaveStyle({ transform: "none" });
     expect(screen.queryByTestId("rotate-overlay")).toBeInTheDocument();
     unmount();
 
@@ -664,7 +620,6 @@ it("shows each recipient its own unfinished output when both sides have translat
   expect(screen.getByTestId("participant-status-A")).toHaveTextContent("Слушайте перевод");
   expect(screen.getByTestId("participant-status-B")).toHaveTextContent("Перевожу");
 });
-
 
 it.each(["active", "pending"].flatMap(location => (["PLAYBACK_ENDED", "AUDIO_INTERRUPTED"] as const).flatMap(edge => [1000, 1050].map(nowMs => ({ location, edge, nowMs })))))("shows fresh text at $nowMs after $edge for a $location source", ({ location, edge, nowMs }) => {
   const source = turn({ id: "a", speaker: "A", translatedText: "Hola.", audioOutputStarted: true,

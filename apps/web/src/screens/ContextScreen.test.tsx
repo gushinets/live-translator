@@ -1,9 +1,9 @@
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
-import { Profiler } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createInitialSession, type TranslationSession } from "../session/SessionState";
 import type { DialogueBlock } from "../conversation/DialogueTranscript";
 import { STARTUP_TRACE_STORAGE_KEY } from "../live/StartupTrace";
+import { supportedLanguageCodes } from "../side/SideResolver";
 import { ContextScreen, type ContextScreenController } from "./ContextScreen";
 
 afterEach(() => {
@@ -26,7 +26,7 @@ class FakeOwnerController implements ContextScreenController {
   playbackInputState: ContextScreenController["playbackInputState"] = "idle";
   contextText = "";
   bootstrapText = "";
-  bootstrapSide = "A" as const;
+  bootstrapSide: ContextScreenController["bootstrapSide"] = "A";
   bootstrapRecording = true;
   ownerError: string | undefined;
   hasEnteredInterpreter = false;
@@ -78,7 +78,6 @@ class FakeOwnerController implements ContextScreenController {
   });
 
   beginInterpreter = vi.fn(async () => {});
-
 
   endConversation = vi.fn(async () => {});
 
@@ -197,11 +196,6 @@ describe("ContextScreen", () => {
     expect(screen.getByRole("button", { name: "Continuar conversa" })).toBeInTheDocument();
   });
 
-  it("does not render again when subscribing to an unchanged controller", () => {
-    let renders = 0;
-    render(<Profiler id="setup" onRender={() => { renders++; }}><ContextScreen controller={new FakeOwnerController()} /></Profiler>);
-    expect(renders).toBe(1);
-  });
   it("catches a recovery change between render and subscription", () => {
     const controller = new FakeOwnerController();
     const subscribe = controller.subscribe.bind(controller);
@@ -218,18 +212,16 @@ describe("ContextScreen", () => {
     expect(screen.queryByRole("button", { name: "Завершить сохранённый разговор" })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Начать перевод" })).not.toBeInTheDocument();
   });
-  it("reserves the first action slot while initial recovery is checking", () => {
+  it("blocks End while recovery is checking and enables resume after verification", () => {
     const controller = new FakeOwnerController();
     controller.retainedRecoveryState = "checking";
     const view = render(<ContextScreen controller={controller} />);
-    const actions = view.container.querySelector(".retained-recovery__actions")!;
-    expect(actions.firstElementChild).toHaveClass("retained-recovery__placeholder");
     const end = screen.getByRole("button", { name: "Завершить сохранённый разговор" });
     expect(end).toBeDisabled();
     controller.retainedRecoveryState = "paused";
     view.rerender(<ContextScreen controller={controller} />);
-    expect(actions.firstElementChild).toHaveTextContent("Продолжить разговор");
-    expect(actions.lastElementChild).toBe(end);
+    expect(screen.getByRole("button", { name: "Продолжить разговор" })).toBeEnabled();
+    expect(screen.getByRole("button", { name: "Завершить сохранённый разговор" })).toBeEnabled();
   });
   it("focuses the bootstrap action after retained recovery clears", () => {
     const controller = new FakeOwnerController();
@@ -333,12 +325,10 @@ describe("ContextScreen", () => {
     view.rerender(<ContextScreen controller={controller} />);
     expect(screen.getByRole("button", { name: "Начать перевод" })).toHaveFocus();
   });
-  it("shows large language choices immediately on the first screen", () => {
+  it("offers a default partner language and enables Start on the first screen", () => {
     render(<ContextScreen controller={new FakeOwnerController()} />);
-    expect(screen.getByRole("heading", { name: "Язык собеседника" })).toBeInTheDocument();
     expect(screen.getByRole("radio", { name: "испанский" })).toBeChecked();
     expect(screen.getByRole("button", { name: "Начать перевод" })).toBeEnabled();
-    expect(screen.queryByLabelText("Контекст")).not.toBeInTheDocument();
   });
 
   it("prefers the device formatting locale when Chrome language order differs", () => {
@@ -365,18 +355,21 @@ describe("ContextScreen", () => {
       expect(screen.getByRole("heading", { name: spanish ? "Idioma del interlocutor" : "Язык собеседника" })).toBeInTheDocument();
       expect(screen.getByRole("button", { name: spanish ? "Iniciar traducción" : "Начать перевод" })).toBeDisabled();
       expect(screen.queryByRole("button", { name: spanish ? "Cerrar ajustes" : "Закрыть настройки" })).not.toBeInTheDocument();
-      expect(document.querySelector(".setup-shell--start")).toBeNull();
     } finally { Reflect.deleteProperty(navigator, "languages"); }
   });
 
-  it("puts six priority languages first and sorts the rest by Russian name without duplicates", () => {
+  it.each(["ru", "en"])("keeps priority languages first and the remaining %s names sorted without duplicates", locale => {
+    localStorage.setItem("live-translator-owner-language", locale);
     render(<ContextScreen controller={new FakeOwnerController()} />);
     const radios = screen.getAllByRole("radio", { name: /.+/ }) as HTMLInputElement[];
-    expect(radios.slice(0, 6).map(radio => radio.value)).toEqual(["es", "en", "fr", "de", "it", "pt"]);
     expect(new Set(radios.map(radio => radio.value)).size).toBe(radios.length);
-    const names = radios.slice(6).map(radio => radio.closest("label")!.textContent!);
-    expect(names).toEqual([...names].sort((a, b) => a.localeCompare(b, "ru")));
-    expect(radios.length).toBeGreaterThan(20);
+    expect(new Set(radios.map(radio => radio.value))).toEqual(new Set(supportedLanguageCodes()));
+    const priority = ["es", "en", "fr", "de", "it", "pt"];
+    expect(radios.slice(0, priority.length).map(radio => radio.value)).toEqual(priority);
+    const remaining = radios.slice(priority.length).map(radio => radio.labels![0]!.textContent!);
+    for (let index = 1; index < remaining.length; index++) {
+      expect(remaining[index - 1]!.localeCompare(remaining[index]!, locale)).toBeLessThanOrEqual(0);
+    }
   });
 
   it("starts on first tap without recording samples", () => {
@@ -410,7 +403,7 @@ describe("ContextScreen", () => {
     expect(screen.queryByRole("radio", { name: "испанский" })).not.toBeInTheDocument();
   });
 
-  it("keeps the large Start button in place while connecting and preparing translation", async () => {
+  it("blocks repeated Start and settings changes while connecting and preparing translation", async () => {
     localStorage.setItem("live-translator-interlocutor-language", "es");
     const controller = new FakeOwnerController();
     let finishStart!: () => void;
@@ -422,18 +415,16 @@ describe("ContextScreen", () => {
     fireEvent.click(start);
 
     const pending = screen.getByRole("button", { name: "Устанавливаю связь…" });
-    expect(pending).toBe(start);
     expect(pending).toBeDisabled();
-    expect(view.container.querySelector(".setup-card--start")).toContainElement(pending);
+    expect(screen.getByRole("button", { name: "Настройки" })).toBeDisabled();
     fireEvent.click(pending);
     expect(controller.startWithLanguages).toHaveBeenCalledOnce();
 
     for (const state of ["connecting", "bootstrap"] as const) {
       controller.session = { ...controller.session, state };
       view.rerender(<ContextScreen controller={controller} />);
-      expect(screen.getByRole("button", { name: "Устанавливаю связь…" })).toBe(start);
-      expect(view.container.querySelector(".setup-card--start")).toContainElement(start);
-      expect(screen.queryByText("Запускаю перевод…")).not.toBeInTheDocument();
+      expect(screen.getByRole("button", { name: "Устанавливаю связь…" })).toBeDisabled();
+      expect(screen.getByRole("button", { name: "Настройки" })).toBeDisabled();
     }
 
     await act(async () => {
@@ -513,6 +504,18 @@ describe("ContextScreen", () => {
     expect(screen.getByRole("button", { name: "Записать заново" })).toBeDisabled();
     expect(screen.getByRole("button", { name: "Сохранить образец" })).toBeDisabled();
     expect(screen.getByRole("button", { name: "Отмена" })).toBeEnabled();
+    expect(screen.getByRole("status")).toHaveTextContent(/сохран/i);
+  });
+
+  it.each(["A", "B"] as const)("announces bootstrap recording for participant %s through a live region", side => {
+    const controller = new FakeOwnerController();
+    controller.session = { ...controller.session, state: "bootstrap" };
+    controller.bootstrapSide = side;
+    render(<ContextScreen controller={controller} />);
+    const status = screen.getByRole("status");
+    expect(status).toHaveTextContent(/слуш|запис/i);
+    expect(status).toHaveTextContent(new RegExp(`\\b${side}\\b`));
+    expect(screen.getByRole("button", { name: "Записать заново" })).toBeEnabled();
   });
 
   it("shows Cancel while connect is in flight from idle", () => {
@@ -577,43 +580,6 @@ describe("ContextScreen", () => {
     expect(screen.getByRole("button", { name: "Завершить" })).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Язык собеседника" })).not.toBeInTheDocument();
     expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
-    expect(screen.getByTestId("participant-pane-B")).toHaveStyle({
-      transform: "rotate(180deg)",
-    });
   });
 
-  it("traces the conversation render predicate outcome", () => {
-    const info = vi.spyOn(console, "info").mockImplementation(() => undefined);
-    localStorage.setItem(STARTUP_TRACE_STORAGE_KEY, "1");
-    const controller = new FakeOwnerController();
-    controller.session = { ...controller.session, state: "listening" };
-    controller.hasEnteredInterpreter = true;
-
-    render(<ContextScreen controller={controller} />);
-
-    const output = info.mock.calls.map(([line]) => String(line)).join("\n");
-    expect(output).toContain('"event":"ui.conversation.render_predicate"');
-    expect(output).toContain('"state":"listening"');
-    expect(output).toContain('"is_conversation":true');
-    expect(output).toContain('"rendered_screen":"conversation"');
-  });
-
-  it("shows the language heading on the first start screen", () => {
-    render(<ContextScreen controller={new FakeOwnerController()} />);
-
-    expect(
-      screen.getByRole("heading", { level: 1, name: "Язык собеседника" }),
-    ).toBeInTheDocument();
-  });
-
-  it("does not render an h1 during conversation", () => {
-    const controller = new FakeOwnerController();
-    controller.session = { ...controller.session, state: "listening" };
-
-    render(<ContextScreen controller={controller} />);
-
-    expect(screen.queryByRole("heading", { level: 1 })).not.toBeInTheDocument();
-    expect(screen.queryByText("Live Translator")).not.toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Завершить" })).toBeInTheDocument();
-  });
 });

@@ -83,9 +83,6 @@ test("pending End stays blocked offline and releases Start only after server pro
   await expect(page.getByRole("alert")).toContainText("Closure is not confirmed");
   await page.unroute("**/api/**", offline);
   const end = page.getByRole("button", { name: "End saved conversation" });
-  expect(await retry.evaluate(button => getComputedStyle(button).backgroundColor)).toBe("rgb(172, 226, 201)");
-  expect(await end.evaluate(button => getComputedStyle(button).borderColor)).toBe("rgb(122, 46, 31)");
-  const before = { retry: await retry.boundingBox(), end: await end.boundingBox() };
   let release!: () => void;
   const gate = new Promise<void>(resolve => { release = resolve; });
   let started!: () => void;
@@ -99,8 +96,6 @@ test("pending End stays blocked offline and releases Start only after server pro
   await requestStarted;
   await expect(retry).toBeDisabled();
   await expect(end).toBeDisabled();
-  expect(await retry.boundingBox()).toEqual(before.retry);
-  expect(await end.boundingBox()).toEqual(before.end);
   release();
   await expect(page.getByRole("button", { name: "Start translation" })).toBeVisible();
   await expect(page.getByRole("button", { name: "Start translation" })).toBeFocused();

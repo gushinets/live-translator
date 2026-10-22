@@ -1,6 +1,7 @@
 import { readFileSync } from "node:fs";
 import { expect, test, type Page } from "@playwright/test";
 import { emulatePortraitScreen } from "./portrait-screen";
+import { cleanupRealSessions } from "./cleanup";
 
 const PARTICIPANT_A_AUDIO = readAudioFixture("participant-a.mp3.b64"); // Russian
 const PARTICIPANT_B_AUDIO = readAudioFixture("participant-b.mp3.b64"); // English
@@ -271,11 +272,6 @@ async function waitForMicrophoneFixture(page: Page): Promise<void> {
   });
 }
 
-async function playMicrophoneFixture(page: Page, base64: string): Promise<void> {
-  await startMicrophoneFixture(page, base64);
-  await waitForMicrophoneFixture(page);
-}
-
 async function readAudioElementState(page: Page): Promise<AudioElementState> {
   return page.evaluate(() => {
     const element = document.querySelector("audio");
@@ -439,6 +435,26 @@ function safeStage(stage: string): void {
 }
 
 test.describe("real GPT-Live desktop conversation", () => {
+  const attempts = new Map<string, string>();
+
+  test.beforeEach(async ({ page }) => {
+    attempts.clear();
+    page.on("request", request => {
+      if (new URL(request.url()).pathname !== "/api/live/session" || request.method() !== "POST") return;
+      const body = request.postDataJSON() as { liveSessionId?: string; conversationId?: string };
+      if (body.liveSessionId && body.conversationId) attempts.set(body.liveSessionId, body.conversationId);
+    });
+    await page.addInitScript(() => {
+      localStorage.setItem("live-translator-owner-language", "ru");
+      localStorage.setItem("live-translator-interlocutor-language", "en");
+    });
+  });
+
+  test.afterEach(async ({ page, baseURL }) => {
+    test.setTimeout(60000);
+    await cleanupRealSessions(page.request, baseURL!, attempts);
+  });
+
   test("translates Russian A to English B and English B to Russian A with remote audio", async ({
     page,
   }) => {
@@ -460,18 +476,6 @@ test.describe("real GPT-Live desktop conversation", () => {
     safeStage("setup_loaded");
 
     await page.getByRole("button", { name: "Начать перевод" }).click();
-    await expect(page.getByRole("heading", { name: "Образец речи A · 1 из 2" })).toBeVisible();
-    expect(liveSessionStatuses).toEqual([201]);
-    await expect.poll(() => page.evaluate(() => window.__liveTranslatorRealMic?.isReady() === true)).toBe(true);
-    safeStage("bootstrap_connected");
-    await playMicrophoneFixture(page, PARTICIPANT_A_AUDIO);
-    await expect(page.getByRole("button", { name: "Сохранить образец" })).toBeEnabled();
-    await page.getByRole("button", { name: "Сохранить образец" }).click();
-    await page.getByRole("button", { name: "Записать образец B" }).click();
-    await playMicrophoneFixture(page, PARTICIPANT_B_AUDIO);
-    await expect(page.getByRole("button", { name: "Сохранить образец" })).toBeEnabled();
-    await page.getByRole("button", { name: "Сохранить образец" }).click();
-    await page.getByRole("button", { name: "Начать разговор" }).click();
     await expect(page.getByRole("button", { name: "Завершить" })).toBeVisible();
     await expect(page.getByTestId("participant-status-A")).toHaveText("Можно говорить");
     await expect(page.getByTestId("participant-status-B")).toHaveText("You can speak");
@@ -635,6 +639,7 @@ test.describe("real GPT-Live desktop conversation", () => {
     );
 
     await page.getByRole("button", { name: "Завершить" }).click();
+    await page.getByRole("button", { name: "На начальный экран", exact: true }).click({ timeout: 25000 });
     await expect(page.getByRole("button", { name: "Начать перевод" })).toBeVisible({
       timeout: 25_000,
     });

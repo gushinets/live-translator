@@ -131,28 +131,23 @@ function sessionWithActiveTurnIn(state: (typeof TURN_CLOSE_BLOCKED_STATES)[numbe
   return { ...stateWithCompletedTurn("A"), state };
 }
 
-describe("sessionReducer: OUTPUT_IDLE never changes initialSpeaker or state", () => {
-  it("does not change expected speaker when output ends before source idle", () => {
+describe("sessionReducer: OUTPUT_IDLE leaves source ownership unchanged", () => {
+  it("keeps the source active when output ends before source idle", () => {
     const state = listeningState({ initialSpeaker: "A", sourceActive: true });
     const next = sessionReducer(state, { type: "OUTPUT_IDLE" });
-    expect(next).not.toHaveProperty("expectedSpeaker");
+    expect(next.activeTurn).toEqual(state.activeTurn);
     expect(next.state).toBe("listening");
   });
 
-  it("does not change initialSpeaker when OUTPUT_IDLE arrives with no active turn", () => {
+  it("leaves an idle listening session unchanged", () => {
     const state = listeningState({ initialSpeaker: "A", sourceActive: false });
     const next = sessionReducer(state, { type: "OUTPUT_IDLE" });
-    expect(next).not.toHaveProperty("expectedSpeaker");
     expect(next.state).toBe("listening");
-    expect(next).toBe(state);
+    expect(next).toEqual(state);
   });
 });
 
 describe("sessionReducer: completed turns do not predict the next speaker", () => {
-  it("does not assign an expected speaker after a completed source turn", () => {
-    const next = sessionReducer(stateWithCompletedTurn("A"), { type: "TURN_CLOSED", speaker: "A" });
-    expect(next).not.toHaveProperty("expectedSpeaker");
-  });
 
   it("moves the closed turn into recentTurns as completed and clears activeTurn", () => {
     const next = sessionReducer(stateWithCompletedTurn("B"), { type: "TURN_CLOSED", speaker: "B" });
@@ -171,7 +166,6 @@ describe("sessionReducer: completed turns do not predict the next speaker", () =
   it("does not mark failed speech as accepted", () => {
     const next = sessionReducer(stateWithCompletedTurn("A"), { type: "TURN_FAILED" });
     expect(next.participantA.hasAcceptedConversationSpeech).toBe(false);
-    expect(next).not.toHaveProperty("expectedSpeaker");
   });
 
   it("returns to listening after a turn closes", () => {
@@ -265,9 +259,8 @@ describe("sessionReducer: main conversation flow", () => {
   it("does not throw or change initialSpeaker when SOURCE_IDLE arrives with no active turn", () => {
     const state = listeningState({ initialSpeaker: "A", sourceActive: false });
     const next = sessionReducer(state, { type: "SOURCE_IDLE" });
-    expect(next).not.toHaveProperty("expectedSpeaker");
     expect(next.state).toBe("listening");
-    expect(next).toBe(state);
+    expect(next).toEqual(state);
   });
 
   it.each(SOURCE_APPEND_BLOCKED_STATES)("rejects SOURCE_ACTIVE while session state is %s", (blockedState) => {
@@ -317,13 +310,11 @@ describe("sessionReducer: main conversation flow", () => {
     const next = sessionReducer(state, { type: "SOURCE_IDLE" });
     expect(next.activeTurn?.sourceIdleAtMs).toBeDefined();
     expect(next.state).toBe("outputting");
-    expect(next).not.toHaveProperty("expectedSpeaker");
   });
 
   it("TURN_FAILED keeps initialSpeaker on the same source side (§10.3)", () => {
     const state = stateWithCompletedTurn("A");
     const next = sessionReducer(state, { type: "TURN_FAILED" });
-    expect(next).not.toHaveProperty("expectedSpeaker");
     expect(next.state).toBe("listening");
     expect(next.recentTurns[0]?.status).toBe("failed");
     expect(next.activeTurn).toBeUndefined();
@@ -348,7 +339,6 @@ describe("sessionReducer: output epoch actions", () => {
 
     expect(next.activeTurn?.audioOutputStarted).toBe(true);
     expect(next.activeTurn?.firstAudibleOutputAtMs).toBe(1600);
-    expect(next).not.toHaveProperty("expectedSpeaker");
   });
 
   it("PLAYBACK_ENDED records playbackEndAtMs without changing initialSpeaker", () => {
@@ -356,7 +346,6 @@ describe("sessionReducer: output epoch actions", () => {
     const next = sessionReducer(state, { type: "PLAYBACK_ENDED", nowMs: 2100 });
 
     expect(next.activeTurn?.playbackEndAtMs).toBe(2100);
-    expect(next).not.toHaveProperty("expectedSpeaker");
     expect(next.state).toBe("outputting");
   });
 
@@ -413,8 +402,6 @@ describe("sessionReducer: suspension flow (§11.3)", () => {
       { type: "SUSPEND" },
     );
     const resumed = sessionReducer(suspended, { type: "RESUME" });
-
-    expect(resumed).not.toHaveProperty("expectedSpeaker");
     expect(resumed.state).toBe("listening");
   });
 

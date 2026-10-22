@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { setImmediate as flushLifecycle } from "node:timers/promises";
 import type { BackendClient } from "../api/BackendClient";
 import { AudioController, type AudioControllerOptions } from "../audio/AudioController";
 import { runtime } from "../config/runtime";
@@ -1683,12 +1684,6 @@ async function startGateARestoreFailureRemuteRace(): Promise<{
   return { controller, live, releaseRemute, resuming, setCaptureEnabled };
 }
 
-async function flushLifecycle(): Promise<void> {
-  for (let attempt = 0; attempt < 24; attempt += 1) {
-    await Promise.resolve();
-  }
-}
-
 async function completeTextOnlyTurn(
   controller: SessionController,
   live: FakeLive,
@@ -1996,7 +1991,6 @@ describe("SessionController turn engine", () => {
     });
 
     expect(controller.session.state).toBe("listening");
-    expect(controller.session).not.toHaveProperty("expectedSpeaker");
     expect(controller.session.activeTurn?.speaker).toBe("A");
     expect(controller.session.activeTurn?.originalText).toBe("Where is apartment 12?");
     expect(controller.session.activeTurn?.sourceFragments[0]?.startMs).toBe(100);
@@ -2014,7 +2008,6 @@ describe("SessionController turn engine", () => {
     await vi.advanceTimersByTimeAsync(runtime.captionIdleMs);
 
     expect(controller.session.state).toBe("outputting");
-    expect(controller.session).not.toHaveProperty("expectedSpeaker");
     expect(controller.session.activeTurn?.translatedText).toBe("Hola, ¿dónde está la estación?");
     expect(controller.session.activeTurn?.firstOutputTextAtMs).toBe(receivedAtMs);
     expect(live.setInputMuted).not.toHaveBeenCalled();
@@ -2064,7 +2057,6 @@ describe("SessionController turn engine", () => {
     expect(controller.session.recentTurns[0]?.translatedText).toBe("Hola, ¿dónde está la estación?");
     expect(controller.session.recentTurns[0]?.audioOutputStarted).toBe(false);
     expect(controller.session.recentTurns[0]?.firstAudibleOutputAtMs).toBeUndefined();
-    expect(controller.session).not.toHaveProperty("expectedSpeaker");
     expect(controller.inputReady).toBe(true);
     expect(controller.metrics.snapshot().textOnlyCompletionCount).toBe(1);
     expect(controller.metrics.snapshot().lastTurn?.t2Ms).toBeUndefined();
@@ -2074,7 +2066,6 @@ describe("SessionController turn engine", () => {
     await vi.advanceTimersByTimeAsync(runtime.captionIdleMs);
 
     expect(controller.session.activeTurn?.originalText).toBe("Next");
-    expect(controller.session).not.toHaveProperty("expectedSpeaker");
   });
 
   it("tracks buffered remote playback activity once media playback succeeds", async () => {
@@ -2115,7 +2106,6 @@ describe("SessionController turn engine", () => {
 
     expect(controller.session.activeTurn?.audioOutputStarted).toBe(true);
     expect(live.setInputMuted).not.toHaveBeenCalled();
-    expect(controller.session).not.toHaveProperty("expectedSpeaker");
   });
 
   it("closes a text-only turn with fixed languages while input stays open", async () => {
@@ -2134,8 +2124,6 @@ describe("SessionController turn engine", () => {
     emitVoice(audio, false);
     await flushMicrotasks();
     expect(live.setInputMuted).not.toHaveBeenCalled();
-    expect(controller.session).not.toHaveProperty("expectedSpeaker");
-
     await vi.advanceTimersByTimeAsync(runtime.audioStartGraceMs);
     await flushMicrotasks();
 
@@ -2143,7 +2131,6 @@ describe("SessionController turn engine", () => {
     expect(controller.session.activeTurn).toBeUndefined();
     expect(controller.session.recentTurns[0]?.status).toBe("completed");
     expect(controller.session.lastSpeaker).toBe("A");
-    expect(controller.session).not.toHaveProperty("expectedSpeaker");
     expect(controller.session.participantA.hasAcceptedConversationSpeech).toBe(true);
     expect(controller.session.participantB.hasAcceptedConversationSpeech).toBe(false);
     expect(live.setInputMuted).not.toHaveBeenCalled();
@@ -2164,7 +2151,6 @@ describe("SessionController turn engine", () => {
     await flushMicrotasks();
 
     expect(controller.session.activeTurn?.status).not.toBe("completed");
-    expect(controller.session).not.toHaveProperty("expectedSpeaker");
     expect(live.setInputMuted).not.toHaveBeenCalled();
   });
 
@@ -2182,13 +2168,10 @@ describe("SessionController turn engine", () => {
     await vi.advanceTimersByTimeAsync(runtime.postSourceOutputGraceMs - 1);
     await flushMicrotasks();
     expect(controller.session.activeTurn).toBeDefined();
-    expect(controller.session).not.toHaveProperty("expectedSpeaker");
-
     await vi.advanceTimersByTimeAsync(1);
     await flushMicrotasks();
     expect(controller.session.state).toBe("listening");
     expect(controller.session.recentTurns[0]?.status).toBe("completed");
-    expect(controller.session).not.toHaveProperty("expectedSpeaker");
   });
 
   it("fails a no-output turn, keeps the same speaker, restores input, and does not steer opposite", async () => {
@@ -2209,16 +2192,12 @@ describe("SessionController turn engine", () => {
 
     expect(controller.session.state).toBe("listening");
     expect(controller.session.recentTurns[0]?.status).toBe("failed");
-    expect(controller.session).not.toHaveProperty("expectedSpeaker");
     expect(controller.session.participantA.hasAcceptedConversationSpeech).toBe(false);
     expect(controller.recoveryPrompt).toBe("repeat");
     expect(controller.recoveryPromptIsTurnFailure).toBe(true);
     expect(live.setInputMuted).not.toHaveBeenCalled();
     expect(live.appendInstructions.mock.calls.length).toBe(appendCountAfterStart);
   });
-
-
-
 
   it("MAX_SOURCE_MS mutes, closes output, fails, warns, and suspends with Resume/Repeat", async () => {
     const { controller, live, audio } = createController();
@@ -2236,7 +2215,6 @@ describe("SessionController turn engine", () => {
     expect(controller.inputReady).toBe(false);
     expect(controller.session.state).toBe("suspended");
     expect(controller.session.recentTurns[0]?.status).toBe("failed");
-    expect(controller.session).not.toHaveProperty("expectedSpeaker");
     expect(controller.recoveryPrompt).toBe("resume-repeat");
     expect(live.appendInstructions).toHaveBeenCalledWith(buildUnfinishedTurnWarning(), {
       kind: "later_steering",
@@ -2301,7 +2279,6 @@ describe("SessionController turn engine", () => {
     expect(audio.setOutputAudible).toHaveBeenLastCalledWith(false);
     expect(controller.session.state).toBe("suspended");
     expect(controller.session.recentTurns[0]?.status).toBe("failed");
-    expect(controller.session).not.toHaveProperty("expectedSpeaker");
     expect(controller.recoveryPrompt).toBe("resume-repeat");
     expect(live.appendInstructions).toHaveBeenCalledWith(buildUnfinishedTurnWarning(), {
       kind: "later_steering",
@@ -2361,7 +2338,6 @@ describe("SessionController turn engine", () => {
     expect(controller.inputReady).toBe(false);
     expect(controller.session.state).toBe("suspended");
     expect(controller.session.recentTurns[0]?.status).toBe("failed");
-    expect(controller.session).not.toHaveProperty("expectedSpeaker");
     expect(controller.recoveryPrompt).toBe("resume-repeat");
     expect(live.appendInstructions).toHaveBeenCalledWith(buildUnfinishedTurnWarning(), {
       kind: "later_steering",
@@ -2385,7 +2361,6 @@ describe("SessionController turn engine", () => {
     expect(audio.captureTrack.enabled).toBe(true);
     expect(audio.setOutputAudible).toHaveBeenLastCalledWith(true);
     expect(controller.session.state).toBe("listening");
-    expect(controller.session).not.toHaveProperty("expectedSpeaker");
     expect(controller.inputReady).toBe(true);
     expect(controller.recoveryPrompt).toBeUndefined();
   });
@@ -2934,7 +2909,6 @@ describe("SessionController turn engine", () => {
     expect(controller.ownerError).toBeUndefined();
   });
 
-
   it("ignores residual output transcript after the active turn is cleared", async () => {
     const { controller, live, audio } = createController();
     await enterListening(controller);
@@ -3000,14 +2974,11 @@ describe("SessionController turn engine", () => {
     emitVoice(audio, true);
     live.emit({ type: "session.input_transcript.delta", delta: " still talking" });
     expect(controller.session.activeTurn).toBeUndefined();
-    expect(controller.session).not.toHaveProperty("expectedSpeaker");
-
     finishWarning();
     await flushMicrotasks();
 
     expect(controller.session.state).toBe("suspended");
     expect(controller.recoveryPrompt).toBe("resume-repeat");
-    expect(controller.session).not.toHaveProperty("expectedSpeaker");
     expect(controller.session.recentTurns[0]?.status).toBe("failed");
     expect(controller.session.activeTurn).toBeUndefined();
   });
@@ -3029,19 +3000,10 @@ describe("SessionController turn engine", () => {
 
     expect(controller.session.state).toBe("suspended");
     expect(controller.recoveryPrompt).toBe("resume-repeat");
-    expect(controller.session).not.toHaveProperty("expectedSpeaker");
     expect(controller.session.recentTurns[0]?.status).toBe("failed");
     await controller.resumeFromSourceTimeout();
     expect(controller.session.state).toBe("listening");
   });
-
-
-
-
-
-
-
-
 
   it("advertises resume-repeat only after suspend and allows resume during warning append", async () => {
     const { controller, live, audio } = createController();
@@ -3065,7 +3027,6 @@ describe("SessionController turn engine", () => {
     });
 
     expect(controller.session.state).toBe("suspended");
-    expect(controller.session).not.toHaveProperty("expectedSpeaker");
     await controller.resumeFromSourceTimeout();
     expect(controller.session.state).toBe("listening");
     expect(controller.recoveryPrompt).toBeUndefined();
@@ -3092,8 +3053,6 @@ describe("SessionController turn engine", () => {
     expect(controller.session.state).toBe("suspended");
     expect(controller.recoveryPrompt).toBe("resume-repeat");
     expect(audio.setOutputAudible).toHaveBeenLastCalledWith(false);
-    expect(controller.session).not.toHaveProperty("expectedSpeaker");
-
     await vi.advanceTimersByTimeAsync(runtime.captionIdleMs);
     await flushMicrotasks();
 
@@ -3112,8 +3071,6 @@ describe("SessionController turn engine", () => {
     expect(controller.session.activeTurn?.translatedText).toBeUndefined();
     expect(controller.session.activeTurn?.audioOutputStarted).toBe(false);
     expect(controller.session.activeTurn?.status).toBe("streaming");
-    expect(controller.session).not.toHaveProperty("expectedSpeaker");
-
     emitPlayback(audio, false);
     await flushMicrotasks();
     await vi.advanceTimersByTimeAsync(runtime.captionIdleMs);
@@ -3122,7 +3079,6 @@ describe("SessionController turn engine", () => {
     await vi.advanceTimersByTimeAsync(runtime.captionIdleMs);
 
     expect(controller.session.activeTurn?.translatedText).toBe("Siguiente pregunta, por favor.");
-    expect(controller.session).not.toHaveProperty("expectedSpeaker");
   });
 
   it("preserves MAX_SOURCE resume-repeat suspension across lifecycle hide/show drain", async () => {
@@ -3255,8 +3211,6 @@ describe("SessionController endConversation", () => {
     expect(controller.session.state).toBe("ended");
     expect(controller.ownerError).toBeUndefined();
   });
-
-
 
 });
 
@@ -3522,7 +3476,6 @@ describe("SessionController PWA lifecycle suspension (§11.3 / §19)", () => {
     emitVoice(audio, true);
     live.emit({ type: "session.input_transcript.delta", delta: "Hello, where is the nearest train station?" });
     expect(controller.session.activeTurn?.status).toBe("streaming");
-    expect(controller.session).not.toHaveProperty("expectedSpeaker");
   }
 
   function rejectPostResumeSteering(live: FakeLive): void {
@@ -3565,7 +3518,6 @@ describe("SessionController PWA lifecycle suspension (§11.3 / §19)", () => {
     expect(controller.session.state).toBe("suspended");
     expect(controller.session.activeTurn).toBeUndefined();
     expect(controller.session.recentTurns[0]?.status).toBe("discarded");
-    expect(controller.session).not.toHaveProperty("expectedSpeaker");
     expect(audio.setCaptureEnabled).toHaveBeenLastCalledWith(false);
     expect(audio.captureTrack.enabled).toBe(false);
     expect(audio.setOutputAudible).toHaveBeenLastCalledWith(false);
@@ -3592,8 +3544,6 @@ describe("SessionController PWA lifecycle suspension (§11.3 / §19)", () => {
     expect(audio.captureTrack.enabled).toBe(false);
     expect(audio.setOutputAudible).toHaveBeenLastCalledWith(false);
     expect(live.setInputMuted).toHaveBeenCalledWith(true);
-    expect(controller.session).not.toHaveProperty("expectedSpeaker");
-
     emitVoice(audio, true);
     live.emit({ type: "session.input_transcript.delta", delta: "ignored" });
     expect(controller.session.state).toBe("suspended");
@@ -3805,7 +3755,6 @@ describe("SessionController PWA lifecycle suspension (§11.3 / §19)", () => {
 
     expect(wakeLock.reacquire).toHaveBeenCalled();
     expect(controller.session.state).toBe("listening");
-    expect(controller.session).not.toHaveProperty("expectedSpeaker");
     expect(controller.recoveryPrompt).toBe("repeat");
     expect(live.appendInstructions.mock.calls.length).toBe(steeringAfterStart + 1);
     expect(live.appendInstructions).toHaveBeenLastCalledWith(
@@ -3866,7 +3815,6 @@ describe("SessionController PWA lifecycle suspension (§11.3 / §19)", () => {
     await flushLifecycle();
 
     expect(controller.session.state).toBe("listening");
-    expect(controller.session).not.toHaveProperty("expectedSpeaker");
     expect(controller.recoveryPrompt).toBe("repeat");
     expect(live.appendInstructions).toHaveBeenLastCalledWith(
       buildSteering({ A: "en", B: "es" }),
@@ -3941,7 +3889,6 @@ describe("SessionController PWA lifecycle suspension (§11.3 / §19)", () => {
 
     expect(controller.session.state).toBe("error");
     expect(controller.ownerError).toBe(CONNECTION_ERROR_MESSAGE);
-    expect(controller.session).not.toHaveProperty("expectedSpeaker");
     expect(live.setInputMuted).not.toHaveBeenLastCalledWith(false);
   });
 
@@ -5064,7 +5011,6 @@ describe("open-input interpretation", () => {
   });
 });
 
-
 describe("buffered playback microphone isolation", () => {
   it("reports input unavailable during playback and its tail, preserves late source text, and still accepts generated output", async () => {
     vi.useFakeTimers();
@@ -5115,7 +5061,6 @@ describe("buffered playback microphone isolation", () => {
     } finally { await controller.endConversation(); audio.dispose(); }
   });
 });
-
 
 describe("stage 4 product retirement safety", () => {
   it.each(["endConversation", "cancel"] as const)("%s closes capture before awaiting the provider", async operation => {
@@ -5804,7 +5749,6 @@ it.each(["input", "output"] as const)("does not merge ambiguous No with Spanish 
   else expect(controller.session.activeTurn?.translatedText).toBe("Sí.");
 });
 
-
 it.each([
   ["3.14 liters.", "3.14 литра."],
   ["1.5 kilograms.", "1.5 килограмма."],
@@ -5824,7 +5768,6 @@ it.each([
     ["input", "B", source], ["output", "A", translation],
   ]);
 });
-
 
 it.each([
   { pair: { A: "ru", B: "de" }, speaker: "B", source: "5. Oktober.", translation: "Пятое октября." },
@@ -5865,7 +5808,6 @@ it.each([
     ["input", speaker, source], ["output", speaker === "A" ? "B" : "A", translation],
   ]);
 });
-
 
 it.each([
   { prefix: "Visit example.", suffix: "com." },
@@ -6134,3 +6076,31 @@ it.each([false, true].flatMap(completed => [1900, 2200, undefined].map(endMs => 
     expect(controller.session.activeTurn?.translatedText).toBeUndefined();
     expect(history.find(turn => turn.translationOnly)?.translatedText).toBe(contained ? undefined : "Yes.");
   });
+
+describe("stage-3 metadata observations", () => {
+  beforeEach(() => { setDeviceLanguage("ru-RU"); vi.useFakeTimers(); });
+  it("observes source-active time even though inputReady becomes false, and emits no conversation text", async () => {
+    const { controller, live, audio } = createController();
+    const observe = vi.fn(); Object.assign(live, { observeProductMetrics: observe, inputMeteringReady: true });
+    await enterListening(controller); audio.setCaptureEnabled(true);
+    emitVoice(audio, true); live.emit({ type: "session.input_transcript.delta", delta: "Private sentence in English." });
+    const typedAudio = audio as typeof audio & { onSourceSample?: (event: { active: boolean; atMs: number }) => void };
+    typedAudio.onSourceSample?.({ active: true, atMs: performance.now() });
+    expect(controller.inputReady).toBe(false);
+    expect(observe).toHaveBeenLastCalledWith(expect.objectContaining({ state: "listening", interpreterReady: true, mediaReady: true, speechEligible: true, sample: { active: true, atMs: performance.now() } }));
+    expect(JSON.stringify(observe.mock.calls)).not.toContain("Private sentence");
+  });
+  it("records audible completion without sending a per-turn steering command", async () => {
+    const { controller, live, audio } = createController(); await enterListening(controller);
+    Object.defineProperty(audio.audioElement, "muted", { value: false, writable: true });
+    emitVoice(audio, true); live.emit({ type: "session.input_transcript.delta", delta: "Hello, where is the nearest train station?" });
+    live.emit({ type: "session.output_transcript.delta", delta: "Hola" }); emitPlayback(audio, true); await flushMicrotasks();
+    emitVoice(audio, false); await flushMicrotasks();
+    live.appendInstructions.mockRejectedValueOnce(new Error("next steering failed"));
+    emitPlayback(audio, false); await flushMicrotasks();
+    await vi.advanceTimersByTimeAsync(2000);
+    expect(controller.metrics.snapshot().audioCompletedTurnCount).toBe(1);
+    expect(controller.session.state).toBe("listening");
+    expect(live.appendInstructions.mock.calls.filter(call => call[1]?.kind === "later_steering")).toHaveLength(0);
+  });
+});

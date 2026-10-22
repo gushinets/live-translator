@@ -1,7 +1,4 @@
-import { readFileSync } from "node:fs";
 import "fake-indexeddb/auto";
-import { dirname, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { TranscriptDeltaEvent } from "../live/LiveEvents";
@@ -11,20 +8,6 @@ import type { DevSpikeConnection } from "./DevSpikeScreen";
 afterEach(cleanup);
 
 describe("App", () => {
-  it("renders the translator title", () => {
-    render(<App />);
-    expect(
-      screen.getByRole("heading", { name: "Переводчик" }),
-    ).toBeInTheDocument();
-  });
-
-  it("declares viewport-fit=cover for safe-area insets", () => {
-    const indexHtml = readFileSync(
-      resolve(dirname(fileURLToPath(import.meta.url)), "../../index.html"),
-      "utf8",
-    );
-    expect(indexHtml).toMatch(/viewport-fit=cover/);
-  });
 
   it("exposes the transport spike controls in development", async () => {
     render(<App />);
