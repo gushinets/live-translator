@@ -10,6 +10,7 @@ declare global {
     readRms(): number; errors: number; replaceRemote(): void;
     useWebRtc(): Promise<void>; receivedSamples(): Promise<number>;
     readReceivedMicRms(): number;
+    inputTransitions: Array<{ atMs: number; state: string; capture: boolean; analysis: boolean }>;
   }; }
 }
 document.querySelector("#start")!.addEventListener("click", async () => {
@@ -24,12 +25,24 @@ document.querySelector("#start")!.addEventListener("click", async () => {
   }
   const mic = tone(320, microphone);
   const remote = tone(850, remoteStream);
+  let microphoneAnalysis: MediaStreamTrack;
+  const cloneMicrophone = microphone.stream.clone.bind(microphone.stream);
+  microphone.stream.clone = () => {
+    const clone = cloneMicrophone();
+    microphoneAnalysis = clone.getAudioTracks()[0]!;
+    return clone;
+  };
+  const inputTransitions: Window["audioHarness"]["inputTransitions"] = [];
   const controller = new AudioController({
     createAudioContext: () => context,
     getUserMedia: async () => microphone.stream,
   });
   await controller.primeOutput();
   await controller.startCapture();
+  controller.onPlaybackInputBlocked = () => inputTransitions.push({
+    atMs: performance.now(), state: controller.playbackInputState,
+    capture: microphone.stream.getAudioTracks()[0]!.enabled, analysis: microphoneAnalysis.enabled,
+  });
   controller.attachRemoteStream(remoteStream.stream);
   // Keep this automatic check silent on the host; measure the processed stream.
   controller.audioElement.volume = 0;
@@ -51,7 +64,7 @@ document.querySelector("#start")!.addEventListener("click", async () => {
     if (microphoneDecoder) { microphoneDecoder.pause(); microphoneDecoder.srcObject = null; }
   });
   window.audioHarness = {
-    controller, context, mic, remote, errors: 0,
+    controller, context, mic, remote, errors: 0, inputTransitions,
     readRms() {
       analyser.getFloatTimeDomainData(samples);
       return Math.sqrt(samples.reduce((sum, x) => sum + x * x, 0) / samples.length);

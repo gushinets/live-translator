@@ -4185,12 +4185,15 @@ describe("SessionController PWA lifecycle suspension (§11.3 / §19)", () => {
     const queue = new PlaybackQueue(48_000);
     const node = Object.assign(new DispatchableAudioNode(), {
       port: {
-        postMessage: vi.fn((data: { type: string; value?: boolean; turnId?: string }) => {
+        postMessage: vi.fn((data: { type: string; value?: boolean; turnId?: string; generation?: number }) => {
           if (data.type === "audible") queue.setAudible(data.value === true);
           if (data.type === "enabled") queue.setEnabled(data.value === true);
           if (data.type === "speaking") queue.setSpeaking(data.value === true);
           if (data.type === "turn") queue.setTurn(data.turnId);
           if (data.type === "dispose") queue.clear();
+          if (data.type === "enabled" || (data.type === "audible" && !data.value)) {
+            queueMicrotask(() => node.port.onmessage?.({ data: { type: "reset", generation: data.generation } } as MessageEvent));
+          }
         }),
         close: vi.fn(), onmessage: null as ((event: MessageEvent) => void) | null,
       }, onprocessorerror: null,
@@ -5039,7 +5042,8 @@ describe("buffered playback microphone isolation", () => {
       emitVoice(audio, false);
       expect(controller.inputReady).toBe(true);
       const changed = vi.fn(); const unsubscribe = controller.subscribe(changed);
-      node.port.onmessage!({ data: { type: "playback", value: true } } as MessageEvent);
+      const generation = node.port.postMessage.mock.calls.filter(([m]) => m.generation !== undefined).at(-1)![0].generation;
+      node.port.onmessage!({ data: { type: "playback", value: true, requestId: 1, generation } } as MessageEvent);
       expect(track.enabled).toBe(false); expect(controller.inputReady).toBe(false);
       expect(controller.playbackInputState).toBe("playing");
       expect(changed).toHaveBeenCalled();
@@ -5050,7 +5054,7 @@ describe("buffered playback microphone isolation", () => {
       live.emit({ type: "session.output_transcript.delta", delta: "Where is the train station?" });
       expect(controller.captionBlocks.some(block => block.text.includes("пешком"))).toBe(true);
       expect(controller.captionBlocks.some(block => block.text.includes("train station"))).toBe(true);
-      node.port.onmessage!({ data: { type: "playback", value: false } } as MessageEvent);
+      node.port.onmessage!({ data: { type: "playback", value: false, requestId: 1, generation } } as MessageEvent);
       expect(controller.playbackInputState).toBe("tail");
       await vi.advanceTimersByTimeAsync(runtime.playbackEchoTailMs - 1);
       expect(controller.inputReady).toBe(false);

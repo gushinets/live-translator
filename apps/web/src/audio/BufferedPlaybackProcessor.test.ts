@@ -18,11 +18,12 @@ beforeEach(async () => {
 });
 afterEach(() => { vi.unstubAllGlobals(); });
 function send(processor: Processor, type: string, value = true) {
-  processor.port.onmessage?.({ data: { type, value } } as MessageEvent);
+  const request = processor.port.postMessage.mock.calls.filter(([m]) => m.type === "playback" && m.value).at(-1)?.[0];
+  processor.port.onmessage?.({ data: { type, value, generation: 0, ...(type === "playback" ? { requestId: request?.requestId } : {}) } } as MessageEvent);
 }
 
 describe("buffered playback processor lifetime", () => {
-  it("waits for microphone closure before the first sample, ignores speech during playback, and bridges short output gaps", () => {
+  it("waits for microphone closure, ignores speech during playback, and reauthorizes after draining", () => {
     const processor = new ProcessorClass();
     send(processor, "audible"); send(processor, "enabled"); send(processor, "speaking");
     const received = new Float32Array(400).fill(.5);
@@ -33,19 +34,54 @@ describe("buffered playback processor lifetime", () => {
       processor.process([[]], [[output]]);
       expect(output.every(sample => sample === 0)).toBe(true);
     }
-    expect(processor.port.postMessage).toHaveBeenCalledWith({ type: "playback", value: true });
+    expect(processor.port.postMessage).toHaveBeenCalledWith(expect.objectContaining({ type: "playback", value: true }));
     expect(processor.port.postMessage.mock.calls.filter(([message]) => message.type === "playback")).toHaveLength(1);
     send(processor, "playback");
     send(processor, "speaking"); // Even a delayed source sample must not interrupt started playback.
     const played: number[] = [];
     for (let i = 0; i < 12; i++) { processor.process([[]], [[output]]); played.push(...output.filter(x => x !== 0)); }
     expect(played).toEqual([...received]);
-    // New provider PCM after a short gap belongs to the same protected playback window.
-    expect(processor.port.postMessage).not.toHaveBeenCalledWith({ type: "playback", value: false });
+    expect(processor.port.postMessage).toHaveBeenCalledWith(expect.objectContaining({ type: "playback", value: false }));
     processor.process([[new Float32Array(100).fill(.7)]], [[output]]);
+    expect(output.every(x => x === 0)).toBe(true);
+    send(processor, "playback");
+    processor.process([[]], [[output]]);
     expect(output.some(x => x > .6)).toBe(true);
     for (let i = 0; i < 15; i++) processor.process([[]], [[output]]);
-    expect(processor.port.postMessage).toHaveBeenCalledWith({ type: "playback", value: false });
+    expect(processor.port.postMessage).toHaveBeenCalledWith(expect.objectContaining({ type: "playback", value: false }));
+  });
+  it("does not release a final nonzero block even after pending empties, then releases on silence", () => {
+    const processor = new ProcessorClass();
+    send(processor, "audible"); send(processor, "enabled");
+    processor.process([[new Float32Array(40).fill(.5)]], [[new Float32Array(40)]]);
+    const tail = new Float32Array(300);
+    tail[249] = .000001; // A quiet word tail is still PCM in the final queued block.
+    processor.process([[tail]], [[new Float32Array(300)]]);
+    send(processor, "playback");
+    processor.port.postMessage.mockClear();
+    const output = new Float32Array(128);
+    for (let n = 0; n < 3; n++) processor.process([[]], [[output]]);
+    expect(output.some(x => x !== 0)).toBe(true);
+    expect(processor.port.postMessage).toHaveBeenCalledWith({ type: "pending", value: false, generation: 0 });
+    expect(processor.port.postMessage.mock.calls.some(([m]) => m.type === "playback" && !m.value)).toBe(false);
+    processor.process([[]], [[new Float32Array(128)]]);
+    expect(processor.port.postMessage.mock.calls.some(([m]) => m.type === "playback" && !m.value)).toBe(true);
+  });
+  it("ignores an old ACK after denial and a new request in the same processor", () => {
+    const processor = new ProcessorClass();
+    send(processor, "audible"); send(processor, "enabled");
+    processor.process([[new Float32Array(400).fill(.5)]], [[new Float32Array(400)]]);
+    const first = processor.port.postMessage.mock.calls.find(([m]) => m.type === "playback" && m.value)![0];
+    processor.port.onmessage!({ data: { ...first, value: false } } as MessageEvent);
+    processor.process([[]], [[new Float32Array(128)]]);
+    const second = processor.port.postMessage.mock.calls.filter(([m]) => m.type === "playback" && m.value).at(-1)![0];
+    processor.port.onmessage!({ data: first } as MessageEvent);
+    const output = new Float32Array(128);
+    processor.process([[]], [[output]]);
+    expect(output.every(x => x === 0)).toBe(true);
+    processor.port.onmessage!({ data: second } as MessageEvent);
+    processor.process([[]], [[output]]);
+    expect(output.some(x => x !== 0)).toBe(true);
   });
   it.each([true, false])("terminates after disposal, with incoming audio=%s", incoming => {
     const processor = new ProcessorClass();
@@ -65,7 +101,7 @@ describe("buffered playback processor lifetime", () => {
     const output = new Float32Array(128);
     processor.process([[new Float32Array(128).fill(.5)]], [[output]]);
     expect(output.every(sample => sample === 0)).toBe(true);
-    expect(processor.port.postMessage).toHaveBeenLastCalledWith({ type: "pending", value: true });
+    expect(processor.port.postMessage.mock.calls.filter(([m]) => m.type === "pending").at(-1)).toEqual([{ type: "pending", value: true, generation: 0 }]);
     send(processor, "speaking", false); send(processor, "enabled", enabled);
     const played: number[] = [];
     for (let quantum = 0; quantum < 100; quantum++) {
@@ -74,7 +110,7 @@ describe("buffered playback processor lifetime", () => {
       if (processor.port.postMessage.mock.calls.some(([message]) => message.type === "playback" && message.value)) send(processor, "playback");
     }
     expect(played).toEqual(new Array(128).fill(.5));
-    expect(processor.port.postMessage).toHaveBeenCalledWith({ type: "pending", value: false });
+    expect(processor.port.postMessage).toHaveBeenCalledWith({ type: "pending", value: false, generation: 0 });
     expect(processor.port.close).not.toHaveBeenCalled();
   });
   it.each([[false, 1000], [true, 1000], [false, 300], [true, 300]] as const)("sends conservative FIFO owner transitions despite caption continuation, second delayed=%s, gap=%s ms", (captionDelayed, gapMs) => {
