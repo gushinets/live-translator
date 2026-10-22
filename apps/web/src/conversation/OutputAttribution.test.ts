@@ -181,7 +181,7 @@ it("preserves published speech and counters through revisions while both evidenc
   const resolved = sessionReducer(uncertain, { type: "OUTPUT_ATTRIBUTION", outputs: ledger.outputs, sourceIds: [a1.id, a2.id] });
   expect(resolved.activeTurn?.translatedText).toBe("Texto.");
   expect(resolved.recentTurns.find(turn => turn.id === output.id)).toBeUndefined();
-  for (let index = 0; index < 2; index++) captions.setOutput(output.id, output.fragments, { A: "ru", B: "es" }, output.sourceId);
+  for (let index = 0; index < 2; index++) captions.setOutputs([output], { A: "ru", B: "es" });
   expect(captions.blocks.map(block => block.text).join("")).toBe("Texto.");
   reporter.observeProduct({ ...observation, atMs: 150, counters: { audioCompletedTurnCount: 1, attributionRevokedCount: metrics.snapshot().attributionRevokedCount } });
   reporter.observeUsage({ kind: "local_close_unconfirmed" }); await reporter.idle();
@@ -234,4 +234,54 @@ it.each(["shared-packet", "separate-packets"])("does not join nonadjacent langua
   // Both ES outputs cover this interval, so punctuation cannot choose one arbitrarily.
   expect(punctuation.id).not.toBe(first.id);
   expect(first.firstReceivedAtMs).toBe(1000);
+});
+
+
+it("waits for independent source language before matching the same output", () => {
+  const ledger = new OutputAttribution();
+  const unknown = { ...source("a", 0), speaker: undefined };
+  const output = ledger.receive([fragment("out", 200, 300)], "B", [unknown], 1000);
+  expect(output.sourceId).toBeUndefined();
+  expect(output.candidateIds).toEqual(["a"]);
+  expect(ledger.hasCompatibleOutput(unknown)).toBe(true);
+  ledger.reconcile([{ ...unknown, speaker: "A" }], 2000);
+  expect(output.sourceId).toBe("a");
+  expect(output.firstReceivedAtMs).toBe(1000);
+  expect(ledger.outputs).toHaveLength(1);
+});
+
+it("keeps late PCM candidates on their provider timeline across a new observed speech boundary", () => {
+  const ledger = new OutputAttribution();
+  ledger.observeReceivedPlayback(1000, []);
+  ledger.observePlayback(1100, []);
+  ledger.observeSourceStart("fresh", 2000);
+  const fresh = { ...source("fresh", 120000), speechStartAtMs: 2000 };
+  const delayed = { ...source("delayed", 100000), speechStartAtMs: 3000 };
+  ledger.reconcile([fresh, delayed], 3000);
+  expect(ledger.hasCompatibleOutput(fresh)).toBe(false);
+  expect(ledger.hasCompatibleOutput(delayed)).toBe(true);
+  expect(ledger.current()).toMatchObject({ matchedAudioOutputs: 0, unattributedPlaybackCount: 1, confirmedSourceSpeechMs: null });
+});
+
+it("lets late ASR split a known PCM episode but excludes later provider speech", () => {
+  const ledger = new OutputAttribution(), original = source("original", 100000);
+  ledger.observeReceivedPlayback(1000, [original]);
+  const delayed = { ...source("split", 100050), speechStartAtMs: 2000 };
+  const later = { ...source("later", 100200), speechStartAtMs: 2000 };
+  ledger.reconcile([original, delayed, later], 2000);
+  expect(ledger.hasCompatibleOutput(delayed)).toBe(true);
+  expect(ledger.hasCompatibleOutput(later)).toBe(false);
+  expect(ledger.hasCompatibleOutput(delayed, 999)).toBe(false);
+});
+
+it.each([false, true])("refines PCM episode bounds when ASR reveals more of the source, initiallyUntimed=%s", initiallyUntimed => {
+  const ledger = new OutputAttribution();
+  const original = source("original", 100000);
+  if (initiallyUntimed) original.sourceFragments = [];
+  ledger.observeReceivedPlayback(1000, [original]);
+  original.sourceFragments = [fragment("expanded", 100000, 100300)];
+  const delayed = { ...source("split", 100200), speechStartAtMs: 2000 };
+  ledger.reconcile([original, delayed], 2000);
+  expect(ledger.hasCompatibleOutput(delayed)).toBe(true);
+  expect(ledger.current().matchedAudioOutputs).toBe(0);
 });

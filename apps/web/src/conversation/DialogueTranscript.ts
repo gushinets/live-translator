@@ -65,8 +65,8 @@ export class DialogueTranscript {
     this.publish();
   }
 
-  setOutput(id: string, fragments: TranscriptFragment[], languages: ConversationLanguages, sourceId?: string): void {
-    this.outputs.set(id, { fragments, languages, sourceId });
+  setOutputs(outputs: readonly { id: string; fragments: TranscriptFragment[]; sourceId?: string }[], languages: ConversationLanguages): void {
+    for (const { id, fragments, sourceId } of outputs) this.outputs.set(id, { fragments, languages, sourceId });
     this.publish();
   }
 

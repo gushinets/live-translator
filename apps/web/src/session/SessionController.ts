@@ -1567,8 +1567,8 @@ export class SessionController {
     }
     for (const output of this.attribution.outputs) {
       if (output.lateOutput) this.conversationMetrics.recordAttributionEvent("lateOutputAfterDeadlineCount", `${output.id}:${output.revision}`);
-      this.dialogueTranscript.setOutput(output.id, output.fragments, this.languages, output.sourceId);
     }
+    if (this.attribution.outputs.length) this.dialogueTranscript.setOutputs(this.attribution.outputs, this.languages);
     if (this.attribution.outputs.length) this.currentSession = sessionReducer(this.currentSession,
       { type: "OUTPUT_ATTRIBUTION", outputs: this.attribution.outputs.filter(output => !output.languagePending), sourceIds: this.routingTurns().map(turn => turn.id) });
     const hint = this.noOutputHint;
@@ -1582,6 +1582,7 @@ export class SessionController {
   private async handleVoiceActivity(event: AudioActivityEvent): Promise<void> {
     if (this.backgroundPaused || this.turnClosing || this.audio.playbackInputBlocked ||
         !["listening", "outputting"].includes(this.currentSession.state)) return;
+    if (event.active) this.expireOutputDeadlines(Date.now());
     this.sourceVoiceActive = event.active;
     if (event.active) {
       if (this.playbackActive) this.conversationMetrics.recordVamFalseActive();
@@ -1594,6 +1595,7 @@ export class SessionController {
         if (active) this.dispatch({ type: "SOURCE_HANDOFF", turnId: crypto.randomUUID(), speaker: undefined, nowMs: event.atMs });
         else this.dispatch({ type: "SOURCE_ACTIVE", turnId: crypto.randomUUID(), speaker: undefined, sideSource: "unresolved" });
         this.routingTurnIds.add(this.currentSession.activeTurn!.id);
+        this.attribution.observeSourceStart(this.currentSession.activeTurn!.id, event.atMs);
         this.armMaxSourceTimer();
       } else {
         if (active.sourceIdleAtMs !== undefined && this.resumedSourceIdle?.turnId !== active.id) {
