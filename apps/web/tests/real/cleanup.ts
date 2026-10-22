@@ -15,11 +15,15 @@ export async function cleanupRealSessions(request: Pick<APIRequestContext, "get"
       }
     }),
     ...Array.from(new Set(attempts.values()), async conversationId => {
-      const conversation = await request.get(`/api/conversations/${conversationId}`, { timeout: 5000 });
-      expect(conversation.ok()).toBe(true);
-      const { version } = await conversation.json() as { version: number };
-      const ended = await request.post(`/api/conversations/${conversationId}/end`, { headers, data: { expectedVersion: version, reason: "user_end" }, timeout: 5000 });
-      expect(ended.ok()).toBe(true);
+      for (let attempt = 0; attempt < 3; attempt++) {
+        const conversation = await request.get(`/api/conversations/${conversationId}`, { timeout: 5000 });
+        expect(conversation.ok()).toBe(true);
+        const { version } = await conversation.json() as { version: number };
+        const ended = await request.post(`/api/conversations/${conversationId}/end`, { headers, data: { expectedVersion: version, reason: "user_end" }, timeout: 5000 });
+        if (ended.status() === 409 && attempt < 2) continue;
+        expect(ended.ok()).toBe(true);
+        return;
+      }
     }),
   ]);
   const failures = results.flatMap(result => result.status === "rejected" ? [result.reason] : []);

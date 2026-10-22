@@ -41,7 +41,19 @@ describe("real-Live harness cleanup against SQLite endpoints", () => {
         conversations.push(c.conversationId); attempts.set(p.liveSessionId, c.conversationId);
       }
       const failedId = attempts.keys().next().value!;
-      const boundary = { get: client.get.bind(client), post: async (...args: Parameters<typeof client.post>) => {
+      let pauseBeforeEnd = true;
+      const boundary = { get: async (...args: Parameters<typeof client.get>) => {
+        const response = await client.get(...args);
+        if (pauseBeforeEnd && args[0] === `/api/conversations/${conversations[1]}`) {
+          pauseBeforeEnd = false;
+          const { version } = await response.json() as { version: number };
+          // The live page can suspend after cleanup reads the version but before it sends End.
+          expect((await client.post(`/api/conversations/${conversations[1]}/pause`, {
+            headers: { Origin: origin }, data: { expectedVersion: version },
+          })).status()).toBe(200);
+        }
+        return response;
+      }, post: async (...args: Parameters<typeof client.post>) => {
         if (args[0] === `/api/live/session/${failedId}/cleanup`) {
           if (failure === "timeout") throw new Error("Request timed out");
           return client.get("/cleanup-unavailable", args[1]);
