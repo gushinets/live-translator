@@ -1,5 +1,4 @@
 import { PlaybackQueue } from "./PlaybackQueue";
-import { runtime } from "../config/runtime";
 
 declare const sampleRate: number;
 declare abstract class AudioWorkletProcessor {
@@ -16,17 +15,22 @@ class BufferedPlaybackProcessor extends AudioWorkletProcessor {
   private audible = false;
   private requested = false;
   private permitted = false;
-  private quietSamples = 0;
+  private requestId = 0;
+  private generation = 0;
   constructor() {
     super();
     this.queue.onPlaybackTurn = (turnId, active) => this.port.postMessage({ type: "turn", turnId, value: active });
-    this.port.onmessage = ({ data }: MessageEvent<{ type: string; value: boolean; turnId?: string }>) => {
+    this.port.onmessage = ({ data }: MessageEvent<{ type: string; value: boolean; turnId?: string; requestId?: number; generation?: number }>) => {
       if (data.type === "dispose") {
         this.disposed = true;
         this.queue.clear();
         this.port.onmessage = null;
         this.port.close();
         return;
+      }
+      if ((data.type === "enabled" || data.type === "audible") && data.generation !== this.generation) {
+        this.resetPermission();
+        this.generation = data.generation ?? 0;
       }
       if (data.type === "turn") this.queue.setTurn(data.turnId);
       if (data.type === "enabled") {
@@ -41,7 +45,7 @@ class BufferedPlaybackProcessor extends AudioWorkletProcessor {
         if (!data.value) this.resetPermission();
       }
       if (data.type === "clear") { this.queue.clear(); this.resetPermission(); }
-      if (data.type === "playback" && this.requested) {
+      if (data.type === "playback" && this.requested && data.requestId === this.requestId && data.generation === this.generation) {
         this.permitted = data.value && this.enabled && this.audible;
         if (this.permitted) this.queue.setSpeaking(false);
         else this.requested = false;
@@ -51,9 +55,8 @@ class BufferedPlaybackProcessor extends AudioWorkletProcessor {
     };
   }
   private resetPermission(): void {
-    if (this.requested) this.port.postMessage({ type: "playback", value: false });
+    if (this.requested) this.port.postMessage({ type: "playback", value: false, requestId: this.requestId, generation: this.generation });
     this.requested = this.permitted = false;
-    this.quietSamples = 0;
     this.queue.setPlaybackAllowed(!this.enabled);
   }
   private reportPending(): void {
@@ -78,14 +81,12 @@ class BufferedPlaybackProcessor extends AudioWorkletProcessor {
     this.reportPending();
     if (this.enabled && !this.requested && this.queue.readyForPlayback) {
       this.requested = true;
+      this.requestId++;
       // PCM remains held until the main thread has closed microphone capture.
-      this.port.postMessage({ type: "playback", value: true });
+      this.port.postMessage({ type: "playback", value: true, requestId: this.requestId, generation: this.generation });
     }
-    if (this.permitted) {
-      this.quietSamples = this.queue.pending || output.some(value => value !== 0) ? 0 : this.quietSamples + output.length;
-      // shortcut: infer output end from quiet; replace when the provider exposes an audio-end event.
-      if (this.quietSamples >= sampleRate * runtime.postSourceOutputGraceMs / 1000) this.resetPermission();
-    }
+    // The last dequeue can empty pending while this render block still contains PCM.
+    if (this.permitted && !this.queue.pending && !output.some(value => value !== 0)) this.resetPermission();
     return true;
   }
 }

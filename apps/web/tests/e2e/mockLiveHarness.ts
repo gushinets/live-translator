@@ -345,11 +345,21 @@ export class MockLiveHarness {
       }
 
       class FakeAudioWorkletNode extends FakeAudioNode {
-        readonly port = { postMessage: () => {}, close: () => {}, onmessage: null as ((event: MessageEvent) => void) | null };
+        private requestId = 0;
+        private generation = 0;
+        readonly port = {
+          postMessage: (message: { generation?: number }) => { if (message.generation !== undefined) this.generation = message.generation; },
+          close: () => {}, onmessage: null as ((event: MessageEvent) => void) | null,
+        };
         constructor() {
           super();
           window.__liveTranslatorTestPlayback = {
-            emit: active => this.port.onmessage?.(new MessageEvent("message", { data: { type: "playback", value: active } })),
+            emit: active => {
+              if (active) this.requestId++;
+              this.port.onmessage?.(new MessageEvent("message", {
+                data: { type: "playback", value: active, requestId: this.requestId, generation: this.generation },
+              }));
+            },
           };
         }
       }

@@ -120,6 +120,8 @@ export class AudioController {
   private captureEnabled = false;
   private inputBlocked = false;
   private playbackReleaseTimer: number | null = null;
+  private playbackGeneration = 0;
+  private playbackRequestId: number | null = null;
   get playbackInputBlocked(): boolean { return this.inputBlocked; }
   get playbackInputState(): PlaybackInputState {
     return !this.inputBlocked ? "idle" : this.playbackReleaseTimer === null ? "playing" : "tail";
@@ -341,7 +343,11 @@ export class AudioController {
   /** Gate C: mute local GPT playback. Never uses Live input mute. */
   setOutputAudible(audible: boolean): void {
     this.audioElement.muted = !audible;
-    this.playbackNode?.port.postMessage({ type: "audible", value: audible });
+    if (!audible) {
+      this.playbackGeneration++;
+      this.playbackRequestId = null;
+    }
+    this.playbackNode?.port.postMessage({ type: "audible", value: audible, generation: this.playbackGeneration });
     if (!audible) {
       this.releasePlaybackInput();
       this.queuedPlayback = false;
@@ -358,9 +364,11 @@ export class AudioController {
   setNonInterrupting(enabled: boolean): void {
     if (enabled && !this.playbackNode) throw new Error("Buffered playback unavailable");
     this.nonInterrupting = enabled;
-    this.playbackNode?.port.postMessage({ type: "enabled", value: enabled });
+    this.playbackGeneration++;
+    this.playbackRequestId = null;
+    this.playbackNode?.port.postMessage({ type: "enabled", value: enabled, generation: this.playbackGeneration });
     this.sendSourceActivity();
-    if (!enabled) this.releasePlaybackInput();
+    this.releasePlaybackInput();
   }
 
   private sendSourceActivity(): void {
@@ -408,6 +416,9 @@ export class AudioController {
   private connectPlayback(context: AudioContext, remoteStream: MediaStream): void {
     const node = this.createPlaybackNode(context);
     this.playbackNode = node;
+    this.playbackGeneration++;
+    this.playbackRequestId = null;
+    let lastRequestId = 0;
     this.playbackDestination = context.createMediaStreamDestination();
     const fail = () => {
       if (this.playbackNode !== node) return;
@@ -415,12 +426,17 @@ export class AudioController {
       this.onPlaybackBufferError?.();
     };
     node.onprocessorerror = fail;
-    node.port.onmessage = ({ data }: MessageEvent<{ type: string; value?: boolean; turnId?: string }>) => {
+    node.port.onmessage = ({ data }: MessageEvent<{ type: string; value?: boolean; turnId?: string; requestId?: number; generation?: number }>) => {
       if (this.playbackNode !== node) return;
       if (data.type === "playback" && !this.audioElement.muted && this.nonInterrupting) {
+        if (data.generation !== this.playbackGeneration || !Number.isSafeInteger(data.requestId) || data.requestId! <= 0) return;
+        const requestId = data.requestId!;
+        const generation = data.generation;
         if (data.value === true) {
+          if (requestId <= lastRequestId) return;
+          lastRequestId = requestId;
           if (this.sourceSpeaking && !this.inputBlocked) {
-            node.port.postMessage({ type: "playback", value: false });
+            node.port.postMessage({ type: "playback", value: false, requestId, generation });
             return;
           }
           const wasTail = this.playbackReleaseTimer !== null;
@@ -428,9 +444,15 @@ export class AudioController {
           try {
             this.blockPlaybackInput(true);
             if (wasTail) this.onPlaybackInputBlocked?.();
-            if (this.playbackNode === node && !this.audioElement.muted) node.port.postMessage({ type: "playback", value: true });
+            if (this.playbackNode === node && !this.audioElement.muted && this.playbackGeneration === generation) {
+              this.playbackRequestId = requestId;
+              node.port.postMessage({ type: "playback", value: true, requestId, generation });
+            }
           } catch { fail(); }
-        } else this.releasePlaybackInput();
+        } else if (requestId === this.playbackRequestId) {
+          this.playbackRequestId = null;
+          this.releasePlaybackInput();
+        }
       }
       if (data.type === "pending") this.queuedPlayback = !this.audioElement.muted && data.value === true;
       if (data.type === "turn" && !this.audioElement.muted) {
@@ -439,8 +461,8 @@ export class AudioController {
       }
       if (data.type === "error") fail();
     };
-    node.port.postMessage({ type: "enabled", value: this.nonInterrupting });
-    node.port.postMessage({ type: "audible", value: !this.audioElement.muted });
+    node.port.postMessage({ type: "enabled", value: this.nonInterrupting, generation: this.playbackGeneration });
+    node.port.postMessage({ type: "audible", value: !this.audioElement.muted, generation: this.playbackGeneration });
     this.sendSourceActivity();
     this.remoteSource!.connect(node);
     this.playedAnalyser = context.createAnalyser();
