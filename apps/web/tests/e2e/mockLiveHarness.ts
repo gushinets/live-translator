@@ -348,7 +348,14 @@ export class MockLiveHarness {
         private requestId = 0;
         private generation = 0;
         readonly port = {
-          postMessage: (message: { generation?: number }) => { if (message.generation !== undefined) this.generation = message.generation; },
+          postMessage: (message: { type: string; value?: boolean; generation?: number }) => {
+            if (message.generation !== undefined) this.generation = message.generation;
+            if (message.type === "enabled" || (message.type === "audible" && !message.value)) {
+              queueMicrotask(() => this.port.onmessage?.(new MessageEvent("message", {
+                data: { type: "reset", generation: message.generation },
+              })));
+            }
+          },
           close: () => {}, onmessage: null as ((event: MessageEvent) => void) | null,
         };
         constructor() {

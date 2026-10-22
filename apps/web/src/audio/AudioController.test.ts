@@ -486,6 +486,10 @@ describe("buffered audio output", () => {
     return { context, controller, element, nodes, destinationStream };
   }
   const requestIds = new WeakMap<object, number>();
+  function sendReset(node: ReturnType<typeof setup>["nodes"][number]) {
+    const generation = node.port.postMessage.mock.calls.filter(([m]) => m.generation !== undefined).at(-1)![0].generation;
+    node.port.onmessage!({ data: { type: "reset", generation } } as MessageEvent);
+  }
   function sendPlayback(node: ReturnType<typeof setup>["nodes"][number], value: boolean) {
     const requestId = (requestIds.get(node) ?? 0) + (value ? 1 : 0);
     requestIds.set(node, requestId);
@@ -586,7 +590,7 @@ describe("buffered audio output", () => {
       expect(states).toEqual(["playing", "tail", "playing", "tail", "idle"]);
     } finally { controller.dispose(); vi.useRealTimers(); }
   });
-  it.each(["active", "echo-tail"])("reopens capture on resume without waiting for a throttled timer after %s playback", async phase => {
+  it.each(["active", "echo-tail"])("waits for cancellation confirmation and the echo tail before reopening after %s playback", async phase => {
     vi.useFakeTimers();
     const { controller, context, nodes } = setup();
     try {
@@ -600,6 +604,14 @@ describe("buffered audio output", () => {
       controller.setCaptureEnabled(false); controller.setOutputAudible(false);
       expect(track.enabled).toBe(false); expect(analysis.enabled).toBe(false);
       controller.setCaptureEnabled(true); controller.setOutputAudible(true);
+      await vi.advanceTimersByTimeAsync(runtime.playbackEchoTailMs + 1);
+      expect(track.enabled).toBe(false); expect(analysis.enabled).toBe(false);
+      expect(controller.audioElement.muted).toBe(true);
+      sendReset(nodes[0]!);
+      expect(controller.audioElement.muted).toBe(false);
+      await vi.advanceTimersByTimeAsync(runtime.playbackEchoTailMs - 1);
+      expect(track.enabled).toBe(false); expect(analysis.enabled).toBe(false);
+      await vi.advanceTimersByTimeAsync(1);
       expect(track.enabled).toBe(true); expect(analysis.enabled).toBe(true);
       expect(controller.playbackInputBlocked).toBe(false);
       send(true);
@@ -658,6 +670,7 @@ describe("buffered audio output", () => {
       if (staleKind === "generation") {
         controller.setCaptureEnabled(false); controller.setOutputAudible(false);
         controller.setCaptureEnabled(true); controller.setOutputAudible(true);
+        sendReset(nodes[0]!);
       } else sendPlayback(nodes[0]!, false);
       sendPlayback(nodes[0]!, true);
       nodes[0]!.port.onmessage!({ data: { ...firstAck, value: false } } as MessageEvent);

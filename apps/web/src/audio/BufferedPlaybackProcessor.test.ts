@@ -101,7 +101,7 @@ describe("buffered playback processor lifetime", () => {
     const output = new Float32Array(128);
     processor.process([[new Float32Array(128).fill(.5)]], [[output]]);
     expect(output.every(sample => sample === 0)).toBe(true);
-    expect(processor.port.postMessage).toHaveBeenLastCalledWith({ type: "pending", value: true });
+    expect(processor.port.postMessage.mock.calls.filter(([m]) => m.type === "pending").at(-1)).toEqual([{ type: "pending", value: true }]);
     send(processor, "speaking", false); send(processor, "enabled", enabled);
     const played: number[] = [];
     for (let quantum = 0; quantum < 100; quantum++) {

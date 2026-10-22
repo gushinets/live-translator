@@ -122,6 +122,8 @@ export class AudioController {
   private playbackReleaseTimer: number | null = null;
   private playbackGeneration = 0;
   private playbackRequestId: number | null = null;
+  private playbackResetPending = false;
+  private outputAudible = false;
   get playbackInputBlocked(): boolean { return this.inputBlocked; }
   get playbackInputState(): PlaybackInputState {
     return !this.inputBlocked ? "idle" : this.playbackReleaseTimer === null ? "playing" : "tail";
@@ -328,7 +330,7 @@ export class AudioController {
 
   private releasePlaybackInput(): void {
     this.cancelPlaybackRelease();
-    if (!this.inputBlocked) return;
+    if (!this.inputBlocked || this.playbackResetPending) return;
     if (!this.captureEnabled) {
       this.blockPlaybackInput(false);
       return;
@@ -342,11 +344,14 @@ export class AudioController {
 
   /** Gate C: mute local GPT playback. Never uses Live input mute. */
   setOutputAudible(audible: boolean): void {
-    this.audioElement.muted = !audible;
+    this.outputAudible = audible;
     if (!audible) {
       this.playbackGeneration++;
       this.playbackRequestId = null;
+      this.playbackResetPending = this.playbackNode !== null;
     }
+    // A prior render task packet can still contain an ACK until reset is confirmed.
+    this.audioElement.muted = !audible || this.playbackResetPending;
     this.playbackNode?.port.postMessage({ type: "audible", value: audible, generation: this.playbackGeneration });
     if (!audible) {
       this.releasePlaybackInput();
@@ -366,6 +371,7 @@ export class AudioController {
     this.nonInterrupting = enabled;
     this.playbackGeneration++;
     this.playbackRequestId = null;
+    this.playbackResetPending = this.playbackNode !== null;
     this.playbackNode?.port.postMessage({ type: "enabled", value: enabled, generation: this.playbackGeneration });
     this.sendSourceActivity();
     this.releasePlaybackInput();
@@ -391,7 +397,6 @@ export class AudioController {
   }
 
   private releasePlayback(): void {
-    this.releasePlaybackInput();
     if (this.remoteDecoder) {
       this.remoteDecoder.onerror = null;
       this.remoteDecoder.pause();
@@ -411,6 +416,9 @@ export class AudioController {
     this.playedAnalyser = null;
     this.queuedPlayback = false;
     this.lastSourceSpeaking = null;
+    this.playbackResetPending = false;
+    this.audioElement.muted = !this.outputAudible;
+    this.releasePlaybackInput();
   }
 
   private connectPlayback(context: AudioContext, remoteStream: MediaStream): void {
@@ -428,6 +436,11 @@ export class AudioController {
     node.onprocessorerror = fail;
     node.port.onmessage = ({ data }: MessageEvent<{ type: string; value?: boolean; turnId?: string; requestId?: number; generation?: number }>) => {
       if (this.playbackNode !== node) return;
+      if (data.type === "reset" && this.playbackResetPending && data.generation === this.playbackGeneration) {
+        this.playbackResetPending = false;
+        this.audioElement.muted = !this.outputAudible;
+        this.releasePlaybackInput();
+      }
       if (data.type === "playback" && !this.audioElement.muted && this.nonInterrupting) {
         if (data.generation !== this.playbackGeneration || !Number.isSafeInteger(data.requestId) || data.requestId! <= 0) return;
         const requestId = data.requestId!;

@@ -4185,12 +4185,15 @@ describe("SessionController PWA lifecycle suspension (§11.3 / §19)", () => {
     const queue = new PlaybackQueue(48_000);
     const node = Object.assign(new DispatchableAudioNode(), {
       port: {
-        postMessage: vi.fn((data: { type: string; value?: boolean; turnId?: string }) => {
+        postMessage: vi.fn((data: { type: string; value?: boolean; turnId?: string; generation?: number }) => {
           if (data.type === "audible") queue.setAudible(data.value === true);
           if (data.type === "enabled") queue.setEnabled(data.value === true);
           if (data.type === "speaking") queue.setSpeaking(data.value === true);
           if (data.type === "turn") queue.setTurn(data.turnId);
           if (data.type === "dispose") queue.clear();
+          if (data.type === "enabled" || (data.type === "audible" && !data.value)) {
+            queueMicrotask(() => node.port.onmessage?.({ data: { type: "reset", generation: data.generation } } as MessageEvent));
+          }
         }),
         close: vi.fn(), onmessage: null as ((event: MessageEvent) => void) | null,
       }, onprocessorerror: null,

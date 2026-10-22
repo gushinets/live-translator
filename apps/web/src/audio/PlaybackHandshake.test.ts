@@ -37,7 +37,7 @@ class Analyser extends Node {
 
 type Trace = {
   atMs: number; event: string; generation?: number; requestId?: number;
-  pending: boolean; nonzero: boolean; capture: boolean; analysis: boolean;
+  pending: boolean; nonzero: boolean; capture: boolean; analysis: boolean; muted: boolean;
 };
 
 // Real queue/processor/controller; only the browser's nodes, tracks and schedulers are replaced.
@@ -48,6 +48,7 @@ class Harness {
   readonly sources: MediaStream[] = [];
   readonly trace: Trace[] = [];
   readonly played: number[] = [];
+  readonly audiblePlayed: number[] = [];
   readonly timers = new Map<number, { due: number; run: () => void }>();
   readonly nodes: Array<{
     processor: Processor; toMain: Message[]; toWorklet: Message[];
@@ -114,22 +115,32 @@ class Harness {
     if (event === "worklet playback:true") this.permission = message;
     this.trace.push({ atMs: this.now, event,
       generation: message?.generation ?? this.permission?.generation, requestId: message?.requestId ?? this.permission?.requestId,
-      pending: this.pending, nonzero: this.nonzero, capture: this.capture.enabled, analysis: this.analysis.enabled });
+      pending: this.pending, nonzero: this.nonzero, capture: this.capture.enabled, analysis: this.analysis.enabled,
+      muted: this.controller.audioElement.muted });
   }
   // Each direction is FIFO, but delivering one never implicitly flushes the other.
   flushMain(node = this.node) {
-    while (node.toMain.length) {
+    while (node.toMain.length) this.deliverMain(node);
+  }
+  takeWorkletTasks(node = this.node) {
+    // Web Audio snapshots task_count before running tasks and the next render quantum.
+    const tasks = node.toWorklet.splice(0);
+    return () => {
+      for (const message of tasks) {
+        this.record(`worklet ${message.type}:${message.value}`, message);
+        node.processor.port.onmessage?.({ data: message } as MessageEvent<Message>);
+      }
+    };
+  }
+  flushWorklet(node = this.node) {
+    this.takeWorkletTasks(node)();
+  }
+  deliverMain(node = this.node) {
+    if (node.toMain.length) {
       const message = node.toMain.shift()!;
       if (message.type === "pending") this.pending = message.value === true;
       this.record(`main ${message.type}:${message.value}`, message);
       node.handler?.({ data: message } as MessageEvent<Message>);
-    }
-  }
-  flushWorklet(node = this.node) {
-    while (node.toWorklet.length) {
-      const message = node.toWorklet.shift()!;
-      this.record(`worklet ${message.type}:${message.value}`, message);
-      node.processor.port.onmessage?.({ data: message } as MessageEvent<Message>);
     }
   }
   runTimers() {
@@ -148,6 +159,7 @@ class Harness {
     if (this.nonzero) {
       this.record("PCM");
       this.played.push(...output.filter(x => x !== 0));
+      if (!this.controller.audioElement.muted) this.audiblePlayed.push(...output.filter(x => x !== 0));
     }
     if (pump) { this.flushMain(); this.flushWorklet(); this.runTimers(); }
     return { output, alive };
@@ -305,6 +317,105 @@ describe("physical playback permission with independent render/main queues", () 
     harness.until(() => harness.played.length > 0);
     harness.until(() => harness.capture.enabled);
     expect(harness.played).toEqual([...new Float32Array(Math.ceil(40 / FRAME_MS) * QUANTUM).fill(.7)]);
+    harness.assertProtected();
+  });
+
+  it("keeps both inputs and audible output closed across a canceled ACK's render-task snapshot", () => {
+    harness.render(40, .5, false); harness.render(320, 0, false);
+    harness.flushMain();
+    const oldTasks = harness.takeWorkletTasks();
+    harness.controller.setCaptureEnabled(false); harness.controller.setOutputAudible(false);
+    harness.controller.setCaptureEnabled(true); harness.controller.setOutputAudible(true);
+    expect(harness.capture.enabled).toBe(false);
+    expect(harness.analysis.enabled).toBe(false);
+    expect(harness.controller.audioElement.muted).toBe(true);
+    oldTasks(); // The cancellation belongs to the next task packet, preserving FIFO.
+    expect(harness.frame(0, false).output.some(x => x !== 0)).toBe(true);
+    harness.render(400, 0, false); harness.runTimers();
+    expect(harness.capture.enabled).toBe(false);
+    expect(harness.analysis.enabled).toBe(false);
+    expect(harness.controller.audioElement.muted).toBe(true);
+    harness.flushMain(); // Old turn/release messages cannot confirm the cancellation.
+    expect(harness.capture.enabled).toBe(false);
+    expect(harness.controller.audioElement.muted).toBe(true);
+    harness.flushWorklet(); // Apply the actual cancellation, then resume in FIFO order.
+    harness.flushMain();
+    expect(harness.controller.audioElement.muted).toBe(true); // The reset must also reach a render quantum.
+    expect(harness.frame(0, false).output.every(x => x === 0)).toBe(true);
+    expect(harness.capture.enabled).toBe(false); // Its confirmation is still undelivered.
+    harness.flushMain();
+    expect(harness.controller.audioElement.muted).toBe(false);
+    harness.until(() => harness.capture.enabled);
+    const before = harness.played.length;
+    harness.render(40, .7, false); harness.render(320, 0, false);
+    expect(harness.played).toHaveLength(before);
+    harness.flushMain(); // Close both tracks, but delay the fresh cycle's ACK.
+    expect(harness.capture.enabled).toBe(false); expect(harness.analysis.enabled).toBe(false);
+    harness.frame(0, false);
+    expect(harness.played).toHaveLength(before);
+    harness.flushWorklet();
+    harness.until(() => harness.capture.enabled && harness.played.length > before);
+    const freshPCM = [...new Float32Array(Math.ceil(40 / FRAME_MS) * QUANTUM).fill(.7)];
+    expect(harness.played.slice(before)).toEqual(freshPCM);
+    expect(harness.audiblePlayed).toEqual(freshPCM); // No canceled .5 marker reaches Gate C.
+    harness.assertProtected();
+  });
+
+  it("ignores an older cancellation confirmation while a newer reset is still queued", () => {
+    harness.render(40, .5, false); harness.render(320, 0, false);
+    harness.flushMain(); harness.flushWorklet();
+    harness.controller.setCaptureEnabled(false); harness.controller.setOutputAudible(false);
+    harness.flushWorklet(); harness.frame(0, false); // Cancellation rendered; confirmation delayed.
+    harness.controller.setCaptureEnabled(true); harness.controller.setOutputAudible(true);
+    harness.controller.setCaptureEnabled(false); harness.controller.setOutputAudible(false);
+    harness.controller.setCaptureEnabled(true); harness.controller.setOutputAudible(true);
+    while (harness.node.toMain.length) {
+      harness.deliverMain();
+      harness.frame(0, false); harness.runTimers();
+      expect(harness.capture.enabled).toBe(false);
+      expect(harness.analysis.enabled).toBe(false);
+      expect(harness.controller.audioElement.muted).toBe(true);
+    }
+    harness.flushWorklet(); harness.flushMain();
+    harness.until(() => harness.capture.enabled);
+    expect(harness.analysis.enabled).toBe(true);
+    expect(harness.controller.audioElement.muted).toBe(false);
+    harness.render(40, .7);
+    harness.until(() => harness.capture.enabled && harness.played.length > 0);
+    expect(harness.played).toEqual([...new Float32Array(Math.ceil(40 / FRAME_MS) * QUANTUM).fill(.7)]);
+    harness.assertProtected();
+  });
+
+  it("ignores a cancellation confirmation from a retired node while its replacement is resetting", () => {
+    harness.render(40, .5, false); harness.render(320, 0, false); harness.flushMain();
+    harness.controller.setCaptureEnabled(false); harness.controller.setOutputAudible(false);
+    harness.controller.setCaptureEnabled(true); harness.controller.setOutputAudible(true);
+    harness.flushWorklet(); harness.frame(0, false);
+    const retired = harness.node; // Its reset confirmation has not reached main.
+    harness.controller.attachRemoteStream(stream());
+    harness.node.handler = harness.node.port.onmessage!;
+    harness.controller.setOutputAudible(false); harness.controller.setOutputAudible(true);
+    harness.flushMain(retired);
+    harness.render(400, 0, false); harness.runTimers();
+    expect(harness.capture.enabled).toBe(false); expect(harness.analysis.enabled).toBe(false);
+    expect(harness.controller.audioElement.muted).toBe(true);
+    harness.flushWorklet(); harness.frame(0, false); harness.flushMain();
+    harness.until(() => harness.capture.enabled);
+    expect(harness.controller.audioElement.muted).toBe(false);
+    harness.controller.dispose();
+    harness.flushMain(retired);
+    expect(harness.capture.readyState).toBe("ended");
+    expect(harness.analysis.readyState).toBe("ended");
+  });
+
+  it("confirms a mode reset before authorizing its already buffered PCM", () => {
+    harness.render(600, .5, false); harness.render(320, 0, false);
+    harness.flushMain(); // The old ACK is queued ahead of the mode reset.
+    harness.controller.setNonInterrupting(true);
+    harness.flushWorklet(); harness.frame(0, false);
+    harness.flushMain(); harness.flushWorklet();
+    harness.until(() => harness.capture.enabled && harness.played.length > 0);
+    expect(harness.played).toEqual([...new Float32Array(Math.ceil(600 / FRAME_MS) * QUANTUM).fill(.5)]);
     harness.assertProtected();
   });
 

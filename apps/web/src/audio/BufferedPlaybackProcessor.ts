@@ -17,6 +17,7 @@ class BufferedPlaybackProcessor extends AudioWorkletProcessor {
   private permitted = false;
   private requestId = 0;
   private generation = 0;
+  private resetPending = false;
   constructor() {
     super();
     this.queue.onPlaybackTurn = (turnId, active) => this.port.postMessage({ type: "turn", turnId, value: active });
@@ -52,6 +53,9 @@ class BufferedPlaybackProcessor extends AudioWorkletProcessor {
         this.queue.setPlaybackAllowed(this.permitted || !this.enabled);
       }
       this.reportPending();
+      if (data.type === "enabled" || (data.type === "audible" && !data.value)) {
+        this.resetPending = true;
+      }
     };
   }
   private resetPermission(): void {
@@ -79,6 +83,10 @@ class BufferedPlaybackProcessor extends AudioWorkletProcessor {
       this.port.postMessage({ type: "error" });
     }
     this.reportPending();
+    if (this.resetPending) {
+      this.resetPending = false;
+      this.port.postMessage({ type: "reset", generation: this.generation });
+    }
     if (this.enabled && !this.requested && this.queue.readyForPlayback) {
       this.requested = true;
       this.requestId++;
