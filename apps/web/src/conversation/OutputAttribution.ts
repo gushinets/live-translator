@@ -1,6 +1,6 @@
 import { earliestFragmentStart, type TranscriptFragment } from "./TranscriptFragment";
 import type { Side, Turn } from "./Turn";
-import { hasSentenceTerminator } from "./sentenceBoundaries";
+import { isSentenceComplete } from "./sentenceBoundaries";
 import { runtime } from "../config/runtime";
 
 export interface AttributedOutput {
@@ -52,11 +52,9 @@ export class OutputAttribution {
     this.record({ kind: "deadline", atMs, sourceId: source.id, compatibleOutput: this.hasCompatibleOutput(source, atMs) });
   }
   private playback: Array<{ atMs: number; sourceIds: string[]; played: boolean }> = [];
-  private queuedPcm = false;
 
-  observePendingPlayback(pending: boolean, atMs: number, sources: Turn[]): void {
-    if (pending && !this.queuedPcm) this.observePcm(atMs, sources, false);
-    this.queuedPcm = pending;
+  observeReceivedPlayback(atMs: number, sources: Turn[]): void {
+    this.observePcm(atMs, sources, false);
   }
 
   receive(fragments: TranscriptFragment[], side: Side | undefined, sources: Turn[], nowMs: number, streamKey = ""): AttributedOutput {
@@ -64,15 +62,16 @@ export class OutputAttribution {
     const pending = this.pendingOutput && fragments.some(part => this.pendingOutput!.fragments.some(known =>
       part.id === known.id || part.id.startsWith(known.id + ":"))) ? this.pendingOutput : undefined;
     const neutral = fragments.every(part => /^[\p{P}\s]+$/u.test(part.text));
+    const last = this.outputs.at(-1);
     const overlaps = this.outputs.filter(output => {
-      if (output === this.pendingOutput) return false;
+      // Lexical groups cannot jump over another output; timed punctuation may refine history.
+      if (output === this.pendingOutput || (!neutral && output !== last)) return false;
       const start = earliestFragmentStart(output.fragments);
       const end = Math.max(...output.fragments.map(part => part.endMs ?? part.startMs ?? -Infinity));
       return (output.side === side || (side === undefined && neutral)) && start !== undefined && fragments.every(part => part.startMs !== undefined && part.startMs >= start &&
         part.startMs <= end && (/^[\p{P}\s]+$/u.test(part.text) || (part.endMs !== undefined && part.endMs <= end)));
     });
-    const last = this.outputs.at(-1);
-    const unfinished = last && !hasSentenceTerminator(last.fragments.map(part => part.text).join(""));
+    const unfinished = last && !isSentenceComplete(last.fragments.map(part => part.text).join(""));
     const adjacent = last && last.fragments.at(-1)!.endMs !== undefined &&
       fragments[0]?.startMs === last.fragments.at(-1)!.endMs;
     const tail = last && last !== this.pendingOutput && last.streamKey === streamKey && (last.side === side || (side === undefined && neutral)) &&

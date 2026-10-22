@@ -148,6 +148,7 @@ function createFakeAudio() {
     } as unknown as HTMLAudioElement,
     onVoiceActivity: null as ((event: { active: boolean; atMs: number }) => void) | null,
     onPlaybackActivity: null as ((event: { active: boolean; atMs: number }) => void) | null,
+    onPcmReceived: null as ((atMs: number) => void) | null,
     onAudioInterruption: null as (() => void) | null,
     onAudioRestored: null as (() => void) | null,
     onCaptureEnded: null as (() => void) | null,
@@ -6198,6 +6199,7 @@ it("uses queued PCM as presence evidence without inventing audible playback", as
   const id = controller.session.activeTurn!.id;
   emitVoice(audio, false);
   audio.hasPendingPlayback = true;
+  audio.onPcmReceived?.(Date.now());
   await vi.advanceTimersByTimeAsync(runtime.noOutputTimeoutMs + 1);
   expect(controller.session.recentTurns.find(turn => turn.id === id)?.status).toBe("unresolved");
   expect(controller.currentAttribution.unattributedPlaybackCount).toBe(0);
@@ -6418,4 +6420,101 @@ it("keeps a repeat hint when an unclassified receipt predates that source on the
   expect(controller.captionBlocks.some(block => block.text === "Thank y")).toBe(true);
   expect(controller.recoveryPrompt).toBe("repeat");
   expect(controller.currentAttribution.matchedTextOutputs).toBe(0);
+});
+
+
+it.each([false, true])("freezes deadline uncertainty before source handoff classification, delayed=%s", async delayed => {
+  vi.useFakeTimers(); vi.setSystemTime(1000);
+  const { controller, live, audio } = createController();
+  await controller.startWithLanguages({ A: "en", B: "es" });
+  emitVoice(audio, true);
+  live.emit({ type: "session.input_transcript.delta", delta: "Where is the nearest station?", start_ms: 0, end_ms: 1000 });
+  const sourceId = controller.session.activeTurn!.id;
+  emitVoice(audio, false);
+  await vi.advanceTimersByTimeAsync(4500);
+  live.emit({ type: "session.output_transcript.delta", delta: "Thank you", start_ms: 500, end_ms: 1500 });
+  const output = controller.captionBlocks.find(block => block.kind === "output")!;
+  expect(output).toMatchObject({ receivedAtMs: 5500, attribution: "unattributed" });
+  if (delayed) vi.setSystemTime(7000);
+  else await vi.advanceTimersByTimeAsync(1500);
+  live.emit({ type: "session.input_transcript.delta", delta: "La estación está cerca del supermercado.", start_ms: 3000, end_ms: 4000 });
+  expect(controller.session.recentTurns.find(turn => turn.id === sourceId)?.outputDeadline)
+    .toEqual({ atMs: 6000, outcome: "unresolved" });
+  expect(controller.metrics.snapshot()).toMatchObject({ noObservedOutputDeadlineCount: 0, unresolvedSourceOutcomeCount: 1 });
+  expect(controller.captionBlocks.find(block => block.outputId === output.outputId)).toMatchObject({ receivedAtMs: 5500 });
+  expect(controller.currentAttribution.matchedTextOutputs).toBe(0);
+});
+
+it("preserves every mixed packet boundary through attribution and rendered captions", async () => {
+  vi.useFakeTimers(); vi.setSystemTime(1000);
+  const { controller, live, audio } = createController();
+  await controller.startWithLanguages({ A: "ru", B: "es" });
+  emitVoice(audio, true);
+  live.emit({ type: "session.input_transcript.delta", delta: "Подскажите, где находится вокзал?", start_ms: 0, end_ms: 1000 });
+  const parts = ["¿Dónde está la estación? ", "Вокзал находится прямо впереди. ", "Muchas gracias por su ayuda."];
+  live.emit({ type: "session.output_transcript.delta", delta: parts.join(""), start_ms: 500, end_ms: 2500 });
+  await vi.advanceTimersByTimeAsync(601);
+  const blocks = controller.captionBlocks.filter(block => block.kind === "output");
+  expect(blocks.map(block => block.text)).toEqual(parts);
+  expect(new Set(blocks.map(block => block.outputId)).size).toBe(3);
+  expect(blocks.map(block => block.receivedAtMs)).toEqual([1000, 1000, 1000]);
+  const root = document.createElement("div");
+  root.innerHTML = renderToStaticMarkup(createElement(ConversationScreen, { controller }));
+  expect([...root.querySelectorAll('[data-testid="participant-pane-B"] li')].map(row => row.textContent))
+    .toEqual(["Él: ¿Dónde está la estación?", "Él: Muchas gracias por su ayuda."]);
+});
+
+
+it("keeps an unfinished multi-sentence output together across caption idle without guessing its source", async () => {
+  vi.useFakeTimers(); vi.setSystemTime(1000);
+  const { controller, live, audio } = createController();
+  await controller.startWithLanguages({ A: "ru", B: "en" });
+  emitVoice(audio, true);
+  const input = (delta: string) => live.emit({ type: "session.input_transcript.delta", delta });
+  const output = (delta: string) => live.emit({ type: "session.output_transcript.delta", delta });
+  input("Так, здравствуйте. Кто вы? Что вы хотите?");
+  input("Um, sir, hi. I'm a delivery guy. I ");
+  output("Well, hello. Who are you, what do you ");
+  await vi.advanceTimersByTimeAsync(900);
+  output("want?");
+  input("need to deliver a package for Mr. Mikhail Gu");
+  await vi.advanceTimersByTimeAsync(900);
+  input("shin.");
+  output("Эм, сэр, привет. Я курьер. У меня посылка для господина Михаила Гу");
+  const prefix = controller.captionBlocks.filter(block => block.kind === "output").at(-1)!;
+  await vi.advanceTimersByTimeAsync(900);
+  output("шина.");
+  expect(controller.captionBlocks.find(block => block.outputId === prefix.outputId)).toMatchObject({
+    receivedAtMs: prefix.receivedAtMs, text: "Эм, сэр, привет. Я курьер. У меня посылка для господина Михаила Гушина.",
+  });
+  input("Ага, как мне получить посылку?");
+  output("How do I get the package?");
+  emitVoice(audio, false);
+  await vi.advanceTimersByTimeAsync(6000);
+  const blocks = controller.captionBlocks.filter(block => block.kind === "output");
+  expect(blocks.map(block => block.text.trim())).toEqual([
+    // Delayed source "I " creates a new source context before "want?".
+    "Well, hello. Who are you, what do you", "want?",
+    "Эм, сэр, привет. Я курьер. У меня посылка для господина Михаила Гушина.",
+    "How do I get the package?",
+  ]);
+  expect(controller.currentAttribution.matchedTextOutputs).toBe(0);
+});
+
+
+it("retains flushed unknown output before a later language-known phrase without guessing a source", async () => {
+  vi.useFakeTimers(); vi.setSystemTime(1000);
+  const { controller, live } = createController();
+  await controller.startWithLanguages({ A: "ru", B: "en" });
+  live.emit({ type: "session.output_transcript.delta", delta: "OK" });
+  await vi.advanceTimersByTimeAsync(900);
+  const unknown = controller.captionBlocks.find(block => block.kind === "output")!;
+  live.emit({ type: "session.output_transcript.delta", delta: ", I can check that for you." });
+  expect(controller.captionBlocks.filter(block => block.kind === "output")).toEqual([
+    expect.objectContaining({ outputId: unknown.outputId, text: "OK", side: undefined, receivedAtMs: 1000, attribution: "unattributed" }),
+    expect.objectContaining({ text: ", I can check that for you.", side: "B", receivedAtMs: 1900, attribution: "unattributed" }),
+  ]);
+  expect(controller.currentAttribution).toMatchObject({ matchedTextOutputs: 0, unattributedTextOutputs: 2, matchedAudioOutputs: 0 });
+  expect(controller.recoveryPrompt).toBeUndefined();
+  expect(controller.metrics.snapshot().noObservedOutputDeadlineCount).toBe(0);
 });

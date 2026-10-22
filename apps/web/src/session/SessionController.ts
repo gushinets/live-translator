@@ -84,6 +84,7 @@ export interface SessionControllerDeps {
     onPlaybackDecoderError?: AudioController["onPlaybackDecoderError"];
     onVoiceActivity: AudioController["onVoiceActivity"];
     onPlaybackActivity: AudioController["onPlaybackActivity"];
+    onPcmReceived?: AudioController["onPcmReceived"];
     onAudioInterruption: AudioController["onAudioInterruption"];
     onAudioRestored: AudioController["onAudioRestored"];
     onCaptureEnded: AudioController["onCaptureEnded"];
@@ -1331,6 +1332,12 @@ export class SessionController {
     this.audio.onPlaybackActivity = (event) => {
       void this.handlePlaybackActivity(event);
     };
+    this.audio.onPcmReceived = atMs => {
+      if (this.backgroundPaused || this.leftoverOutputDraining ||
+          !["listening", "outputting"].includes(this.currentSession.state)) return;
+      this.attribution.observeReceivedPlayback(atMs, this.routingTurns());
+      this.projectAttribution();
+    };
     this.audio.onRemoteAudioSample = event => {
       if (this.backgroundPaused) return;
       if (event.active && this.currentSession.state === "suspended" && this.lifecycleSuspendReason !== undefined &&
@@ -1394,6 +1401,7 @@ export class SessionController {
   }
 
   private routeSource(groups: RoutedTranscript[], considerCompletion = true): void {
+    this.expireOutputDeadlines(Date.now(), false);
     // A language-evidence group can contain packets from different source intervals.
     for (const { side, first } of groups.flatMap(group => group.fragments.map(first => ({ side: group.side, first })))) {
       const historical = this.findSourceTarget(first, side);
@@ -1506,8 +1514,6 @@ export class SessionController {
     if (this.leftoverOutputDraining) { this.noteLeftoverCaption(); return; }
     const fragment = createTranscriptFragment({ text: event.delta, nowMs: Date.now(), startMs: event.start_ms, endMs: event.end_ms });
 
-    // Settle past deadlines before new language evidence changes what was known at D.
-    this.expireOutputDeadlines(fragment.receivedAtMs, false);
     if (!this.outputRouter.hasPending && /^[\p{P}\s]+$/u.test(fragment.text)) {
       this.routeOutput([{ side: undefined, fragments: [fragment] }]);
     } else {
@@ -1534,6 +1540,8 @@ export class SessionController {
   }
 
   private routeOutput(groups: RoutedTranscript[], considerCompletion = true): void {
+    // Includes timer and source-handoff flushes, not only newly received deltas.
+    this.expireOutputDeadlines(Date.now(), false);
     for (const { side, fragments } of groups) {
       const output = this.attribution.receive(fragments, side, this.routingTurns(), Date.now(), this.latestSourceTurnId);
       if (output.lateOutput) this.conversationMetrics.recordAttributionEvent("lateOutputAfterDeadlineCount", `${output.id}:${output.revision}`);
@@ -1665,7 +1673,6 @@ export class SessionController {
 
   private async considerTurnCompletion(nowMs: number): Promise<void> {
     if (this.turnClosing || !["listening", "outputting"].includes(this.currentSession.state)) return;
-    this.attribution.observePendingPlayback(this.audio.hasPendingPlayback === true, nowMs, this.routingTurns());
     const nextDeadline = this.expireOutputDeadlines(nowMs);
     const playback = this.playbackTurnId ? findSessionTurn(this.currentSession, this.playbackTurnId) : undefined;
     if (this.playbackActive && (!playback || ["completed", "failed", "discarded", "unresolved"].includes(playback.status))) {
@@ -1675,11 +1682,11 @@ export class SessionController {
       return;
     }
     if (this.audio.hasPendingPlayback) {
-      this.armCompletionTimer(nowMs + 50, nowMs);
+      this.armCompletionTimer(Math.min(nextDeadline ?? Infinity, nowMs + 50), nowMs);
       return;
     }
     const turns = [...(this.currentSession.pendingTurns ?? []), ...(this.currentSession.activeTurn ? [this.currentSession.activeTurn] : [])];
-    let retryAtMs: number | undefined;
+    let retryAtMs = nextDeadline;
     for (const turn of turns) {
       const decision = evaluateTurnCompletion(buildTurnCompletionSnapshot({ turn,
         playbackActive: this.playbackActive && this.playbackTurnId === turn.id, nowMs }), nowMs);

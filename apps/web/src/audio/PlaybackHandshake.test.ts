@@ -531,3 +531,108 @@ describe("pending observations across a reset barrier", () => {
     harness.assertProtected();
   });
 });
+
+
+describe("timestamped PCM evidence and independent source deadline", () => {
+  async function sourceSession() {
+    const { SessionController } = await import("../session/SessionController");
+    const session = new SessionController({ audio: harness.controller, createLive: () => ({}) as never });
+    vi.spyOn(Date, "now").mockImplementation(() => harness.now);
+    harness.now = 1000;
+    Object.assign(session.session, { state: "listening", participantA: { side: "A", language: "ru" }, participantB: { side: "B", language: "es" }, activeTurn: {
+      id: "source", speaker: "A", sideSource: "language", originalText: "Вокзал", status: "streaming",
+      sourceFragments: [{ id: "s", text: "Вокзал", startMs: 0, endMs: 1000, receivedAtMs: 1000 }],
+      sourceIdleAtMs: 1000, speechStartAtMs: 0, audioOutputStarted: false,
+    } });
+    const internal = session as unknown as { routingTurnIds: Set<string>; considerTurnCompletion(atMs: number): Promise<void> };
+    internal.routingTurnIds.add("source");
+    await internal.considerTurnCompletion(1000);
+    return { session, internal };
+  }
+
+  it.each(["on-time", "delayed", "cancelled"])("retains actual held PCM receipt when completion is %s", async schedule => {
+    const { session } = await sourceSession();
+    harness.now = 5500;
+    harness.frame(.7, false); harness.flushMain();
+    const receivedAt = harness.now;
+    expect(harness.controller.hasPendingPlayback).toBe(true);
+    expect(harness.played).toHaveLength(0);
+    if (schedule === "cancelled") {
+      harness.now = 5800;
+      harness.controller.setOutputAudible(false); harness.flushWorklet(); harness.flushMain();
+      expect(harness.controller.hasPendingPlayback).toBe(false);
+    }
+    harness.now = schedule === "delayed" ? 7000 : 6000;
+    harness.runTimers();
+    expect(session.session.recentTurns.find(turn => turn.id === "source")?.outputDeadline)
+      .toEqual({ atMs: 6000, outcome: "unresolved" });
+    expect(session.attributionTrace.filter(entry => entry.kind === "pcm"))
+      .toEqual([expect.objectContaining({ atMs: receivedAt, played: false })]);
+    expect(session.metrics.snapshot().noObservedOutputDeadlineCount).toBe(0);
+    expect(session.currentAttribution).toMatchObject({ matchedAudioOutputs: 0, unattributedPlaybackCount: 0, confirmedSourceSpeechMs: null });
+    expect(harness.played).toHaveLength(0);
+  });
+
+  it("expires semantic uncertainty at D while natural audio settling has a later timer", async () => {
+    const { session, internal } = await sourceSession();
+    harness.now = 5100;
+    harness.frame(.7, false); harness.flushMain();
+    const receivedAt = harness.now;
+    await internal.considerTurnCompletion(harness.now); harness.flushWorklet();
+    while (harness.now < 6000) harness.frame();
+    expect(harness.played).toHaveLength(128);
+    expect(harness.controller.hasPendingPlayback).toBe(false);
+    expect(harness.capture.enabled).toBe(true);
+    expect(harness.analysis.enabled).toBe(true);
+    expect(session.session.recentTurns.find(turn => turn.id === "source")?.outputDeadline)
+      .toEqual({ atMs: 6000, outcome: "unresolved" });
+    expect(session.attributionTrace.filter(entry => entry.kind === "pcm" && !entry.played))
+      .toEqual([expect.objectContaining({ atMs: receivedAt, played: false })]);
+    expect(session.currentAttribution).toMatchObject({ matchedAudioOutputs: 0, unattributedPlaybackCount: 1, confirmedSourceSpeechMs: null });
+    harness.assertProtected();
+  });
+});
+
+
+it("keeps received PCM with its source context and rejects old generation and replaced-node callbacks", async () => {
+  const { SessionController } = await import("../session/SessionController");
+  const session = new SessionController({ audio: harness.controller, createLive: () => ({}) as never });
+  vi.spyOn(Date, "now").mockImplementation(() => harness.now);
+  harness.now = 1000;
+  Object.assign(session.session, { state: "listening", activeTurn: {
+    id: "old-source", speaker: "A", sideSource: "language", originalText: "source", status: "streaming",
+    sourceFragments: [], sourceIdleAtMs: 1000, speechStartAtMs: 0, audioOutputStarted: false,
+  } });
+  const internal = session as unknown as {
+    routingTurnIds: Set<string>; considerTurnCompletion(atMs: number): Promise<void>;
+    dispatch(action: unknown): void; resetTranscriptRouting(): void;
+    attribution: { hasCompatibleOutput(source: unknown): boolean };
+  };
+  internal.routingTurnIds.add("old-source");
+  harness.now = 5000; harness.frame(.7, false); harness.flushMain();
+  const receivedAt = harness.now;
+  const oldNode = harness.node;
+  const oldPending = harness.trace.find(row => row.event === "main pending:true")!;
+  for (let n = 0; n < 3; n++) await internal.considerTurnCompletion(harness.now);
+  expect(session.attributionTrace.filter(entry => entry.kind === "pcm"))
+    .toEqual([expect.objectContaining({ atMs: receivedAt, played: false })]);
+  harness.now = 5700;
+  internal.dispatch({ type: "SOURCE_HANDOFF", turnId: "new-source", speaker: "B", nowMs: 5700, languageRouted: true });
+  internal.routingTurnIds.add("new-source");
+  expect(internal.attribution.hasCompatibleOutput(session.session.activeTurn)).toBe(false);
+  harness.now = 6000;
+  await internal.considerTurnCompletion(harness.now);
+  expect(session.session.recentTurns.find(turn => turn.id === "old-source")?.outputDeadline)
+    .toEqual({ atMs: 6000, outcome: "unresolved" });
+
+  harness.controller.setOutputAudible(false); harness.controller.setOutputAudible(true);
+  internal.resetTranscriptRouting(); internal.routingTurnIds.add("new-source");
+  const stale = { data: { type: "pending", value: true, generation: oldPending.generation } } as MessageEvent<Message>;
+  oldNode.handler?.(stale);
+  await internal.considerTurnCompletion(harness.now);
+  expect(session.attributionTrace.filter(entry => entry.kind === "pcm")).toEqual([]);
+  harness.controller.attachRemoteStream(stream());
+  oldNode.handler?.(stale);
+  expect(session.attributionTrace.filter(entry => entry.kind === "pcm")).toEqual([]);
+  expect(internal.attribution.hasCompatibleOutput(session.session.activeTurn)).toBe(false);
+});

@@ -219,3 +219,19 @@ it("preserves pending packet identity and clocks when language evidence splits i
   expect(ledger.outputs.map(output => output.firstReceivedAtMs)).toEqual([1000, 1000]);
   expect(ledger.outputs.at(-1)?.sourceId).toBeUndefined();
 });
+
+
+it.each(["shared-packet", "separate-packets"])("does not join nonadjacent language groups with shared clocks: %s", kind => {
+  const ledger = new OutputAttribution(), a = source("a", 0);
+  const ids = kind === "shared-packet" ? ["p:head", "p:tail:head", "p:tail:tail"] : ["p1", "p2", "p3"];
+  const texts = ["¿Dónde está la estación? ", "Вокзал находится прямо впереди. ", "Muchas gracias por su ayuda."];
+  for (const [index, side] of (["B", "A", "B"] as const).entries())
+    ledger.receive([{ ...fragment(ids[index]!, 500, 2500), text: texts[index]! }], side, [a], 1000, "a");
+  expect(ledger.outputs.map(output => output.fragments.map(part => part.text).join(""))).toEqual(texts);
+  expect(new Set(ledger.outputs.map(output => output.id)).size).toBe(3);
+  const first = ledger.outputs[0]!;
+  const punctuation = ledger.receive([{ ...fragment("late-punctuation", 600, 600, 2000), text: "!" }], undefined, [a], 2000, "a");
+  // Both ES outputs cover this interval, so punctuation cannot choose one arbitrarily.
+  expect(punctuation.id).not.toBe(first.id);
+  expect(first.firstReceivedAtMs).toBe(1000);
+});
