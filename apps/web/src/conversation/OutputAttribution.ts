@@ -206,15 +206,12 @@ export class OutputAttribution {
         if (receipt.atMs > atMs) return false;
         if (receipt.sourceIds.includes(source.id)) return true;
         const start = earliestFragmentStart(source.sourceFragments);
-        // A late transcript can reveal old speech; receipt UUIDs alone cannot exclude it.
-        const ends = this.sources.filter(turn => receipt.sourceIds.includes(turn.id)).flatMap(turn =>
-          turn.sourceFragments.flatMap(part => part.endMs === undefined && part.startMs === undefined ? [] : [part.endMs ?? part.startMs!]));
-        if (start === undefined || (ends.length && start > Math.max(...ends))) return false;
+        // PCM has no provider upper bound; only accepted later VAD can exclude delayed speech.
         return ![...this.speechStarts].some(([id, speechAtMs]) => {
           if (speechAtMs <= receipt.atMs) return false;
           if (id === source.id) return true;
           const boundary = earliestFragmentStart(this.sources.find(turn => turn.id === id)?.sourceFragments);
-          return boundary !== undefined ? start >= boundary : (source.speechStartAtMs ?? Infinity) >= speechAtMs;
+          return start !== undefined && boundary !== undefined && start >= boundary;
         });
       });
   }

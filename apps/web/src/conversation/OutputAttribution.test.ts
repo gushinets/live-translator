@@ -82,7 +82,8 @@ describe("output attribution evidence", () => {
     const ledger = new OutputAttribution(), a = source("a", 0);
     ledger.observePlayback(1000, [a]);
     expect(ledger.hasCompatibleOutput(a)).toBe(true);
-    expect(ledger.hasCompatibleOutput(source("later", 5000))).toBe(false);
+    // A later provider timestamp is not a local PCM boundary.
+    expect(ledger.hasCompatibleOutput(source("later", 5000))).toBe(true);
   });
   it("converges for either order of evidence and keeps a previously published snapshot immutable", () => {
     const a1 = source("a1", 0), a2 = source("a2", 50), ledger = new OutputAttribution();
@@ -263,14 +264,14 @@ it("keeps late PCM candidates on their provider timeline across a new observed s
   expect(ledger.current()).toMatchObject({ matchedAudioOutputs: 0, unattributedPlaybackCount: 1, confirmedSourceSpeechMs: null });
 });
 
-it("lets late ASR split a known PCM episode but excludes later provider speech", () => {
+it("retains late ASR beyond the last known transcript end without inventing a PCM bound", () => {
   const ledger = new OutputAttribution(), original = source("original", 100000);
   ledger.observeReceivedPlayback(1000, [original]);
   const delayed = { ...source("split", 100050), speechStartAtMs: 2000 };
   const later = { ...source("later", 100200), speechStartAtMs: 2000 };
   ledger.reconcile([original, delayed, later], 2000);
   expect(ledger.hasCompatibleOutput(delayed)).toBe(true);
-  expect(ledger.hasCompatibleOutput(later)).toBe(false);
+  expect(ledger.hasCompatibleOutput(later)).toBe(true);
   expect(ledger.hasCompatibleOutput(delayed, 999)).toBe(false);
 });
 
@@ -363,4 +364,30 @@ it.each([false, true])("distinguishes delayed untimed ASR receipt from an observ
   ledger.reconcile([a, delayed], 2000);
   expect(out.sourceId).toBe(vad ? "a" : undefined);
   expect(out.firstReceivedAtMs).toBe(1000);
+});
+
+
+it.each(["untimed", "later-provider", "unknown-vad-boundary"])("retains PCM uncertainty without a proven later onset: %s", kind => {
+  const ledger = new OutputAttribution(), original = source("original", 100000);
+  ledger.observeReceivedPlayback(1000, [original]);
+  ledger.observePlayback(1100, [original]);
+  const delayed = { ...source("delayed", 100200), speechStartAtMs: 3000 };
+  if (kind === "untimed") delayed.sourceFragments = [];
+  const fresh = { ...source("fresh", 120000), sourceFragments: [], speechStartAtMs: 2000 };
+  if (kind === "unknown-vad-boundary") ledger.observeSourceStart(fresh.id, 2000);
+  ledger.reconcile([original, delayed, fresh], 3000);
+  expect(ledger.hasCompatibleOutput(delayed)).toBe(true);
+  expect(ledger.hasCompatibleOutput(delayed, 999)).toBe(false);
+  expect(ledger.current()).toMatchObject({ matchedAudioOutputs: 0, unattributedPlaybackCount: 1, confirmedSourceSpeechMs: null });
+});
+
+it("excludes delayed speech only beyond a known provider boundary of an accepted later VAD", () => {
+  const ledger = new OutputAttribution();
+  ledger.observeReceivedPlayback(1000, []);
+  ledger.observeSourceStart("fresh", 2000);
+  const fresh = source("fresh", 120000), later = source("later", 120100), older = source("older", 100000);
+  ledger.reconcile([fresh, later, older], 3000);
+  expect(ledger.hasCompatibleOutput(fresh)).toBe(false);
+  expect(ledger.hasCompatibleOutput(later)).toBe(false);
+  expect(ledger.hasCompatibleOutput(older)).toBe(true);
 });

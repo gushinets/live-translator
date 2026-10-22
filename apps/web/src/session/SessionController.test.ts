@@ -6638,3 +6638,53 @@ it.each([false, true])("observes pending unknown source before caption flush and
   });
   await controller.endConversation();
 });
+
+
+it.each([false, true])("publishes classified source with revised attribution, outputPending=%s", async outputPending => {
+  vi.useFakeTimers(); vi.setSystemTime(1000);
+  const { controller, live, audio } = createController();
+  await controller.startWithLanguages({ A: "en", B: "es" });
+  emitVoice(audio, true);
+  live.emit({ type: "session.input_transcript.delta", delta: "Where is the nearest train station?", start_ms: 0, end_ms: 1000 });
+  emitVoice(audio, false);
+  await vi.advanceTimersByTimeAsync(5001);
+  vi.setSystemTime(7000);
+  live.emit({ type: "session.output_transcript.delta", delta: "La estación está cerca de aquí.", start_ms: 2500, end_ms: 3500 });
+  const original = controller.captionBlocks.find(block => block.kind === "output")!;
+  if (outputPending) live.emit({ type: "session.output_transcript.delta", delta: "No", start_ms: 4000, end_ms: 4100 });
+  const snapshots: Array<{ matched: number; attribution: string | undefined; id: string | undefined; receipt: number | undefined }> = [];
+  const unsubscribe = controller.subscribe(() => {
+    if (!controller.captionBlocks.some(block => block.text.includes("How much does the ticket cost?"))) return;
+    const output = controller.captionBlocks.find(block => block.outputId === original.outputId)!;
+    snapshots.push({ matched: controller.currentAttribution.matchedTextOutputs, attribution: output.attribution,
+      id: output.outputId, receipt: output.receivedAtMs });
+  });
+  live.emit({ type: "session.input_transcript.delta", delta: "How much does the ticket cost?", start_ms: 2000, end_ms: 3000 });
+  unsubscribe();
+  expect(snapshots.length).toBeGreaterThan(0);
+  expect(snapshots).toEqual(snapshots.map(() => ({ matched: 0, attribution: "unattributed", id: original.outputId, receipt: 7000 })));
+  expect(controller.session.activeTurn?.originalText).toBe("How much does the ticket cost?");
+  await controller.endConversation();
+});
+
+
+it.each(["source", "vad"])("restores source publication after a projection exception: %s", async path => {
+  vi.useFakeTimers(); vi.setSystemTime(1000);
+  const { controller, live } = createController();
+  await controller.startWithLanguages({ A: "en", B: "es" });
+  const internal = controller as unknown as {
+    attribution: { reconcile(...args: unknown[]): unknown };
+    handleVoiceActivity(event: { active: boolean; atMs: number }): Promise<void>;
+  };
+  const failure = new Error("projection failed");
+  vi.spyOn(internal.attribution, "reconcile").mockImplementationOnce(() => { throw failure; });
+  const published: string[] = [];
+  const unsubscribe = controller.subscribe(() => published.push(controller.session.activeTurn?.originalText ?? ""));
+  if (path === "vad") await expect(internal.handleVoiceActivity({ active: true, atMs: 1000 })).rejects.toBe(failure);
+  else expect(() => live.emit({ type: "session.input_transcript.delta", delta: "Where is the station?" })).toThrow(failure);
+  expect(published).toEqual([]);
+  live.emit({ type: "session.input_transcript.delta", delta: "I need to buy a ticket." });
+  expect(published.some(text => text.includes("I need to buy a ticket."))).toBe(true);
+  unsubscribe();
+  await controller.endConversation();
+});

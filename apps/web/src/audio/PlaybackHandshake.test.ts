@@ -619,7 +619,8 @@ it("keeps received PCM with its source context and rejects old generation and re
   harness.now = 5700;
   internal.dispatch({ type: "SOURCE_HANDOFF", turnId: "new-source", speaker: "B", nowMs: 5700, languageRouted: true });
   internal.routingTurnIds.add("new-source");
-  expect(internal.attribution.hasCompatibleOutput(session.session.activeTurn)).toBe(false);
+  // A synthetic handoff without accepted VAD does not prove speech began after the PCM.
+  expect(internal.attribution.hasCompatibleOutput(session.session.activeTurn)).toBe(true);
   harness.now = 6000;
   await internal.considerTurnCompletion(harness.now);
   expect(session.session.recentTurns.find(turn => turn.id === "old-source")?.outputDeadline)
@@ -651,7 +652,8 @@ async function sessionWithSource(source = true) {
   const internal = session as unknown as {
     speechInputReady: boolean; routingTurnIds: Set<string>;
     considerTurnCompletion(atMs: number): Promise<void>;
-    handleConversationInputDelta(event: { type: "session.input_transcript.delta"; delta: string; start_ms: number; end_ms: number }): void;
+    handleConversationInputDelta(event: { type: "session.input_transcript.delta"; delta: string; start_ms?: number; end_ms?: number }): void;
+    handleConversationOutputDelta(event: { type: "session.output_transcript.delta"; delta: string; start_ms: number; end_ms: number }): void;
     handleVoiceActivity(event: { active: boolean; atMs: number }): Promise<void>;
   };
   internal.speechInputReady = true;
@@ -687,4 +689,59 @@ it.each([false, true])("retains drained PCM for delayed ASR but not a new observ
   expect(source?.outputDeadline?.outcome).toBe(freshSpeech ? "no_observed_output" : "unresolved");
   expect(session.recoveryPrompt).toBe(freshSpeech ? "repeat" : undefined);
   expect(session.currentAttribution).toMatchObject({ matchedAudioOutputs: 0, unattributedPlaybackCount: 1, confirmedSourceSpeechMs: null });
+});
+
+it.each(["untimed", "later-provider", "fresh-vad"])("real drained PCM remains evidence with uncertain ASR bounds: %s", async kind => {
+  const { session, internal } = await sessionWithSource(kind === "later-provider");
+  harness.frame(.7, false); harness.flushMain(); harness.flushWorklet();
+  harness.until(() => harness.played.length === 128);
+  harness.until(() => harness.capture.enabled);
+  expect(harness.controller.hasPendingPlayback).toBe(false);
+  harness.now = 2000;
+  if (kind === "fresh-vad") harness.sampleMic(.5, 300);
+  internal.handleConversationInputDelta({ type: "session.input_transcript.delta",
+    delta: kind === "later-provider" ? "La estación está cerca de aquí." : "Где находится вокзал?",
+    ...(kind === "later-provider" ? { start_ms: 600, end_ms: 900 } : {}) });
+  const id = session.session.activeTurn!.id;
+  await internal.handleVoiceActivity({ active: false, atMs: harness.now });
+  harness.now += 5000; harness.runTimers();
+  harness.assertProtected();
+  expect(harness.played).toHaveLength(128);
+  expect(session.session.recentTurns.find(turn => turn.id === id)?.outputDeadline?.outcome)
+    .toBe(kind === "fresh-vad" ? "no_observed_output" : "unresolved");
+  expect(session.recoveryPrompt).toBe(kind === "fresh-vad" ? "repeat" : undefined);
+  expect(session.currentAttribution).toMatchObject({ matchedAudioOutputs: 0, unattributedPlaybackCount: 1, confirmedSourceSpeechMs: null });
+});
+
+it.each([false, true])("reconciles accepted real VAD before publishing, outputFirst=%s", async outputFirst => {
+  const { session, internal } = await sessionWithSource();
+  await internal.considerTurnCompletion(1000);
+  harness.now = 6000; harness.runTimers();
+  const handler = harness.controller.onVoiceActivity!;
+  const snapshots: number[] = [];
+  const unsubscribe = session.subscribe(() => {
+    if (session.session.activeTurn?.originalText === "") snapshots.push(session.currentAttribution.matchedTextOutputs);
+  });
+  harness.controller.onVoiceActivity = event => {
+    const output = () => internal.handleConversationOutputDelta({ type: "session.output_transcript.delta",
+      delta: "¿Dónde está la estación?", start_ms: 100, end_ms: 400 });
+    if (event.active && outputFirst) output();
+    handler(event);
+    if (event.active && !outputFirst) output();
+  };
+  harness.now = 7000; harness.sampleMic(.5, 300);
+  const original = session.captionBlocks.find(block => block.kind === "output")!;
+  expect(session.session.activeTurn).toMatchObject({ originalText: "", speechStartAtMs: 7150 });
+  expect(session.currentAttribution).toMatchObject({ matchedTextOutputs: 0, unattributedTextOutputs: 1 });
+  harness.now += 1000; harness.runTimers();
+  expect(session.currentAttribution.matchedTextOutputs).toBe(0);
+  expect(session.session.recentTurns.find(turn => turn.id === "source")?.translatedText).toBeUndefined();
+  expect(session.session.recentTurns.find(turn => turn.id === "source")?.outputDeadline)
+    .toEqual({ atMs: 6000, outcome: "no_observed_output" });
+  expect(session.captionBlocks.find(block => block.outputId === original.outputId))
+    .toMatchObject({ receivedAtMs: 7150, text: original.text, attribution: "unattributed" });
+  expect(snapshots.length).toBeGreaterThan(0);
+  expect(snapshots.every(count => count === 0)).toBe(true);
+  unsubscribe();
+  harness.assertProtected();
 });
