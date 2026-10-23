@@ -1457,6 +1457,7 @@ export class SessionController {
         }
         if (!active) {
           if (!this.speechInputReady) continue;
+          this.dismissPresentedRecovery();
           this.speechInputReady = false;
           this.dispatch({ type: "SOURCE_ACTIVE", turnId: crypto.randomUUID(), speaker: side,
             sideSource: side ? "language" : "unresolved", fragment: first, languageRouted: true });

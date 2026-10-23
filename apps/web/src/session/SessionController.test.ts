@@ -7472,3 +7472,30 @@ it.each(["speech", "transcript", "pcm", "language", "end"])("dismisses provider 
   expect(controller.recoveryPrompt).toBeUndefined();
   if (boundary !== "end") await controller.endConversation();
 });
+
+
+it("dismisses the presented A hint when a new B source arrives through ASR without VAD", async () => {
+  vi.useFakeTimers(); vi.setSystemTime(1000);
+  const { controller, live, audio } = createController();
+  await controller.startWithLanguages({ A: "ru", B: "es" });
+  emitVoice(audio, true);
+  live.emit({ type: "session.input_transcript.delta", delta: "Где находится станция?", start_ms: 0, end_ms: 1000 });
+  const aId = controller.session.activeTurn!.id;
+  emitVoice(audio, false);
+  await vi.advanceTimersByTimeAsync(5001);
+  expect(controller.inputReady).toBe(true);
+  expect(controller.recoveryPrompt).toBe("repeat");
+  expect(controller.recoveryPromptSide).toBe("A");
+  vi.setSystemTime(6002);
+  // ASR itself accepts a new source; no VAD-active event precedes it.
+  live.emit({ type: "session.input_transcript.delta", delta: "La estación está cerca.", start_ms: 2000, end_ms: 3000 });
+  const bId = controller.session.activeTurn!.id;
+  expect(bId).not.toBe(aId);
+  expect(controller.session.activeTurn?.speaker).toBe("B");
+  expect(controller.recoveryPrompt).toBeUndefined();
+  await vi.advanceTimersByTimeAsync(5001);
+  expect(controller.session.recentTurns.filter(turn => turn.outputDeadline).map(turn => turn.id)).toEqual([aId, bId]);
+  expect(controller.recoveryPrompt).toBe("repeat");
+  expect(controller.recoveryPromptSide).toBe("B");
+  await controller.endConversation();
+});
