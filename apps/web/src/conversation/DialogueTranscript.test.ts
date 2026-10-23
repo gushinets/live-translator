@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { DialogueTranscript } from "./DialogueTranscript";
 import type { TranscriptFragment } from "./TranscriptFragment";
 
@@ -589,4 +589,34 @@ it("publishes a whole output projection with historical revisions and no duplica
   expect(transcript.blocks.map(block => [block.outputId, block.receivedAtMs, block.attribution])).toEqual([
     ["one", 100, "unattributed"], ["two", 200, "matched"], ["three", 300, "matched"],
   ]);
+});
+
+
+it("reuses unchanged output language analysis across PCM and source-only projections", () => {
+  const transcript = new DialogueTranscript();
+  const analyze = vi.spyOn(transcript as unknown as { languageRuns: (...args: unknown[]) => unknown }, "languageRuns");
+  const outputs = [
+    { id: "first", sourceId: "a", fragments: [fragment("La estación está cerca.", 1000)] },
+    { id: "second", sourceId: undefined as string | undefined, fragments: [fragment("Cafe\u0301. ", 2000)] },
+  ];
+  const languages = { A: "ru", B: "es" };
+  transcript.setOutputs(outputs, languages);
+  analyze.mockClear();
+  for (let index = 0; index < 10; index++) transcript.setOutputs(outputs, { ...languages });
+  outputs[1]!.sourceId = "b";
+  transcript.setOutputs(outputs, languages);
+  expect(analyze).not.toHaveBeenCalled();
+  expect(transcript.blocks.map(block => block.attribution)).toEqual(["matched", "matched"]);
+  outputs[1]!.fragments.push(fragment("Sí.", 2001));
+  transcript.setOutputs(outputs, languages);
+  expect(analyze).toHaveBeenCalledTimes(1);
+  expect(transcript.blocks.map(block => block.text).join("")).toContain("Cafe\u0301. Sí.");
+  transcript.setOutputs(outputs, { A: "ru", B: "fr" });
+  expect(analyze).toHaveBeenCalledTimes(3);
+  transcript.seal();
+  transcript.setOutputs(outputs, languages);
+  expect(analyze).toHaveBeenCalledTimes(5);
+  transcript.clear();
+  transcript.setOutputs(outputs, languages);
+  expect(analyze).toHaveBeenCalledTimes(7);
 });

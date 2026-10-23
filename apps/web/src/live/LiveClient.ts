@@ -726,8 +726,6 @@ export class LiveClient {
       this.handleMalformedServerEvent("Received malformed Live event JSON");
       return;
     }
-    if (typeof parsed === "object" && parsed !== null && "type" in parsed && parsed.type === "error")
-      this.diagnostics.observe("provider_error", "error", Date.now());
     const serverEvent = parseLiveServerEvent(parsed);
     if (serverEvent.kind === "unknown") {
       this.diagnostics.observe("unknown_event", (parsed as { type: string }).type, Date.now());
@@ -737,6 +735,7 @@ export class LiveClient {
       this.handleMalformedServerEvent(serverEvent.message);
       return;
     }
+    if (serverEvent.event.type === "error") this.diagnostics.observe("provider_error", "error", Date.now());
     this.dispatchServerEvent(serverEvent.event, parsed);
   }
 

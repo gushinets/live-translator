@@ -692,7 +692,7 @@ it.each([false, true])("retains drained PCM for delayed ASR even after a new VAD
   const source = session.session.recentTurns.find(t => t.id === id);
   harness.assertProtected();
   expect(source?.outputDeadline?.outcome).toBe("unresolved");
-  expect(session.recoveryPrompt).toBe(undefined);
+  expect(session.recoveryPrompt).toBe("conditional-repeat");
   expect(session.currentAttribution).toMatchObject({ matchedAudioOutputs: 0, unattributedPlaybackCount: 1, confirmedSourceSpeechMs: null });
 });
 
@@ -714,7 +714,7 @@ it.each(["untimed", "later-provider", "fresh-vad"])("real drained PCM remains ev
   expect(harness.played).toHaveLength(128);
   expect(session.session.recentTurns.find(turn => turn.id === id)?.outputDeadline?.outcome)
     .toBe("unresolved");
-  expect(session.recoveryPrompt).toBe(undefined);
+  expect(session.recoveryPrompt).toBe("conditional-repeat");
   expect(session.currentAttribution).toMatchObject({ matchedAudioOutputs: 0, unattributedPlaybackCount: 1, confirmedSourceSpeechMs: null });
 });
 
@@ -780,7 +780,7 @@ it.each(["overlap", "main-delay"])("does not turn VAD confirmation into an onset
   await internal.considerTurnCompletion(deadline);
   expect(session.session.recentTurns.find(turn => turn.id === id)?.outputDeadline?.outcome).toBe("unresolved");
   expect(session.metrics.snapshot().noObservedOutputDeadlineCount).toBe(0);
-  expect(session.recoveryPrompt).toBeUndefined();
+  expect(session.recoveryPrompt).toBe("conditional-repeat");
   expect(harness.played).toHaveLength(128);
   harness.assertProtected();
 });
@@ -839,6 +839,6 @@ it.each([false, true])("does not correlate delayed ASR with a reopened capture c
   expect(reopenedAt).toBeGreaterThan(pcmReceivedAt);
   expect(compatible,"ASR has no correlation to the capture reopen and can describe the captured pre-PCM prefix").toBe(true);
   expect(terminal?.outputDeadline?.outcome).toBe("unresolved");
-  expect(session.recoveryPrompt).toBeUndefined();
+  expect(session.recoveryPrompt).toBe("conditional-repeat");
   expect(session.metrics.snapshot().noObservedOutputDeadlineCount).toBe(0);
 });

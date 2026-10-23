@@ -156,6 +156,7 @@ export function ConversationScreen({
           </button>
         ) : null}
         {controller.recoveryPrompt === "repeat" && controller.inputReady ? <p>{t("Повторите")}</p> : null}
+        {controller.recoveryPrompt === "conditional-repeat" && controller.inputReady ? <p>{t("Если перевод не прозвучал, повторите реплику")}</p> : null}
         {controller.retainedRecoveryState === undefined && terminalAlert === undefined && controller.ownerError !== undefined ? (
           <ErrorOverlay message={controller.ownerError} language={ownerLocale} />
         ) : null}

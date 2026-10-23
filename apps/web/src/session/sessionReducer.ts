@@ -404,11 +404,22 @@ export function sessionReducer(session: TranslationSession, action: SessionActio
         outputDeadline: { atMs: action.atMs, outcome: action.outcome } }));
     }
     case "OUTPUT_ATTRIBUTION": {
+      const sourceIds = new Set(action.sourceIds);
+      const turns = new Map([...session.recentTurns, ...(session.pendingTurns ?? []),
+        ...(session.activeTurn ? [session.activeTurn] : [])].map(turn => [turn.id, turn]));
+      const sourceOutputs = new Map<string, AttributedOutput[]>();
+      for (const output of action.outputs) {
+        if (!output.sourceId) continue;
+        const outputs = sourceOutputs.get(output.sourceId) ?? [];
+        outputs.push(output);
+        sourceOutputs.set(output.sourceId, outputs);
+      }
       const project = (turn: Turn): Turn => {
-        if (turn.translationOnly || !action.sourceIds.includes(turn.id)) return turn;
-        const fragments = action.outputs.filter(output => output.sourceId === turn.id).flatMap(output => output.fragments);
+        if (turn.translationOnly || !sourceIds.has(turn.id)) return turn;
+        const outputs = sourceOutputs.get(turn.id) ?? [];
+        const fragments = outputs.flatMap(output => output.fragments);
         const ordered = orderTranscriptFragments(fragments);
-        const outputSide = action.outputs.find(output => output.sourceId === turn.id)?.side;
+        const outputSide = outputs[0]?.side;
         const speaker = turn.speaker ?? (outputSide === "A" ? "B" : outputSide === "B" ? "A" : undefined);
         return { ...turn, speaker, sideSource: turn.speaker === undefined && speaker !== undefined ? "translation" : turn.sideSource,
           status: ordered.length && turn.status === "streaming" ? "outputting" : turn.status, outputFragments: ordered, translatedText: ordered.length ? ordered.map(part => part.text).join("") : undefined,
@@ -419,7 +430,7 @@ export function sessionReducer(session: TranslationSession, action: SessionActio
           outputTextEndAtMs: ordered.length ? Math.max(...ordered.map(part => part.receivedAtMs)) : undefined };
       };
       const standalone = action.outputs.filter(output => !output.sourceId).map(output => {
-        const known = findSessionTurn(session, output.id);
+        const known = turns.get(output.id);
         const fragments = orderTranscriptFragments(output.fragments);
         return { ...(known ?? createTurn({ id: output.id, speaker: undefined, sideSource: "unresolved", nowMs: output.firstReceivedAtMs })),
           translationOnly: true, status: known?.status ?? (output.technicalCompleted ? "completed" as const : "outputting" as const), sourceIdleAtMs: output.firstReceivedAtMs,
@@ -428,11 +439,14 @@ export function sessionReducer(session: TranslationSession, action: SessionActio
           firstOutputTextAtMs: output.firstReceivedAtMs, outputTextEndAtMs: Math.max(...fragments.map(part => part.receivedAtMs)) };
       });
       const outputIds = new Set(action.outputs.map(output => output.id));
-      return { ...session, state: session.state === "listening" && action.outputs.some(output =>
-          !output.sourceId ? !findSessionTurn(session, output.id) || findSessionTurn(session, output.id)?.status !== "completed" :
-          ["streaming", "outputting"].includes(findSessionTurn(session, output.sourceId)?.status ?? "")) ? "outputting" : session.state,
-        activeTurn: session.activeTurn ? project(session.activeTurn) : undefined,
-        pendingTurns: [...(session.pendingTurns ?? []).filter(turn => !outputIds.has(turn.id)).map(project), ...standalone.filter(turn => !["completed", "discarded"].includes(turn.status))],
+      const activeTurn = session.activeTurn ? project(session.activeTurn) : undefined;
+      const pendingTurns = [...(session.pendingTurns ?? []).filter(turn => !outputIds.has(turn.id)).map(project),
+        ...standalone.filter(turn => !["completed", "discarded"].includes(turn.status))];
+      const state = session.state === "outputting" && !activeTurn && !pendingTurns.length ? "listening"
+        : session.state === "listening" && action.outputs.some(output =>
+          !output.sourceId ? !turns.has(output.id) || turns.get(output.id)?.status !== "completed" :
+          ["streaming", "outputting"].includes(turns.get(output.sourceId)?.status ?? "")) ? "outputting" : session.state;
+      return { ...session, state, activeTurn, pendingTurns,
         recentTurns: [...session.recentTurns.filter(turn => !outputIds.has(turn.id)).map(project), ...standalone.filter(turn => ["completed", "discarded"].includes(turn.status))] };
     }
 

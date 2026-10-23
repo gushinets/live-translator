@@ -39,6 +39,7 @@ const messages: Record<string, Translations> = {
   "Поверните телефон вертикально": ["Turn your phone upright", "Tournez votre téléphone à la verticale", "Ruota il telefono in verticale", "Drehen Sie das Telefon ins Hochformat", "Gira el teléfono a la posición vertical", "Gire o telefone para a posição vertical"],
   "Продолжить / повторить": ["Continue / repeat", "Continuer / répéter", "Continua / ripeti", "Fortsetzen / wiederholen", "Continuar / repetir", "Continuar / repetir"],
   "Повторите": ["Please repeat", "Répétez", "Ripeti", "Bitte wiederholen", "Repite", "Repita"],
+  "Если перевод не прозвучал, повторите реплику": ["If you did not hear a translation, please repeat", "Si vous n’avez pas entendu la traduction, répétez la phrase", "Se non hai sentito la traduzione, ripeti la frase", "Falls Sie keine Übersetzung gehört haben, wiederholen Sie den Satz", "Si no has oído la traducción, repite la frase", "Se não ouviu a tradução, repita a frase"],
   "Ваш язык": ["Your language", "Votre langue", "La tua lingua", "Ihre Sprache", "Tu idioma", "Seu idioma"],
   "не определён": ["not selected", "non définie", "non selezionata", "nicht ausgewählt", "sin seleccionar", "não selecionado"],
   "Изменить": ["Change", "Modifier", "Cambia", "Ändern", "Cambiar", "Alterar"],

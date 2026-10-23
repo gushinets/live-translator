@@ -30,6 +30,7 @@ export class DialogueTranscript {
   private streams: Partial<Record<DialogueBlock["kind"], Stream>> = {};
   private sequence = 0;
   private outputs = new Map<string, { fragments: TranscriptFragment[]; languages: ConversationLanguages; sourceId?: string }>();
+  private outputRuns = new Map<string, { text: string; languages: ConversationLanguages; runs: Array<{ text: string; side?: Side }> }>();
   private readonly detector = eld.newInstance();
 
   push(kind: DialogueBlock["kind"], fragment: TranscriptFragment, languages: ConversationLanguages): void {
@@ -75,6 +76,7 @@ export class DialogueTranscript {
     this.history = [...this.blocks];
     this.streams = {};
     this.outputs.clear();
+    this.outputRuns.clear();
   }
 
   clear(): void {
@@ -82,6 +84,7 @@ export class DialogueTranscript {
     this.streams = {};
     this.blocks = [];
     this.outputs.clear();
+    this.outputRuns.clear();
   }
 
   private publish(): void {
@@ -99,10 +102,16 @@ export class DialogueTranscript {
         previous.fragments.push(...output.fragments);
       } else phrases.push(output);
     }
+    const phraseIds = new Set(phrases.map(output => output.id));
+    for (const id of this.outputRuns.keys()) if (!phraseIds.has(id)) this.outputRuns.delete(id);
     for (const { id, ...output } of phrases) {
       const outputBlocks: DialogueBlock[] = [];
       const fragments = orderTranscriptFragments(output.fragments);
-      const runs = this.languageRuns(fragments.map(part => part.text).join(""), output.languages);
+      const text = fragments.map(part => part.text).join("");
+      const cached = this.outputRuns.get(id);
+      const runs = cached?.text === text && cached.languages.A === output.languages.A && cached.languages.B === output.languages.B
+        ? cached.runs : this.languageRuns(text, output.languages);
+      this.outputRuns.set(id, { text, languages: { ...output.languages }, runs });
       let offset = 0;
       for (const run of runs) {
         outputBlocks.push({ ...run, id: `output:${id}:${offset}`, outputId: id, kind: "output",

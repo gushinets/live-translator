@@ -663,3 +663,44 @@ it("shows an addressed no-output repeat hint only when input is ready", () => {
   controller.inputReady = true; view.rerender(<ConversationScreen controller={controller} />);
   expect(screen.getByText("Повторите")).toBeVisible();
 });
+
+
+it("keeps an unowned Spanish translation readable without inventing an author", () => {
+  const controller = new FakeConversationController(session({
+    participantA: { ...participant("A"), language: "ru" },
+    participantB: { ...participant("B"), language: "es" },
+  }));
+  controller.captionBlocks = [{ id: "unowned", outputId: "output", kind: "output", side: "B", language: "es",
+    attribution: "unattributed", text: "La estación está cerca.", receivedAtMs: 1 }];
+  const view = render(<ConversationScreen controller={controller} />);
+  const text = screen.getByText("La estación está cerca.");
+  expect(text).toHaveAttribute("lang", "es");
+  expect(text.closest("li")?.querySelector(".turn-author")).toBeNull();
+  expect(screen.getAllByText("La estación está cerca.")).toHaveLength(1);
+  controller.captionBlocks = controller.captionBlocks.map(block => ({ ...block, attribution: "matched" }));
+  view.rerender(<ConversationScreen controller={controller} />);
+  expect(screen.getByText("La estación está cerca.").closest("li")?.querySelector(".turn-author")).not.toBeNull();
+});
+
+
+it.each([
+  ["ru", "Если перевод не прозвучал, повторите реплику"],
+  ["en", "If you did not hear a translation, please repeat"],
+  ["es", "Si no has oído la traducción, repite la frase"],
+  ["pt", "Se não ouviu a tradução, repita a frase"],
+  ["de", "Falls Sie keine Übersetzung gehört haben, wiederholen Sie den Satz"],
+  ["fr", "Si vous n’avez pas entendu la traduction, répétez la phrase"],
+  ["it", "Se non hai sentito la traduzione, ripeti la frase"],
+])("shows honest conditional recovery in %s only when input is ready", (language, text) => {
+  const controller = new FakeConversationController(session({
+    participantA: { ...participant("A"), language },
+    participantB: { ...participant("B"), language: language === "es" ? "en" : "es" },
+  }));
+  controller.recoveryPrompt = "conditional-repeat"; controller.recoveryPromptIsTurnFailure = true;
+  controller.inputReady = false;
+  const view = render(<ConversationScreen controller={controller} />);
+  expect(screen.queryByText(text)).not.toBeInTheDocument();
+  controller.inputReady = true; view.rerender(<ConversationScreen controller={controller} />);
+  expect(screen.getByText(text)).toBeVisible();
+  expect(screen.queryByText("Повторите", { exact: true })).not.toBeInTheDocument();
+});

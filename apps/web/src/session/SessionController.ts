@@ -50,7 +50,7 @@ import {
 
 import { detectLanguage, type ConversationLanguages } from "../side/SideResolver";
 
-export type RecoveryPrompt = "repeat" | "resume-repeat";
+export type RecoveryPrompt = "repeat" | "conditional-repeat" | "resume-repeat";
 
 export type LifecycleSuspendReason = "orientation" | "visibility" | "audio";
 
@@ -147,10 +147,21 @@ export class SessionController {
   private readonly dialogueTranscript = new DialogueTranscript();
   private attribution = new OutputAttribution();
   private retiredAttributionTrace: OutputAttribution["trace"] = [];
+  private retiredProviderDiagnostics: LiveClient["diagnostics"]["entries"] = [];
   private sourceUpdateInProgress = false;
   private noOutputHint: { sourceId: string; generation: number } | undefined;
   get currentAttribution() { return this.attribution.current(); }
   get attributionTrace() { return [...this.retiredAttributionTrace, ...this.attribution.trace].slice(-128); }
+  get providerDiagnostics() {
+    const current = this.live.diagnostics;
+    return [...this.retiredProviderDiagnostics.filter(entry => entry.generation !== current?.generation), ...(current?.entries ?? [])]
+      .slice(-32).map(entry => ({ ...entry }));
+  }
+  private retainProviderDiagnostics(live = this.live): void {
+    if (!live.diagnostics) return;
+    this.retiredProviderDiagnostics = [...this.retiredProviderDiagnostics.filter(entry => entry.generation !== live.diagnostics.generation),
+      ...live.diagnostics.entries].slice(-32).map(entry => ({ ...entry }));
+  }
   get captionBlocks() { return this.dialogueTranscript.blocks; }
   private sourceFragmentTimer: number | null = null;
   private outputFragmentTimer: number | null = null;
@@ -257,6 +268,7 @@ export class SessionController {
     if (!stream) throw new Error("Microphone capture stream is unavailable");
     this.assertCaptureStreamLive(stream);
     this.audio.setCaptureEnabled(false);
+    this.retainProviderDiagnostics();
     const live = this.live = this.deps.createLive();
     this.bindLive();
     this.retainedProductDeadlineAt = snapshot.productDeadlineAt;
@@ -434,6 +446,7 @@ export class SessionController {
       this.backgroundPaused = false;
       this.backgroundCloseWork = null;
       this.sessionGeneration++;
+      this.retainProviderDiagnostics();
       this.live = this.deps.createLive();
       this.bindLive();
     }
@@ -492,7 +505,7 @@ export class SessionController {
   }
 
   get recoveryPromptIsTurnFailure(): boolean {
-    return this.recoveryPromptKind === "repeat" && this.turnFailurePrompt;
+    return (this.recoveryPromptKind === "repeat" || this.recoveryPromptKind === "conditional-repeat") && this.turnFailurePrompt;
   }
 
   get suspendReason(): LifecycleSuspendReason | undefined {
@@ -1339,7 +1352,8 @@ export class SessionController {
       if (this.backgroundPaused || this.leftoverOutputDraining ||
           !["listening", "outputting"].includes(this.currentSession.state)) return;
       this.attribution.observeReceivedPlayback(atMs);
-      this.projectAttribution();
+      // PCM updates deadline evidence, but has no text-attribution evidence.
+      this.projectAttribution(false);
     };
     this.audio.onRemoteAudioSample = event => {
       if (this.backgroundPaused) return;
@@ -1563,7 +1577,7 @@ export class SessionController {
     this.expireOutputDeadlines(Date.now(), false);
     for (const { side, fragments } of groups) {
       const output = this.attribution.receive(fragments, side, this.routingTurns(), Date.now(), this.sourceRouter.pendingFragments);
-      if (output.lateOutput) this.conversationMetrics.recordAttributionEvent("lateOutputAfterDeadlineCount", `${output.id}:${output.revision}`);
+      if (output.lateOutput) this.conversationMetrics.recordAttributionEvent("lateOutputAfterDeadlineCount", output.id);
       this.outputTurnId = output.sourceId ?? output.id;
       this.outputSourceTurnId = output.sourceId ?? this.latestSourceTurnId;
       // Preserve the legacy technical playback label; current attribution does not treat it as provider correlation.
@@ -1576,23 +1590,28 @@ export class SessionController {
     if (considerCompletion) void this.considerTurnCompletion(Date.now());
   }
 
-  private projectAttribution(): void {
+  private projectAttribution(reconcile = true): void {
     this.expireOutputDeadlines(Date.now());
-    const changes = this.attribution.reconcile(this.routingTurns(), Date.now(), this.sourceRouter.pendingFragments);
-    for (const { output, previousSourceId } of changes) {
-      if (output.lateOutput) this.conversationMetrics.recordAttributionEvent("lateOutputAfterDeadlineCount", `${output.id}:${output.revision}`);
-      if (previousSourceId && previousSourceId !== output.sourceId)
-        this.conversationMetrics.recordAttributionEvent("attributionRevokedCount", `${output.id}:${output.revision}`);
+    if (reconcile) {
+      const changes = this.attribution.reconcile(this.routingTurns(), Date.now(), this.sourceRouter.pendingFragments);
+      for (const { output, previousSourceId } of changes) {
+        if (output.lateOutput) this.conversationMetrics.recordAttributionEvent("lateOutputAfterDeadlineCount", output.id);
+        if (previousSourceId && previousSourceId !== output.sourceId)
+          this.conversationMetrics.recordAttributionEvent("attributionRevokedCount", `${output.id}:${output.revision}`);
+      }
+      for (const output of this.attribution.outputs) {
+        if (output.lateOutput) this.conversationMetrics.recordAttributionEvent("lateOutputAfterDeadlineCount", output.id);
+      }
+      if (this.attribution.outputs.length) this.dialogueTranscript.setOutputs(this.attribution.outputs, this.languages);
+      if (this.attribution.outputs.length) this.currentSession = sessionReducer(this.currentSession,
+        { type: "OUTPUT_ATTRIBUTION", outputs: this.attribution.outputs.filter(output => !output.languagePending), sourceIds: this.routingTurns().map(turn => turn.id) });
     }
-    for (const output of this.attribution.outputs) {
-      if (output.lateOutput) this.conversationMetrics.recordAttributionEvent("lateOutputAfterDeadlineCount", `${output.id}:${output.revision}`);
-    }
-    if (this.attribution.outputs.length) this.dialogueTranscript.setOutputs(this.attribution.outputs, this.languages);
-    if (this.attribution.outputs.length) this.currentSession = sessionReducer(this.currentSession,
-      { type: "OUTPUT_ATTRIBUTION", outputs: this.attribution.outputs.filter(output => !output.languagePending), sourceIds: this.routingTurns().map(turn => turn.id) });
     const hint = this.noOutputHint;
     const source = hint && findSessionTurn(this.currentSession, hint.sourceId);
-    if (hint && source && hint.generation === this.sessionGeneration && this.attribution.hasCompatibleOutput(source)) {
+    if (hint && source && hint.generation === this.sessionGeneration &&
+        (this.recoveryPromptKind === "conditional-repeat"
+          ? this.attribution.outputs.some(output => output.sourceId === source.id)
+          : this.attribution.hasCompatibleOutput(source))) {
       this.noOutputHint = undefined; this.recoveryPromptKind = undefined; this.turnFailurePrompt = false;
     }
     this.notify();
@@ -1787,9 +1806,11 @@ export class SessionController {
       this.conversationMetrics.recordNoOutputWatchdog();
     }
     this.dispatch({ type: "OUTPUT_DEADLINE", turnId: turn.id, atMs, outcome: unresolved ? "unresolved" : "no_observed_output" });
-    if (!unresolved && !this.currentSession.activeTurn && !(this.currentSession.pendingTurns?.length)) {
+    if (!turn.translationOnly && !this.attribution.outputs.some(output => output.sourceId === turn.id) &&
+        !this.currentSession.activeTurn && !(this.currentSession.pendingTurns?.length)) {
       this.noOutputHint = { sourceId: turn.id, generation: this.sessionGeneration };
-      this.recoveryPromptKind = "repeat"; this.turnFailurePrompt = true;
+      // Uncorrelated historical PCM cannot prove this source was translated or went silent.
+      this.recoveryPromptKind = unresolved ? "conditional-repeat" : "repeat"; this.turnFailurePrompt = true;
     }
     this.notify();
   }
@@ -2132,6 +2153,7 @@ export class SessionController {
     this.audio.detachRemoteStream?.();
     this.audio.audioElement.srcObject = null;
 
+    this.retainProviderDiagnostics(previousLive);
     this.live = replacementLive;
     this.hasConnected = false;
     this.liveConnectStarted = true;
@@ -2141,7 +2163,10 @@ export class SessionController {
     this.retiringLiveClose = retiring;
     this.notify();
     try { await retiring; }
-    finally { if (this.retiringLiveClose === retiring) this.retiringLiveClose = null; }
+    finally {
+      if (this.sessionGeneration === generation) this.retainProviderDiagnostics(previousLive);
+      if (this.retiringLiveClose === retiring) this.retiringLiveClose = null;
+    }
 
     if (this.sessionGeneration !== generation) {
       await replacementLive.disconnectImmediately();
@@ -3049,11 +3074,13 @@ export class SessionController {
     this.sessionGeneration += 1;
     this.currentSession = createEmptySession();
     if (review) {
+      this.retainProviderDiagnostics();
       this.currentSession = { ...this.currentSession, state: "ended", participantA, participantB };
       this.dialogueTranscript.seal();
     } else {
       this.dialogueTranscript.clear();
       this.retiredAttributionTrace = [];
+      this.retiredProviderDiagnostics = [];
     }
     this.live = this.deps.createLive();
     this.bindLive();

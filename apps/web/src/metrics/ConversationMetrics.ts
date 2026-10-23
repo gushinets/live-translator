@@ -71,7 +71,7 @@ export function calculateMetrics(input: TurnTimingInput): TurnMetrics {
 export class ConversationMetrics {
   private readonly attributionEvents = new Map<string, Set<string>>();
   private readonly restoredAttribution: MetricCounters = {};
-  /** Deadlines dedupe by source; decisions by stable output ID and revision. Historical, never current success. */
+  /** Deadlines dedupe by source, late receipts by output ID, revocations by output ID/revision. Historical, never current success. */
   recordAttributionEvent(name: typeof ATTRIBUTION_COUNTER_NAMES[number], id: string): void {
     let events = this.attributionEvents.get(name);
     if (!events) this.attributionEvents.set(name, events = new Set());

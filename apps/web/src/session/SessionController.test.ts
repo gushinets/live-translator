@@ -9,6 +9,7 @@ import { runtime } from "../config/runtime";
 import { PlaybackQueue } from "../audio/PlaybackQueue";
 import { AckTimeoutError } from "../live/AckRegistry";
 import { LiveClient } from "../live/LiveClient";
+import { LiveDiagnostics } from "../live/LiveDiagnostics";
 import {
   APPEND_CHAR_BUDGET,
   ContextTooLongError,
@@ -6173,7 +6174,7 @@ describe("attribution deadlines and visible output", () => {
       emitVoice(audio, false);
       emitPlayback(audio, true); emitPlayback(audio, false);
       await vi.advanceTimersByTimeAsync(runtime.noOutputTimeoutMs + runtime.captionIdleMs);
-      expect(controller.recoveryPrompt).toBeUndefined();
+      expect(controller.recoveryPrompt).toBe(index === 0 ? undefined : "conditional-repeat");
     }
     expect(controller.metrics.snapshot().noObservedOutputDeadlineCount).toBe(0);
     expect(controller.metrics.snapshot().noOutputWatchdogCount).toBe(5);
@@ -6343,11 +6344,12 @@ describe("receipt, language boundaries and deadline ordering", () => {
       status: "unresolved", outputDeadline: { atMs: 6000, outcome: "unresolved" },
     });
     expect(controller.metrics.snapshot()).toMatchObject({ noObservedOutputDeadlineCount: 0, unresolvedSourceOutcomeCount: 1 });
-    expect(controller.recoveryPrompt).toBeUndefined();
+    expect(controller.recoveryPrompt).toBe("conditional-repeat");
     live.emit({ type: "session.output_transcript.delta", delta: "ou very much.", start_ms: 1500, end_ms: 2000 });
     expect(controller.captionBlocks.filter(block => block.kind === "output")).toEqual([
       expect.objectContaining({ outputId: first!.outputId, text: "Thank you very much.", receivedAtMs: 1000, attribution: "matched" }),
     ]);
+    expect(controller.recoveryPrompt).toBeUndefined();
     expect(controller.session.recentTurns.find(turn => turn.id === sourceId)).toMatchObject({ status: "unresolved", firstOutputTextAtMs: 1000 });
     expect(controller.metrics.snapshot().lateOutputAfterDeadlineCount).toBe(0);
     expect(controller.attributionTrace.some(entry => entry.firstReceivedAtMs === 1000 && entry.matchedAtMs === 7000 && entry.deadlineAtMs === 6000)).toBe(true);
@@ -6991,7 +6993,7 @@ describe("output evidence across source callback order", () => {
       expect(metrics).toMatchObject({ completedTurnCount: 0, noOutputWatchdogCount: 2, unresolvedSourceOutcomeCount: 1, noObservedOutputDeadlineCount: 1 });
       const root = document.createElement("div");
       root.innerHTML = renderToStaticMarkup(createElement(ConversationScreen, { controller }));
-      expect([...root.querySelectorAll('[data-testid="participant-pane-A"] li')].map(row => row.textContent)).toContain("Он: " + prefix + suffix);
+      expect([...root.querySelectorAll('[data-testid="participant-pane-A"] li')].map(row => row.textContent)).toContain(prefix + suffix);
       expect(root.querySelectorAll(".unattributed-output li")).toHaveLength(0);
       const trace = structuredClone(controller.attributionTrace);
       const decisions = trace.filter(entry => entry.outputId === first.outputId && entry.revision !== undefined);
@@ -7040,7 +7042,7 @@ it.each([true, false].flatMap(sourceFirst => [false, true].flatMap(timed =>
   const root = document.createElement("div");
   root.innerHTML = renderToStaticMarkup(createElement(ConversationScreen, { controller }));
   expect([...root.querySelectorAll(".unattributed-output li")].map(row => row.textContent)).toEqual(["Да"]);
-  expect([...root.querySelectorAll('[data-testid="participant-pane-B"] li')].map(row => row.textContent)).toContain("Him: Where is the train station?");
+  expect([...root.querySelectorAll('[data-testid="participant-pane-B"] li')].map(row => row.textContent)).toContain("Where is the train station?");
   await controller.endConversation();
 });
 
@@ -7159,4 +7161,169 @@ it.each(["?", " ?"].flatMap(suffix => [1, 20].map(gap => ({ suffix, gap }))))("k
     expect.objectContaining({ outputId: first.outputId, text: "Thank y" + suffix, receivedAtMs: 1000 }),
   ]);
   await controller.endConversation();
+});
+
+
+describe("PR44 comment regressions", () => {
+  beforeEach(() => { vi.useFakeTimers(); vi.setSystemTime(1000); });
+
+  it("returns to listening after the last standalone output binds to a failed source", async () => {
+    const { controller, live, audio } = createController();
+    await controller.startWithLanguages({ A: "en", B: "es" });
+    emitVoice(audio, true);
+    live.emit({ type: "session.input_transcript.delta", delta: "Where is the train station?", start_ms: 0, end_ms: 1000 });
+    const sourceId = controller.session.activeTurn!.id;
+    emitVoice(audio, false);
+    await vi.advanceTimersByTimeAsync(5001);
+    live.emit({ type: "session.input_transcript.delta", delta: "Thank y", start_ms: 100, end_ms: 200 });
+    live.emit({ type: "session.output_transcript.delta", delta: "La estación está cerca.", start_ms: 500, end_ms: 1500 });
+    expect(controller.session.pendingTurns).toHaveLength(1);
+    live.emit({ type: "session.input_transcript.delta", delta: "ou very much.", start_ms: 200, end_ms: 300 });
+    await vi.advanceTimersByTimeAsync(2000);
+    expect(controller.session.recentTurns.find(turn => turn.id === sourceId)?.status).toBe("failed");
+    expect(controller.session.pendingTurns).toEqual([]);
+    expect(controller.session.activeTurn).toBeUndefined();
+    expect(controller.session.state).toBe("listening");
+    live.appendInstructions.mockImplementation(async (_text, policy) => {
+      (LiveClient.prototype as unknown as { assertSteeringAllowed(policy: unknown): void }).assertSteeringAllowed.call(live, policy);
+      return { eventId: "change-language" };
+    });
+    await controller.changeInterlocutorLanguage("de");
+    expect(controller.session.participantB.language).toBe("de");
+    expect(controller.session.state).toBe("listening");
+    await controller.endConversation();
+  });
+
+  it("counts one late receipt once when the same source binding is revoked and restored", async () => {
+    const { controller, live, audio } = createController();
+    await controller.startWithLanguages({ A: "ru", B: "es" });
+    emitVoice(audio, true);
+    live.emit({ type: "session.input_transcript.delta", delta: "Где находится станция?", start_ms: 0, end_ms: 1000 });
+    emitVoice(audio, false);
+    await vi.advanceTimersByTimeAsync(5001);
+    live.emit({ type: "session.output_transcript.delta", delta: "La estación está cerca.", start_ms: 500, end_ms: 1500 });
+    const first = controller.captionBlocks.find(block => block.kind === "output")!;
+    expect(controller.metrics.snapshot().lateOutputAfterDeadlineCount).toBe(1);
+    vi.setSystemTime(6101);
+    live.emit({ type: "session.input_transcript.delta", delta: "у", start_ms: 200, end_ms: 300 });
+    expect(controller.currentAttribution.matchedTextOutputs).toBe(0);
+    vi.setSystemTime(6201);
+    live.emit({ type: "session.input_transcript.delta", delta: "лица.", start_ms: 300, end_ms: 400 });
+    expect(controller.currentAttribution.matchedTextOutputs).toBe(1);
+    expect(controller.captionBlocks.filter(block => block.kind === "output")).toEqual([expect.objectContaining({
+      outputId: first.outputId, receivedAtMs: 6001, text: first.text,
+    })]);
+    expect(controller.metrics.snapshot().lateOutputAfterDeadlineCount).toBe(1);
+    expect(controller.metrics.snapshot().attributionRevokedCount).toBe(1);
+    await controller.endConversation();
+  });
+
+  it("retains a bounded provider diagnostic snapshot after End and clears it for the next conversation", async () => {
+    const first = Object.assign(new FakeLive(), { diagnostics: new LiveDiagnostics() });
+    const next = Object.assign(new FakeLive(), { diagnostics: new LiveDiagnostics() });
+    const third = Object.assign(new FakeLive(), { diagnostics: new LiveDiagnostics() });
+    const { controller } = createController({ lives: [first, next, third] });
+    await controller.startWithLanguages({ A: "ru", B: "es" });
+    for (let index = 0; index < 40; index++) first.diagnostics.observe("unknown_event", `session.future.${index}`, index);
+    first.diagnostics.observe("provider_error", "error", 1000);
+    const expected = structuredClone(first.diagnostics.entries);
+    await controller.endConversation();
+    const diagnostics = (controller as unknown as { providerDiagnostics: typeof expected }).providerDiagnostics;
+    expect(diagnostics).toEqual(expected);
+    expect(diagnostics).toHaveLength(2);
+    expect(diagnostics.find(entry => entry.kind === "unknown_event")).toMatchObject({ type: "unknown_event", count: 40 });
+    first.diagnostics.observe("provider_error", "error", 2000);
+    expect((controller as unknown as { providerDiagnostics: typeof expected }).providerDiagnostics).toEqual(expected);
+    await controller.cancel();
+    expect((controller as unknown as { providerDiagnostics: typeof expected }).providerDiagnostics).toEqual([]);
+    await controller.startWithLanguages({ A: "ru", B: "es" });
+    expect((controller as unknown as { providerDiagnostics: typeof expected }).providerDiagnostics).toEqual([]);
+  });
+});
+
+
+it("offers conditional recovery for a fresh silent source after an earlier completed played translation", async () => {
+  vi.useFakeTimers(); vi.setSystemTime(1000);
+  const { controller, live, audio } = createController();
+  await controller.startWithLanguages({ A: "ru", B: "es" });
+  emitVoice(audio, true);
+  live.emit({ type: "session.input_transcript.delta", delta: "Где находится станция?", start_ms: 0, end_ms: 1000 });
+  live.emit({ type: "session.output_transcript.delta", delta: "La estación está cerca.", start_ms: 500, end_ms: 1500 });
+  emitVoice(audio, false);
+  audio.onPcmReceived?.(1000);
+  emitPlayback(audio, true);
+  vi.setSystemTime(1500); emitPlayback(audio, false);
+  await vi.advanceTimersByTimeAsync(1500);
+  expect(controller.session.recentTurns.some(turn => turn.status === "completed")).toBe(true);
+  emitVoice(audio, true);
+  live.emit({ type: "session.input_transcript.delta", delta: "¿Puedo ir a pie hasta la estación?", start_ms: 3000, end_ms: 4000 });
+  const laterId = controller.session.activeTurn!.id;
+  emitVoice(audio, false);
+  await vi.advanceTimersByTimeAsync(5001);
+  const later = controller.session.recentTurns.find(turn => turn.id === laterId)!;
+  // PCM has no provider/source boundary: the current evidence cannot prove absence for this ASR episode.
+  expect(later.outputDeadline?.outcome).toBe("unresolved");
+  expect(controller.recoveryPrompt).toBe("conditional-repeat");
+  expect(controller.metrics.snapshot().noObservedOutputDeadlineCount).toBe(0);
+  emitVoice(audio, true);
+  expect(controller.recoveryPrompt).toBeUndefined();
+  audio.onPcmReceived?.(Date.now());
+  emitPlayback(audio, true); emitPlayback(audio, false);
+  expect(controller.recoveryPrompt).toBeUndefined();
+  expect(controller.recoveryPromptIsTurnFailure).toBe(false);
+  await controller.endConversation();
+});
+
+it.each(["content", "expired"])("surfaces the documented terminal Live session reason %s", async reason => {
+  vi.useFakeTimers(); vi.setSystemTime(1000);
+  const { controller, live, audio } = createController();
+  await controller.startWithLanguages({ A: "ru", B: "es" });
+  vi.spyOn(console, "error").mockImplementation(() => {});
+  live.emitSessionClosed(reason);
+  expect(controller.session.state).toBe("error");
+  expect(controller.ownerError).toBe(CONNECTION_ERROR_MESSAGE);
+  expect(audio.getCaptureStream()).toBeNull();
+});
+
+
+it("gates conditional recovery on playback and clears it for verified late translation", async () => {
+  vi.useFakeTimers(); vi.setSystemTime(1000);
+  const { controller, live, audio } = createController();
+  await controller.startWithLanguages({ A: "ru", B: "es" });
+  emitVoice(audio, true);
+  live.emit({ type: "session.input_transcript.delta", delta: "Где находится станция?", start_ms: 0, end_ms: 1000 });
+  emitVoice(audio, false);
+  audio.onPcmReceived?.(1000);
+  await vi.advanceTimersByTimeAsync(5001);
+  expect(controller.session.recentTurns[0]?.outputDeadline?.outcome).toBe("unresolved");
+  expect(controller.recoveryPrompt).toBe("conditional-repeat");
+  emitPlayback(audio, true);
+  expect(controller.recoveryPrompt).toBeUndefined();
+  emitPlayback(audio, false);
+  expect(controller.recoveryPrompt).toBe("conditional-repeat");
+  live.emit({ type: "session.output_transcript.delta", delta: "La estación está cerca.", start_ms: 500, end_ms: 1500 });
+  expect(controller.currentAttribution.matchedTextOutputs).toBe(1);
+  expect(controller.recoveryPrompt).toBeUndefined();
+  await controller.endConversation();
+  expect(controller.recoveryPrompt).toBeUndefined();
+});
+
+
+it.each(["language-change", "end"])("dismisses unresolved conditional recovery on %s without reviving it on PCM", async boundary => {
+  vi.useFakeTimers(); vi.setSystemTime(1000);
+  const { controller, live, audio } = createController();
+  await controller.startWithLanguages({ A: "ru", B: "es" });
+  emitVoice(audio, true);
+  live.emit({ type: "session.input_transcript.delta", delta: "Где находится станция?", start_ms: 0, end_ms: 1000 });
+  emitVoice(audio, false);
+  audio.onPcmReceived?.(1000);
+  await vi.advanceTimersByTimeAsync(5001);
+  expect(controller.recoveryPrompt).toBe("conditional-repeat");
+  if (boundary === "language-change") await controller.changeInterlocutorLanguage("de");
+  else await controller.endConversation();
+  expect(controller.recoveryPrompt).toBeUndefined();
+  audio.onPcmReceived?.(Date.now());
+  emitPlayback(audio, true); emitPlayback(audio, false);
+  expect(controller.recoveryPrompt).toBeUndefined();
+  if (boundary === "language-change") await controller.endConversation();
 });
