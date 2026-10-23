@@ -571,3 +571,22 @@ it.each(["He said 'Goodbye.'", "He said 'Are you sure (really?)'", "He said 'She
       expect(content(transcript)).toEqual([{ kind, side: "A", text: source }, { kind, side: "B", text: second }]);
     }
   });
+
+it("publishes a whole output projection with historical revisions and no duplicated captions", () => {
+  const transcript = new DialogueTranscript();
+  const outputs = [
+    { id: "one", sourceId: "a", fragments: [fragment("Where is the station?", 100)] },
+    { id: "two", sourceId: undefined as string | undefined, fragments: [fragment("Вокзал рядом.", 200)] },
+    { id: "three", sourceId: "a2", fragments: [fragment("Thank you.", 300)] },
+  ];
+  transcript.setOutputs(outputs, pair);
+  expect(transcript.blocks.map(block => [block.outputId, block.text, block.attribution])).toEqual([
+    ["one", "Where is the station?", "matched"], ["two", "Вокзал рядом.", "unattributed"], ["three", "Thank you.", "matched"],
+  ]);
+  outputs[0]!.sourceId = undefined;
+  outputs[1]!.sourceId = "b";
+  transcript.setOutputs(outputs, pair);
+  expect(transcript.blocks.map(block => [block.outputId, block.receivedAtMs, block.attribution])).toEqual([
+    ["one", 100, "unattributed"], ["two", 200, "matched"], ["three", 300, "matched"],
+  ]);
+});

@@ -36,7 +36,8 @@ test("courier dialogue retains originals, translations and split names across ca
   ]);
   await expect(b.locator("li")).toHaveText([
     "Me: Um, sir, hi. I'm a delivery guy. I need to deliver a package for Mr. Mikhail Gushin.",
-    "Him: Well, hello. Who are you, what do you want?",
+    // Delayed source "I " establishes a new context between these untimed outputs.
+    "Him: Well, hello. Who are you, what do you", "Him: want?",
     "Him: How do I get the package?",
   ]);
   await expect(page.locator(".turn-waiting")).toHaveCount(0);
@@ -46,7 +47,7 @@ test("courier dialogue retains originals, translations and split names across ca
   await page.screenshot({ path: testInfo.outputPath("courier-caption-blocks.png") });
 });
 
-test("unknown text stays hidden until its complete phrase resolves", async ({ page }) => {
+test("unknown output remains visible and unassigned beside a later identified phrase", async ({ page }) => {
   const harness = await MockLiveHarness.attach(page);
   await page.addInitScript(() => {
     localStorage.setItem("live-translator-owner-language", "ru");
@@ -59,10 +60,16 @@ test("unknown text stays hidden until its complete phrase resolves", async ({ pa
   await harness.advance(900);
   await expect(page.locator(".participant-pane li")).toHaveCount(0);
   await expect(page.locator(".unassigned-captions")).toHaveCount(0);
-  await expect(page.getByText("OK", { exact: true })).toHaveCount(0);
+  await expect(page.locator(".unattributed-output li")).toHaveText("OK");
+  await expect(page.locator(".unattributed-output .turn-author")).toHaveCount(0);
+  await expect(page.getByText("Повторите", { exact: true })).toHaveCount(0);
   await harness.outputDelta(", I can check that for you.");
-  await expect(page.locator(".unassigned-captions")).toHaveCount(0);
-  await expect(page.getByTestId("participant-pane-B").locator("li")).toHaveText("Him: OK, I can check that for you.");
+  // The idle flush finalized the unknown group; later language evidence does not identify its owner.
+  await expect(page.locator(".unattributed-output li")).toHaveText("OK");
+  await expect(page.locator(".unattributed-output .turn-author")).toHaveCount(0);
+  await expect(page.getByText("OK", { exact: true })).toHaveCount(1);
+  await expect(page.getByTestId("participant-pane-B").locator("li")).toHaveText("Him: , I can check that for you.");
+  await expect(page.getByText("Повторите", { exact: true })).toHaveCount(0);
   await expect(page.getByTestId("participant-pane-A").locator("li")).toHaveCount(0);
 });
 

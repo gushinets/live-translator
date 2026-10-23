@@ -195,3 +195,5 @@ body,
   .conversation-center .conversation-home-action { flex: 1 1 0; min-width: 0; }
   .conversation-end-size { white-space: nowrap; }
 }
+
+.unattributed-output { max-height: 20vh; overflow-y: auto; width: 100%; }

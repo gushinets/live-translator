@@ -117,8 +117,6 @@ describe("default independent captions", () => {
       participantB: { ...participant("B"), language: "en" },
       activeTurn: turn({ id: "service", speaker: "A", originalText: "Legacy text" }),
     }));
-    controller.recoveryPrompt = "repeat";
-    controller.recoveryPromptIsTurnFailure = true;
     controller.captionBlocks = [
       { id: "1", kind: "input", side: "A", language: "ru", text: "Кто вы?", receivedAtMs: 1 },
       { id: "2", kind: "output", side: "B", language: "en", text: "Who are you?", receivedAtMs: 2 },
@@ -132,7 +130,7 @@ describe("default independent captions", () => {
     expect([...b.querySelectorAll("li")].map(row => row.textContent)).toEqual(["Him: Who are you?", "Me: I'm a courier."]);
     expect(a).not.toHaveTextContent("OK");
     expect(b).not.toHaveTextContent("OK");
-    expect(screen.queryByText("OK")).not.toBeInTheDocument();
+    expect(screen.getAllByText("OK")).toHaveLength(1);
     expect(screen.queryByText(/Текст без определённого языка/)).not.toBeInTheDocument();
     expect(screen.queryByText("Legacy text")).not.toBeInTheDocument();
     expect(screen.queryByText("Повторите")).not.toBeInTheDocument();
@@ -147,14 +145,14 @@ describe("default independent captions", () => {
     expect(screen.getByText("Повторите")).toBeVisible();
   });
 
-  it.each(["/", "/?captions=blocks", "/?captions=legacy"])("hides uncertain text until the full phrase resolves at %s", url => {
+  it.each(["/", "/?captions=blocks", "/?captions=legacy"])("preserves uncertain output once until the full phrase resolves at %s", url => {
     window.history.replaceState({}, "", url);
     const controller = new FakeConversationController(session({
       participantB: { ...participant("B"), language: "en" },
     }));
     controller.captionBlocks = [{ id: "pending", kind: "output", text: "Um", receivedAtMs: 1 }];
     const view = render(<ConversationScreen controller={controller} />);
-    expect(screen.queryByText("Um")).not.toBeInTheDocument();
+    expect(screen.getAllByText("Um")).toHaveLength(1);
     expect(document.querySelectorAll(".participant-pane li")).toHaveLength(0);
     expect(screen.queryByText(/Текст без определённого языка/)).not.toBeInTheDocument();
     controller.captionBlocks = [{ id: "pending", kind: "output", side: "B", language: "en", text: "Um, I have a package for you.", receivedAtMs: 1 }];
@@ -653,4 +651,15 @@ describe("conversation controls", () => {
     expect(screen.queryByRole("button", { name: "Язык собеседника" })).not.toBeInTheDocument();
     expect(screen.getAllByText(/Hello/).length).toBeGreaterThan(0);
   });
+});
+
+
+it("shows an addressed no-output repeat hint only when input is ready", () => {
+  const controller = new FakeConversationController();
+  controller.recoveryPrompt = "repeat"; controller.recoveryPromptIsTurnFailure = true;
+  controller.inputReady = false;
+  const view = render(<ConversationScreen controller={controller} />);
+  expect(screen.queryByText("Повторите")).not.toBeInTheDocument();
+  controller.inputReady = true; view.rerender(<ConversationScreen controller={controller} />);
+  expect(screen.getByText("Повторите")).toBeVisible();
 });

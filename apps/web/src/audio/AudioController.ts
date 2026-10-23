@@ -76,6 +76,7 @@ export class AudioController {
   onSourceSample: ((event: AudioActivityEvent & { reset?: boolean }) => void) | null = null;
   onVoiceActivity: ((event: AudioActivityEvent) => void) | null = null;
   onPlaybackActivity: ((event: PlaybackActivityEvent) => void) | null = null;
+  onPcmReceived: ((atMs: number) => void) | null = null;
   onPlaybackInputBlocked: (() => void) | null = null;
   onRemoteAudioSample: ((event: AudioActivityEvent) => void) | null = null;
   onAudioInterruption: (() => void) | null = null;
@@ -469,7 +470,9 @@ export class AudioController {
       }
       if (data.type === "pending" && data.generation === this.playbackGeneration) {
         // A reset barrier mutes output temporarily; fresh held PCM still prevents logical completion.
+        const received = this.outputAudible && data.value === true && !this.queuedPlayback;
         this.queuedPlayback = this.outputAudible && data.value === true;
+        if (received) this.onPcmReceived?.(this.nowMs());
       }
       if (data.type === "turn" && !this.audioElement.muted) {
         this.onPlaybackActivity?.({ active: data.value === true, atMs: this.nowMs(), owned: true,

@@ -43,6 +43,7 @@ type Trace = {
 // Real queue/processor/controller; only the browser's nodes, tracks and schedulers are replaced.
 class Harness {
   now = 0;
+  audioTime = 0;
   readonly capture = new Track();
   readonly analysers: Analyser[] = [];
   readonly sources: MediaStream[] = [];
@@ -74,6 +75,7 @@ class Harness {
     vi.spyOn(window, "setInterval").mockImplementation(((run: () => void) => { this.sampler = run; return 1; }) as typeof window.setInterval);
     vi.spyOn(window, "clearInterval").mockImplementation(() => {});
     const context = {
+      sampleRate: SAMPLE_RATE,
       state: "running", resume: async () => {}, close: async () => {},
       addEventListener() {}, removeEventListener() {},
       audioWorklet: { addModule: async () => {} },
@@ -81,6 +83,7 @@ class Harness {
       createAnalyser: () => { const analyser = new Analyser(); this.analysers.push(analyser); return analyser; },
       createMediaStreamDestination: () => ({ stream: stream() }),
     };
+    Object.defineProperty(context, "currentTime", { get: () => this.audioTime });
     this.controller = new AudioController({
       createAudioContext: () => context as unknown as AudioContext,
       getUserMedia: async () => stream(this.capture), nowMs: () => this.now,
@@ -155,6 +158,7 @@ class Harness {
     const output = new Float32Array(QUANTUM);
     const alive = this.node.processor.process([[new Float32Array(QUANTUM).fill(amplitude)]], [[output]]);
     this.now += FRAME_MS;
+    this.audioTime += FRAME_MS / 1000;
     this.nonzero = output.some(x => x !== 0);
     if (this.nonzero) {
       this.record("PCM");
@@ -530,4 +534,310 @@ describe("pending observations across a reset barrier", () => {
     expect(harness.controller.hasPendingPlayback).toBe(false);
     harness.assertProtected();
   });
+});
+
+
+describe("timestamped PCM evidence and independent source deadline", () => {
+  async function sourceSession() {
+    const { SessionController } = await import("../session/SessionController");
+    const session = new SessionController({ audio: harness.controller, createLive: () => ({}) as never });
+    vi.spyOn(Date, "now").mockImplementation(() => harness.now);
+    harness.now = 1000;
+    Object.assign(session.session, { state: "listening", participantA: { side: "A", language: "ru" }, participantB: { side: "B", language: "es" }, activeTurn: {
+      id: "source", speaker: "A", sideSource: "language", originalText: "Вокзал", status: "streaming",
+      sourceFragments: [{ id: "s", text: "Вокзал", startMs: 0, endMs: 1000, receivedAtMs: 1000 }],
+      sourceIdleAtMs: 1000, speechStartAtMs: 0, audioOutputStarted: false,
+    } });
+    const internal = session as unknown as { routingTurnIds: Set<string>; considerTurnCompletion(atMs: number): Promise<void> };
+    internal.routingTurnIds.add("source");
+    await internal.considerTurnCompletion(1000);
+    return { session, internal };
+  }
+
+  it.each(["on-time", "delayed", "cancelled"])("retains actual held PCM receipt when completion is %s", async schedule => {
+    const { session } = await sourceSession();
+    harness.now = 5500;
+    harness.frame(.7, false); harness.flushMain();
+    const receivedAt = harness.now;
+    expect(harness.controller.hasPendingPlayback).toBe(true);
+    expect(harness.played).toHaveLength(0);
+    if (schedule === "cancelled") {
+      harness.now = 5800;
+      harness.controller.setOutputAudible(false); harness.flushWorklet(); harness.flushMain();
+      expect(harness.controller.hasPendingPlayback).toBe(false);
+    }
+    harness.now = schedule === "delayed" ? 7000 : 6000;
+    harness.runTimers();
+    expect(session.session.recentTurns.find(turn => turn.id === "source")?.outputDeadline)
+      .toEqual({ atMs: 6000, outcome: "unresolved" });
+    expect(session.attributionTrace.filter(entry => entry.kind === "pcm"))
+      .toEqual([expect.objectContaining({ atMs: receivedAt, played: false })]);
+    expect(session.metrics.snapshot().noObservedOutputDeadlineCount).toBe(0);
+    expect(session.currentAttribution).toMatchObject({ matchedAudioOutputs: 0, unattributedPlaybackCount: 0, confirmedSourceSpeechMs: null });
+    expect(harness.played).toHaveLength(0);
+  });
+
+  it("expires semantic uncertainty at D while natural audio settling has a later timer", async () => {
+    const { session, internal } = await sourceSession();
+    harness.now = 5100;
+    harness.frame(.7, false); harness.flushMain();
+    const receivedAt = harness.now;
+    await internal.considerTurnCompletion(harness.now); harness.flushWorklet();
+    while (harness.now < 6000) harness.frame();
+    expect(harness.played).toHaveLength(128);
+    expect(harness.controller.hasPendingPlayback).toBe(false);
+    expect(harness.capture.enabled).toBe(true);
+    expect(harness.analysis.enabled).toBe(true);
+    expect(session.session.recentTurns.find(turn => turn.id === "source")?.outputDeadline)
+      .toEqual({ atMs: 6000, outcome: "unresolved" });
+    expect(session.attributionTrace.filter(entry => entry.kind === "pcm" && !entry.played))
+      .toEqual([expect.objectContaining({ atMs: receivedAt, played: false })]);
+    expect(session.currentAttribution).toMatchObject({ matchedAudioOutputs: 0, unattributedPlaybackCount: 1, confirmedSourceSpeechMs: null });
+    harness.assertProtected();
+  });
+});
+
+
+it("keeps received PCM with its source context and rejects old generation and replaced-node callbacks", async () => {
+  const { SessionController } = await import("../session/SessionController");
+  const session = new SessionController({ audio: harness.controller, createLive: () => ({}) as never });
+  vi.spyOn(Date, "now").mockImplementation(() => harness.now);
+  harness.now = 1000;
+  Object.assign(session.session, { state: "listening", activeTurn: {
+    id: "old-source", speaker: "A", sideSource: "language", originalText: "source", status: "streaming",
+    sourceFragments: [], sourceIdleAtMs: 1000, speechStartAtMs: 0, audioOutputStarted: false,
+  } });
+  const internal = session as unknown as {
+    routingTurnIds: Set<string>; considerTurnCompletion(atMs: number): Promise<void>;
+    dispatch(action: unknown): void; resetTranscriptRouting(): void;
+    attribution: { hasCompatibleOutput(source: unknown): boolean };
+  };
+  internal.routingTurnIds.add("old-source");
+  harness.now = 5000; harness.frame(.7, false); harness.flushMain();
+  const receivedAt = harness.now;
+  const oldNode = harness.node;
+  const oldPending = harness.trace.find(row => row.event === "main pending:true")!;
+  for (let n = 0; n < 3; n++) await internal.considerTurnCompletion(harness.now);
+  expect(session.attributionTrace.filter(entry => entry.kind === "pcm"))
+    .toEqual([expect.objectContaining({ atMs: receivedAt, played: false })]);
+  harness.now = 5700;
+  internal.dispatch({ type: "SOURCE_HANDOFF", turnId: "new-source", speaker: "B", nowMs: 5700, languageRouted: true });
+  internal.routingTurnIds.add("new-source");
+  // A synthetic handoff without accepted VAD does not prove speech began after the PCM.
+  expect(internal.attribution.hasCompatibleOutput(session.session.activeTurn)).toBe(true);
+  harness.now = 6000;
+  await internal.considerTurnCompletion(harness.now);
+  expect(session.session.recentTurns.find(turn => turn.id === "old-source")?.outputDeadline)
+    .toEqual({ atMs: 6000, outcome: "unresolved" });
+
+  harness.controller.setOutputAudible(false); harness.controller.setOutputAudible(true);
+  internal.resetTranscriptRouting(); internal.routingTurnIds.add("new-source");
+  const stale = { data: { type: "pending", value: true, generation: oldPending.generation } } as MessageEvent<Message>;
+  oldNode.handler?.(stale);
+  await internal.considerTurnCompletion(harness.now);
+  expect(session.attributionTrace.filter(entry => entry.kind === "pcm")).toEqual([]);
+  harness.controller.attachRemoteStream(stream());
+  oldNode.handler?.(stale);
+  expect(session.attributionTrace.filter(entry => entry.kind === "pcm")).toEqual([]);
+  expect(internal.attribution.hasCompatibleOutput(session.session.activeTurn)).toBe(false);
+});
+
+
+async function sessionWithSource(source = true) {
+  const { SessionController } = await import("../session/SessionController");
+  const session = new SessionController({ audio: harness.controller, createLive: () => ({}) as never });
+  vi.spyOn(Date, "now").mockImplementation(() => harness.now);
+  harness.now = 1000;
+  Object.assign(session.session, { state: "listening", participantA: { side: "A", language: "ru" }, participantB: { side: "B", language: "es" }, ...(source ? { activeTurn: {
+    id: "source", speaker: "A", sideSource: "language", originalText: "Вокзал", status: "streaming",
+    sourceFragments: [{ id: "s", text: "Вокзал", startMs: 0, endMs: 500, receivedAtMs: 1000 }],
+    sourceIdleAtMs: 1000, speechStartAtMs: 0, audioOutputStarted: false,
+  } } : {}) });
+  const internal = session as unknown as {
+    speechInputReady: boolean; routingTurnIds: Set<string>;
+    considerTurnCompletion(atMs: number): Promise<void>;
+    handleConversationInputDelta(event: { type: "session.input_transcript.delta"; delta: string; start_ms?: number; end_ms?: number }): void;
+    handleConversationOutputDelta(event: { type: "session.output_transcript.delta"; delta: string; start_ms: number; end_ms: number }): void;
+    handleVoiceActivity(event: { active: boolean; atMs: number }): Promise<void>;
+  };
+  internal.speechInputReady = true;
+  if (source) internal.routingTurnIds.add("source");
+  return { session, internal };
+}
+
+it.each([false, true])("real AudioController VAD preserves elapsed D, delayed=%s", async delayed => {
+  const { session, internal } = await sessionWithSource();
+  await internal.considerTurnCompletion(1000);
+  if (!delayed) { harness.now = 6000; harness.runTimers(); }
+  harness.now = 7000;
+  harness.sampleMic(.5, 300);
+  harness.assertProtected();
+  expect(session.session.recentTurns.find(t => t.id === "source")?.outputDeadline).toEqual({ atMs: 6000, outcome: "no_observed_output" });
+});
+
+it.each([false, true])("retains drained PCM for delayed ASR even after a new VAD event, freshSpeech=%s", async freshSpeech => {
+  const { session, internal } = await sessionWithSource(false);
+  harness.frame(.7, false); harness.flushMain(); harness.flushWorklet();
+  harness.until(() => harness.played.length === 128);
+  harness.until(() => harness.capture.enabled);
+  expect(harness.controller.hasPendingPlayback).toBe(false);
+  expect(session.currentAttribution.unattributedPlaybackCount).toBe(1);
+  harness.now = 2000;
+  if (freshSpeech) harness.sampleMic(.5, 300);
+  internal.handleConversationInputDelta({ type: "session.input_transcript.delta", delta: "Где находится вокзал?", start_ms: 0, end_ms: 500 });
+  const id = session.session.activeTurn!.id;
+  await internal.handleVoiceActivity({ active: false, atMs: 2000 });
+  harness.now += 5000; harness.runTimers();
+  const source = session.session.recentTurns.find(t => t.id === id);
+  harness.assertProtected();
+  expect(source?.outputDeadline?.outcome).toBe("unresolved");
+  expect(session.recoveryPrompt).toBe(undefined);
+  expect(session.currentAttribution).toMatchObject({ matchedAudioOutputs: 0, unattributedPlaybackCount: 1, confirmedSourceSpeechMs: null });
+});
+
+it.each(["untimed", "later-provider", "fresh-vad"])("real drained PCM remains evidence with uncertain ASR bounds: %s", async kind => {
+  const { session, internal } = await sessionWithSource(kind === "later-provider");
+  harness.frame(.7, false); harness.flushMain(); harness.flushWorklet();
+  harness.until(() => harness.played.length === 128);
+  harness.until(() => harness.capture.enabled);
+  expect(harness.controller.hasPendingPlayback).toBe(false);
+  harness.now = 2000;
+  if (kind === "fresh-vad") harness.sampleMic(.5, 300);
+  internal.handleConversationInputDelta({ type: "session.input_transcript.delta",
+    delta: kind === "later-provider" ? "La estación está cerca de aquí." : "Где находится вокзал?",
+    ...(kind === "later-provider" ? { start_ms: 600, end_ms: 900 } : {}) });
+  const id = session.session.activeTurn!.id;
+  await internal.handleVoiceActivity({ active: false, atMs: harness.now });
+  harness.now += 5000; harness.runTimers();
+  harness.assertProtected();
+  expect(harness.played).toHaveLength(128);
+  expect(session.session.recentTurns.find(turn => turn.id === id)?.outputDeadline?.outcome)
+    .toBe("unresolved");
+  expect(session.recoveryPrompt).toBe(undefined);
+  expect(session.currentAttribution).toMatchObject({ matchedAudioOutputs: 0, unattributedPlaybackCount: 1, confirmedSourceSpeechMs: null });
+});
+
+it.each([false, true])("reconciles accepted real VAD before publishing, outputFirst=%s", async outputFirst => {
+  const { session, internal } = await sessionWithSource();
+  await internal.considerTurnCompletion(1000);
+  harness.now = 6000; harness.runTimers();
+  const handler = harness.controller.onVoiceActivity!;
+  const snapshots: number[] = [];
+  const unsubscribe = session.subscribe(() => {
+    if (session.session.activeTurn?.originalText === "") snapshots.push(session.currentAttribution.matchedTextOutputs);
+  });
+  harness.controller.onVoiceActivity = event => {
+    const output = () => internal.handleConversationOutputDelta({ type: "session.output_transcript.delta",
+      delta: "¿Dónde está la estación?", start_ms: 100, end_ms: 400 });
+    if (event.active && outputFirst) output();
+    handler(event);
+    if (event.active && !outputFirst) output();
+  };
+  harness.now = 7000; harness.sampleMic(.5, 300);
+  const original = session.captionBlocks.find(block => block.kind === "output")!;
+  expect(session.session.activeTurn).toMatchObject({ originalText: "", speechStartAtMs: 7150 });
+  expect(session.currentAttribution).toMatchObject({ matchedTextOutputs: 0, unattributedTextOutputs: 1 });
+  harness.now += 1000; harness.runTimers();
+  expect(session.currentAttribution.matchedTextOutputs).toBe(0);
+  expect(session.session.recentTurns.find(turn => turn.id === "source")?.translatedText).toBeUndefined();
+  expect(session.session.recentTurns.find(turn => turn.id === "source")?.outputDeadline)
+    .toEqual({ atMs: 6000, outcome: "no_observed_output" });
+  expect(session.captionBlocks.find(block => block.outputId === original.outputId))
+    .toMatchObject({ receivedAtMs: 7150, text: original.text, attribution: "unattributed" });
+  expect(snapshots.length).toBeGreaterThan(0);
+  expect(snapshots.every(count => count === 0)).toBe(true);
+  unsubscribe();
+  harness.assertProtected();
+});
+
+
+it.each(["overlap", "main-delay"])("does not turn VAD confirmation into an onset bound after PCM: %s", async schedule => {
+  const { session, internal } = await sessionWithSource(false);
+  harness.now = 4700; harness.sampleMic(.001, 100);
+  harness.now = 4950;
+  if (schedule === "overlap") harness.sampleMic(.5, 50);
+  else harness.now = 5000;
+  harness.frame(.7, false);
+  while (!harness.controller.hasPendingPlayback) harness.deliverMain();
+  const receipt = harness.now;
+  expect(harness.capture.enabled).toBe(true);
+  expect(harness.analysis.enabled).toBe(true);
+  if (schedule === "main-delay") { harness.now += 1000; harness.sampleMic(.5, 50); }
+  harness.sampleMic(.5, 50);
+  const id = session.session.activeTurn!.id;
+  expect(session.session.activeTurn!.speechStartAtMs).toBeGreaterThan(receipt);
+  harness.flushMain(); harness.flushWorklet();
+  internal.handleConversationInputDelta({ type: "session.input_transcript.delta", delta: "Где находится вокзал?", start_ms: 3000, end_ms: 4000 });
+  expect((session as unknown as { attribution: { hasCompatibleOutput(source: unknown): boolean } })
+    .attribution.hasCompatibleOutput(session.session.activeTurn)).toBe(true);
+  harness.sampleMic(0, 1000);
+  const deadline = session.session.activeTurn!.sourceIdleAtMs! + 5000;
+  // Let the real processor drain normally; this extends the original held-render probe.
+  harness.until(() => harness.played.length === 128);
+  harness.until(() => harness.capture.enabled);
+  harness.now = deadline; harness.runTimers();
+  await internal.considerTurnCompletion(deadline);
+  expect(session.session.recentTurns.find(turn => turn.id === id)?.outputDeadline?.outcome).toBe("unresolved");
+  expect(session.metrics.snapshot().noObservedOutputDeadlineCount).toBe(0);
+  expect(session.recoveryPrompt).toBeUndefined();
+  expect(harness.played).toHaveLength(128);
+  harness.assertProtected();
+});
+
+it.each([false, true])("does not correlate delayed ASR with a reopened capture cycle, untimedText=%s", async untimedText => {
+  const { SessionController } = await import("../session/SessionController");
+  vi.spyOn(Date,"now").mockImplementation(()=>harness.now);
+  harness.flushMain();harness.flushWorklet();
+  const session=new SessionController({audio:harness.controller,createLive:()=>({}) as never});
+  Object.assign(session.session,{state:"listening",participantA:{side:"A",language:"ru"},participantB:{side:"B",language:"es"}});
+  const internal=session as unknown as {
+    speechInputReady: boolean;
+    handleConversationInputDelta(event: { type: "session.input_transcript.delta"; delta: string; start_ms: number; end_ms: number }): void;
+    handleConversationOutputDelta(event: { type: "session.output_transcript.delta"; delta: string }): void;
+    considerTurnCompletion(atMs: number): Promise<void>;
+    attribution: { hasCompatibleOutput(source: unknown): boolean; outputs: Array<{candidateIds: string[]}> };
+  }; internal.speechInputReady=true;
+  const events:Array<{active:boolean;atMs:number}>=[]; const handler=harness.controller.onVoiceActivity;
+  harness.controller.onVoiceActivity=event=>{events.push({...event});handler?.(event);};
+  harness.now=4700;harness.sampleMic(.001,100);
+  harness.now=4950;harness.sampleMic(.5,50);
+  const prefix={atMs:harness.now,capture:harness.capture.enabled,analysis:harness.analysis.enabled,acceptedVad:events.filter(e=>e.active).length};
+  // The provider can process this captured prefix before its ASR delta reaches the client.
+  if (untimedText) internal.handleConversationOutputDelta({ type: "session.output_transcript.delta", delta: "¿Dónde está la estación?" });
+  harness.frame(.7,false);
+  while(!harness.controller.hasPendingPlayback)harness.deliverMain();
+  const pcmReceivedAt=harness.now;
+  harness.flushMain();harness.flushWorklet();
+  harness.until(()=>harness.controller.playbackInputBlocked);
+  const closed={atMs:harness.now,capture:harness.capture.enabled,analysis:harness.analysis.enabled};
+  // Real disabled tracks produce zero frames. Let the real queue drain and the render clock progress.
+  harness.analysers[0]!.amplitude=0;
+  harness.until(()=>harness.played.length===128);
+  harness.until(()=>harness.capture.enabled);
+  const reopenedAt=harness.now;
+  harness.sampleMic(.5,300);
+  expect(events.some(e=>e.active)).toBe(true);
+  const id=session.session.activeTurn!.id;
+  internal.handleConversationInputDelta({type:"session.input_transcript.delta",delta:"Где находится вокзал?",start_ms:0,end_ms:500});
+  const source=session.session.activeTurn!;
+  const compatible=internal.attribution.hasCompatibleOutput(source);
+  if (untimedText) {
+    expect(internal.attribution.outputs[0]!.candidateIds).toContain(id);
+    harness.assertProtected();
+    return;
+  }
+  harness.sampleMic(0,1000);
+  const idle=[session.session.activeTurn,...session.session.recentTurns].find(t=>t?.id===id)!;
+  const deadline=idle.sourceIdleAtMs!+5000;
+  harness.now=deadline;harness.runTimers();await internal.considerTurnCompletion(deadline);
+  const terminal=session.session.recentTurns.find(t=>t.id===id);
+  harness.assertProtected();
+  expect(prefix).toMatchObject({capture:true,analysis:true,acceptedVad:0});
+  expect(prefix.atMs).toBeLessThan(pcmReceivedAt);
+  expect(closed).toMatchObject({capture:false,analysis:false});
+  expect(reopenedAt).toBeGreaterThan(pcmReceivedAt);
+  expect(compatible,"ASR has no correlation to the capture reopen and can describe the captured pre-PCM prefix").toBe(true);
+  expect(terminal?.outputDeadline?.outcome).toBe("unresolved");
+  expect(session.recoveryPrompt).toBeUndefined();
+  expect(session.metrics.snapshot().noObservedOutputDeadlineCount).toBe(0);
 });

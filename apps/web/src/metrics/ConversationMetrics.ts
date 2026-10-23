@@ -2,7 +2,7 @@
  * In-memory non-content conversation metrics (binding spec 1.2.1 §26).
  * Never records transcript text or sends analytics.
  */
-import type { MetricCounters } from "./UsageTypes";
+import { ATTRIBUTION_COUNTER_NAMES, type MetricCounters } from "./UsageTypes";
 
 export interface TurnTimingInput {
   sourceIdleAtMs: number;
@@ -22,6 +22,10 @@ export interface TurnMetrics {
 }
 
 export interface ConversationMetricsSnapshot {
+  noObservedOutputDeadlineCount: number;
+  unresolvedSourceOutcomeCount: number;
+  lateOutputAfterDeadlineCount: number;
+  attributionRevokedCount: number;
   earlyOutputCount: number;
   completedTurnCount: number;
   earlyOutputRate: number;
@@ -65,6 +69,14 @@ export function calculateMetrics(input: TurnTimingInput): TurnMetrics {
 }
 
 export class ConversationMetrics {
+  private readonly attributionEvents = new Map<string, Set<string>>();
+  private readonly restoredAttribution: MetricCounters = {};
+  /** Deadlines dedupe by source; decisions by stable output ID and revision. Historical, never current success. */
+  recordAttributionEvent(name: typeof ATTRIBUTION_COUNTER_NAMES[number], id: string): void {
+    let events = this.attributionEvents.get(name);
+    if (!events) this.attributionEvents.set(name, events = new Set());
+    events.add(id);
+  }
   private readonly technicalTurns = { audio: new Set<string>(), text_only: new Set<string>(), failed: new Set<string>(), discarded: new Set<string>() };
   private readonly restoredTurns = { audio: 0, text_only: 0, failed: 0, discarded: 0 };
   recordTechnicalOutcome(id: string, kind: keyof ConversationMetrics["technicalTurns"]): boolean {
@@ -80,6 +92,7 @@ export class ConversationMetrics {
   private lastTurn: TurnMetrics | undefined;
 
   restoreCounters(counters: MetricCounters): void {
+    for (const name of ATTRIBUTION_COUNTER_NAMES) this.restoredAttribution[name] = counters[name] ?? 0;
     this.earlyOutputCount = counters.earlyOutputCount ?? 0;
     this.completedTurnCount = counters.completedTurnCount ?? 0;
     this.sourceTailClippingReports = counters.sourceTailClippingReports ?? 0;
@@ -121,6 +134,10 @@ export class ConversationMetrics {
 
   snapshot(): ConversationMetricsSnapshot {
     return {
+      noObservedOutputDeadlineCount: (this.restoredAttribution.noObservedOutputDeadlineCount ?? 0) + (this.attributionEvents.get("noObservedOutputDeadlineCount")?.size ?? 0),
+      unresolvedSourceOutcomeCount: (this.restoredAttribution.unresolvedSourceOutcomeCount ?? 0) + (this.attributionEvents.get("unresolvedSourceOutcomeCount")?.size ?? 0),
+      lateOutputAfterDeadlineCount: (this.restoredAttribution.lateOutputAfterDeadlineCount ?? 0) + (this.attributionEvents.get("lateOutputAfterDeadlineCount")?.size ?? 0),
+      attributionRevokedCount: (this.restoredAttribution.attributionRevokedCount ?? 0) + (this.attributionEvents.get("attributionRevokedCount")?.size ?? 0),
       earlyOutputCount: this.earlyOutputCount,
       completedTurnCount: this.completedTurnCount,
       earlyOutputRate:
