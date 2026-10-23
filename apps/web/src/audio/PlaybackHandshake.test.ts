@@ -630,15 +630,16 @@ it("keeps received PCM with its source context and rejects old generation and re
   expect(session.session.recentTurns.find(turn => turn.id === "old-source")?.outputDeadline)
     .toEqual({ atMs: 6000, outcome: "unresolved" });
 
+  const pcmHistory = structuredClone(session.attributionTrace.filter(entry => entry.kind === "pcm"));
   harness.controller.setOutputAudible(false); harness.controller.setOutputAudible(true);
   internal.resetTranscriptRouting(); internal.routingTurnIds.add("new-source");
   const stale = { data: { type: "pending", value: true, generation: oldPending.generation } } as MessageEvent<Message>;
   oldNode.handler?.(stale);
   await internal.considerTurnCompletion(harness.now);
-  expect(session.attributionTrace.filter(entry => entry.kind === "pcm")).toEqual([]);
+  expect(session.attributionTrace.filter(entry => entry.kind === "pcm")).toEqual(pcmHistory);
   harness.controller.attachRemoteStream(stream());
   oldNode.handler?.(stale);
-  expect(session.attributionTrace.filter(entry => entry.kind === "pcm")).toEqual([]);
+  expect(session.attributionTrace.filter(entry => entry.kind === "pcm")).toEqual(pcmHistory);
   expect(internal.attribution.hasCompatibleOutput(session.session.activeTurn)).toBe(false);
 });
 

@@ -211,10 +211,10 @@ it("does not inherit a known direction for an unknown lexical group sharing its 
 it("preserves pending packet identity and clocks when language evidence splits its tail", () => {
   const ledger = new OutputAttribution(), a = source("a", 0);
   const raw = { ...fragment("packet", 100, 500), text: "Thank y" };
-  ledger.observePending([raw], [a], 1000, "a");
+  ledger.observePending([raw], [a], 1000);
   const id = ledger.outputs[0]!.id;
-  const first = ledger.receive([{ ...raw, id: "packet:head", text: "Thank " }], "B", [a], 2000, "a");
-  ledger.observePending([{ ...raw, id: "packet:tail", text: "y" }], [a], 2000, "a");
+  const first = ledger.receive([{ ...raw, id: "packet:head", text: "Thank " }], "B", [a], 2000);
+  ledger.observePending([{ ...raw, id: "packet:tail", text: "y" }], [a], 2000);
   expect(first.id).toBe(id);
   expect(ledger.outputs.flatMap(output => output.fragments).map(part => part.text).join("")).toBe("Thank y");
   expect(ledger.outputs.map(output => output.firstReceivedAtMs)).toEqual([1000, 1000]);
@@ -227,11 +227,11 @@ it.each(["shared-packet", "separate-packets"])("does not join nonadjacent langua
   const ids = kind === "shared-packet" ? ["p:head", "p:tail:head", "p:tail:tail"] : ["p1", "p2", "p3"];
   const texts = ["¿Dónde está la estación? ", "Вокзал находится прямо впереди. ", "Muchas gracias por su ayuda."];
   for (const [index, side] of (["B", "A", "B"] as const).entries())
-    ledger.receive([{ ...fragment(ids[index]!, 500, 2500), text: texts[index]! }], side, [a], 1000, "a");
+    ledger.receive([{ ...fragment(ids[index]!, 500, 2500), text: texts[index]! }], side, [a], 1000);
   expect(ledger.outputs.map(output => output.fragments.map(part => part.text).join(""))).toEqual(texts);
   expect(new Set(ledger.outputs.map(output => output.id)).size).toBe(3);
   const first = ledger.outputs[0]!;
-  const punctuation = ledger.receive([{ ...fragment("late-punctuation", 600, 600, 2000), text: "!" }], undefined, [a], 2000, "a");
+  const punctuation = ledger.receive([{ ...fragment("late-punctuation", 600, 600, 2000), text: "!" }], undefined, [a], 2000);
   // Both ES outputs cover this interval, so punctuation cannot choose one arbitrarily.
   expect(punctuation.id).not.toBe(first.id);
   expect(first.firstReceivedAtMs).toBe(1000);
@@ -311,7 +311,7 @@ it.each([false, true])("separates timely historical evidence from fresh late iso
 it.each([undefined, 100, 2000])("evaluates pending speech clocks without inventing a source, start=%s", startMs => {
   const ledger = new OutputAttribution(), a = source("a", 0);
   const pending = [{ ...fragment("raw-input", 100, 2500, 1000), text: "No.", startMs }];
-  const out = ledger.receive([fragment("output", 500, 1500, 1000)], "B", [a], 1000, "a", pending);
+  const out = ledger.receive([fragment("output", 500, 1500, 1000)], "B", [a], 1000, pending);
   expect(out.sourceId).toBe(startMs === 2000 ? "a" : undefined);
   expect(out.candidateIds).toEqual(["a"]);
   expect(a.originalText).toBe("Source");
@@ -323,8 +323,8 @@ it.each([undefined, 100, 2000])("evaluates pending speech clocks without inventi
 it("does not use pending-uncertain output as an opposite-direction witness", () => {
   const ledger = new OutputAttribution(), a = source("a", 0), b = source("b", 2000, "B");
   const pending = [{ ...fragment("unknown", 200, 600), text: "No." }];
-  ledger.receive([fragment("early", 500, 1500)], "B", [a, b], 1000, "", pending);
-  const later = ledger.receive([fragment("later", 2500, 3500)], "A", [a, b], 1000, "", pending);
+  ledger.receive([fragment("early", 500, 1500)], "B", [a, b], 1000, pending);
+  const later = ledger.receive([fragment("later", 2500, 3500)], "A", [a, b], 1000, pending);
   expect(later.candidateIds).toEqual(["a", "b"]);
   expect(later.sourceId).toBeUndefined();
   ledger.reconcile([a, b], 2000);
@@ -346,7 +346,7 @@ it("does not certify a first late isolated result before a pending later episode
   const ledger = new OutputAttribution(), a = source("a", 0, "A", "failed");
   a.outputDeadline = { atMs: 6000, outcome: "no_observed_output" };
   const pending = [{ ...fragment("unknown", 2000, 3000, 7000), text: "No." }];
-  const out = ledger.receive([fragment("output", 500, 1500, 7000)], "B", [a], 7000, "", pending);
+  const out = ledger.receive([fragment("output", 500, 1500, 7000)], "B", [a], 7000, pending);
   expect(out.sourceId).toBeUndefined();
   const unknown = { ...source("unknown", 2000), speaker: undefined };
   ledger.reconcile([a, unknown], 7600);
@@ -386,4 +386,37 @@ it("does not compare source provider timestamps with local PCM receipt", () => {
   expect(ledger.hasCompatibleOutput(fresh)).toBe(true);
   expect(ledger.hasCompatibleOutput(later)).toBe(true);
   expect(ledger.hasCompatibleOutput(older)).toBe(true);
+});
+
+it.each([false, true])("keeps an untimed result separate from a sentence-complete timed output, source first=%s", sourceFirst => {
+  const ledger = new OutputAttribution(), a = source("a", 100), b = source("b", 1400, "B");
+  const first = ledger.receive([{ ...fragment("first", 600, 1300), text: "El paquete está aquí." }], "B", [a], 1000);
+  if (sourceFirst) ledger.reconcile([a, b], 1200);
+  const continued = ledger.receive([{ ...fragment("continued", 1000, 1300, 1200), text: " Gracias." }], "B", sourceFirst ? [a, b] : [a], 1200);
+  expect(continued.id).toBe(first.id);
+  const next = ledger.receive([{ id: "untimed", text: "Sí.", receivedAtMs: 1200 }], "B", sourceFirst ? [a, b] : [a], 1200);
+  ledger.reconcile([a, b], 1200);
+  expect(next.id).not.toBe(first.id);
+  expect(next.sourceId).toBeUndefined();
+  expect(first.sourceId).toBe(a.id);
+  expect(first.fragments.map(part => part.text).join("")).toBe("El paquete está aquí. Gracias.");
+  expect(ledger.outputs).toHaveLength(2);
+  expect(ledger.outputs.map(output => output.firstReceivedAtMs)).toEqual([1000, 1200]);
+});
+
+it.each([false, true])("keeps unfinished timed continuations independent of source delivery, source first=%s", sourceFirst => {
+  for (const timing of ["untimed", "overlap", "adjacent"]) {
+    const ledger = new OutputAttribution(), a = source("a", 100), b = source("b", 1400, "B");
+    const first = ledger.receive([{ ...fragment("first", 600, 1300), text: "El paquete está " }], "B", [a], 1000);
+    if (sourceFirst) ledger.reconcile([a, b], 1200);
+    const suffix = timing === "untimed" ? { id: "suffix", text: "aquí.", receivedAtMs: 1200 }
+      : { ...fragment("suffix", timing === "overlap" ? 1000 : 1300, timing === "overlap" ? 1300 : 1350, 1200), text: "aquí." };
+    const continued = ledger.receive([suffix], "B", sourceFirst ? [a, b] : [a], 1200);
+    ledger.reconcile([a, b], 1200);
+    expect(continued.id).toBe(first.id);
+    expect(continued.fragments.map(part => part.text).join("")).toBe("El paquete está aquí.");
+    expect(continued.firstReceivedAtMs).toBe(1000);
+    expect(continued.sourceId).toBe(timing === "untimed" ? undefined : a.id);
+    expect(ledger.outputs).toHaveLength(1);
+  }
 });

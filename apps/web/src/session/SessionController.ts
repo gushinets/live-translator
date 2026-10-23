@@ -145,10 +145,11 @@ export class SessionController {
   private readonly outputRouter = new TranscriptRouter();
   private readonly dialogueTranscript = new DialogueTranscript();
   private attribution = new OutputAttribution();
+  private retiredAttributionTrace: OutputAttribution["trace"] = [];
   private sourceUpdateInProgress = false;
   private noOutputHint: { sourceId: string; generation: number } | undefined;
   get currentAttribution() { return this.attribution.current(); }
-  get attributionTrace() { return this.attribution.trace; }
+  get attributionTrace() { return [...this.retiredAttributionTrace, ...this.attribution.trace].slice(-128); }
   get captionBlocks() { return this.dialogueTranscript.blocks; }
   private sourceFragmentTimer: number | null = null;
   private outputFragmentTimer: number | null = null;
@@ -1550,7 +1551,7 @@ export class SessionController {
     // Includes timer and source-handoff flushes, not only newly received deltas.
     this.expireOutputDeadlines(Date.now(), false);
     for (const { side, fragments } of groups) {
-      const output = this.attribution.receive(fragments, side, this.routingTurns(), Date.now(), this.latestSourceTurnId, this.sourceRouter.pendingFragments);
+      const output = this.attribution.receive(fragments, side, this.routingTurns(), Date.now(), this.sourceRouter.pendingFragments);
       if (output.lateOutput) this.conversationMetrics.recordAttributionEvent("lateOutputAfterDeadlineCount", `${output.id}:${output.revision}`);
       this.outputTurnId = output.sourceId ?? output.id;
       this.outputSourceTurnId = output.sourceId ?? this.latestSourceTurnId;
@@ -1558,7 +1559,7 @@ export class SessionController {
       this.audio.setPlaybackTurn?.(this.outputTurnId);
       this.lastOutputSide = side;
     }
-    this.attribution.observePending(this.outputRouter.pendingFragments, this.routingTurns(), Date.now(), this.latestSourceTurnId, this.sourceRouter.pendingFragments);
+    this.attribution.observePending(this.outputRouter.pendingFragments, this.routingTurns(), Date.now(), this.sourceRouter.pendingFragments);
     if (groups.length || this.outputRouter.hasPending) this.projectAttribution();
     this.armCaptionIdleTimer();
     if (considerCompletion) void this.considerTurnCompletion(Date.now());
@@ -2060,6 +2061,7 @@ export class SessionController {
     this.sourceRouter.reset();
     this.outputRouter.reset();
     this.routingTurnIds.clear();
+    this.retiredAttributionTrace = this.attributionTrace;
     this.attribution = new OutputAttribution();
     this.noOutputHint = undefined;
     this.outputTurnId = undefined;
@@ -3038,7 +3040,10 @@ export class SessionController {
     if (review) {
       this.currentSession = { ...this.currentSession, state: "ended", participantA, participantB };
       this.dialogueTranscript.seal();
-    } else this.dialogueTranscript.clear();
+    } else {
+      this.dialogueTranscript.clear();
+      this.retiredAttributionTrace = [];
+    }
     this.live = this.deps.createLive();
     this.bindLive();
     this.notify();

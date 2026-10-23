@@ -15,7 +15,6 @@ export interface AttributedOutput {
   lateOutput?: boolean;
   technicalCompleted?: boolean;
   languagePending?: boolean;
-  streamKey: string;
 }
 export interface AttributionChange {
   output: Pick<AttributedOutput, "id" | "sourceId" | "revision" | "lateOutput">;
@@ -56,7 +55,7 @@ export class OutputAttribution {
     this.observePcm(atMs, false);
   }
 
-  receive(fragments: TranscriptFragment[], side: Side | undefined, sources: Turn[], nowMs: number, streamKey = "", pendingSources: readonly TranscriptFragment[] = []): AttributedOutput {
+  receive(fragments: TranscriptFragment[], side: Side | undefined, sources: Turn[], nowMs: number, pendingSources: readonly TranscriptFragment[] = []): AttributedOutput {
     // Router splits keep the packet ID as a prefix and preserve its original clocks.
     const pending = this.pendingOutput && fragments.some(part => this.pendingOutput!.fragments.some(known =>
       part.id === known.id || part.id.startsWith(known.id + ":"))) ? this.pendingOutput : undefined;
@@ -75,13 +74,16 @@ export class OutputAttribution {
     const unfinished = last && !isSentenceComplete(last.fragments.map(part => part.text).join(""));
     const adjacent = last && last.fragments.at(-1)!.endMs !== undefined &&
       fragments[0]?.startMs === last.fragments.at(-1)!.endMs;
-    const tail = last && last !== this.pendingOutput && last.streamKey === streamKey && (last.side === side || (side === undefined && neutral)) &&
+    // ASR delivery does not establish an output boundary. An untimed packet cannot
+    // extend sentence-complete timed evidence solely because it arrived soon after.
+    const tail = last && last !== this.pendingOutput && (last.side === side || (side === undefined && neutral)) &&
       ((fragments.every(part => part.startMs === undefined) &&
-        (nowMs - last.fragments.at(-1)!.receivedAtMs < runtime.captionIdleMs || unfinished)) ||
+        ((last.fragments.every(part => part.startMs === undefined) &&
+          nowMs - last.fragments.at(-1)!.receivedAtMs < runtime.captionIdleMs) || unfinished)) ||
         (adjacent && unfinished)) ? last : undefined;
     const output = pending ?? (overlaps.length === 1 ? overlaps[0]! : tail) ?? {
       id: crypto.randomUUID(), fragments: [], side, firstReceivedAtMs: Math.min(...fragments.map(part => part.receivedAtMs)),
-      candidateIds: [], revision: 0, streamKey,
+      candidateIds: [], revision: 0,
     };
     if (pending) {
       output.fragments = [];
@@ -98,11 +100,11 @@ export class OutputAttribution {
   }
 
   /** Observe the unresolved router tail now; later language evidence refines the same receipt. */
-  observePending(fragments: readonly TranscriptFragment[], sources: Turn[], nowMs: number, streamKey = "", pendingSources: readonly TranscriptFragment[] = []): void {
+  observePending(fragments: readonly TranscriptFragment[], sources: Turn[], nowMs: number, pendingSources: readonly TranscriptFragment[] = []): void {
     if (!fragments.length) return;
     const output = this.pendingOutput ??= {
       id: crypto.randomUUID(), fragments: [], languagePending: true, firstReceivedAtMs: Math.min(...fragments.map(part => part.receivedAtMs)),
-      candidateIds: [], revision: 0, streamKey,
+      candidateIds: [], revision: 0,
     };
     output.fragments = [...fragments];
     if (!this.outputs.includes(output)) this.outputs.push(output);

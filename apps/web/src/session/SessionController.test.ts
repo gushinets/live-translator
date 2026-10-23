@@ -5649,22 +5649,21 @@ it.each([0, runtime.noOutputTimeoutMs])("preserves standalone output context aft
   expect(controller.session.pendingTurns?.find(turn => turn.id === a)?.translatedText).toBeUndefined();
 });
 
-it("does not join a new source's output to a stale standalone translation", async () => {
+it.each([false, true])("requires disjoint output intervals to separate an unfinished same-language output, timed=%s", async timed => {
   vi.useFakeTimers(); vi.setSystemTime(0);
   const { controller, live, audio } = createController();
   await controller.startWithLanguages({ A: "ru", B: "en" });
   emitVoice(audio, true);
   for (const delta of ["I use Google every day.", "Я тоже использую Гугл.", "I use it for work too."])
     live.emit({ type: "session.input_transcript.delta", delta });
-  live.emit({ type: "session.output_transcript.delta", delta: "Я использую " });
+  live.emit({ type: "session.output_transcript.delta", delta: "Я использую ", ...(timed ? { start_ms: 100, end_ms: 200 } : {}) });
   const standalone = controller.session.pendingTurns?.find(turn => turn.translationOnly)?.id;
   for (const delta of ["Подскажите, где находится вокзал?", "The station is straight ahead."])
     live.emit({ type: "session.input_transcript.delta", delta });
-  live.emit({ type: "session.output_transcript.delta", delta: "Вокзал находится прямо впереди." });
-  expect(controller.session.pendingTurns?.find(turn => turn.id === standalone)?.translatedText).toBe("Я использую ");
-  expect(controller.session.pendingTurns?.filter(turn => turn.translationOnly).map(turn => turn.translatedText)).toEqual([
-    "Я использую ", "Вокзал находится прямо впереди.",
-  ]);
+  live.emit({ type: "session.output_transcript.delta", delta: "Вокзал находится прямо впереди.", ...(timed ? { start_ms: 300, end_ms: 400 } : {}) });
+  expect(controller.session.pendingTurns?.find(turn => turn.id === standalone)?.translatedText).toBe(timed ? "Я использую " : "Я использую Вокзал находится прямо впереди.");
+  expect(controller.session.pendingTurns?.filter(turn => turn.translationOnly).map(turn => turn.translatedText)).toEqual(timed ? ["Я использую ", "Вокзал находится прямо впереди."] : ["Я использую Вокзал находится прямо впереди."]);
+  expect(controller.currentAttribution.matchedTextOutputs).toBe(0);
 });
 
 describe("PR32 buffered output boundaries", () => {
@@ -6534,8 +6533,7 @@ it("keeps an unfinished multi-sentence output together across caption idle witho
   await vi.advanceTimersByTimeAsync(6000);
   const blocks = controller.captionBlocks.filter(block => block.kind === "output");
   expect(blocks.map(block => block.text.trim())).toEqual([
-    // Delayed source "I " creates a new source context before "want?".
-    "Well, hello. Who are you, what do you", "want?",
+    "Well, hello. Who are you, what do you want?",
     "Эм, сэр, привет. Я курьер. У меня посылка для господина Михаила Гушина.",
     "How do I get the package?",
   ]);
@@ -6821,4 +6819,115 @@ it("retains untimed short-source uncertainty without borrowing completed text", 
   expect(controller.session.activeTurn).toMatchObject({ id: a, translatedText: undefined });
   expect(controller.session.recentTurns.find(turn => turn.id === b)?.translatedText).toBeUndefined();
   expect(controller.captionBlocks.filter(block => block.kind === "output").map(block => block.text)).toEqual(["Я использую ", "Google."]);
+});
+
+describe("final attribution review regressions", () => {
+  beforeEach(() => { vi.useFakeTimers(); vi.setSystemTime(1000); });
+
+  it.each([true, false])("keeps output identity and outcomes independent of ASR delivery order, timed=%s", async timed => {
+    const scenario = async (asrFirst: boolean) => {
+      vi.setSystemTime(1000);
+      const { controller, live, audio } = createController();
+      await controller.startWithLanguages({ A: "ru", B: "es" });
+      emitVoice(audio, true);
+      live.emit({ type: "session.input_transcript.delta", delta: "Где находится станция?", start_ms: 0, end_ms: 100 });
+      emitVoice(audio, false);
+      const sourceId = controller.session.activeTurn!.id;
+      live.emit({ type: "session.output_transcript.delta", delta: "La estación está ",
+        ...(timed ? { start_ms: 100, end_ms: 200 } : {}) });
+      const outputId = controller.captionBlocks.find(block => block.kind === "output")!.outputId;
+      vi.setSystemTime(1100);
+      const source = () => live.emit({ type: "session.input_transcript.delta", delta: "¿Está muy lejos?", start_ms: 250, end_ms: 350 });
+      const suffix = () => live.emit({ type: "session.output_transcript.delta", delta: "muy cerca.",
+        ...(timed ? { start_ms: 200, end_ms: 300 } : {}) });
+      if (asrFirst) { source(); suffix(); } else { suffix(); source(); }
+      emitVoice(audio, false);
+      await vi.advanceTimersByTimeAsync(6000);
+      const outputs = controller.captionBlocks.filter(block => block.kind === "output");
+      expect(outputs).toEqual([expect.objectContaining({ outputId, text: "La estación está muy cerca.",
+        attribution: "unattributed", receivedAtMs: 1000 })]);
+      const turn = controller.session.recentTurns.find(turn => turn.id === sourceId)!;
+      expect(turn).toMatchObject({ status: "unresolved", outputDeadline: { atMs: 6000, outcome: "unresolved" } });
+      expect(turn.translatedText).toBeUndefined();
+      const result = { current: controller.currentAttribution, metrics: controller.metrics.snapshot(),
+        outputs: outputs.map(({ text, attribution, receivedAtMs }) => ({ text, attribution, receivedAtMs })) };
+      expect(result.current).toMatchObject({ matchedTextOutputs: 0, unattributedTextOutputs: 1, matchedAudioOutputs: 0, confirmedSourceSpeechMs: null });
+      expect(result.metrics).toMatchObject({ completedTurnCount: 0, noOutputWatchdogCount: 2, unresolvedSourceOutcomeCount: 1, noObservedOutputDeadlineCount: 1, lateOutputAfterDeadlineCount: 0 });
+      const decisions = controller.attributionTrace.filter(entry => entry.outputId === outputId && entry.revision !== undefined);
+      expect(new Set(decisions.map(entry => entry.revision)).size).toBe(decisions.length);
+      await controller.endConversation();
+      return result;
+    };
+    expect(await scenario(true)).toEqual(await scenario(false));
+  });
+
+  it.each(["finalized", "incomplete", "rejected"] as const)("retains content-free diagnostics after public End, close=%s", async close => {
+    const { controller, live, audio } = createController();
+    await controller.startWithLanguages({ A: "ru", B: "es" });
+    emitVoice(audio, true);
+    live.emit({ type: "session.input_transcript.delta", delta: "Где находится станция?", start_ms: 0, end_ms: 100 });
+    live.emit({ type: "session.output_transcript.delta", delta: "La estación está cerca.", start_ms: 100, end_ms: 200 });
+    emitVoice(audio, false);
+    audio.onPcmReceived?.(1050);
+    await vi.advanceTimersByTimeAsync(1600);
+    const trace = structuredClone(controller.attributionTrace);
+    const captions = structuredClone(controller.captionBlocks);
+    const oldTranscript = live.onTranscriptDelta!;
+    expect(trace.length).toBeGreaterThan(0);
+    if (close === "incomplete") live.close.mockResolvedValue({ finalized: false });
+    if (close === "rejected") live.close.mockRejectedValue(new Error("close failed"));
+    if (close === "rejected") await expect(controller.endConversation()).rejects.toThrow("close failed");
+    else await controller.endConversation();
+    expect(controller.session.state).toBe(close === "rejected" ? "ending" : "ended");
+    expect(controller.captionBlocks).toEqual(captions);
+    expect(controller.attributionTrace).toEqual(trace);
+    expect(JSON.stringify(controller.attributionTrace)).not.toMatch(/Где находится|La estación|delta|payload/);
+    oldTranscript({ type: "session.output_transcript.delta", delta: "Старое событие." });
+    expect(controller.attributionTrace).toEqual(trace);
+    expect(controller.currentAttribution).toMatchObject({ matchedTextOutputs: 0, unattributedTextOutputs: 0, unattributedPlaybackCount: 0 });
+  });
+
+  it("clears retained diagnostics and attribution before a new conversation", async () => {
+    const { controller, live, audio } = createController();
+    await controller.startWithLanguages({ A: "ru", B: "es" });
+    live.emit({ type: "session.output_transcript.delta", delta: "La estación está cerca.", start_ms: 100, end_ms: 200 });
+    const oldGeneration = controller.attributionTrace[0]!.generation;
+    const oldTranscript = live.onTranscriptDelta!;
+    const oldPcm = audio.onPcmReceived!;
+    await controller.endConversation();
+    expect(controller.attributionTrace.length).toBeGreaterThan(0);
+    oldPcm(2000);
+    expect(controller.attributionTrace.some(entry => entry.atMs === 2000)).toBe(false);
+    await controller.cancel();
+    expect(controller.attributionTrace).toEqual([]);
+    await controller.startWithLanguages({ A: "ru", B: "es" });
+    oldTranscript({ type: "session.output_transcript.delta", delta: "Старое событие." });
+    expect(controller.attributionTrace).toEqual([]);
+    expect(controller.captionBlocks).toEqual([]);
+    expect(controller.currentAttribution).toMatchObject({ matchedTextOutputs: 0, unattributedTextOutputs: 0, unattributedPlaybackCount: 0 });
+    live.emit({ type: "session.output_transcript.delta", delta: "Una conversación nueva." });
+    expect(controller.attributionTrace.length).toBeGreaterThan(0);
+    expect(controller.attributionTrace.every(entry => entry.generation !== oldGeneration)).toBe(true);
+    await controller.endConversation();
+  });
+
+  it("bounds retained metadata across routing generations without retaining their candidate state", async () => {
+    const { controller, audio } = createController();
+    await controller.startWithLanguages({ A: "ru", B: "es" });
+    audio.onPcmReceived?.(1000);
+    const first = structuredClone(controller.attributionTrace);
+    await controller.changeInterlocutorLanguage("en");
+    expect(controller.attributionTrace).toEqual(first);
+    expect(controller.currentAttribution).toMatchObject({ matchedTextOutputs: 0, unattributedTextOutputs: 0, unattributedPlaybackCount: 0 });
+    audio.onPcmReceived?.(1100);
+    expect(controller.attributionTrace.at(-1)!.generation).not.toBe(first[0]!.generation);
+    for (let index = 0; index < 200; index++) audio.onPcmReceived?.(1200 + index);
+    const beforeReset = structuredClone(controller.attributionTrace);
+    expect(beforeReset).toHaveLength(128);
+    expect(beforeReset[0]!.atMs).toBe(1272);
+    await controller.changeInterlocutorLanguage("es");
+    expect(controller.attributionTrace).toEqual(beforeReset);
+    await controller.endConversation();
+    expect(controller.attributionTrace).toEqual(beforeReset);
+  });
 });

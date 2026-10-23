@@ -36,8 +36,7 @@ test("courier dialogue retains originals, translations and split names across ca
   ]);
   await expect(b.locator("li")).toHaveText([
     "Me: Um, sir, hi. I'm a delivery guy. I need to deliver a package for Mr. Mikhail Gushin.",
-    // Delayed source "I " establishes a new context between these untimed outputs.
-    "Him: Well, hello. Who are you, what do you", "Him: want?",
+    "Him: Well, hello. Who are you, what do you want?",
     "Him: How do I get the package?",
   ]);
   await expect(page.locator(".turn-waiting")).toHaveCount(0);
