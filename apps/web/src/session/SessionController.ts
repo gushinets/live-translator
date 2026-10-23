@@ -1527,14 +1527,14 @@ export class SessionController {
     const continuous = pending.some(part => part.startMs !== undefined && part.endMs !== undefined &&
       fragment.startMs !== undefined && fragment.startMs <= part.endMs &&
       (fragment.endMs ?? fragment.startMs) >= part.startMs);
-    const disjoint = pending.length > 0 && pending.every(part =>
-      (part.endMs !== undefined && fragment.startMs !== undefined && fragment.startMs > part.endMs) ||
-      (part.startMs !== undefined && fragment.endMs !== undefined && fragment.endMs < part.startMs));
-    const pendingTail = pending.at(-1)?.text.match(/\p{L}$/u)?.[0];
-    const incomingSide = pendingTail && /^\p{L}/u.test(fragment.text) ? completeScriptSide(fragment.text, this.languages) : undefined;
-    // Output intervals preserve mixed-script continuations and separate disjoint receipts, independent of ASR.
-    if (!continuous && (disjoint || (pendingTail && incomingSide &&
-        !scriptPattern(languageScripts(this.languages[incomingSide]))?.test(pendingTail)))) {
+    const pendingText = pending.map(part => part.text).join("");
+    const pendingTail = pendingText.trimEnd().match(/\p{L}$/u)?.[0];
+    const continuesWord = /\p{L}$/u.test(pendingText) && /^\p{Ll}/u.test(fragment.text);
+    const incomingSide = pendingTail && !continuesWord && /^\s*\p{L}/u.test(fragment.text)
+      ? completeScriptSide(fragment.text, this.languages) : undefined;
+    // A timing gap cannot split a word, including a lowercase suffix in another script.
+    if (!continuous && pendingTail && incomingSide &&
+        !scriptPattern(languageScripts(this.languages[incomingSide]))?.test(pendingTail)) {
       this.routeOutput(this.outputRouter.flush(this.languages, true), false);
     }
 

@@ -7081,3 +7081,52 @@ it.each([150, 200])("keeps a mixed-script word with its pending output at provid
   expect(root.querySelectorAll(".unattributed-output li")).toHaveLength(0);
   await controller.endConversation();
 });
+
+it.each([
+  { A: "ru", B: "en", prefix: "Я ис", suffix: "пользую приложение.", source: "I use the application every day." },
+  { A: "es", B: "en", prefix: "Uti", suffix: "lizo la aplicación.", source: "I use the application every day." },
+  { A: "pt", B: "en", prefix: "Eu uti", suffix: "lizo o aplicativo.", source: "I use the application every day." },
+  { A: "de", B: "en", prefix: "Ich ve", suffix: "rwende die Anwendung.", source: "I use the application every day." },
+  { A: "fr", B: "en", prefix: "Je re", suffix: "garde la télévision.", source: "I watch television every day." },
+  { A: "en", B: "ru", prefix: "Thank y", suffix: "ou very much.", source: "Спасибо большое за вашу помощь." },
+  { A: "it", B: "en", prefix: "Sto uti", suffix: "lizzando l'applicazione.", source: "I am using the application every day." },
+  { A: "ru", B: "en", prefix: "Я ", suffix: "использую приложение.", source: "I use the application every day." },
+  { A: "ru", B: "en", prefix: "Zoom", suffix: "ом удобно пользоваться.", source: "Zoom is convenient to use." },
+  { A: "fr", B: "en", prefix: "L'", suffix: "application fonctionne correctement.", source: "The application works correctly." },
+  { A: "it", B: "en", prefix: "L’", suffix: "applicazione funziona correttamente.", source: "The application works correctly." },
+  { A: "en", B: "ru", prefix: "Self-", suffix: "service is available.", source: "Самообслуживание доступно каждому посетителю." },
+  { A: "fr", B: "en", prefix: "Je pre\u0301", suffix: "pare le repas.", source: "I am preparing the meal." },
+].flatMap(row => [1, 20].map(gap => ({ ...row, gap }))))("keeps a word across an output interval gap: $A $gap ms ($prefix | $suffix)", async ({ A, B, prefix, suffix, source, gap }) => {
+  vi.useFakeTimers(); vi.setSystemTime(1000);
+  const { controller, live, audio } = createController();
+  await controller.startWithLanguages({ A, B });
+  emitVoice(audio, true);
+  live.emit({ type: "session.input_transcript.delta", delta: source, start_ms: 0, end_ms: 100 });
+  live.emit({ type: "session.output_transcript.delta", delta: prefix, start_ms: 100, end_ms: 200 });
+  const first = controller.captionBlocks.find(block => block.kind === "output")!;
+  vi.setSystemTime(1100);
+  live.emit({ type: "session.output_transcript.delta", delta: suffix, start_ms: 200 + gap, end_ms: 400 });
+  await vi.advanceTimersByTimeAsync(runtime.captionIdleMs);
+  expect(controller.captionBlocks.filter(block => block.kind === "output")).toEqual([
+    expect.objectContaining({ outputId: first.outputId, text: prefix + suffix, side: "A", receivedAtMs: 1000 }),
+  ]);
+  expect(controller.currentAttribution).toMatchObject({ matchedTextOutputs: 1, unattributedTextOutputs: 0, matchedAudioOutputs: 0 });
+  await controller.endConversation();
+});
+
+it.each(["?", " ?"].flatMap(suffix => [1, 20].map(gap => ({ suffix, gap }))))("keeps a neutral suffix across an output interval gap: $suffix $gap ms", async ({ suffix, gap }) => {
+  vi.useFakeTimers(); vi.setSystemTime(1000);
+  const { controller, live, audio } = createController();
+  await controller.startWithLanguages({ A: "en", B: "ru" });
+  emitVoice(audio, true);
+  live.emit({ type: "session.input_transcript.delta", delta: "Спасибо большое за вашу помощь.", start_ms: 0, end_ms: 100 });
+  live.emit({ type: "session.output_transcript.delta", delta: "Thank y", start_ms: 100, end_ms: 200 });
+  const first = controller.captionBlocks.find(block => block.kind === "output")!;
+  vi.setSystemTime(1100);
+  live.emit({ type: "session.output_transcript.delta", delta: suffix, start_ms: 200 + gap, end_ms: 400 });
+  await vi.advanceTimersByTimeAsync(runtime.captionIdleMs);
+  expect(controller.captionBlocks.filter(block => block.kind === "output")).toEqual([
+    expect.objectContaining({ outputId: first.outputId, text: "Thank y" + suffix, receivedAtMs: 1000 }),
+  ]);
+  await controller.endConversation();
+});
