@@ -14,7 +14,7 @@ async function startRussianEnglish(page: Page, languages = { A: "ru", B: "en" })
   return harness;
 }
 
-test("a rapid B reply retains A's late translation and both relative authors", async ({ page }, testInfo) => {
+test("a rapid B reply retains originals and late translations without inventing output authors", async ({ page }, testInfo) => {
   const harness = await startRussianEnglish(page);
   const startupEvents = await harness.sentClientEvents();
   await harness.sourceActive();
@@ -27,10 +27,13 @@ test("a rapid B reply retains A's late translation and both relative authors", a
   await expect(b.locator(".turn-author").last()).toHaveText("Me:");
   await expect(a.locator("li")).toHaveText("Я: Подскажите, где находится вокзал?");
   await harness.outputDelta("Where is the train station?");
-  await expect(b.locator("li")).toHaveText(["Me: The station is straight ahead.", "Him: Where is the train station?"]);
+  await expect(b.locator("li")).toHaveText(["Me: The station is straight ahead.", "Where is the train station?"]);
   await harness.outputDelta("Вокзал находится прямо впереди.");
   await expect(a.locator(".recent-turn-primary").last()).toHaveText("Вокзал находится прямо впереди.");
-  await expect(a.locator(".turn-author").last()).toHaveText("Он:");
+  await expect(a.locator("li").last().locator(".turn-author")).toHaveCount(0);
+  await expect(b.locator("li").last().locator(".turn-author")).toHaveCount(0);
+  await expect(a.locator(".recent-turn-primary").last()).toHaveAttribute("lang", "ru");
+  await expect(b.locator(".recent-turn-primary").last()).toHaveAttribute("lang", "en");
   expect(await harness.sentClientEvents()).toEqual(startupEvents);
   await page.screenshot({ path: testInfo.outputPath("rapid-reply-late-translation.png") });
 });
@@ -90,7 +93,7 @@ test("same-speaker continuation stays in the original source across a short paus
   expect(await harness.lastGateBCommand()).toBe("unmute");
 });
 
-test("ambiguous A-B-A output stays an independent authored block after source timeouts", async ({ page }, testInfo) => {
+test("ambiguous A-B-A output stays an independent unowned block after source timeouts", async ({ page }, testInfo) => {
   const harness = await startRussianEnglish(page);
   await harness.sourceActive();
   await harness.inputDelta("Подскажите, где находится вокзал?");
@@ -101,7 +104,10 @@ test("ambiguous A-B-A output stays an independent authored block after source ti
   await harness.outputDelta("Thank you, I will walk there.");
   const a = page.getByTestId("participant-pane-A");
   const b = page.getByTestId("participant-pane-B");
-  await expect(b.getByText("Thank you, I will walk there.").locator("..")).toContainText("Him:");
+  const output = b.getByText("Thank you, I will walk there.", { exact: true });
+  await expect(output).toHaveCount(1);
+  await expect(output).toHaveAttribute("lang", "en");
+  await expect(output.locator("..").locator(".turn-author")).toHaveCount(0);
   await expect(a.getByText("Thank you, I will walk there.")).toHaveCount(0);
   await expect(a.locator("li")).toHaveCount(2);
   await expect(b.locator("li")).toHaveCount(2);

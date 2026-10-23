@@ -60,6 +60,7 @@ test.describe("mocked conversation runtime", () => {
         recipient,
         original: turn.original,
         translation: turn.translation,
+        outputAttributed: index === 0,
       });
       expect(harness.liveSessionCreateCount()).toBe(liveSessionCreatesAfterSetup);
       expect(await harness.peerCreateCount()).toBe(peerCreatesAfterSetup);
@@ -126,11 +127,12 @@ test.describe("mocked conversation runtime", () => {
   test("B starts and A speaks three times without alternating", async ({ page }) => {
     const harness = await MockLiveHarness.attach(page);
     await harness.startListeningConversation();
-    for (const speaker of ["B", "A", "A", "A", "B"] as const) {
+    for (const [index, speaker] of (["B", "A", "A", "A", "B"] as const).entries()) {
       await completeTextOnlyTurn(harness, page, {
         speaker, recipient: speaker === "A" ? "B" : "A",
         original: speaker === "A" ? "Could you tell me where the train station is?" : "¿Dónde está la estación de tren, por favor?",
         translation: speaker === "A" ? "¿Dónde está la estación de tren, por favor?" : "Could you tell me where the train station is?",
+        outputAttributed: index === 0,
       });
     }
     await harness.sourceActive();
@@ -143,10 +145,10 @@ test.describe("mocked conversation runtime", () => {
     const paneA = page.getByTestId("participant-pane-A");
     const paneB = page.getByTestId("participant-pane-B");
     await expect(paneA.locator(".recent-turn-primary")).toHaveText([english, english.repeat(3), english]);
-    await expect(paneA.locator(".turn-author")).toHaveText(["Him:", "Me:", "Him:"]);
+    await expect(paneA.locator(".turn-author")).toHaveText(["Me:"]);
     // Independent uncertain outputs retain their boundaries instead of joining A1's translation.
     await expect(paneB.locator(".recent-turn-primary")).toHaveText([spanish, spanish, spanish, spanish, spanish]);
-    await expect(paneB.locator(".turn-author")).toHaveText(["Yo:", "Él:", "Él:", "Él:", "Yo:"]);
+    await expect(paneB.locator(".turn-author")).toHaveText(["Yo:", "Yo:"]);
     await harness.sourceQuiet();
   });
 
@@ -187,6 +189,7 @@ test.describe("mocked conversation runtime", () => {
       recipient: "B",
       original: "Hello from A.",
       translation: "Hola desde A.",
+      outputAttributed: true,
     });
     await expect(page.getByTestId("participant-status-B")).toHaveText("Puedes hablar");
     await expect(page.getByTestId("participant-status-A")).toHaveText("You can speak");
@@ -227,20 +230,21 @@ test.describe("mocked conversation runtime", () => {
     expect(await harness.lastGateBCommand()).toBe("unmute");
   });
 
-  test("compatible output with two retained source candidates does not request a repeat", async ({ page }) => {
+  test("two retained source candidates keep unowned output and offer conditional recovery", async ({ page }) => {
     const harness = await MockLiveHarness.attach(page);
     await harness.startListeningConversation();
     const original = "Could you tell me where the train station is?";
     const translation = "¿Dónde está la estación de tren, por favor?";
-    await completeTextOnlyTurn(harness, page, { speaker: "A", recipient: "B", original, translation });
+    await completeTextOnlyTurn(harness, page, { speaker: "A", recipient: "B", original, translation, outputAttributed: true });
     // A1 remains a possible continuation; untimed A2 output cannot identify one of the two sources.
-    await completeTextOnlyTurn(harness, page, { speaker: "A", recipient: "B", original, translation });
+    await completeTextOnlyTurn(harness, page, { speaker: "A", recipient: "B", original, translation, outputAttributed: false });
     const paneA = page.getByTestId("participant-pane-A");
     const paneB = page.getByTestId("participant-pane-B");
     await expect(paneA.locator(".recent-turn-primary")).toHaveText(original.repeat(2));
     await expect(paneA.locator(".turn-author")).toHaveText("Me:");
     await expect(paneB.locator(".recent-turn-primary")).toHaveText([translation, translation]);
-    await expect(paneB.locator(".turn-author")).toHaveText(["Él:", "Él:"]);
+    await expect(paneB.locator(".turn-author")).toHaveCount(0);
+    await expect(page.getByText("If you did not hear a translation, please repeat", { exact: true })).toBeVisible();
     await expect(page.getByText("Please repeat", { exact: true })).toHaveCount(0);
     expect(await harness.lastGateBCommand()).toBe("unmute");
   });
@@ -254,6 +258,7 @@ async function completeTextOnlyTurn(
     recipient: "A" | "B";
     original: string;
     translation: string;
+    outputAttributed: boolean;
   },
 ): Promise<void> {
   await harness.sourceActive();
@@ -266,7 +271,10 @@ async function completeTextOnlyTurn(
   const caption = page.getByTestId(`participant-pane-${turn.recipient}`).locator(".recent-turn-primary").last();
   await expect(caption).toContainText(turn.translation);
   await expect(caption).toBeVisible();
-  await expect(caption.locator("..")).toContainText(turn.recipient === "A" ? "Him:" : "Él:");
+  await expect(caption).toHaveAttribute("lang", turn.recipient === "A" ? "en" : "es");
+  const author = caption.locator("..").locator(".turn-author");
+  if (turn.outputAttributed) await expect(author).toHaveText(turn.recipient === "A" ? "Him:" : "Él:");
+  else await expect(author).toHaveCount(0);
   await expect(page.getByTestId(`participant-status-${turn.speaker}`)).toHaveText(turn.speaker === "A" ? "Listening" : "Escuchando");
   expect(await harness.lastGateBCommand()).not.toBe("mute");
   await harness.sourceQuiet();

@@ -7327,3 +7327,148 @@ it.each(["language-change", "end"])("dismisses unresolved conditional recovery o
   expect(controller.recoveryPrompt).toBeUndefined();
   if (boundary === "language-change") await controller.endConversation();
 });
+
+
+it.each(["none", "pcm", "late-text"])("retains A's unseen timeout through B's continued speech and completion, evidence=%s", async evidence => {
+  vi.useFakeTimers(); vi.setSystemTime(1000);
+  const { controller, live, audio } = createController();
+  await controller.startWithLanguages({ A: "ru", B: "en" });
+  emitVoice(audio, true);
+  live.emit({ type: "session.input_transcript.delta", delta: "Где находится станция?", start_ms: 2000, end_ms: 3000 });
+  const failedId = controller.session.activeTurn!.id;
+  emitVoice(audio, false);
+  vi.setSystemTime(2000); emitVoice(audio, true);
+  // ASR delivery order need not be provider-time order; the earlier B interval can be isolated independently.
+  live.emit({ type: "session.input_transcript.delta", delta: "The station is nearby", start_ms: 0, end_ms: 1000 });
+  const otherId = controller.session.activeTurn!.id;
+  expect(otherId).not.toBe(failedId);
+  if (evidence === "late-text") {
+    vi.setSystemTime(5900);
+    live.emit({ type: "session.output_transcript.delta", delta: "Thank y", start_ms: 2500, end_ms: 2600 });
+  }
+  await vi.advanceTimersByTimeAsync(6001 - Date.now());
+  expect(controller.session.recentTurns.find(turn => turn.id === failedId)?.outputDeadline?.outcome)
+    .toBe(evidence === "late-text" ? "unresolved" : "no_observed_output");
+  expect(controller.session.activeTurn?.id).toBe(otherId);
+  expect(controller.recoveryPrompt).toBeUndefined();
+  // A second VAD notification and an ASR continuation belong to B, who was already speaking before A failed.
+  emitVoice(audio, true);
+  live.emit({ type: "session.input_transcript.delta", delta: ", just around the corner.", start_ms: 1000, end_ms: 1100 });
+  live.emit({ type: "session.output_transcript.delta", delta: "Станция рядом, за углом.", start_ms: 500, end_ms: 1500 });
+  expect(controller.captionBlocks.find(block => block.text === "Станция рядом, за углом.")?.attribution).toBe("matched");
+  if (evidence === "pcm") audio.onPcmReceived?.(Date.now());
+  emitVoice(audio, false);
+  await vi.advanceTimersByTimeAsync(1500);
+  expect(controller.session.activeTurn).toBeUndefined();
+  expect(controller.session.pendingTurns).toEqual([]);
+  if (evidence === "late-text") {
+    expect(controller.captionBlocks.find(block => block.text === "Thank y")?.attribution).toBe("matched");
+    expect(controller.recoveryPrompt).toBeUndefined();
+  } else {
+    expect(controller.recoveryPrompt).toBe(evidence === "none" ? "repeat" : "conditional-repeat");
+    expect(controller.recoveryPromptSide).toBe("A");
+    emitVoice(audio, true);
+    expect(controller.recoveryPrompt).toBeUndefined();
+    audio.onPcmReceived?.(Date.now());
+    expect(controller.recoveryPrompt).toBeUndefined();
+  }
+  await controller.endConversation();
+});
+
+
+it.each(["late-output", "acknowledgement"])("retains B's unseen timeout after A's %s", async resolution => {
+  vi.useFakeTimers(); vi.setSystemTime(1000);
+  const { controller, live, audio } = createController();
+  await controller.startWithLanguages({ A: "ru", B: "en" });
+  emitVoice(audio, true);
+  live.emit({ type: "session.input_transcript.delta", delta: "Где находится станция?", start_ms: 0, end_ms: 1000 });
+  const aId = controller.session.activeTurn!.id;
+  emitVoice(audio, false);
+  vi.setSystemTime(1100); emitVoice(audio, true);
+  live.emit({ type: "session.input_transcript.delta", delta: "The station is nearby.", start_ms: 2000, end_ms: 3000 });
+  const bId = controller.session.activeTurn!.id;
+  emitVoice(audio, false);
+  if (resolution === "late-output") {
+    vi.setSystemTime(5900);
+    live.emit({ type: "session.output_transcript.delta", delta: "W", start_ms: 500, end_ms: 600 });
+  }
+  await vi.advanceTimersByTimeAsync(6101 - Date.now());
+  expect(controller.session.recentTurns.filter(turn => turn.outputDeadline).map(turn => turn.id)).toEqual([aId, bId]);
+  expect(controller.recoveryPrompt).toBe(resolution === "late-output" ? "conditional-repeat" : "repeat");
+  expect(controller.recoveryPromptSide).toBe("A");
+  live.onError?.({ type: "error", error: { message: "recoverable interruption" } });
+  expect(controller.recoveryPromptSide).toBe("A");
+  if (resolution === "late-output") {
+    expect(controller.captionBlocks.find(block => block.text === "W")?.attribution).toBe("unattributed");
+    live.emit({ type: "session.output_transcript.delta", delta: "here is the station?", start_ms: 600, end_ms: 1500 });
+    expect(controller.captionBlocks.find(block => block.text === "Where is the station?")?.attribution).toBe("matched");
+  } else {
+    emitVoice(audio, true);
+    expect(controller.recoveryPrompt).toBeUndefined();
+    emitVoice(audio, false);
+    await vi.advanceTimersByTimeAsync(5001);
+  }
+  expect(controller.recoveryPrompt).toBe("repeat");
+  expect(controller.recoveryPromptSide).toBe("B");
+  await controller.endConversation();
+});
+
+it.each([undefined, "append-123"])("offers private nonfatal recovery for a valid post-start error, client event %s", async clientEventId => {
+  const { controller, live, audio } = createController();
+  await controller.startWithLanguages({ A: "ru", B: "es" });
+  const parser = new LiveClient({ backend: {} as BackendClient, peerFactory: () => { throw new Error("Network is not used"); }, onRemoteStream: vi.fn() });
+  const channel = parser as unknown as { started: boolean; handleChannelMessage(event: MessageEvent<string>): void };
+  channel.started = true;
+  parser.onError = event => live.onError?.(event as FakeLiveErrorEvent);
+  channel.handleChannelMessage(new MessageEvent("message", { data: JSON.stringify({ type: "error",
+    error: { message: "private patient details", code: null, ...(clientEventId ? { client_event_id: clientEventId } : {}) } }) }));
+  expect(controller.session.state).toBe("listening");
+  expect(controller.inputReady).toBe(true);
+  expect(audio.captureTrack.enabled).toBe(true);
+  expect(controller.ownerError).toBeUndefined();
+  expect(controller.recoveryPrompt).toBe("conditional-repeat");
+  expect(controller.recoveryPromptSide).toBeUndefined();
+  const markup = renderToStaticMarkup(createElement(ConversationScreen, { controller }));
+  expect(markup).toContain("Если перевод не прозвучал, повторите реплику");
+  expect(markup).not.toContain("private patient details");
+  emitPlayback(audio, true);
+  expect(controller.recoveryPrompt).toBeUndefined();
+  emitPlayback(audio, false);
+  expect(controller.recoveryPrompt).toBe("conditional-repeat");
+  live.emit({ type: "session.output_transcript.delta", delta: "La estación está cerca." });
+  expect(controller.recoveryPrompt).toBeUndefined();
+  await controller.endConversation();
+});
+
+it("does not offer nonfatal recovery for a malformed provider error", async () => {
+  vi.spyOn(console, "error").mockImplementation(() => {});
+  const { controller, live } = createController();
+  await controller.startWithLanguages({ A: "ru", B: "es" });
+  const parser = new LiveClient({ backend: {} as BackendClient, peerFactory: () => { throw new Error("Network is not used"); }, onRemoteStream: vi.fn() });
+  const channel = parser as unknown as { started: boolean; handleChannelMessage(event: MessageEvent<string>): void };
+  channel.started = true;
+  parser.onError = event => live.onError?.(event as FakeLiveErrorEvent);
+  channel.handleChannelMessage(new MessageEvent("message", { data: JSON.stringify({ type: "error", error: { message: 42 } }) }));
+  expect(controller.recoveryPrompt).toBeUndefined();
+  expect(parser.diagnostics.entries.some(entry => entry.kind === "provider_error")).toBe(false);
+  expect(controller.session.state).toBe("error");
+  expect(controller.ownerError).toBe(CONNECTION_ERROR_MESSAGE);
+});
+
+
+it.each(["speech", "transcript", "pcm", "language", "end"])("dismisses provider recovery on %s without reviving it on old playback", async boundary => {
+  vi.useFakeTimers(); vi.setSystemTime(1000);
+  const { controller, live, audio } = createController();
+  await controller.startWithLanguages({ A: "ru", B: "es" });
+  live.onError?.({ type: "error", error: { message: "recoverable interruption" } });
+  expect(controller.recoveryPrompt).toBe("conditional-repeat");
+  if (boundary === "speech") emitVoice(audio, true);
+  if (boundary === "transcript") live.emit({ type: "session.input_transcript.delta", delta: "Где находится станция?" });
+  if (boundary === "pcm") audio.onPcmReceived?.(Date.now());
+  if (boundary === "language") await controller.changeInterlocutorLanguage("de");
+  if (boundary === "end") await controller.endConversation();
+  expect(controller.recoveryPrompt).toBeUndefined();
+  emitPlayback(audio, true); emitPlayback(audio, false);
+  expect(controller.recoveryPrompt).toBeUndefined();
+  if (boundary !== "end") await controller.endConversation();
+});

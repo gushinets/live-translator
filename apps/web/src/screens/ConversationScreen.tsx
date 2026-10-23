@@ -1,9 +1,9 @@
 import { DialogueCaptions } from "../components/DialogueCaptions";
-import { useEffect, useLayoutEffect, useReducer, useRef } from "react";
+import { useEffect, useLayoutEffect, useMemo, useReducer, useRef } from "react";
 import { ErrorOverlay } from "../components/ErrorOverlay";
 import { RetainedRecovery, type RetainedRecoveryState } from "../components/RetainedRecovery";
 import "./ConversationScreen.css";
-import { ParticipantPane } from "../components/ParticipantPane";
+import { ParticipantPane, useCaptionScroll } from "../components/ParticipantPane";
 import { deriveParticipantStatus } from "../components/ParticipantStatus";
 import type { LifecycleSuspendReason, RecoveryPrompt } from "../session/SessionController";
 import type { TranslationSession } from "../session/SessionState";
@@ -18,6 +18,7 @@ export interface ConversationScreenController {
   readonly inputReady: boolean;
   readonly playbackInputState: PlaybackInputState;
   readonly recoveryPrompt?: RecoveryPrompt;
+  readonly recoveryPromptSide?: Side;
   readonly recoveryPromptIsTurnFailure?: boolean;
   readonly ownerError?: string;
   readonly suspendReason?: LifecycleSuspendReason;
@@ -33,7 +34,7 @@ export interface ConversationScreenController {
 function uiSnapshot(controller: ConversationScreenController): unknown[] {
   return [controller.session, controller.inputReady, controller.recoveryPrompt, controller.ownerError,
     controller.suspendReason, controller.retainedRecoveryState,
-    controller.captionBlocks, controller.recoveryPromptIsTurnFailure, controller.playbackInputState];
+    controller.captionBlocks, controller.recoveryPromptSide, controller.recoveryPromptIsTurnFailure, controller.playbackInputState];
 }
 
 export function ConversationScreen({
@@ -59,6 +60,11 @@ export function ConversationScreen({
 
   const session = controller.session;
   const captions = controller.captionBlocks;
+  const unassigned = useMemo(() => captions.filter(block => block.kind === "output" && block.side === undefined), [captions]);
+  const unassignedScroll = useCaptionScroll(unassigned);
+  const recoverySide = controller.recoveryPromptSide;
+  const recoveryCopy = !controller.inputReady ? undefined : controller.recoveryPrompt === "repeat" ? "Повторите"
+    : controller.recoveryPrompt === "conditional-repeat" ? "Если перевод не прозвучал, повторите реплику" : undefined;
   const ownerLocale = uiLocale(session.participantA.language);
   const t = (text: string) => translate(text, ownerLocale);
   const ending = session.state === "ending";
@@ -110,13 +116,15 @@ export function ConversationScreen({
         rotated
         status={statusB}
         captions={captions.filter(block => block.side === "B")}
+        recoveryText={recoverySide === "B" && recoveryCopy ? translate(recoveryCopy, uiLocale(session.participantB.language)) : undefined}
         alertText={terminalAlert}
         alertLanguage={ownerLocale}
       />
       <div className="conversation-center">
-        {captions.some(block => block.kind === "output" && block.side === undefined) ?
-          <div className="unattributed-output"><DialogueCaptions
-            blocks={captions.filter(block => block.kind === "output" && block.side === undefined)} language={ownerLocale} /></div> : null}
+        {unassigned.length ?
+          <div className="unattributed-output" ref={unassignedScroll.scrollRef} onScroll={unassignedScroll.onScroll}
+            tabIndex={0} role="region" aria-label={t("Перевод")}><DialogueCaptions
+            blocks={unassigned} language={ownerLocale} /></div> : null}
         {recoveryState !== undefined ? <RetainedRecovery
           state={recoveryState} surface="conversation" language={ownerLocale}
           onResume={controller.resumeRetainedConversation?.bind(controller)}
@@ -155,8 +163,7 @@ export function ConversationScreen({
             {t("Продолжить / повторить")}
           </button>
         ) : null}
-        {controller.recoveryPrompt === "repeat" && controller.inputReady ? <p>{t("Повторите")}</p> : null}
-        {controller.recoveryPrompt === "conditional-repeat" && controller.inputReady ? <p>{t("Если перевод не прозвучал, повторите реплику")}</p> : null}
+        {recoverySide === undefined && recoveryCopy ? <p>{t(recoveryCopy)}</p> : null}
         {controller.retainedRecoveryState === undefined && terminalAlert === undefined && controller.ownerError !== undefined ? (
           <ErrorOverlay message={controller.ownerError} language={ownerLocale} />
         ) : null}
@@ -167,6 +174,7 @@ export function ConversationScreen({
         rotated={false}
         status={statusA}
         captions={captions.filter(block => block.side === "A")}
+        recoveryText={recoverySide === "A" && recoveryCopy ? translate(recoveryCopy, uiLocale(session.participantA.language)) : undefined}
         alertText={terminalAlert}
         alertLanguage={ownerLocale}
       />

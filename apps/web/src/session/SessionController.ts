@@ -149,7 +149,11 @@ export class SessionController {
   private retiredAttributionTrace: OutputAttribution["trace"] = [];
   private retiredProviderDiagnostics: LiveClient["diagnostics"]["entries"] = [];
   private sourceUpdateInProgress = false;
-  private noOutputHint: { sourceId: string; generation: number } | undefined;
+  private readonly noOutputHints = new Map<string, {
+    sourceId: string; generation: number; deferred: boolean; kind: "repeat" | "conditional-repeat";
+  }>();
+  private get noOutputHint() { return this.noOutputHints.values().next().value; }
+  private providerRecoveryGeneration: number | undefined;
   get currentAttribution() { return this.attribution.current(); }
   get attributionTrace() { return [...this.retiredAttributionTrace, ...this.attribution.trace].slice(-128); }
   get providerDiagnostics() {
@@ -500,8 +504,18 @@ export class SessionController {
 
   get recoveryPrompt(): RecoveryPrompt | undefined {
     if (this.turnFailurePrompt && (!this.noOutputHint || this.noOutputHint.generation !== this.sessionGeneration ||
-        !this.inputReady || this.playbackActive || this.audio.hasPendingPlayback || this.ownerError)) return undefined;
-    return this.recoveryPromptKind;
+        !this.inputReady || this.currentSession.activeTurn || this.currentSession.pendingTurns?.some(turn => !turn.translationOnly) ||
+        this.playbackActive || this.audio.hasPendingPlayback || this.ownerError)) return undefined;
+    if (this.recoveryPromptKind) return this.recoveryPromptKind;
+    if (this.providerRecoveryGeneration === this.sessionGeneration && this.inputReady &&
+        !this.currentSession.activeTurn && !this.currentSession.pendingTurns?.length &&
+        !this.playbackActive && !this.audio.hasPendingPlayback && !this.ownerError) return "conditional-repeat";
+    return undefined;
+  }
+
+  get recoveryPromptSide(): Side | undefined {
+    const hint = this.noOutputHint;
+    return hint?.generation === this.sessionGeneration ? findSessionTurn(this.currentSession, hint.sourceId)?.speaker : undefined;
   }
 
   get recoveryPromptIsTurnFailure(): boolean {
@@ -1353,6 +1367,7 @@ export class SessionController {
           !["listening", "outputting"].includes(this.currentSession.state)) return;
       this.attribution.observeReceivedPlayback(atMs);
       // PCM updates deadline evidence, but has no text-attribution evidence.
+      this.providerRecoveryGeneration = undefined;
       this.projectAttribution(false);
     };
     this.audio.onRemoteAudioSample = event => {
@@ -1535,6 +1550,7 @@ export class SessionController {
   private handleConversationOutputDelta(event: TranscriptDeltaEvent): void {
     if (!event.delta || !["listening", "outputting"].includes(this.currentSession.state)) return;
     if (this.leftoverOutputDraining) { this.noteLeftoverCaption(); return; }
+    if (event.delta.trim()) this.providerRecoveryGeneration = undefined;
     const fragment = createTranscriptFragment({ text: event.delta, nowMs: Date.now(), startMs: event.start_ms, endMs: event.end_ms });
 
     const pending = this.outputRouter.pendingFragments;
@@ -1606,15 +1622,33 @@ export class SessionController {
       if (this.attribution.outputs.length) this.currentSession = sessionReducer(this.currentSession,
         { type: "OUTPUT_ATTRIBUTION", outputs: this.attribution.outputs.filter(output => !output.languagePending), sourceIds: this.routingTurns().map(turn => turn.id) });
     }
-    const hint = this.noOutputHint;
-    const source = hint && findSessionTurn(this.currentSession, hint.sourceId);
-    if (hint && source && hint.generation === this.sessionGeneration &&
-        (this.recoveryPromptKind === "conditional-repeat"
-          ? this.attribution.outputs.some(output => output.sourceId === source.id)
-          : this.attribution.hasCompatibleOutput(source))) {
-      this.noOutputHint = undefined; this.recoveryPromptKind = undefined; this.turnFailurePrompt = false;
-    }
+    this.refreshNoOutputHints();
     this.notify();
+  }
+
+  private refreshNoOutputHints(): void {
+    for (const [id, hint] of this.noOutputHints) {
+      const source = findSessionTurn(this.currentSession, id);
+      if (!source || hint.generation !== this.sessionGeneration ||
+          this.attribution.outputs.some(output => output.sourceId === id)) {
+        this.noOutputHints.delete(id);
+      } else if (this.attribution.hasCompatibleOutput(source)) {
+        if (hint.deferred || hint.kind === "conditional-repeat") hint.kind = "conditional-repeat";
+        else this.noOutputHints.delete(id);
+      }
+    }
+    const hint = this.noOutputHint;
+    if (hint) { this.recoveryPromptKind = hint.kind; this.turnFailurePrompt = true; }
+    else if (this.turnFailurePrompt) { this.recoveryPromptKind = undefined; this.turnFailurePrompt = false; }
+  }
+
+  private dismissPresentedRecovery(): void {
+    const hint = this.noOutputHint;
+    if (hint && this.recoveryPrompt !== undefined) {
+      this.noOutputHints.delete(hint.sourceId);
+      this.refreshNoOutputHints();
+    } else if (!hint) this.recoveryPromptKind = undefined;
+    this.providerRecoveryGeneration = undefined;
   }
 
   private async handleVoiceActivity(event: AudioActivityEvent): Promise<void> {
@@ -1624,7 +1658,7 @@ export class SessionController {
     this.sourceVoiceActive = event.active;
     if (event.active) {
       if (this.playbackActive) this.conversationMetrics.recordVamFalseActive();
-      this.recoveryPromptKind = undefined;
+      this.dismissPresentedRecovery();
       this.clearCompletionTimer();
       const active = this.currentSession.activeTurn;
       if (!active || (active.speaker === undefined && active.originalText.length > 0 && active.sourceIdleAtMs !== undefined)) {
@@ -1806,11 +1840,11 @@ export class SessionController {
       this.conversationMetrics.recordNoOutputWatchdog();
     }
     this.dispatch({ type: "OUTPUT_DEADLINE", turnId: turn.id, atMs, outcome: unresolved ? "unresolved" : "no_observed_output" });
-    if (!turn.translationOnly && !this.attribution.outputs.some(output => output.sourceId === turn.id) &&
-        !this.currentSession.activeTurn && !(this.currentSession.pendingTurns?.length)) {
-      this.noOutputHint = { sourceId: turn.id, generation: this.sessionGeneration };
-      // Uncorrelated historical PCM cannot prove this source was translated or went silent.
-      this.recoveryPromptKind = unresolved ? "conditional-repeat" : "repeat"; this.turnFailurePrompt = true;
+    if (!turn.translationOnly && !this.attribution.outputs.some(output => output.sourceId === turn.id)) {
+      this.noOutputHints.set(turn.id, { sourceId: turn.id, generation: this.sessionGeneration,
+        deferred: Boolean(this.noOutputHint || this.currentSession.activeTurn || this.currentSession.pendingTurns?.length),
+        kind: unresolved ? "conditional-repeat" : "repeat" });
+      this.refreshNoOutputHints();
     }
     this.notify();
   }
@@ -2095,7 +2129,8 @@ export class SessionController {
     this.routingTurnIds.clear();
     this.retiredAttributionTrace = this.attributionTrace;
     this.attribution = new OutputAttribution();
-    this.noOutputHint = undefined;
+    this.noOutputHints.clear();
+    this.providerRecoveryGeneration = undefined;
     this.outputTurnId = undefined;
     this.audio.setPlaybackTurn?.(undefined);
     this.outputSourceTurnId = undefined;
@@ -2472,14 +2507,19 @@ export class SessionController {
     if (!this.enteredInterpreter) {
       return;
     }
-    if (!("transportFailure" in event)) {
-      return;
-    }
     if (
       this.currentSession.state === "ending" ||
       this.currentSession.state === "ended" ||
       this.currentSession.state === "error"
     ) {
+      return;
+    }
+    if (!("transportFailure" in event)) {
+      if (["listening", "outputting"].includes(this.currentSession.state)) {
+        // A valid provider error can interrupt output without ending the transport. Do not expose its message or guess a source.
+        this.providerRecoveryGeneration = this.sessionGeneration;
+        this.notify();
+      }
       return;
     }
     this.speechInputReady = false;
@@ -3088,6 +3128,7 @@ export class SessionController {
   }
 
   protected dispatch(action: SessionAction): void {
+    const presentedHintId = this.recoveryPrompt !== undefined ? this.noOutputHint?.sourceId : undefined;
     const previousTurn = "turnId" in action ? findSessionTurn(this.currentSession, action.turnId) : this.currentSession.activeTurn;
     const previousUnfinished = [...(this.currentSession.pendingTurns ?? []),
       ...(this.currentSession.activeTurn ? [this.currentSession.activeTurn] : [])];
@@ -3099,9 +3140,14 @@ export class SessionController {
       this.finishLeftoverOutputDrain();
     }
     if (action.type === "SOURCE_ACTIVE" || action.type === "SOURCE_HANDOFF") this.latestSourceTurnId = action.turnId;
-    if (["SOURCE_ACTIVE", "SOURCE_HANDOFF", "SOURCE_FRAGMENT", "SUSPEND", "END", "SESSION_ERROR"].includes(action.type)) {
-      this.noOutputHint = undefined;
+    if (["SUSPEND", "END", "SESSION_ERROR"].includes(action.type)) {
+      this.noOutputHints.clear();
+      this.providerRecoveryGeneration = undefined;
       if (this.turnFailurePrompt) { this.recoveryPromptKind = undefined; this.turnFailurePrompt = false; }
+    } else if (["SOURCE_ACTIVE", "SOURCE_HANDOFF", "SOURCE_FRAGMENT"].includes(action.type)) {
+      if (presentedHintId) this.noOutputHints.delete(presentedHintId);
+      this.providerRecoveryGeneration = undefined;
+      this.refreshNoOutputHints();
     }
     let completedTurnId: string | undefined;
     if (previousTurn && !previousTurn.translationOnly && action.type === "TURN_CLOSED" && action.recordOutcome !== false) {

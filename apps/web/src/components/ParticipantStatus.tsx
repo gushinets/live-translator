@@ -81,15 +81,17 @@ export function ParticipantStatus({
   side,
   label,
   language,
+  recoveryText,
 }: {
   side: Side;
   label: ParticipantStatusLabel;
   language?: string;
+  recoveryText?: string;
 }) {
   const guidanceRef = useRef<HTMLDivElement>(null);
   useLayoutEffect(() => {
     if (guidanceRef.current) guidanceRef.current.scrollTop = 0;
-  }, [label, language]);
+  }, [label, language, recoveryText]);
   const messages: Record<ParticipantStatusLabel, readonly [string, string?]> = {
     DETECTING: ["Определяю язык", "Продолжайте говорить на своём языке."],
     "YOUR TURN": ["Можно говорить", "Микрофон включён. Говорите по очереди."],
@@ -127,7 +129,9 @@ export function ParticipantStatus({
         </svg>
         <div className="participant-guidance-copy">
           <p id={`participant-guidance-title-${side}`} className="participant-guidance-title" data-testid={`participant-status-${side}`}>{translate(title, language)}</p>
-          <p id={`participant-guidance-detail-${side}`} className="participant-guidance-detail">{translate(detail, language)}</p>
+          <p id={`participant-guidance-detail-${side}`} className="participant-guidance-detail"
+            lang={recoveryText ? uiLocale(language) : undefined}
+            data-testid={recoveryText ? `participant-recovery-${side}` : undefined}>{recoveryText ?? translate(detail, language)}</p>
         </div>
       </> : <>
         {label === "PAUSED" && language !== undefined ? `${languageName(language, uiLocale(language))} · ` : null}
