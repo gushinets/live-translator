@@ -7013,23 +7013,27 @@ describe("output evidence across source callback order", () => {
 });
 
 
-it.each([true, false])("keeps an undecided prefix separate from an independent cross-script sentence, ASR first=%s", async sourceFirst => {
+it.each([true, false].flatMap(sourceFirst => [false, true].flatMap(timed =>
+  (timed ? [["Да", "Where is the train station?"], ["Да ", "Where is the train station?"], ["Да ", " Where is the train station?"]]
+    : [["Да", "Where is the train station?"]])
+    .map(([opening, question]) => ({ sourceFirst, timed, opening: opening!, question: question! })),
+)))("keeps an undecided prefix separate: ASR first=$sourceFirst, timed=$timed, $opening/$question", async ({ sourceFirst, timed, opening, question }) => {
   vi.useFakeTimers(); vi.setSystemTime(1000);
   const { controller, live, audio } = createController();
   await controller.startWithLanguages({ A: "ru", B: "en" });
   emitVoice(audio, true);
-  live.emit({ type: "session.input_transcript.delta", delta: "Yes, I understand you." });
-  live.emit({ type: "session.output_transcript.delta", delta: "Да" });
+  live.emit({ type: "session.input_transcript.delta", delta: "Yes, I understand you.", ...(timed ? { start_ms: 0, end_ms: 100 } : {}) });
+  live.emit({ type: "session.output_transcript.delta", delta: opening, ...(timed ? { start_ms: 100, end_ms: 200 } : {}) });
   const prefix = controller.captionBlocks.find(block => block.kind === "output")!;
   vi.setSystemTime(1100);
-  const source = () => live.emit({ type: "session.input_transcript.delta", delta: "Подскажите, где находится вокзал?" });
-  const output = () => live.emit({ type: "session.output_transcript.delta", delta: "Where is the train station?" });
+  const source = () => live.emit({ type: "session.input_transcript.delta", delta: "Подскажите, где находится вокзал?", ...(timed ? { start_ms: 500, end_ms: 800 } : {}) });
+  const output = () => live.emit({ type: "session.output_transcript.delta", delta: question, ...(timed ? { start_ms: 1000, end_ms: 1200 } : {}) });
   if (sourceFirst) { source(); output(); } else { output(); source(); }
   await vi.advanceTimersByTimeAsync(runtime.captionIdleMs);
   const outputs = controller.captionBlocks.filter(block => block.kind === "output");
   expect(outputs).toEqual([
-    expect.objectContaining({ outputId: prefix.outputId, text: "Да", side: undefined, receivedAtMs: 1000, attribution: "unattributed" }),
-    expect.objectContaining({ text: "Where is the train station?", side: "B", receivedAtMs: 1100, attribution: "unattributed" }),
+    expect.objectContaining({ outputId: prefix.outputId, text: opening, side: undefined, receivedAtMs: 1000, attribution: "unattributed" }),
+    expect.objectContaining({ text: question, side: "B", receivedAtMs: 1100, attribution: "unattributed" }),
   ]);
   expect(outputs[1]!.outputId).not.toBe(prefix.outputId);
   expect(controller.currentAttribution).toMatchObject({ matchedTextOutputs: 0, unattributedTextOutputs: 2 });
@@ -7054,5 +7058,26 @@ it.each([["Я", " использую Google."], ["Я ис", "пользую Goog
     expect.objectContaining({ outputId: first.outputId, text: prefix + suffix, side: "A", attribution: "matched", receivedAtMs: 1000 }),
   ]);
   expect(controller.currentAttribution).toMatchObject({ matchedTextOutputs: 1, unattributedTextOutputs: 0 });
+  await controller.endConversation();
+});
+
+it.each([150, 200])("keeps a mixed-script word with its pending output at provider start %s", async startMs => {
+  vi.useFakeTimers(); vi.setSystemTime(1000);
+  const { controller, live, audio } = createController();
+  await controller.startWithLanguages({ A: "ru", B: "en" });
+  emitVoice(audio, true);
+  live.emit({ type: "session.input_transcript.delta", delta: "Zoom is convenient to use.", start_ms: 0, end_ms: 100 });
+  live.emit({ type: "session.output_transcript.delta", delta: "Zoom", start_ms: 100, end_ms: 200 });
+  const first = controller.captionBlocks.find(block => block.kind === "output")!;
+  vi.setSystemTime(1100);
+  live.emit({ type: "session.output_transcript.delta", delta: "ом удобно пользоваться.", start_ms: startMs, end_ms: 400 });
+  expect(controller.captionBlocks.filter(block => block.kind === "output")).toEqual([
+    expect.objectContaining({ outputId: first.outputId, text: "Zoomом удобно пользоваться.", side: "A", receivedAtMs: 1000, attribution: "matched" }),
+  ]);
+  expect(controller.currentAttribution).toMatchObject({ matchedTextOutputs: 1, unattributedTextOutputs: 0, matchedAudioOutputs: 0 });
+  const root = document.createElement("div");
+  root.innerHTML = renderToStaticMarkup(createElement(ConversationScreen, { controller }));
+  expect([...root.querySelectorAll('[data-testid="participant-pane-A"] li')].map(row => row.textContent)).toEqual(["Он: Zoomом удобно пользоваться."]);
+  expect(root.querySelectorAll(".unattributed-output li")).toHaveLength(0);
   await controller.endConversation();
 });

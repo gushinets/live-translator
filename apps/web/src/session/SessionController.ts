@@ -1523,10 +1523,18 @@ export class SessionController {
     if (this.leftoverOutputDraining) { this.noteLeftoverCaption(); return; }
     const fragment = createTranscriptFragment({ text: event.delta, nowMs: Date.now(), startMs: event.start_ms, endMs: event.end_ms });
 
-    const pendingTail = this.outputRouter.pendingFragments.at(-1)?.text.match(/\p{L}$/u)?.[0];
+    const pending = this.outputRouter.pendingFragments;
+    const continuous = pending.some(part => part.startMs !== undefined && part.endMs !== undefined &&
+      fragment.startMs !== undefined && fragment.startMs <= part.endMs &&
+      (fragment.endMs ?? fragment.startMs) >= part.startMs);
+    const disjoint = pending.length > 0 && pending.every(part =>
+      (part.endMs !== undefined && fragment.startMs !== undefined && fragment.startMs > part.endMs) ||
+      (part.startMs !== undefined && fragment.endMs !== undefined && fragment.endMs < part.startMs));
+    const pendingTail = pending.at(-1)?.text.match(/\p{L}$/u)?.[0];
     const incomingSide = pendingTail && /^\p{L}/u.test(fragment.text) ? completeScriptSide(fragment.text, this.languages) : undefined;
-    // A no-space switch to another script cannot turn an undecided prefix into that language.
-    if (pendingTail && incomingSide && !scriptPattern(languageScripts(this.languages[incomingSide]))?.test(pendingTail)) {
+    // Output intervals preserve mixed-script continuations and separate disjoint receipts, independent of ASR.
+    if (!continuous && (disjoint || (pendingTail && incomingSide &&
+        !scriptPattern(languageScripts(this.languages[incomingSide]))?.test(pendingTail)))) {
       this.routeOutput(this.outputRouter.flush(this.languages, true), false);
     }
 
