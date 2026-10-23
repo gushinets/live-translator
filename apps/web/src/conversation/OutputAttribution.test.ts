@@ -73,14 +73,14 @@ describe("output attribution evidence", () => {
     const ledger = new OutputAttribution();
     const a = source("a", 0);
     expect(ledger.receive([fragment("o", 200, 300)], undefined, [a], 1000).sourceId).toBeUndefined();
-    ledger.observePlayback(1200, [a]);
+    ledger.observePlayback(1200);
     expect(ledger.hasCompatibleOutput(a)).toBe(true);
     expect(ledger.current().unattributedPlaybackCount).toBe(1);
     expect(ledger.current().matchedAudioOutputs).toBe(0);
   });
   it("retains already drained PCM as deadline evidence, without claiming delivery owner", () => {
     const ledger = new OutputAttribution(), a = source("a", 0);
-    ledger.observePlayback(1000, [a]);
+    ledger.observePlayback(1000);
     expect(ledger.hasCompatibleOutput(a)).toBe(true);
     // A later provider timestamp is not a local PCM boundary.
     expect(ledger.hasCompatibleOutput(source("later", 5000))).toBe(true);
@@ -104,7 +104,7 @@ it("traces receipts, decision revisions and deadlines without content and with a
   ledger.observeDeadline(a, 1200);
   expect(ledger.trace.some(entry => entry.kind === "revoked" && entry.outputId === output.id)).toBe(true);
   expect(ledger.trace.some(entry => entry.kind === "deadline" && entry.compatibleOutput === true)).toBe(true);
-  for (let index = 0; index < 200; index++) ledger.observePlayback(1300 + index, [a]);
+  for (let index = 0; index < 200; index++) ledger.observePlayback(1300 + index);
   expect(ledger.trace.length).toBeLessThanOrEqual(128);
   expect(JSON.stringify(ledger.trace)).not.toContain("PRIVATE SPEECH");
 });
@@ -161,7 +161,7 @@ it("preserves published speech and counters through revisions while both evidenc
   for (now = 0; now <= 100; now += 50) reporter.observeProduct({ ...observation, atMs: now, turnId: a1.id, sample: { atMs: now, active: now < 100 } });
   const output = ledger.receive([fragment("o", 200, 300)], "B", [], 1000);
   ledger.reconcile([a1], 1100);
-  ledger.observePlayback(1100, [a1]);
+  ledger.observePlayback(1100);
   expect(ledger.claimTechnicalCompletion(a1.id)).toBe(true);
   metrics.recordTechnicalOutcome(a1.id, "audio");
   reporter.observeProduct({ ...observation, atMs: 150, completedTurnId: a1.id, counters: { audioCompletedTurnCount: 1 } });
@@ -192,7 +192,7 @@ it("preserves published speech and counters through revisions while both evidenc
   expect(intermediate.app.completedSourceSpeechMs).toBe(100);
   const otherOrder = new OutputAttribution();
   otherOrder.receive([fragment("o", 200, 300)], "B", [a1, a2], 1000);
-  otherOrder.observePlayback(1100, [a1, a2]);
+  otherOrder.observePlayback(1100);
   expect(otherOrder.current()).toEqual(ledger.current());
   expect(ledger.current().confirmedSourceSpeechMs).toBeNull();
   expect(output.firstReceivedAtMs).toBe(1000);
@@ -251,22 +251,21 @@ it("waits for independent source language before matching the same output", () =
   expect(ledger.outputs).toHaveLength(1);
 });
 
-it("keeps late PCM candidates on their provider timeline across a proven input-cycle boundary", () => {
+it("keeps delayed ASR compatible with PCM without a correlated provider interval", () => {
   const ledger = new OutputAttribution();
-  ledger.observeReceivedPlayback(1000, []);
-  ledger.observePlayback(1100, []);
-  ledger.observeSourceStart("fresh", 2000, 1500);
+  ledger.observeReceivedPlayback(1000);
+  ledger.observePlayback(1100);
   const fresh = { ...source("fresh", 120000), speechStartAtMs: 2000 };
   const delayed = { ...source("delayed", 100000), speechStartAtMs: 3000 };
   ledger.reconcile([fresh, delayed], 3000);
-  expect(ledger.hasCompatibleOutput(fresh)).toBe(false);
+  expect(ledger.hasCompatibleOutput(fresh)).toBe(true);
   expect(ledger.hasCompatibleOutput(delayed)).toBe(true);
   expect(ledger.current()).toMatchObject({ matchedAudioOutputs: 0, unattributedPlaybackCount: 1, confirmedSourceSpeechMs: null });
 });
 
 it("retains late ASR beyond the last known transcript end without inventing a PCM bound", () => {
   const ledger = new OutputAttribution(), original = source("original", 100000);
-  ledger.observeReceivedPlayback(1000, [original]);
+  ledger.observeReceivedPlayback(1000);
   const delayed = { ...source("split", 100050), speechStartAtMs: 2000 };
   const later = { ...source("later", 100200), speechStartAtMs: 2000 };
   ledger.reconcile([original, delayed, later], 2000);
@@ -279,7 +278,7 @@ it.each([false, true])("refines PCM episode bounds when ASR reveals more of the 
   const ledger = new OutputAttribution();
   const original = source("original", 100000);
   if (initiallyUntimed) original.sourceFragments = [];
-  ledger.observeReceivedPlayback(1000, [original]);
+  ledger.observeReceivedPlayback(1000);
   original.sourceFragments = [fragment("expanded", 100000, 100300)];
   const delayed = { ...source("split", 100200), speechStartAtMs: 2000 };
   ledger.reconcile([original, delayed], 2000);
@@ -356,59 +355,35 @@ it("does not certify a first late isolated result before a pending later episode
 });
 
 
-it.each([false, true])("distinguishes delayed untimed ASR receipt from a proven reopened input cycle, vad=%s", vad => {
+it("keeps delayed untimed ASR as a competing source", () => {
   const ledger = new OutputAttribution(), a = source("a", 0);
   const out = ledger.receive([{ id: "out", text: "Texto.", receivedAtMs: 1000 }], "B", [a], 1000);
   const delayed = { ...source("b", 0, "B"), sourceFragments: [{ id: "asr", text: "Source", receivedAtMs: 2000 }], speechStartAtMs: 2000 };
-  if (vad) ledger.observeSourceStart("b", 2000, 1500);
   ledger.reconcile([a, delayed], 2000);
-  expect(out.sourceId).toBe(vad ? "a" : undefined);
+  expect(out.sourceId).toBeUndefined();
   expect(out.firstReceivedAtMs).toBe(1000);
 });
 
 
-it.each(["untimed", "later-provider", "unknown-vad-boundary"])("retains PCM uncertainty without a proven later onset: %s", kind => {
+it.each(["untimed", "later-provider"])("retains PCM uncertainty without a proven later onset: %s", kind => {
   const ledger = new OutputAttribution(), original = source("original", 100000);
-  ledger.observeReceivedPlayback(1000, [original]);
-  ledger.observePlayback(1100, [original]);
+  ledger.observeReceivedPlayback(1000);
+  ledger.observePlayback(1100);
   const delayed = { ...source("delayed", 100200), speechStartAtMs: 3000 };
   if (kind === "untimed") delayed.sourceFragments = [];
   const fresh = { ...source("fresh", 120000), sourceFragments: [], speechStartAtMs: 2000 };
-  if (kind === "unknown-vad-boundary") ledger.observeSourceStart(fresh.id, 2000);
   ledger.reconcile([original, delayed, fresh], 3000);
   expect(ledger.hasCompatibleOutput(delayed)).toBe(true);
   expect(ledger.hasCompatibleOutput(delayed, 999)).toBe(false);
   expect(ledger.current()).toMatchObject({ matchedAudioOutputs: 0, unattributedPlaybackCount: 1, confirmedSourceSpeechMs: null });
 });
 
-it("excludes delayed speech only beyond a known provider boundary of an accepted later capture cycle", () => {
+it("does not compare source provider timestamps with local PCM receipt", () => {
   const ledger = new OutputAttribution();
-  ledger.observeReceivedPlayback(1000, []);
-  ledger.observeSourceStart("fresh", 2000, 1500);
+  ledger.observeReceivedPlayback(1000);
   const fresh = source("fresh", 120000), later = source("later", 120100), older = source("older", 100000);
   ledger.reconcile([fresh, later, older], 3000);
-  expect(ledger.hasCompatibleOutput(fresh)).toBe(false);
-  expect(ledger.hasCompatibleOutput(later)).toBe(false);
+  expect(ledger.hasCompatibleOutput(fresh)).toBe(true);
+  expect(ledger.hasCompatibleOutput(later)).toBe(true);
   expect(ledger.hasCompatibleOutput(older)).toBe(true);
-});
-
-
-it.each([undefined, 0, 900, 1100])("uses only proven capture lower bounds for untimed text and PCM, bound=%s", bound => {
-  const ledger = new OutputAttribution(), old = source("old", 0);
-  const output = ledger.receive([{ id: "out", text: "Texto.", receivedAtMs: 1000 }], "B", [old], 1000);
-  ledger.observeReceivedPlayback(1000, [old]);
-  const fresh = { ...source("fresh", 2000), sourceFragments: [], speechStartAtMs: 2000 };
-  ledger.observeSourceStart(fresh.id, 2000, bound);
-  ledger.reconcile([old, fresh], 2000);
-  expect(output.candidateIds).toEqual(bound === 1100 ? ["old"] : ["fresh", "old"]);
-  expect(ledger.hasCompatibleOutput(fresh)).toBe(bound !== 1100);
-});
-
-it("preserves a known zero capture bound instead of treating it as absent", () => {
-  const ledger = new OutputAttribution();
-  ledger.observeReceivedPlayback(-1, []);
-  ledger.observeSourceStart("fresh", 2000, 0);
-  const fresh = { ...source("fresh", 2000), sourceFragments: [] };
-  ledger.reconcile([fresh], 2000);
-  expect(ledger.hasCompatibleOutput(fresh)).toBe(false);
 });

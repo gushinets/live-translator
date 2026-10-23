@@ -119,8 +119,6 @@ export class AudioController {
   private sourceSpeaking = false;
   private lastSourceSpeaking: boolean | null = null;
   private captureEnabled = false;
-  private captureClosedAudioTime?: number;
-  private captureLowerBoundAtMs?: number;
   private inputBlocked = false;
   private playbackReleaseTimer: number | null = null;
   private playbackGeneration = 0;
@@ -155,8 +153,7 @@ export class AudioController {
 
 
     this.voiceActivityMonitor.onActivity = (event) => {
-      this.onVoiceActivity?.(this.captureLowerBoundAtMs === undefined ? event :
-        { ...event, captureLowerBoundAtMs: this.captureLowerBoundAtMs });
+      this.onVoiceActivity?.(event);
     };
     this.voiceActivityMonitor.onSample = event => {
       this.sourceSpeaking = event.active;
@@ -298,8 +295,6 @@ export class AudioController {
     this.micAnalysisStream = null;
     this.captureTrack = null;
     this.captureStream = null;
-    this.captureClosedAudioTime = undefined;
-    this.captureLowerBoundAtMs = undefined;
     this.notifyMeteringBoundary();
     this.syncSampler();
   }
@@ -315,20 +310,6 @@ export class AudioController {
 
   private applyCaptureGate(): void {
     const enabled = this.captureEnabled && !this.inputBlocked;
-    const wasEnabled = this.captureTrack?.enabled;
-    if (wasEnabled && !enabled) {
-      this.captureClosedAudioTime = this.audioContext?.currentTime;
-    } else if (wasEnabled === false && enabled) {
-      this.captureLowerBoundAtMs = undefined;
-      const closed = this.captureClosedAudioTime, context = this.audioContext, analyser = this.micAnalyser;
-      try {
-        // A full silent window plus one render quantum excludes pre-close analyser data.
-        if (closed !== undefined && context?.state === "running" && analyser &&
-            context.currentTime - closed > (analyser.fftSize + 128) / context.sampleRate &&
-            rmsFromAnalyser(analyser) === 0) this.captureLowerBoundAtMs = this.nowMs();
-      } catch { /* Missing analyser provenance leaves the input-cycle bound unknown. */ }
-      this.captureClosedAudioTime = undefined;
-    }
     if (this.captureTrack) this.captureTrack.enabled = enabled;
     for (const track of this.micAnalysisStream?.getAudioTracks() ?? []) track.enabled = enabled;
   }

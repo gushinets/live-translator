@@ -16,7 +16,6 @@ export interface AttributedOutput {
   technicalCompleted?: boolean;
   languagePending?: boolean;
   streamKey: string;
-  sourceIdsAtReceipt: string[];
 }
 export interface AttributionChange {
   output: Pick<AttributedOutput, "id" | "sourceId" | "revision" | "lateOutput">;
@@ -51,17 +50,10 @@ export class OutputAttribution {
   observeDeadline(source: Turn, atMs: number): void {
     this.record({ kind: "deadline", atMs, sourceId: source.id, compatibleOutput: this.hasCompatibleOutput(source, atMs) });
   }
-  private playback: Array<{ atMs: number; sourceIds: string[]; played: boolean }> = [];
-  private sources: Turn[] = [];
-  private readonly captureStarts = new Map<string, number>();
+  private playback: Array<{ atMs: number; played: boolean }> = [];
 
-  observeSourceStart(sourceId: string, _confirmedAtMs: number, captureLowerBoundAtMs?: number): void {
-    if (captureLowerBoundAtMs !== undefined && Number.isFinite(captureLowerBoundAtMs))
-      this.captureStarts.set(sourceId, captureLowerBoundAtMs);
-  }
-
-  observeReceivedPlayback(atMs: number, sources: Turn[]): void {
-    this.observePcm(atMs, sources, false);
+  observeReceivedPlayback(atMs: number): void {
+    this.observePcm(atMs, false);
   }
 
   receive(fragments: TranscriptFragment[], side: Side | undefined, sources: Turn[], nowMs: number, streamKey = "", pendingSources: readonly TranscriptFragment[] = []): AttributedOutput {
@@ -89,7 +81,7 @@ export class OutputAttribution {
         (adjacent && unfinished)) ? last : undefined;
     const output = pending ?? (overlaps.length === 1 ? overlaps[0]! : tail) ?? {
       id: crypto.randomUUID(), fragments: [], side, firstReceivedAtMs: Math.min(...fragments.map(part => part.receivedAtMs)),
-      candidateIds: [], revision: 0, streamKey, sourceIdsAtReceipt: sources.filter(turn => !turn.translationOnly).map(turn => turn.id),
+      candidateIds: [], revision: 0, streamKey,
     };
     if (pending) {
       output.fragments = [];
@@ -110,7 +102,7 @@ export class OutputAttribution {
     if (!fragments.length) return;
     const output = this.pendingOutput ??= {
       id: crypto.randomUUID(), fragments: [], languagePending: true, firstReceivedAtMs: Math.min(...fragments.map(part => part.receivedAtMs)),
-      candidateIds: [], revision: 0, streamKey, sourceIdsAtReceipt: sources.filter(turn => !turn.translationOnly).map(turn => turn.id),
+      candidateIds: [], revision: 0, streamKey,
     };
     output.fragments = [...fragments];
     if (!this.outputs.includes(output)) this.outputs.push(output);
@@ -119,7 +111,6 @@ export class OutputAttribution {
   }
 
   reconcile(sources: Turn[], nowMs: number, pendingSources: readonly TranscriptFragment[] = []): AttributionChange[] {
-    this.sources = sources;
     const isolatedDirections = this.isolatedDirections(sources.filter(turn => !turn.translationOnly), pendingSources);
     for (const output of this.outputs) this.decide(output, sources, nowMs, pendingSources, isolatedDirections);
     return this.changes.splice(0);
@@ -129,8 +120,8 @@ export class OutputAttribution {
     const sourceStart = earliestFragmentStart(source.sourceFragments), outputStart = earliestFragmentStart(output.fragments);
     if (sourceStart !== undefined && outputStart !== undefined && output.fragments.every(part => part.endMs !== undefined))
       return sourceStart <= Math.max(...output.fragments.map(part => part.endMs!));
-    // Neither ASR receipt nor VAD confirmation bounds onset; only proven capture provenance can exclude it.
-    return output.sourceIdsAtReceipt.includes(source.id) || (this.captureStarts.get(source.id) ?? -Infinity) <= output.firstReceivedAtMs;
+    // Local capture/VAD events do not correlate delayed ASR with a capture cycle.
+    return true;
   }
 
   private hasPendingSource(output: AttributedOutput, pendingSources: readonly TranscriptFragment[]): boolean {
@@ -188,33 +179,21 @@ export class OutputAttribution {
     return true;
   }
 
-  observePlayback(atMs: number, sources: Turn[]): void {
+  observePlayback(atMs: number): void {
     // Worklet labels originate in caption routing, not provider correlation: they cannot prove PCM ownership.
-    this.observePcm(atMs, sources, true);
+    this.observePcm(atMs, true);
   }
 
-  private observePcm(atMs: number, sources: Turn[], played: boolean): void {
+  private observePcm(atMs: number, played: boolean): void {
     this.record({ kind: "pcm", atMs, played });
-    this.sources = sources;
-    const eligible = sources.filter(turn => !turn.translationOnly && (turn.speechStartAtMs ?? Infinity) <= atMs);
-    this.playback.push({ atMs, played, sourceIds: eligible.map(turn => turn.id) });
+    this.playback.push({ atMs, played });
   }
 
   hasCompatibleOutput(source: Turn, atMs = Infinity): boolean {
     return this.outputs.some(output => output.firstReceivedAtMs <= atMs && this.possible(source, output) &&
       (output.side === undefined || source.speaker === undefined || source.speaker !== output.side)) ||
-      this.playback.some(receipt => {
-        if (receipt.atMs > atMs) return false;
-        if (receipt.sourceIds.includes(source.id)) return true;
-        const start = earliestFragmentStart(source.sourceFragments);
-        // PCM has no provider upper bound; only a proven later input cycle can exclude delayed speech.
-        return ![...this.captureStarts].some(([id, captureAtMs]) => {
-          if (captureAtMs <= receipt.atMs) return false;
-          if (id === source.id) return true;
-          const boundary = earliestFragmentStart(this.sources.find(turn => turn.id === id)?.sourceFragments);
-          return start !== undefined && boundary !== undefined && start >= boundary;
-        });
-      });
+      // PCM has neither a source correlation ID nor a provider-time interval.
+      this.playback.some(receipt => receipt.atMs <= atMs);
   }
 
   current() {

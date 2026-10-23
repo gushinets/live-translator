@@ -1336,7 +1336,7 @@ export class SessionController {
     this.audio.onPcmReceived = atMs => {
       if (this.backgroundPaused || this.leftoverOutputDraining ||
           !["listening", "outputting"].includes(this.currentSession.state)) return;
-      this.attribution.observeReceivedPlayback(atMs, this.routingTurns());
+      this.attribution.observeReceivedPlayback(atMs);
       this.projectAttribution();
     };
     this.audio.onRemoteAudioSample = event => {
@@ -1604,7 +1604,6 @@ export class SessionController {
           if (active) this.dispatch({ type: "SOURCE_HANDOFF", turnId: crypto.randomUUID(), speaker: undefined, nowMs: event.atMs });
           else this.dispatch({ type: "SOURCE_ACTIVE", turnId: crypto.randomUUID(), speaker: undefined, sideSource: "unresolved" });
           this.routingTurnIds.add(this.currentSession.activeTurn!.id);
-          this.attribution.observeSourceStart(this.currentSession.activeTurn!.id, event.atMs, event.captureLowerBoundAtMs);
           this.armMaxSourceTimer();
           this.projectAttribution();
         } finally {
@@ -1655,7 +1654,7 @@ export class SessionController {
       return;
     }
     if (event.active) {
-      this.attribution.observePlayback(event.atMs, this.routingTurns());
+      this.attribution.observePlayback(event.atMs);
       this.projectAttribution();
       const turns = [...(this.currentSession.pendingTurns ?? []), ...(this.currentSession.activeTurn ? [this.currentSession.activeTurn] : [])];
       // Unknown worklet ownership is still real playback. Credit it only when one source is eligible.
