@@ -7044,6 +7044,35 @@ it.each([true, false].flatMap(sourceFirst => [false, true].flatMap(timed =>
   await controller.endConversation();
 });
 
+it.each([
+  { A: "fr", B: "ru", openings: ["là ", "la\u0300 "], source: "Да, я вас понимаю.",
+    nextSource: "Où est la gare, s'il vous plaît ?", question: " Где находится вокзал?" },
+  { A: "ru", B: "en", openings: ["Да ", "Да\u0301 "], source: "Yes, I understand you.",
+    nextSource: "Подскажите, где находится вокзал?", question: " Where is the train station?" },
+].flatMap(row => row.openings.flatMap(opening => [false, true].map(sourceFirst => ({ ...row, opening, sourceFirst })))))("separates Unicode spaced prefixes without changing raw text: $A $opening ASR first=$sourceFirst", async ({ A, B, source, nextSource, question, opening, sourceFirst }) => {
+  vi.useFakeTimers(); vi.setSystemTime(1000);
+  const { controller, live, audio } = createController();
+  await controller.startWithLanguages({ A, B });
+  emitVoice(audio, true);
+  live.emit({ type: "session.input_transcript.delta", delta: source, start_ms: 0, end_ms: 100 });
+  live.emit({ type: "session.output_transcript.delta", delta: opening, start_ms: 100, end_ms: 200 });
+  const first = controller.captionBlocks.find(block => block.kind === "output")!;
+  vi.setSystemTime(1100);
+  const input = () => live.emit({ type: "session.input_transcript.delta", delta: nextSource, start_ms: 500, end_ms: 800 });
+  const output = () => live.emit({ type: "session.output_transcript.delta", delta: question, start_ms: 1000, end_ms: 1200 });
+  if (sourceFirst) { input(); output(); } else { output(); input(); }
+  await vi.advanceTimersByTimeAsync(runtime.captionIdleMs);
+  const outputs = controller.captionBlocks.filter(block => block.kind === "output");
+  expect(outputs).toEqual([
+    expect.objectContaining({ outputId: first.outputId, text: opening, side: undefined, receivedAtMs: 1000, attribution: "unattributed" }),
+    expect.objectContaining({ text: question, side: "B", receivedAtMs: 1100, attribution: "unattributed" }),
+  ]);
+  expect(outputs[1]!.outputId).not.toBe(first.outputId);
+  expect(controller.currentAttribution).toMatchObject({ matchedTextOutputs: 0, unattributedTextOutputs: 2 });
+  await controller.endConversation();
+});
+
+
 it.each([["Я", " использую Google."], ["Я ис", "пользую Google."], ["Гу", "гл."]])("refines an undecided continuation without losing its first receipt: %s%s", async (prefix, suffix) => {
   vi.useFakeTimers(); vi.setSystemTime(1000);
   const { controller, live, audio } = createController();
@@ -7092,6 +7121,7 @@ it.each([
   { A: "it", B: "en", prefix: "Sto uti", suffix: "lizzando l'applicazione.", source: "I am using the application every day." },
   { A: "ru", B: "en", prefix: "Я ", suffix: "использую приложение.", source: "I use the application every day." },
   { A: "ru", B: "en", prefix: "Zoom", suffix: "ом удобно пользоваться.", source: "Zoom is convenient to use." },
+  { A: "ru", B: "en", prefix: "Zoom\u0301\u0323", suffix: "ом удобно пользоваться.", source: "Zoom is convenient to use." },
   { A: "fr", B: "en", prefix: "L'", suffix: "application fonctionne correctement.", source: "The application works correctly." },
   { A: "it", B: "en", prefix: "L’", suffix: "applicazione funziona correttamente.", source: "The application works correctly." },
   { A: "en", B: "ru", prefix: "Self-", suffix: "service is available.", source: "Самообслуживание доступно каждому посетителю." },

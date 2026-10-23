@@ -1528,8 +1528,8 @@ export class SessionController {
       fragment.startMs !== undefined && fragment.startMs <= part.endMs &&
       (fragment.endMs ?? fragment.startMs) >= part.startMs);
     const pendingText = pending.map(part => part.text).join("");
-    const pendingTail = pendingText.trimEnd().match(/\p{L}$/u)?.[0];
-    const continuesWord = /\p{L}$/u.test(pendingText) && /^\p{Ll}/u.test(fragment.text);
+    const pendingTail = pendingText.trimEnd().match(/(\p{L})\p{M}*$/u)?.[1];
+    const continuesWord = /\p{L}\p{M}*$/u.test(pendingText) && /^\p{Ll}/u.test(fragment.text);
     const incomingSide = pendingTail && !continuesWord && /^\s*\p{L}/u.test(fragment.text)
       ? completeScriptSide(fragment.text, this.languages) : undefined;
     // A timing gap cannot split a word, including a lowercase suffix in another script.
