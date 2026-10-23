@@ -43,6 +43,7 @@ type Trace = {
 // Real queue/processor/controller; only the browser's nodes, tracks and schedulers are replaced.
 class Harness {
   now = 0;
+  audioTime = 0;
   readonly capture = new Track();
   readonly analysers: Analyser[] = [];
   readonly sources: MediaStream[] = [];
@@ -74,6 +75,7 @@ class Harness {
     vi.spyOn(window, "setInterval").mockImplementation(((run: () => void) => { this.sampler = run; return 1; }) as typeof window.setInterval);
     vi.spyOn(window, "clearInterval").mockImplementation(() => {});
     const context = {
+      sampleRate: SAMPLE_RATE,
       state: "running", resume: async () => {}, close: async () => {},
       addEventListener() {}, removeEventListener() {},
       audioWorklet: { addModule: async () => {} },
@@ -81,6 +83,7 @@ class Harness {
       createAnalyser: () => { const analyser = new Analyser(); this.analysers.push(analyser); return analyser; },
       createMediaStreamDestination: () => ({ stream: stream() }),
     };
+    Object.defineProperty(context, "currentTime", { get: () => this.audioTime });
     this.controller = new AudioController({
       createAudioContext: () => context as unknown as AudioContext,
       getUserMedia: async () => stream(this.capture), nowMs: () => this.now,
@@ -155,6 +158,7 @@ class Harness {
     const output = new Float32Array(QUANTUM);
     const alive = this.node.processor.process([[new Float32Array(QUANTUM).fill(amplitude)]], [[output]]);
     this.now += FRAME_MS;
+    this.audioTime += FRAME_MS / 1000;
     this.nonzero = output.some(x => x !== 0);
     if (this.nonzero) {
       this.record("PCM");
@@ -743,5 +747,63 @@ it.each([false, true])("reconciles accepted real VAD before publishing, outputFi
   expect(snapshots.length).toBeGreaterThan(0);
   expect(snapshots.every(count => count === 0)).toBe(true);
   unsubscribe();
+  harness.assertProtected();
+});
+
+
+it.each(["overlap", "main-delay"])("does not turn VAD confirmation into an onset bound after PCM: %s", async schedule => {
+  const { session, internal } = await sessionWithSource(false);
+  harness.now = 4700; harness.sampleMic(.001, 100);
+  harness.now = 4950;
+  if (schedule === "overlap") harness.sampleMic(.5, 50);
+  else harness.now = 5000;
+  harness.frame(.7, false);
+  while (!harness.controller.hasPendingPlayback) harness.deliverMain();
+  const receipt = harness.now;
+  expect(harness.capture.enabled).toBe(true);
+  expect(harness.analysis.enabled).toBe(true);
+  if (schedule === "main-delay") { harness.now += 1000; harness.sampleMic(.5, 50); }
+  harness.sampleMic(.5, 50);
+  const id = session.session.activeTurn!.id;
+  expect(session.session.activeTurn!.speechStartAtMs).toBeGreaterThan(receipt);
+  harness.flushMain(); harness.flushWorklet();
+  internal.handleConversationInputDelta({ type: "session.input_transcript.delta", delta: "Где находится вокзал?", start_ms: 3000, end_ms: 4000 });
+  expect((session as unknown as { attribution: { hasCompatibleOutput(source: unknown): boolean } })
+    .attribution.hasCompatibleOutput(session.session.activeTurn)).toBe(true);
+  harness.sampleMic(0, 1000);
+  const deadline = session.session.activeTurn!.sourceIdleAtMs! + 5000;
+  // Let the real processor drain normally; this extends the original held-render probe.
+  harness.until(() => harness.played.length === 128);
+  harness.until(() => harness.capture.enabled);
+  harness.now = deadline; harness.runTimers();
+  await internal.considerTurnCompletion(deadline);
+  expect(session.session.recentTurns.find(turn => turn.id === id)?.outputDeadline?.outcome).toBe("unresolved");
+  expect(session.metrics.snapshot().noObservedOutputDeadlineCount).toBe(0);
+  expect(session.recoveryPrompt).toBeUndefined();
+  expect(harness.played).toHaveLength(128);
+  harness.assertProtected();
+});
+
+it.each(["fresh", "stale-buffer", "no-render", "zero", "metadata-error"])("propagates a capture boundary only after a closed rendered silent window: %s", async kind => {
+  const { internal } = await sessionWithSource(false);
+  const events: Array<{ active: boolean; atMs: number; captureLowerBoundAtMs?: number }> = [];
+  const handler = harness.controller.onVoiceActivity;
+  harness.controller.onVoiceActivity = event => { events.push(event); handler?.(event); };
+  harness.now = kind === "zero" ? 0 : 2000;
+  harness.controller.setCaptureEnabled(false);
+  if (kind !== "no-render") harness.render(100);
+  else harness.now += 1000;
+  harness.analysers[0]!.amplitude = kind === "stale-buffer" ? .5 : 0;
+  if (kind === "zero") harness.now = 0;
+  const reopenedAt = harness.now;
+  if (kind === "metadata-error") vi.spyOn(harness.analysers[0]!, "getFloatTimeDomainData")
+    .mockImplementationOnce(() => { throw new Error("unavailable analyser"); });
+  harness.controller.setCaptureEnabled(true);
+  expect(harness.capture.enabled).toBe(true);
+  expect(harness.analysis.enabled).toBe(true);
+  harness.sampleMic(.001, 100); harness.sampleMic(.5, 100);
+  expect(events.find(event => event.active)?.captureLowerBoundAtMs)
+    .toBe(kind === "fresh" || kind === "zero" ? reopenedAt : undefined);
+  internal.handleConversationInputDelta({ type: "session.input_transcript.delta", delta: "Где находится вокзал?" });
   harness.assertProtected();
 });

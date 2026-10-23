@@ -53,10 +53,11 @@ export class OutputAttribution {
   }
   private playback: Array<{ atMs: number; sourceIds: string[]; played: boolean }> = [];
   private sources: Turn[] = [];
-  private readonly speechStarts = new Map<string, number>();
+  private readonly captureStarts = new Map<string, number>();
 
-  observeSourceStart(sourceId: string, atMs: number): void {
-    this.speechStarts.set(sourceId, atMs);
+  observeSourceStart(sourceId: string, _confirmedAtMs: number, captureLowerBoundAtMs?: number): void {
+    if (captureLowerBoundAtMs !== undefined && Number.isFinite(captureLowerBoundAtMs))
+      this.captureStarts.set(sourceId, captureLowerBoundAtMs);
   }
 
   observeReceivedPlayback(atMs: number, sources: Turn[]): void {
@@ -128,8 +129,8 @@ export class OutputAttribution {
     const sourceStart = earliestFragmentStart(source.sourceFragments), outputStart = earliestFragmentStart(output.fragments);
     if (sourceStart !== undefined && outputStart !== undefined && output.fragments.every(part => part.endMs !== undefined))
       return sourceStart <= Math.max(...output.fragments.map(part => part.endMs!));
-    // ASR receipt time is not speech onset; only an observed VAD boundary can exclude untimed later speech.
-    return output.sourceIdsAtReceipt.includes(source.id) || (this.speechStarts.get(source.id) ?? -Infinity) <= output.firstReceivedAtMs;
+    // Neither ASR receipt nor VAD confirmation bounds onset; only proven capture provenance can exclude it.
+    return output.sourceIdsAtReceipt.includes(source.id) || (this.captureStarts.get(source.id) ?? -Infinity) <= output.firstReceivedAtMs;
   }
 
   private hasPendingSource(output: AttributedOutput, pendingSources: readonly TranscriptFragment[]): boolean {
@@ -206,9 +207,9 @@ export class OutputAttribution {
         if (receipt.atMs > atMs) return false;
         if (receipt.sourceIds.includes(source.id)) return true;
         const start = earliestFragmentStart(source.sourceFragments);
-        // PCM has no provider upper bound; only accepted later VAD can exclude delayed speech.
-        return ![...this.speechStarts].some(([id, speechAtMs]) => {
-          if (speechAtMs <= receipt.atMs) return false;
+        // PCM has no provider upper bound; only a proven later input cycle can exclude delayed speech.
+        return ![...this.captureStarts].some(([id, captureAtMs]) => {
+          if (captureAtMs <= receipt.atMs) return false;
           if (id === source.id) return true;
           const boundary = earliestFragmentStart(this.sources.find(turn => turn.id === id)?.sourceFragments);
           return start !== undefined && boundary !== undefined && start >= boundary;

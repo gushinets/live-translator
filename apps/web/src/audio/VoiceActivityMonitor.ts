@@ -4,6 +4,8 @@ import { VoiceActivityEstimator } from "./VoiceActivityEstimator";
 export interface AudioActivityEvent {
   active: boolean;
   atMs: number;
+  /** Proven input-cycle lower bound, not acoustic onset or VAD confirmation. */
+  captureLowerBoundAtMs?: number;
 }
 
 /**

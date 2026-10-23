@@ -1604,7 +1604,7 @@ export class SessionController {
           if (active) this.dispatch({ type: "SOURCE_HANDOFF", turnId: crypto.randomUUID(), speaker: undefined, nowMs: event.atMs });
           else this.dispatch({ type: "SOURCE_ACTIVE", turnId: crypto.randomUUID(), speaker: undefined, sideSource: "unresolved" });
           this.routingTurnIds.add(this.currentSession.activeTurn!.id);
-          this.attribution.observeSourceStart(this.currentSession.activeTurn!.id, event.atMs);
+          this.attribution.observeSourceStart(this.currentSession.activeTurn!.id, event.atMs, event.captureLowerBoundAtMs);
           this.armMaxSourceTimer();
           this.projectAttribution();
         } finally {

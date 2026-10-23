@@ -146,7 +146,7 @@ function createFakeAudio() {
       play: vi.fn(async () => {}),
       load: vi.fn(),
     } as unknown as HTMLAudioElement,
-    onVoiceActivity: null as ((event: { active: boolean; atMs: number }) => void) | null,
+    onVoiceActivity: null as ((event: { active: boolean; atMs: number; captureLowerBoundAtMs?: number }) => void) | null,
     onPlaybackActivity: null as ((event: { active: boolean; atMs: number }) => void) | null,
     onPcmReceived: null as ((atMs: number) => void) | null,
     onAudioInterruption: null as (() => void) | null,
@@ -1579,14 +1579,15 @@ async function enterListening(controller: SessionController): Promise<void> {
 }
 
 function emitVoice(
-  audio: { onVoiceActivity: ((event: { active: boolean; atMs: number }) => void) | null },
+  audio: { onVoiceActivity: ((event: { active: boolean; atMs: number; captureLowerBoundAtMs?: number }) => void) | null },
   active: boolean,
   atMs = Date.now(),
+  captureLowerBoundAtMs?: number,
 ): void {
   if (audio.onVoiceActivity === null) {
     throw new Error("Voice activity handler was not installed");
   }
-  audio.onVoiceActivity({ active, atMs });
+  audio.onVoiceActivity({ active, atMs, captureLowerBoundAtMs });
 }
 
 function emitPlayback(
@@ -4449,7 +4450,8 @@ describe("fixed-language conversation regression", () => {
     const russian = "Подскажите, пожалуйста, где находится вокзал?";
     const english = "Could you tell me where the train station is?";
     for (const side of ["B", "A", "A", "A", "B", "B"] as const) {
-      emitVoice(audio, true);
+      // Explicit fresh capture provenance; actual producer coverage is in PlaybackHandshake.test.ts.
+      emitVoice(audio, true, Date.now(), Date.now());
       expect(controller.session.activeTurn?.speaker).toBeUndefined();
       live.emit({ type: "session.input_transcript.delta", delta: side === "A" ? russian : english });
       expect(controller.session.activeTurn?.speaker).toBe(side);
@@ -4473,7 +4475,7 @@ describe("fixed-language conversation regression", () => {
     expect(controller.session.participantA.language).toBe("ru");
     expect(controller.session.participantB.language).toBe("en");
     expect(controller.session.recentTurns).toHaveLength(10);
-    emitVoice(audio, true);
+    emitVoice(audio, true, Date.now(), Date.now());
     live.emit({ type: "session.input_transcript.delta", delta: "OK" });
     expect(controller.session.activeTurn?.speaker).toBeUndefined();
     live.emit({ type: "session.output_transcript.delta", delta: "Хорошо" });
@@ -4838,14 +4840,15 @@ describe("open-input interpretation", () => {
 
   it("keeps a fresh untimed old-language result independent of completed history", async () => {
     const { controller, live, audio } = await startRussianEnglish();
-    emitVoice(audio, true);
+    // Explicit fresh capture provenance; actual producer coverage is in PlaybackHandshake.test.ts.
+    emitVoice(audio, true, Date.now(), Date.now());
     live.emit({ type: "session.input_transcript.delta", delta: "Подскажите, где находится вокзал?" });
     const aId = controller.session.activeTurn?.id;
     live.emit({ type: "session.output_transcript.delta", delta: "Where is the train station?" });
     emitVoice(audio, false);
     await vi.advanceTimersByTimeAsync(runtime.audioStartGraceMs + runtime.captionIdleMs);
     const before = controller.metrics.snapshot().textOnlyCompletedTurnCount;
-    emitVoice(audio, true);
+    emitVoice(audio, true, Date.now(), Date.now());
     live.emit({ type: "session.input_transcript.delta", delta: "The station is straight ahead." });
     live.emit({ type: "session.output_transcript.delta", delta: " I want to walk there." });
     expect(controller.session.recentTurns.find(t => t.id === aId)).toMatchObject({ speaker: "A",
@@ -5297,13 +5300,14 @@ describe("PR32 playback completion regression", () => {
   it("does not complete B while unattributed audio is playing", async () => {
     const {controller,live,audio} = createController();
     await controller.startWithLanguages({A:"ru",B:"en"});
-    emitVoice(audio,true);
+    // Explicit fresh capture provenance; actual producer coverage is in PlaybackHandshake.test.ts.
+    emitVoice(audio, true, Date.now(), Date.now());
     live.emit({type:"session.input_transcript.delta",delta:"Подскажите, где находится вокзал?"});
     live.emit({type:"session.output_transcript.delta",delta:"Where is the train station?"});
     emitVoice(audio,false);
     await vi.advanceTimersByTimeAsync(runtime.audioStartGraceMs+runtime.captionIdleMs);
     expect(controller.session.activeTurn).toBeUndefined();
-    emitVoice(audio,true);
+    emitVoice(audio, true, Date.now(), Date.now());
     live.emit({type:"session.input_transcript.delta",delta:"The station is straight ahead."});
     const b = controller.session.activeTurn!.id;
     live.setInputMuted.mockClear();
@@ -5530,14 +5534,15 @@ it("does not borrow a completed output sentence for a new source's short transla
   vi.useFakeTimers(); vi.setSystemTime(0);
   const { controller, live, audio } = createController();
   await controller.startWithLanguages({ A: "ru", B: "en" });
-  emitVoice(audio, true);
+  // Explicit fresh capture provenance; actual producer coverage is in PlaybackHandshake.test.ts.
+  emitVoice(audio, true, Date.now(), Date.now());
   live.emit({ type: "session.input_transcript.delta", delta: "I use Google every day." });
   const b = controller.session.activeTurn!.id;
   live.emit({ type: "session.output_transcript.delta", delta: "Я использую ", start_ms: 0, end_ms: 500 });
   emitVoice(audio, false);
   await vi.advanceTimersByTimeAsync(runtime.audioStartGraceMs + runtime.captionIdleMs);
   expect(controller.session.recentTurns.find(turn => turn.id === b)?.status).toBe("completed");
-  emitVoice(audio, true);
+  emitVoice(audio, true, Date.now(), Date.now());
   live.emit({ type: "session.input_transcript.delta", delta: "Гугл." });
   const a = controller.session.activeTurn!.id;
   live.emit({ type: "session.output_transcript.delta", delta: "Google.", start_ms: 1000, end_ms: 1500 });
@@ -5950,7 +5955,8 @@ it.each([false, true])("keeps fresh output independent of completed same-speaker
   vi.useFakeTimers(); vi.setSystemTime(0);
   const { controller, live, audio } = createController();
   await controller.startWithLanguages({ A: "en", B: "es" });
-  emitVoice(audio, true);
+  // Explicit fresh capture provenance; actual producer coverage is in PlaybackHandshake.test.ts.
+  emitVoice(audio, true, Date.now(), Date.now());
   live.emit({ type: "session.input_transcript.delta", delta: "Sí." });
   const completedId = controller.session.activeTurn!.id;
   live.emit({ type: "session.output_transcript.delta", delta: "Yes." });
@@ -5959,7 +5965,7 @@ it.each([false, true])("keeps fresh output independent of completed same-speaker
   expect(controller.session.recentTurns.find(turn => turn.id === completedId)).toMatchObject({
     status: "completed", speaker: "B", translatedText: "Yes.",
   });
-  emitVoice(audio, true);
+  emitVoice(audio, true, Date.now(), Date.now());
   if (caption) {
     live.emit({ type: "session.input_transcript.delta", delta: "No." });
     await vi.advanceTimersByTimeAsync(runtime.captionIdleMs);
@@ -5980,14 +5986,15 @@ it("retains timestamped late output for completed history beside a fresh unresol
   vi.useFakeTimers(); vi.setSystemTime(0);
   const { controller, live, audio } = createController();
   await controller.startWithLanguages({ A: "en", B: "es" });
-  emitVoice(audio, true);
+  // Explicit fresh capture provenance; actual producer coverage is in PlaybackHandshake.test.ts.
+  emitVoice(audio, true, Date.now(), Date.now());
   live.emit({ type: "session.input_transcript.delta", delta: "Sí.", start_ms: 0, end_ms: 500 });
   const completedId = controller.session.activeTurn!.id;
   live.emit({ type: "session.output_transcript.delta", delta: "Yes.", start_ms: 600, end_ms: 900 });
   emitVoice(audio, false);
   await vi.advanceTimersByTimeAsync(runtime.audioStartGraceMs + runtime.captionIdleMs);
   expect(controller.session.recentTurns.find(turn => turn.id === completedId)?.status).toBe("completed");
-  emitVoice(audio, true);
+  emitVoice(audio, true, Date.now(), Date.now());
   const unresolvedId = controller.session.activeTurn!.id;
   live.emit({ type: "session.output_transcript.delta", delta: "Yes.", start_ms: 600, end_ms: 900 });
   expect(controller.session.recentTurns.find(turn => turn.id === completedId)?.translatedText).toBe("Yes.Yes.");
@@ -6000,14 +6007,15 @@ it("keeps late output independent of completed history after the latest unresolv
   vi.useFakeTimers(); vi.setSystemTime(0);
   const { controller, live, audio } = createController();
   await controller.startWithLanguages({ A: "en", B: "es" });
-  emitVoice(audio, true);
+  // Explicit fresh capture provenance; actual producer coverage is in PlaybackHandshake.test.ts.
+  emitVoice(audio, true, Date.now(), Date.now());
   live.emit({ type: "session.input_transcript.delta", delta: "Sí." });
   const completedId = controller.session.activeTurn!.id;
   live.emit({ type: "session.output_transcript.delta", delta: "Yes." });
   emitVoice(audio, false);
   await vi.advanceTimersByTimeAsync(runtime.audioStartGraceMs + runtime.captionIdleMs);
   expect(controller.session.recentTurns.find(turn => turn.id === completedId)?.status).toBe("completed");
-  emitVoice(audio, true);
+  emitVoice(audio, true, Date.now(), Date.now());
   live.emit({ type: "session.input_transcript.delta", delta: "No." });
   await vi.advanceTimersByTimeAsync(runtime.captionIdleMs);
   const unresolvedId = controller.session.activeTurn!.id;
