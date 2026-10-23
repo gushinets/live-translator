@@ -59,6 +59,31 @@ export class OutputAttribution {
     // Router splits keep the packet ID as a prefix and preserve its original clocks.
     const pending = this.pendingOutput && fragments.some(part => this.pendingOutput!.fragments.some(known =>
       part.id === known.id || part.id.startsWith(known.id + ":"))) ? this.pendingOutput : undefined;
+    const output = pending ?? this.continuation(fragments, side, nowMs) ?? {
+      id: crypto.randomUUID(), fragments: [], side, firstReceivedAtMs: Math.min(...fragments.map(part => part.receivedAtMs)),
+      candidateIds: [], revision: 0,
+    };
+    if (pending) {
+      output.fragments = [];
+      output.side = side;
+      output.languagePending = false;
+      this.pendingOutput = undefined;
+    }
+    if (!this.outputs.includes(output)) this.outputs.push(output);
+    for (const part of fragments) if (!output.fragments.some(known => known.id === part.id)) output.fragments.push(part);
+    output.side ??= side;
+    this.record({ kind: "text", atMs: nowMs, outputId: output.id });
+    this.decide(output, sources, nowMs, pendingSources);
+    return output;
+  }
+
+  /** Output language context follows the same evidence as grouping, never source delivery. */
+  contextFor(fragment: TranscriptFragment): AttributedOutput | undefined {
+    const last = this.outputs.at(-1);
+    return last && this.continuation([fragment], last.side, fragment.receivedAtMs) === last ? last : undefined;
+  }
+
+  private continuation(fragments: TranscriptFragment[], side: Side | undefined, nowMs: number): AttributedOutput | undefined {
     const neutral = fragments.every(part => /^[\p{P}\s]+$/u.test(part.text));
     const last = this.outputs.at(-1);
     const timed = this.outputs.filter(output => {
@@ -75,28 +100,14 @@ export class OutputAttribution {
     const adjacent = last && last.fragments.at(-1)!.endMs !== undefined &&
       fragments[0]?.startMs === last.fragments.at(-1)!.endMs;
     // ASR delivery does not establish an output boundary. An untimed packet cannot
-    // extend sentence-complete timed evidence solely because it arrived soon after.
+    // extend sentence-complete timed evidence solely because it arrived soon after;
+    // a neutral suffix carries no independent lexical language or source evidence.
     const tail = last && last !== this.pendingOutput && (last.side === side || (side === undefined && neutral)) &&
       ((fragments.every(part => part.startMs === undefined) &&
-        ((last.fragments.every(part => part.startMs === undefined) &&
+        (((neutral || last.fragments.every(part => part.startMs === undefined)) &&
           nowMs - last.fragments.at(-1)!.receivedAtMs < runtime.captionIdleMs) || unfinished)) ||
         (adjacent && unfinished)) ? last : undefined;
-    const output = pending ?? (overlaps.length === 1 ? overlaps[0]! : tail) ?? {
-      id: crypto.randomUUID(), fragments: [], side, firstReceivedAtMs: Math.min(...fragments.map(part => part.receivedAtMs)),
-      candidateIds: [], revision: 0,
-    };
-    if (pending) {
-      output.fragments = [];
-      output.side = side;
-      output.languagePending = false;
-      this.pendingOutput = undefined;
-    }
-    if (!this.outputs.includes(output)) this.outputs.push(output);
-    for (const part of fragments) if (!output.fragments.some(known => known.id === part.id)) output.fragments.push(part);
-    output.side ??= side;
-    this.record({ kind: "text", atMs: nowMs, outputId: output.id });
-    this.decide(output, sources, nowMs, pendingSources);
-    return output;
+    return overlaps.length === 1 ? overlaps[0]! : tail;
   }
 
   /** Observe the unresolved router tail now; later language evidence refines the same receipt. */

@@ -10,6 +10,7 @@ import {
 import { createTranscriptFragment } from "../conversation/TurnBuffer";
 import { TranscriptRouter, type RoutedTranscript } from "../conversation/TranscriptRouter";
 import { OutputAttribution } from "../conversation/OutputAttribution";
+import { completeScriptSide, languageScripts, scriptPattern } from "../conversation/languageScripts";
 import { DialogueTranscript } from "../conversation/DialogueTranscript";
 import { earliestFragmentStart, type TranscriptFragment } from "../conversation/TranscriptFragment";
 import type { ResumeSnapshot, ResumeSnapshotInput } from "./ResumeSnapshotStore";
@@ -1522,17 +1523,19 @@ export class SessionController {
     if (this.leftoverOutputDraining) { this.noteLeftoverCaption(); return; }
     const fragment = createTranscriptFragment({ text: event.delta, nowMs: Date.now(), startMs: event.start_ms, endMs: event.end_ms });
 
+    const pendingTail = this.outputRouter.pendingFragments.at(-1)?.text.match(/\p{L}$/u)?.[0];
+    const incomingSide = pendingTail && /^\p{L}/u.test(fragment.text) ? completeScriptSide(fragment.text, this.languages) : undefined;
+    // A no-space switch to another script cannot turn an undecided prefix into that language.
+    if (pendingTail && incomingSide && !scriptPattern(languageScripts(this.languages[incomingSide]))?.test(pendingTail)) {
+      this.routeOutput(this.outputRouter.flush(this.languages, true), false);
+    }
+
     if (!this.outputRouter.hasPending && /^[\p{P}\s]+$/u.test(fragment.text)) {
       this.routeOutput([{ side: undefined, fragments: [fragment] }]);
     } else {
-      const continuation = this.outputTurnId ? findSessionTurn(this.currentSession, this.outputTurnId) : undefined;
-      const start = earliestFragmentStart(continuation?.outputFragments);
-      // Retired output and older packets cannot supply context for a new translation.
-      const hasContext = continuation && !["completed", "failed", "discarded", "unresolved"].includes(continuation.status) &&
-        (this.outputSourceTurnId === this.latestSourceTurnId) &&
-        (fragment.startMs === undefined || start === undefined || fragment.startMs >= start);
-      const side = hasContext ? (continuation.speaker === "A" ? "B" : continuation.speaker === "B" ? "A" : undefined) : undefined;
-      this.routeOutput(this.outputRouter.push(fragment, this.languages, side, hasContext ? continuation.translatedText : undefined));
+      const continuation = this.attribution.contextFor(fragment);
+      this.routeOutput(this.outputRouter.push(fragment, this.languages, continuation?.side,
+        continuation?.fragments.map(part => part.text).join("")));
     }
     const generation = this.sessionGeneration;
     const epoch = this.lifecycleEpoch;
@@ -1548,7 +1551,7 @@ export class SessionController {
   }
 
   private routeOutput(groups: RoutedTranscript[], considerCompletion = true): void {
-    // Includes timer and source-handoff flushes, not only newly received deltas.
+    // Includes timer and lifecycle flushes, not only newly received deltas.
     this.expireOutputDeadlines(Date.now(), false);
     for (const { side, fragments } of groups) {
       const output = this.attribution.receive(fragments, side, this.routingTurns(), Date.now(), this.sourceRouter.pendingFragments);
@@ -3050,11 +3053,6 @@ export class SessionController {
   }
 
   protected dispatch(action: SessionAction): void {
-    if ((action.type === "SOURCE_ACTIVE" || action.type === "SOURCE_HANDOFF") &&
-        action.turnId !== this.latestSourceTurnId && this.outputRouter.hasPending) {
-      // Seal old evidence before changing its source context. Ambiguity is retained.
-      this.routeOutput(this.outputRouter.flush(this.languages, true), false);
-    }
     const previousTurn = "turnId" in action ? findSessionTurn(this.currentSession, action.turnId) : this.currentSession.activeTurn;
     const previousUnfinished = [...(this.currentSession.pendingTurns ?? []),
       ...(this.currentSession.activeTurn ? [this.currentSession.activeTurn] : [])];

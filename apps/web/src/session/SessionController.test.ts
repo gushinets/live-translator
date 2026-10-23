@@ -5571,7 +5571,7 @@ describe("PR32 pending-source ownership", () => {
     await vi.advanceTimersByTimeAsync(100);
     expect(controller.session.recentTurns.find(turn => turn.id === a)?.status).toBe(correctionStart === 0 ? "failed" : undefined);
   });
-  it.each([undefined, 1000, "late correction"])("does not reuse pending B output context for new A output at %s", async timestamp => {
+  it.each([undefined, 1000, "late correction"])("uses output interval evidence instead of ASR to separate Google at %s", async timestamp => {
     const { controller, live, audio } = createController();
     await controller.startWithLanguages({ A: "ru", B: "en" });
     emitVoice(audio, true);
@@ -5582,9 +5582,13 @@ describe("PR32 pending-source ownership", () => {
     const a = controller.session.activeTurn!.id;
     if (timestamp === "late correction") live.emit({ type: "session.output_transcript.delta", delta: "Каждый день я использую ", start_ms: 100, end_ms: 400 });
     live.emit({ type: "session.output_transcript.delta", delta: "Google.", start_ms: typeof timestamp === "number" ? timestamp : undefined });
-    expect(controller.session.activeTurn).toMatchObject({ id: a, speaker: "A", translatedText: "Google." });
-    expect(controller.session.pendingTurns?.find(turn => turn.id === b)?.translatedText).toBe(
-      timestamp === "late correction" ? "Я использую Каждый день я использую " : "Я использую ");
+    const disjoint = typeof timestamp === "number";
+    expect(controller.session.activeTurn).toMatchObject({ id: a, speaker: "A", translatedText: disjoint ? "Google." : undefined });
+    expect(controller.session.pendingTurns?.find(turn => turn.id === b)?.translatedText).toBe(disjoint ? "Я использую " : undefined);
+    expect(controller.captionBlocks.filter(block => block.kind === "output").map(block => block.text)).toEqual(disjoint
+      ? ["Я использую ", "Google."]
+      : [timestamp === "late correction" ? "Я использую Каждый день я использую Google." : "Я использую Google."]);
+    expect(controller.currentAttribution).toMatchObject({ matchedTextOutputs: disjoint ? 2 : 0, unattributedTextOutputs: disjoint ? 0 : 1 });
   });
   it.each([false, true])("keeps audio before B's caption unattributed when A is still pending, owned=%s", async owned => {
     const { controller, live, audio } = createController();
@@ -6930,4 +6934,125 @@ describe("final attribution review regressions", () => {
     await controller.endConversation();
     expect(controller.attributionTrace).toEqual(beforeReset);
   });
+});
+
+
+describe("output evidence across source callback order", () => {
+  beforeEach(() => { vi.useFakeTimers(); vi.setSystemTime(1000); });
+
+  it.each(["»", "!"])("keeps an untimed neutral suffix on its timed output: %s", async suffix => {
+    const { controller, live, audio } = createController();
+    await controller.startWithLanguages({ A: "ru", B: "es" });
+    emitVoice(audio, true);
+    live.emit({ type: "session.input_transcript.delta", delta: "Где находится посылка?", start_ms: 100, end_ms: 1000 });
+    const prefix = suffix === "»" ? "«El paquete está aquí." : "El paquete está aquí.";
+    live.emit({ type: "session.output_transcript.delta", delta: prefix, start_ms: 600, end_ms: 1300 });
+    const first = controller.captionBlocks.find(block => block.kind === "output")!;
+    vi.setSystemTime(1100);
+    live.emit({ type: "session.output_transcript.delta", delta: suffix });
+    expect(controller.captionBlocks.filter(block => block.kind === "output")).toEqual([
+      expect.objectContaining({ outputId: first.outputId, text: prefix + suffix, receivedAtMs: 1000, attribution: "matched" }),
+    ]);
+    const root = document.createElement("div");
+    root.innerHTML = renderToStaticMarkup(createElement(ConversationScreen, { controller }));
+    expect([...root.querySelectorAll('[data-testid="participant-pane-B"] li')].map(row => row.textContent)).toEqual(["Él: " + prefix + suffix]);
+    expect(root.querySelectorAll(".unattributed-output li")).toHaveLength(0);
+    expect(controller.currentAttribution).toMatchObject({ matchedTextOutputs: 1, unattributedTextOutputs: 0 });
+    await controller.endConversation();
+  });
+
+  it.each([
+    ["Я использую ", "Google.", "adjacent"],
+    ["Я использую ", "Google.", "overlap"],
+    ["Я использую ", "Google.", "untimed"],
+    ["Я ", "использую сервис.", "adjacent"],
+    ["Я ", "использую сервис.", "overlap"],
+    ["Я ", "использую сервис.", "untimed"],
+  ])("keeps the same raw output and outcomes across ASR order: %s%s (%s)", async (prefix, suffix, timing) => {
+    const scenario = async (sourceFirst: boolean) => {
+      vi.setSystemTime(1000);
+      const { controller, live, audio } = createController();
+      await controller.startWithLanguages({ A: "ru", B: "en" });
+      emitVoice(audio, true);
+      live.emit({ type: "session.input_transcript.delta", delta: "I use this service every day.", start_ms: 0, end_ms: 100 });
+      live.emit({ type: "session.output_transcript.delta", delta: prefix, start_ms: 100, end_ms: 200 });
+      const first = controller.captionBlocks.find(block => block.kind === "output")!;
+      vi.setSystemTime(1100);
+      const source = () => live.emit({ type: "session.input_transcript.delta", delta: "Я тоже каждый день пользуюсь этим сервисом.", start_ms: 150, end_ms: 350 });
+      const output = () => live.emit({ type: "session.output_transcript.delta", delta: suffix,
+        ...(timing === "untimed" ? {} : { start_ms: timing === "adjacent" ? 200 : 150, end_ms: timing === "adjacent" ? 300 : 200 }) });
+      if (sourceFirst) { source(); output(); } else { output(); source(); }
+      emitVoice(audio, false);
+      await vi.advanceTimersByTimeAsync(6000);
+      const outputs = controller.captionBlocks.filter(block => block.kind === "output");
+      expect(outputs).toEqual([expect.objectContaining({ outputId: first.outputId, text: prefix + suffix, side: "A", receivedAtMs: 1000, attribution: "unattributed" })]);
+      expect(controller.currentAttribution).toMatchObject({ matchedTextOutputs: 0, unattributedTextOutputs: 1, matchedAudioOutputs: 0, confirmedSourceSpeechMs: null });
+      const metrics = structuredClone(controller.metrics.snapshot());
+      expect(metrics).toMatchObject({ completedTurnCount: 0, noOutputWatchdogCount: 2, unresolvedSourceOutcomeCount: 1, noObservedOutputDeadlineCount: 1 });
+      const root = document.createElement("div");
+      root.innerHTML = renderToStaticMarkup(createElement(ConversationScreen, { controller }));
+      expect([...root.querySelectorAll('[data-testid="participant-pane-A"] li')].map(row => row.textContent)).toContain("Он: " + prefix + suffix);
+      expect(root.querySelectorAll(".unattributed-output li")).toHaveLength(0);
+      const trace = structuredClone(controller.attributionTrace);
+      const decisions = trace.filter(entry => entry.outputId === first.outputId && entry.revision !== undefined);
+      expect(new Set(decisions.map(entry => entry.revision)).size).toBe(decisions.length);
+      const current = controller.currentAttribution;
+      await vi.advanceTimersByTimeAsync(1000);
+      expect(controller.currentAttribution).toEqual(current);
+      expect(controller.metrics.snapshot()).toEqual(metrics);
+      expect(controller.attributionTrace).toEqual(trace);
+      // A real intermediate match/revocation remains history even when the final evidence agrees.
+      const { attributionRevokedCount, ...outcomes } = metrics;
+      expect(attributionRevokedCount).toBe(prefix === "Я " && sourceFirst ? 0 : 1);
+      const result = { current, outcomes, outputs: outputs.map(({ text, side, attribution, receivedAtMs }) => ({ text, side, attribution, receivedAtMs })) };
+      await controller.endConversation();
+      return result;
+    };
+    expect(await scenario(true)).toEqual(await scenario(false));
+  });
+});
+
+
+it.each([true, false])("keeps an undecided prefix separate from an independent cross-script sentence, ASR first=%s", async sourceFirst => {
+  vi.useFakeTimers(); vi.setSystemTime(1000);
+  const { controller, live, audio } = createController();
+  await controller.startWithLanguages({ A: "ru", B: "en" });
+  emitVoice(audio, true);
+  live.emit({ type: "session.input_transcript.delta", delta: "Yes, I understand you." });
+  live.emit({ type: "session.output_transcript.delta", delta: "Да" });
+  const prefix = controller.captionBlocks.find(block => block.kind === "output")!;
+  vi.setSystemTime(1100);
+  const source = () => live.emit({ type: "session.input_transcript.delta", delta: "Подскажите, где находится вокзал?" });
+  const output = () => live.emit({ type: "session.output_transcript.delta", delta: "Where is the train station?" });
+  if (sourceFirst) { source(); output(); } else { output(); source(); }
+  await vi.advanceTimersByTimeAsync(runtime.captionIdleMs);
+  const outputs = controller.captionBlocks.filter(block => block.kind === "output");
+  expect(outputs).toEqual([
+    expect.objectContaining({ outputId: prefix.outputId, text: "Да", side: undefined, receivedAtMs: 1000, attribution: "unattributed" }),
+    expect.objectContaining({ text: "Where is the train station?", side: "B", receivedAtMs: 1100, attribution: "unattributed" }),
+  ]);
+  expect(outputs[1]!.outputId).not.toBe(prefix.outputId);
+  expect(controller.currentAttribution).toMatchObject({ matchedTextOutputs: 0, unattributedTextOutputs: 2 });
+  const root = document.createElement("div");
+  root.innerHTML = renderToStaticMarkup(createElement(ConversationScreen, { controller }));
+  expect([...root.querySelectorAll(".unattributed-output li")].map(row => row.textContent)).toEqual(["Да"]);
+  expect([...root.querySelectorAll('[data-testid="participant-pane-B"] li')].map(row => row.textContent)).toContain("Him: Where is the train station?");
+  await controller.endConversation();
+});
+
+it.each([["Я", " использую Google."], ["Я ис", "пользую Google."], ["Гу", "гл."]])("refines an undecided continuation without losing its first receipt: %s%s", async (prefix, suffix) => {
+  vi.useFakeTimers(); vi.setSystemTime(1000);
+  const { controller, live, audio } = createController();
+  await controller.startWithLanguages({ A: "ru", B: "en" });
+  emitVoice(audio, true);
+  live.emit({ type: "session.input_transcript.delta", delta: "I use this service every day.", start_ms: 0, end_ms: 100 });
+  live.emit({ type: "session.output_transcript.delta", delta: prefix, start_ms: 100, end_ms: 200 });
+  const first = controller.captionBlocks.find(block => block.kind === "output")!;
+  vi.setSystemTime(1100);
+  live.emit({ type: "session.output_transcript.delta", delta: suffix, start_ms: 200, end_ms: 300 });
+  expect(controller.captionBlocks.filter(block => block.kind === "output")).toEqual([
+    expect.objectContaining({ outputId: first.outputId, text: prefix + suffix, side: "A", attribution: "matched", receivedAtMs: 1000 }),
+  ]);
+  expect(controller.currentAttribution).toMatchObject({ matchedTextOutputs: 1, unattributedTextOutputs: 0 });
+  await controller.endConversation();
 });
