@@ -149,6 +149,7 @@ export class SessionController {
   private retiredAttributionTrace: OutputAttribution["trace"] = [];
   private retiredProviderDiagnostics: LiveClient["diagnostics"]["entries"] = [];
   private sourceUpdateInProgress = false;
+  private presentedNoOutputHintId: string | undefined;
   private readonly noOutputHints = new Map<string, {
     sourceId: string; generation: number; deferred: boolean; kind: "repeat" | "conditional-repeat";
   }>();
@@ -1644,11 +1645,10 @@ export class SessionController {
   }
 
   private dismissPresentedRecovery(): void {
-    const hint = this.noOutputHint;
-    if (hint && this.recoveryPrompt !== undefined) {
-      this.noOutputHints.delete(hint.sourceId);
+    if (this.presentedNoOutputHintId) {
+      this.noOutputHints.delete(this.presentedNoOutputHintId);
       this.refreshNoOutputHints();
-    } else if (!hint) this.recoveryPromptKind = undefined;
+    } else if (!this.noOutputHint) this.recoveryPromptKind = undefined;
     this.providerRecoveryGeneration = undefined;
   }
 
@@ -2131,6 +2131,7 @@ export class SessionController {
     this.retiredAttributionTrace = this.attributionTrace;
     this.attribution = new OutputAttribution();
     this.noOutputHints.clear();
+    this.refreshNoOutputHints();
     this.providerRecoveryGeneration = undefined;
     this.outputTurnId = undefined;
     this.audio.setPlaybackTurn?.(undefined);
@@ -3129,7 +3130,7 @@ export class SessionController {
   }
 
   protected dispatch(action: SessionAction): void {
-    const presentedHintId = this.recoveryPrompt !== undefined ? this.noOutputHint?.sourceId : undefined;
+    const presentedHintId = this.presentedNoOutputHintId;
     const previousTurn = "turnId" in action ? findSessionTurn(this.currentSession, action.turnId) : this.currentSession.activeTurn;
     const previousUnfinished = [...(this.currentSession.pendingTurns ?? []),
       ...(this.currentSession.activeTurn ? [this.currentSession.activeTurn] : [])];
@@ -3203,6 +3204,7 @@ export class SessionController {
     this.observeMetrics(completedTurnId);
     // Publish source changes only together with their reconciled caption/ownership projection.
     if (this.sourceUpdateInProgress) return;
+    this.presentedNoOutputHintId = this.recoveryPrompt !== undefined ? this.noOutputHint?.sourceId : undefined;
     for (const listener of this.listeners) {
       listener();
     }

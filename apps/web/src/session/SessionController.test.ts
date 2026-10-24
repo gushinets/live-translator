@@ -7499,3 +7499,67 @@ it("dismisses the presented A hint when a new B source arrives through ASR witho
   expect(controller.recoveryPromptSide).toBe("B");
   await controller.endConversation();
 });
+
+it.each([false, true])("preserves an unpublished timeout discovered by new ASR, delayed timer=%s", async delayedTimer => {
+  vi.useFakeTimers(); vi.setSystemTime(1000);
+  const { controller, live, audio } = createController();
+  await controller.startWithLanguages({ A: "ru", B: "en" });
+  const presented: string[] = [];
+  const unsubscribe = controller.subscribe(() => {
+    if (controller.recoveryPrompt) presented.push(controller.recoveryPrompt);
+  });
+  emitVoice(audio, true);
+  live.emit({ type: "session.input_transcript.delta", delta: "Где находится станция?", start_ms: 2000, end_ms: 3000 });
+  const aId = controller.session.activeTurn!.id;
+  emitVoice(audio, false);
+  if (delayedTimer) vi.setSystemTime(6001);
+  else await vi.advanceTimersByTimeAsync(5001);
+  expect(presented.length > 0).toBe(!delayedTimer);
+
+  live.emit({ type: "session.input_transcript.delta", delta: "The station is nearby.", start_ms: 0, end_ms: 1000 });
+  expect(controller.session.recentTurns.find(turn => turn.id === aId)?.outputDeadline?.outcome).toBe("no_observed_output");
+  expect(controller.session.activeTurn?.speaker).toBe("B");
+  expect(controller.recoveryPrompt).toBeUndefined();
+  if (delayedTimer) expect(presented).toEqual([]);
+  live.emit({ type: "session.output_transcript.delta", delta: "Станция находится рядом.", start_ms: 500, end_ms: 1500 });
+  expect(controller.captionBlocks.find(block => block.text === "Станция находится рядом.")?.attribution).toBe("matched");
+  await vi.advanceTimersByTimeAsync(1500);
+  expect(controller.session.activeTurn).toBeUndefined();
+  expect(controller.session.pendingTurns).toEqual([]);
+  expect(controller.recoveryPrompt).toBe(delayedTimer ? "repeat" : undefined);
+  if (delayedTimer) {
+    expect(controller.recoveryPromptSide).toBe("A");
+    expect(presented).toContain("repeat");
+  }
+  unsubscribe();
+  await controller.endConversation();
+});
+
+it.each([false, true])("shows a new provider error after a language change, prior timeout=%s", async priorTimeout => {
+  vi.useFakeTimers(); vi.setSystemTime(1000);
+  const { controller, live, audio } = createController();
+  await controller.startWithLanguages({ A: "ru", B: "es" });
+  if (priorTimeout) {
+    emitVoice(audio, true);
+    live.emit({ type: "session.input_transcript.delta", delta: "Где находится станция?", start_ms: 0, end_ms: 1000 });
+    emitVoice(audio, false);
+    await vi.advanceTimersByTimeAsync(5001);
+    expect(controller.recoveryPrompt).toBe("repeat");
+  }
+  await controller.changeInterlocutorLanguage("de");
+  expect(controller.recoveryPrompt).toBeUndefined();
+  const parser = new LiveClient({ backend: {} as BackendClient, peerFactory: () => { throw new Error("Network is not used"); }, onRemoteStream: vi.fn() });
+  const channel = parser as unknown as { started: boolean; handleChannelMessage(event: MessageEvent<string>): void };
+  channel.started = true;
+  parser.onError = event => live.onError?.(event as FakeLiveErrorEvent);
+  channel.handleChannelMessage(new MessageEvent("message", { data: JSON.stringify({ type: "error",
+    error: { message: "recoverable interruption", code: null } }) }));
+  expect(parser.diagnostics.entries.some(entry => entry.kind === "provider_error")).toBe(true);
+  expect(controller.session.state).toBe("listening");
+  expect(controller.inputReady).toBe(true);
+  expect(audio.captureTrack.enabled).toBe(true);
+  expect(controller.recoveryPrompt).toBe("conditional-repeat");
+  expect(controller.recoveryPromptIsTurnFailure).toBe(false);
+  expect(controller.recoveryPromptSide).toBeUndefined();
+  await controller.endConversation();
+});

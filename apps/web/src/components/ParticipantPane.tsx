@@ -30,6 +30,10 @@ export function useCaptionScroll(captions: readonly DialogueBlock[], status?: st
     if (followEnd.current) syncScroll();
   }, [captions, status, syncScroll]);
   useLayoutEffect(() => {
+    if (captions.length === 0) {
+      followEnd.current = true;
+      scrollState.current = { readingTop: 0, appliedTop: 0 };
+    }
     const scroll = scrollRef.current;
     if (!scroll || typeof ResizeObserver === "undefined") return;
     const observer = new ResizeObserver(syncScroll);
