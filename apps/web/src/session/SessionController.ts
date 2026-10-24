@@ -1665,13 +1665,14 @@ export class SessionController {
         this.clearCompletionTimer();
         const active = this.currentSession.activeTurn;
         if (!active || (active.speaker === undefined && active.originalText.length > 0 && active.sourceIdleAtMs !== undefined)) {
-          if (!this.speechInputReady) return;
-          this.speechInputReady = false;
-          if (active) this.dispatch({ type: "SOURCE_HANDOFF", turnId: crypto.randomUUID(), speaker: undefined, nowMs: event.atMs });
-          else this.dispatch({ type: "SOURCE_ACTIVE", turnId: crypto.randomUUID(), speaker: undefined, sideSource: "unresolved" });
-          this.routingTurnIds.add(this.currentSession.activeTurn!.id);
-          this.armMaxSourceTimer();
-          this.projectAttribution();
+          if (this.speechInputReady) {
+            this.speechInputReady = false;
+            if (active) this.dispatch({ type: "SOURCE_HANDOFF", turnId: crypto.randomUUID(), speaker: undefined, nowMs: event.atMs });
+            else this.dispatch({ type: "SOURCE_ACTIVE", turnId: crypto.randomUUID(), speaker: undefined, sideSource: "unresolved" });
+            this.routingTurnIds.add(this.currentSession.activeTurn!.id);
+            this.armMaxSourceTimer();
+            this.projectAttribution();
+          }
         } else {
           if (active.sourceIdleAtMs !== undefined && this.resumedSourceIdle?.turnId !== active.id) {
             const observed = active.sourceFragments.flatMap(part => {

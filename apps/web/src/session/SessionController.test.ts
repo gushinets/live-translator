@@ -7613,3 +7613,33 @@ it.each([false, true])("keeps VAD-discovered timeout recovery until it can rende
   view.unmount();
   await controller.endConversation();
 });
+
+it.each([false, true])("completes a queued language change after deadline expiry, VAD first=%s", async vadFirst => {
+  vi.useFakeTimers(); vi.setSystemTime(1000);
+  const { controller, live, audio } = createController();
+  await controller.startWithLanguages({ A: "ru", B: "en" });
+  emitVoice(audio, true);
+  live.emit({ type: "session.input_transcript.delta", delta: "Где находится станция?", start_ms: 0, end_ms: 1000 });
+  const aId = controller.session.activeTurn!.id;
+  emitVoice(audio, false);
+  await vi.advanceTimersByTimeAsync(runtime.captionIdleMs + 1);
+  await controller.changeInterlocutorLanguage("de");
+  expect(controller.selectedInterlocutorLanguage).toBe("de");
+  expect(controller.session.participantB.language).toBe("en");
+  if (vadFirst) {
+    vi.setSystemTime(6001);
+    emitVoice(audio, true);
+    emitVoice(audio, false);
+  } else {
+    await vi.advanceTimersByTimeAsync(6001 - Date.now());
+  }
+  await vi.advanceTimersByTimeAsync(10_000);
+  expect(controller.session.recentTurns.find(turn => turn.id === aId)?.outputDeadline?.outcome).toBe("no_observed_output");
+  expect(controller.session.activeTurn).toBeUndefined();
+  expect(controller.session.pendingTurns ?? []).toEqual([]);
+  expect(controller.session.participantB.language).toBe("de");
+  expect(live.appendInstructions).toHaveBeenLastCalledWith(buildSteering({ A: "ru", B: "de" }), expect.anything());
+  expect(controller.inputReady).toBe(true);
+  expect(controller.session.state).toBe("listening");
+  await controller.endConversation();
+});
