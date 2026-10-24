@@ -98,6 +98,11 @@ async function installDeterministicMicrophone(page: Page): Promise<void> {
       }
       if (destination === null) {
         destination = context.createMediaStreamDestination();
+        // Keep the provider timeline advancing before and between speech fixtures.
+        const silence = context.createConstantSource();
+        silence.offset.value = 0;
+        silence.connect(destination);
+        silence.start();
       }
       return { context, destination };
     }
@@ -453,6 +458,41 @@ test.describe("real GPT-Live desktop conversation", () => {
   test.afterEach(async ({ page, baseURL }) => {
     test.setTimeout(60000);
     await cleanupRealSessions(page.request, baseURL!, attempts);
+  });
+
+  test("synthetic microphone sends silence before the first fixture, including while capture is disabled", async ({ page }) => {
+    await installDeterministicMicrophone(page);
+    await page.goto("/");
+    await page.locator(".setup-brand").click();
+    const sendsSilence = await page.evaluate(async () => {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      stream.getAudioTracks()[0]!.enabled = false;
+      const sender = new RTCPeerConnection();
+      const receiver = new RTCPeerConnection();
+      sender.onicecandidate = event => { if (event.candidate) void receiver.addIceCandidate(event.candidate); };
+      receiver.onicecandidate = event => { if (event.candidate) void sender.addIceCandidate(event.candidate); };
+      try {
+        sender.addTrack(stream.getAudioTracks()[0]!, stream);
+        await sender.setLocalDescription(await sender.createOffer());
+        await receiver.setRemoteDescription(sender.localDescription!);
+        await receiver.setLocalDescription(await receiver.createAnswer());
+        await sender.setRemoteDescription(receiver.localDescription!);
+        const deadline = performance.now() + 5000;
+        while (performance.now() < deadline) {
+          let packetsSent = 0;
+          (await sender.getStats()).forEach(report => {
+            if (report.type === "outbound-rtp" && report.kind === "audio") packetsSent += report.packetsSent;
+          });
+          if (packetsSent > 0) return true;
+          await new Promise(resolve => setTimeout(resolve, 50));
+        }
+        return false;
+      } finally {
+        sender.close(); receiver.close();
+        for (const track of stream.getTracks()) track.stop();
+      }
+    });
+    expect(sendsSilence).toBe(true);
   });
 
   test("translates Russian A to English B and English B to Russian A with remote audio", async ({
