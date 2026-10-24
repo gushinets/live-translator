@@ -1655,42 +1655,43 @@ export class SessionController {
   private async handleVoiceActivity(event: AudioActivityEvent): Promise<void> {
     if (this.backgroundPaused || this.turnClosing || this.audio.playbackInputBlocked ||
         !["listening", "outputting"].includes(this.currentSession.state)) return;
-    if (event.active) this.expireOutputDeadlines(Date.now());
-    this.sourceVoiceActive = event.active;
     if (event.active) {
-      if (this.playbackActive) this.conversationMetrics.recordVamFalseActive();
-      this.dismissPresentedRecovery();
-      this.clearCompletionTimer();
-      const active = this.currentSession.activeTurn;
-      if (!active || (active.speaker === undefined && active.originalText.length > 0 && active.sourceIdleAtMs !== undefined)) {
-        if (!this.speechInputReady) return;
-        this.speechInputReady = false;
-        this.sourceUpdateInProgress = true;
-        try {
+      this.sourceUpdateInProgress = true;
+      try {
+        this.expireOutputDeadlines(Date.now());
+        this.sourceVoiceActive = true;
+        if (this.playbackActive) this.conversationMetrics.recordVamFalseActive();
+        this.dismissPresentedRecovery();
+        this.clearCompletionTimer();
+        const active = this.currentSession.activeTurn;
+        if (!active || (active.speaker === undefined && active.originalText.length > 0 && active.sourceIdleAtMs !== undefined)) {
+          if (!this.speechInputReady) return;
+          this.speechInputReady = false;
           if (active) this.dispatch({ type: "SOURCE_HANDOFF", turnId: crypto.randomUUID(), speaker: undefined, nowMs: event.atMs });
           else this.dispatch({ type: "SOURCE_ACTIVE", turnId: crypto.randomUUID(), speaker: undefined, sideSource: "unresolved" });
           this.routingTurnIds.add(this.currentSession.activeTurn!.id);
           this.armMaxSourceTimer();
           this.projectAttribution();
-        } finally {
-          this.sourceUpdateInProgress = false;
+        } else {
+          if (active.sourceIdleAtMs !== undefined && this.resumedSourceIdle?.turnId !== active.id) {
+            const observed = active.sourceFragments.flatMap(part => {
+              const timestamp = part.endMs ?? part.startMs;
+              return timestamp === undefined ? [] : [timestamp];
+            });
+            this.resumedSourceIdle = { turnId: active.id, atMs: active.sourceIdleAtMs,
+              observedThroughMs: observed.length ? Math.max(...observed) : undefined };
+          }
+          this.dispatch({ type: "SOURCE_ACTIVE", turnId: active.id, speaker: active.speaker, sideSource: active.sideSource });
+          if (active.sourceIdleAtMs !== undefined) this.armMaxSourceTimer();
         }
-        this.notify();
-      } else {
-        if (active.sourceIdleAtMs !== undefined && this.resumedSourceIdle?.turnId !== active.id) {
-          const observed = active.sourceFragments.flatMap(part => {
-            const timestamp = part.endMs ?? part.startMs;
-            return timestamp === undefined ? [] : [timestamp];
-          });
-          this.resumedSourceIdle = { turnId: active.id, atMs: active.sourceIdleAtMs,
-            observedThroughMs: observed.length ? Math.max(...observed) : undefined };
-        }
-        this.dispatch({ type: "SOURCE_ACTIVE", turnId: active.id, speaker: active.speaker, sideSource: active.sideSource });
-        if (active.sourceIdleAtMs !== undefined) this.armMaxSourceTimer();
+      } finally {
+        this.sourceUpdateInProgress = false;
       }
+      this.notify();
       await this.considerTurnCompletion(Date.now());
       return;
     }
+    this.sourceVoiceActive = false;
     if (!this.currentSession.activeTurn) return;
     this.clearMaxSourceTimer();
     this.dispatch({ type: "SOURCE_IDLE" });

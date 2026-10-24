@@ -1,4 +1,5 @@
-import { createElement } from "react";
+import { createElement, Profiler } from "react";
+import { act, cleanup, render } from "@testing-library/react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { ConversationScreen } from "../screens/ConversationScreen";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -41,6 +42,7 @@ type FakeLiveErrorEvent = {
 };
 
 afterEach(() => {
+  cleanup();
   vi.useRealTimers();
   vi.restoreAllMocks();
   window.history.replaceState({}, "", "/");
@@ -7561,5 +7563,53 @@ it.each([false, true])("shows a new provider error after a language change, prio
   expect(controller.recoveryPrompt).toBe("conditional-repeat");
   expect(controller.recoveryPromptIsTurnFailure).toBe(false);
   expect(controller.recoveryPromptSide).toBeUndefined();
+  await controller.endConversation();
+});
+
+it.each([false, true])("keeps VAD-discovered timeout recovery until it can render, delayed timer=%s", async delayedTimer => {
+  vi.useFakeTimers(); vi.setSystemTime(1000);
+  const { controller, live, audio } = createController();
+  await controller.startWithLanguages({ A: "ru", B: "en" });
+  const committedHints: (string | null)[] = [];
+  const view = render(createElement(Profiler, {
+    id: "conversation",
+    onRender: () => committedHints.push(document.querySelector('[data-testid="participant-recovery-A"]')?.textContent ?? null),
+  }, createElement(ConversationScreen, { controller })));
+  await act(async () => {
+    emitVoice(audio, true);
+    live.emit({ type: "session.input_transcript.delta", delta: "Где находится станция?", start_ms: 2000, end_ms: 3000 });
+    emitVoice(audio, false);
+  });
+  const aId = controller.session.activeTurn!.id;
+  if (delayedTimer) vi.setSystemTime(6001);
+  else await act(async () => { await vi.advanceTimersByTimeAsync(5001); });
+  expect(committedHints.includes("Повторите")).toBe(!delayedTimer);
+
+  await act(async () => {
+    emitVoice(audio, true);
+    live.emit({ type: "session.input_transcript.delta", delta: "The station is nearby.", start_ms: 0, end_ms: 1000 });
+  });
+  expect(controller.session.recentTurns.find(turn => turn.id === aId)?.outputDeadline?.outcome).toBe("no_observed_output");
+  expect(controller.session.activeTurn?.speaker).toBe("B");
+  expect(view.queryByTestId("participant-recovery-A")).toBeNull();
+  expect(committedHints.includes("Повторите")).toBe(!delayedTimer);
+
+  await act(async () => {
+    live.emit({ type: "session.output_transcript.delta", delta: "Станция находится рядом.", start_ms: 500, end_ms: 1500 });
+    emitVoice(audio, false);
+    await vi.advanceTimersByTimeAsync(1500);
+  });
+  expect(controller.captionBlocks.find(block => block.text === "Станция находится рядом.")?.attribution).toBe("matched");
+  expect(controller.session.activeTurn).toBeUndefined();
+  expect(controller.session.pendingTurns).toEqual([]);
+  if (delayedTimer) {
+    expect(view.getByTestId("participant-recovery-A")).toHaveTextContent("Повторите");
+    expect(committedHints).toContain("Повторите");
+    expect(controller.recoveryPromptSide).toBe("A");
+  } else {
+    expect(view.queryByTestId("participant-recovery-A")).toBeNull();
+    expect(controller.recoveryPrompt).toBeUndefined();
+  }
+  view.unmount();
   await controller.endConversation();
 });
