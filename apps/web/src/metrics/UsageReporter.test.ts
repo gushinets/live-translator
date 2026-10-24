@@ -40,3 +40,26 @@ it("takes terminal product counters after teardown callbacks without extending t
   await r.idle();
   expect(out.enqueue.mock.calls.at(-1)![2].app).toMatchObject({ activeInterpreterMs: 10000, appMetricsFinalized: true, counters: { failedTurnCount: 1 } });
 });
+
+it("measures new counters from a fresh attempt baseline without changing legacy reports", async () => {
+  const out = { enqueue: vi.fn().mockResolvedValue(undefined), finishProducer: vi.fn(), noProvider: vi.fn() };
+  const old = new UsageReporter("old", "conversation", out, { now: () => 0, automatic: false, initial: ready });
+  old.observeUsage({ kind: "local_close_unconfirmed" }); await old.idle();
+  const legacy = structuredClone(out.enqueue.mock.calls[0]![2]);
+  const next = new UsageReporter("new", "conversation", out, { now: () => 0, automatic: false,
+    initial: { ...ready, counters: { noObservedOutputDeadlineCount: 3, attributionRevokedCount: 0 } } });
+  next.observeProduct({ ...ready, counters: { noObservedOutputDeadlineCount: 4 } });
+  next.observeUsage({ kind: "checkpoint", seconds: 15 }); await next.idle();
+  const intermediate = structuredClone(out.enqueue.mock.calls.at(-1)![2]);
+  next.observeProduct({ ...ready, counters: { noObservedOutputDeadlineCount: 4, attributionRevokedCount: 1 } });
+  next.observeUsage({ kind: "local_close_unconfirmed" }); await next.idle();
+  const final = out.enqueue.mock.calls.at(-1)![2];
+  expect(final.app.counters).toEqual({ noObservedOutputDeadlineCount: 1, attributionRevokedCount: 1 });
+  expect(final.app.activityReportSeq).toBe(2);
+  expect(intermediate.app.counters).toEqual({ noObservedOutputDeadlineCount: 1, attributionRevokedCount: 0 });
+  expect(out.enqueue.mock.calls[0]![2]).toEqual(legacy);
+  expect(legacy.app.counters).toEqual({});
+  old.observeProduct({ ...ready, counters: { noObservedOutputDeadlineCount: 0 } });
+  old.observeUsage({ kind: "provider_closed", seconds: 15 }); await old.idle();
+  expect(out.enqueue.mock.calls.at(-1)![2].app).toBeUndefined();
+});

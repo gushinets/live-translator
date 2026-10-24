@@ -2,7 +2,7 @@ import { act, cleanup, fireEvent, render, screen, within } from "@testing-librar
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { sessionReducer } from "../session/sessionReducer";
 import type { Side, Turn } from "../conversation/Turn";
-import type { DialogueBlock } from "../conversation/DialogueTranscript";
+import { DialogueTranscript, type DialogueBlock } from "../conversation/DialogueTranscript";
 import type { LifecycleSuspendReason, RecoveryPrompt } from "../session/SessionController";
 import {
   createInitialSession,
@@ -73,6 +73,51 @@ class FakeConversationController implements ConversationScreenController {
 describe("default independent captions", () => {
   afterEach(() => { window.history.replaceState({}, "", "/"); });
 
+  it("follows fresh unknown captions after language refinement removes a manually scrolled region", () => {
+    vi.spyOn(HTMLElement.prototype, "scrollHeight", "get").mockReturnValue(1000);
+    vi.spyOn(HTMLElement.prototype, "clientHeight", "get").mockReturnValue(200);
+    try {
+      const languages = { A: "ru", B: "en" };
+      const controller = new FakeConversationController(session({
+        participantA: { ...participant("A"), language: languages.A },
+        participantB: { ...participant("B"), language: languages.B },
+      }));
+      const transcript = new DialogueTranscript();
+      const outputs = [{ id: "first", fragments: [{ id: "digits", text: "1234567890 ".repeat(25), receivedAtMs: 1000 }] }];
+      const publish = () => {
+        transcript.setOutputs(outputs, languages);
+        controller.captionBlocks = transcript.blocks;
+        controller.notify();
+      };
+      publish();
+      render(<ConversationScreen controller={controller} />);
+      const earlier = document.querySelector<HTMLDivElement>(".unattributed-output")!;
+      expect(earlier.scrollTop).toBe(1000);
+      earlier.scrollTop = 120;
+      fireEvent.scroll(earlier);
+      act(() => {
+        outputs[0]!.fragments.push({ id: "more-digits", text: "2468 ", receivedAtMs: 1050 });
+        publish();
+      });
+      expect(earlier.scrollTop).toBe(120);
+      act(() => {
+        outputs[0]!.fragments.push({ id: "language", text: "These are the item numbers for your order.", receivedAtMs: 1100 });
+        publish();
+      });
+      expect(document.querySelector(".unattributed-output")).toBeNull();
+      expect(screen.getByTestId("participant-pane-B")).toHaveTextContent("These are the item numbers for your order.");
+      act(() => {
+        outputs.push({ id: "next", fragments: [{ id: "new-digits", text: "9876543210 ".repeat(25), receivedAtMs: 2001 }] });
+        publish();
+      });
+      const next = document.querySelector<HTMLDivElement>(".unattributed-output")!;
+      expect(next).not.toBe(earlier);
+      expect(next.scrollTop).toBe(1000);
+    } finally {
+      vi.restoreAllMocks();
+    }
+  });
+
   it("keeps native caption anchoring when resize arrives before its scroll notification", () => {
     const resizeCallbacks: (() => void)[] = [];
     vi.stubGlobal("ResizeObserver", class {
@@ -117,8 +162,6 @@ describe("default independent captions", () => {
       participantB: { ...participant("B"), language: "en" },
       activeTurn: turn({ id: "service", speaker: "A", originalText: "Legacy text" }),
     }));
-    controller.recoveryPrompt = "repeat";
-    controller.recoveryPromptIsTurnFailure = true;
     controller.captionBlocks = [
       { id: "1", kind: "input", side: "A", language: "ru", text: "Кто вы?", receivedAtMs: 1 },
       { id: "2", kind: "output", side: "B", language: "en", text: "Who are you?", receivedAtMs: 2 },
@@ -132,7 +175,7 @@ describe("default independent captions", () => {
     expect([...b.querySelectorAll("li")].map(row => row.textContent)).toEqual(["Him: Who are you?", "Me: I'm a courier."]);
     expect(a).not.toHaveTextContent("OK");
     expect(b).not.toHaveTextContent("OK");
-    expect(screen.queryByText("OK")).not.toBeInTheDocument();
+    expect(screen.getAllByText("OK")).toHaveLength(1);
     expect(screen.queryByText(/Текст без определённого языка/)).not.toBeInTheDocument();
     expect(screen.queryByText("Legacy text")).not.toBeInTheDocument();
     expect(screen.queryByText("Повторите")).not.toBeInTheDocument();
@@ -147,14 +190,14 @@ describe("default independent captions", () => {
     expect(screen.getByText("Повторите")).toBeVisible();
   });
 
-  it.each(["/", "/?captions=blocks", "/?captions=legacy"])("hides uncertain text until the full phrase resolves at %s", url => {
+  it.each(["/", "/?captions=blocks", "/?captions=legacy"])("preserves uncertain output once until the full phrase resolves at %s", url => {
     window.history.replaceState({}, "", url);
     const controller = new FakeConversationController(session({
       participantB: { ...participant("B"), language: "en" },
     }));
     controller.captionBlocks = [{ id: "pending", kind: "output", text: "Um", receivedAtMs: 1 }];
     const view = render(<ConversationScreen controller={controller} />);
-    expect(screen.queryByText("Um")).not.toBeInTheDocument();
+    expect(screen.getAllByText("Um")).toHaveLength(1);
     expect(document.querySelectorAll(".participant-pane li")).toHaveLength(0);
     expect(screen.queryByText(/Текст без определённого языка/)).not.toBeInTheDocument();
     controller.captionBlocks = [{ id: "pending", kind: "output", side: "B", language: "en", text: "Um, I have a package for you.", receivedAtMs: 1 }];
@@ -653,4 +696,56 @@ describe("conversation controls", () => {
     expect(screen.queryByRole("button", { name: "Язык собеседника" })).not.toBeInTheDocument();
     expect(screen.getAllByText(/Hello/).length).toBeGreaterThan(0);
   });
+});
+
+
+it("shows an addressed no-output repeat hint only when input is ready", () => {
+  const controller = new FakeConversationController();
+  controller.recoveryPrompt = "repeat"; controller.recoveryPromptIsTurnFailure = true;
+  controller.inputReady = false;
+  const view = render(<ConversationScreen controller={controller} />);
+  expect(screen.queryByText("Повторите")).not.toBeInTheDocument();
+  controller.inputReady = true; view.rerender(<ConversationScreen controller={controller} />);
+  expect(screen.getByText("Повторите")).toBeVisible();
+});
+
+
+it("keeps an unowned Spanish translation readable without inventing an author", () => {
+  const controller = new FakeConversationController(session({
+    participantA: { ...participant("A"), language: "ru" },
+    participantB: { ...participant("B"), language: "es" },
+  }));
+  controller.captionBlocks = [{ id: "unowned", outputId: "output", kind: "output", side: "B", language: "es",
+    attribution: "unattributed", text: "La estación está cerca.", receivedAtMs: 1 }];
+  const view = render(<ConversationScreen controller={controller} />);
+  const text = screen.getByText("La estación está cerca.");
+  expect(text).toHaveAttribute("lang", "es");
+  expect(text.closest("li")?.querySelector(".turn-author")).toBeNull();
+  expect(screen.getAllByText("La estación está cerca.")).toHaveLength(1);
+  controller.captionBlocks = controller.captionBlocks.map(block => ({ ...block, attribution: "matched" }));
+  view.rerender(<ConversationScreen controller={controller} />);
+  expect(screen.getByText("La estación está cerca.").closest("li")?.querySelector(".turn-author")).not.toBeNull();
+});
+
+
+it.each([
+  ["ru", "Если перевод не прозвучал, повторите реплику"],
+  ["en", "If you did not hear a translation, please repeat"],
+  ["es", "Si no has oído la traducción, repite la frase"],
+  ["pt", "Se não ouviu a tradução, repita a frase"],
+  ["de", "Falls Sie keine Übersetzung gehört haben, wiederholen Sie den Satz"],
+  ["fr", "Si vous n’avez pas entendu la traduction, répétez la phrase"],
+  ["it", "Se non hai sentito la traduzione, ripeti la frase"],
+])("shows honest conditional recovery in %s only when input is ready", (language, text) => {
+  const controller = new FakeConversationController(session({
+    participantA: { ...participant("A"), language },
+    participantB: { ...participant("B"), language: language === "es" ? "en" : "es" },
+  }));
+  controller.recoveryPrompt = "conditional-repeat"; controller.recoveryPromptIsTurnFailure = true;
+  controller.inputReady = false;
+  const view = render(<ConversationScreen controller={controller} />);
+  expect(screen.queryByText(text)).not.toBeInTheDocument();
+  controller.inputReady = true; view.rerender(<ConversationScreen controller={controller} />);
+  expect(screen.getByText(text)).toBeVisible();
+  expect(screen.queryByText("Повторите", { exact: true })).not.toBeInTheDocument();
 });

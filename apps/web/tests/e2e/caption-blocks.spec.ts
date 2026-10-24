@@ -31,14 +31,18 @@ test("courier dialogue retains originals, translations and split names across ca
   const a = page.getByTestId("participant-pane-A"), b = page.getByTestId("participant-pane-B");
   await expect(a.locator("li")).toHaveText([
     "Я: Так, здравствуйте. Кто вы? Что вы хотите?",
-    "Он: Эм, сэр, привет. Я курьер. У меня посылка для господина Михаила Гушина.",
+    "Эм, сэр, привет. Я курьер. У меня посылка для господина Михаила Гушина.",
     "Я: Ага, как мне получить посылку?",
   ]);
   await expect(b.locator("li")).toHaveText([
     "Me: Um, sir, hi. I'm a delivery guy. I need to deliver a package for Mr. Mikhail Gushin.",
-    "Him: Well, hello. Who are you, what do you want?",
-    "Him: How do I get the package?",
+    "Well, hello. Who are you, what do you want?",
+    "How do I get the package?",
   ]);
+  await expect(a.locator(".turn-author")).toHaveText(["Я:", "Я:"]);
+  await expect(b.locator(".turn-author")).toHaveText(["Me:"]);
+  await expect(a.locator("li").nth(1).locator(".recent-turn-primary")).toHaveAttribute("lang", "ru");
+  await expect(b.locator("li").nth(1).locator(".recent-turn-primary")).toHaveAttribute("lang", "en");
   await expect(page.locator(".turn-waiting")).toHaveCount(0);
   await expect(page.getByText("Повторите", { exact: true })).toHaveCount(0);
   expect(await harness.lastGateBCommand()).toBe("unmute");
@@ -46,7 +50,7 @@ test("courier dialogue retains originals, translations and split names across ca
   await page.screenshot({ path: testInfo.outputPath("courier-caption-blocks.png") });
 });
 
-test("unknown text stays hidden until its complete phrase resolves", async ({ page }) => {
+test("unknown output remains visible and unassigned beside a later identified phrase", async ({ page }) => {
   const harness = await MockLiveHarness.attach(page);
   await page.addInitScript(() => {
     localStorage.setItem("live-translator-owner-language", "ru");
@@ -59,10 +63,18 @@ test("unknown text stays hidden until its complete phrase resolves", async ({ pa
   await harness.advance(900);
   await expect(page.locator(".participant-pane li")).toHaveCount(0);
   await expect(page.locator(".unassigned-captions")).toHaveCount(0);
-  await expect(page.getByText("OK", { exact: true })).toHaveCount(0);
+  await expect(page.locator(".unattributed-output li")).toHaveText("OK");
+  await expect(page.locator(".unattributed-output .turn-author")).toHaveCount(0);
+  await expect(page.getByText("Повторите", { exact: true })).toHaveCount(0);
   await harness.outputDelta(", I can check that for you.");
-  await expect(page.locator(".unassigned-captions")).toHaveCount(0);
-  await expect(page.getByTestId("participant-pane-B").locator("li")).toHaveText("Him: OK, I can check that for you.");
+  // The idle flush finalized the unknown group; later language evidence does not identify its owner.
+  await expect(page.locator(".unattributed-output li")).toHaveText("OK");
+  await expect(page.locator(".unattributed-output .turn-author")).toHaveCount(0);
+  await expect(page.getByText("OK", { exact: true })).toHaveCount(1);
+  await expect(page.getByTestId("participant-pane-B").locator("li")).toHaveText(", I can check that for you.");
+  await expect(page.getByTestId("participant-pane-B").locator(".turn-author")).toHaveCount(0);
+  await expect(page.getByTestId("participant-pane-B").locator(".recent-turn-primary")).toHaveAttribute("lang", "en");
+  await expect(page.getByText("Повторите", { exact: true })).toHaveCount(0);
   await expect(page.getByTestId("participant-pane-A").locator("li")).toHaveCount(0);
 });
 
@@ -87,9 +99,11 @@ test("numbers and embedded brands stay in the complete caption on its language p
   await harness.inputDelta("I also use OpenAI every day.");
   await harness.outputDelta("Я тоже использую OpenAI каждый день.");
   await expect(a.locator("li")).toHaveText([
-    "Я: 12, Я использую Google каждый день.", "Он: Я тоже использую OpenAI каждый день.",
+    "Я: 12, Я использую Google каждый день.", "Я тоже использую OpenAI каждый день.",
   ]);
   await expect(b.locator("li")).toHaveText("Me: I also use OpenAI every day.");
+  await expect(a.locator("li").last().locator(".turn-author")).toHaveCount(0);
+  await expect(a.locator("li").last().locator(".recent-turn-primary")).toHaveAttribute("lang", "ru");
   await page.screenshot({ path: testInfo.outputPath("caption-prefix-and-brands.png") });
 });
 
@@ -112,7 +126,9 @@ test("short resolved captions and sentence-final names survive subsequent packet
   await expect(a.locator("li")).toHaveText("Я: Да.");
   await expect(b.locator("li")).toHaveText("Me: 12 Please continue speaking.");
   await harness.outputDelta("Наш новый офис теперь находится в New York.");
-  await expect(a.locator("li").last()).toHaveText("Он: Наш новый офис теперь находится в New York.");
+  await expect(a.locator("li").last()).toHaveText("Наш новый офис теперь находится в New York.");
+  await expect(a.locator("li").last().locator(".turn-author")).toHaveCount(0);
+  await expect(a.locator("li").last().locator(".recent-turn-primary")).toHaveAttribute("lang", "ru");
   await expect(b.locator("li")).toHaveCount(1);
 });
 
@@ -160,7 +176,9 @@ test("Japanese prolonged marks retain complete originals and translations", asyn
   await expect(page.getByRole("button", { name: "Завершить", exact: true })).toBeVisible();
   await harness.inputDelta("コーヒー。");
   await harness.outputDelta("スーパーで待っています。");
-  await expect(page.getByTestId("participant-pane-B").locator("li")).toHaveText(["Me: コーヒー。", "Him: スーパーで待っています。"]);
+  await expect(page.getByTestId("participant-pane-B").locator("li")).toHaveText(["Me: コーヒー。", "スーパーで待っています。"]);
+  await expect(page.getByTestId("participant-pane-B").locator("li").last().locator(".turn-author")).toHaveCount(0);
+  await expect(page.getByTestId("participant-pane-B").locator("li").last().locator(".recent-turn-primary")).toHaveAttribute("lang", "ja");
 });
 
 for (const [language, text] of [["hi", "हाँ।"], ["ar", "نعم؟"], ["ur", "جی۔"]] as const) {
@@ -175,7 +193,9 @@ for (const [language, text] of [["hi", "हाँ।"], ["ar", "نعم؟"], ["ur
     await expect(page.getByRole("button", { name: "Завершить", exact: true })).toBeVisible();
     for (const character of text) await harness.inputDelta(character);
     await harness.outputDelta(text);
-    await expect(page.getByTestId("participant-pane-B").locator("li")).toHaveText(["Me: " + text, "Him: " + text]);
+    await expect(page.getByTestId("participant-pane-B").locator("li")).toHaveText(["Me: " + text, text]);
+    await expect(page.getByTestId("participant-pane-B").locator("li").last().locator(".turn-author")).toHaveCount(0);
+    await expect(page.getByTestId("participant-pane-B").locator("li").last().locator(".recent-turn-primary")).toHaveAttribute("lang", language);
     await expect(page.getByTestId("participant-pane-A").locator("li")).toHaveCount(0);
   });
 }
@@ -199,8 +219,10 @@ test("same-script replies retain quoted captions and pending translation status"
   await expect(page.getByTestId("participant-status-B")).toHaveText("Traduciendo");
   await expect(page.getByTestId("participant-status-A")).toHaveText("Please wait");
   await expect(page.getByTestId("participant-pane-B").locator("li")).toHaveText([
-    "Yo: La estación está cerca del supermercado.", "Él: Sí.",
+    "Yo: La estación está cerca del supermercado.", "Sí.",
   ]);
+  await expect(page.getByTestId("participant-pane-B").locator("li").last().locator(".turn-author")).toHaveCount(0);
+  await expect(page.getByTestId("participant-pane-B").locator("li").last().locator(".recent-turn-primary")).toHaveAttribute("lang", "es");
   await harness.advance(1000);
   await expect(page.getByTestId("participant-status-B")).not.toHaveText("Traduciendo");
 });
@@ -226,7 +248,9 @@ test("adjacent quotes and buffered ambiguous replies stay in their own caption b
   await harness.advance(1);
   await harness.inputDelta("No.");
   await harness.inputDelta(" Sí.");
-  await expect(b.locator("li")).toHaveText(['Yo: "La estación está cerca del supermercado."', "Él: Sí.", "Yo: Sí."]);
+  await expect(b.locator("li")).toHaveText(['Yo: "La estación está cerca del supermercado."', "Sí.", "Yo: Sí."]);
+  await expect(b.locator("li").nth(1).locator(".turn-author")).toHaveCount(0);
+  await expect(b.locator("li").nth(1).locator(".recent-turn-primary")).toHaveAttribute("lang", "es");
   await expect(page.locator(".participant-pane li")).toHaveCount(4);
 });
 
@@ -250,4 +274,58 @@ test("stopped playback with retained translated text does not keep an output ind
   await expect(status).not.toHaveText("Escucha la traducción");
   await expect(status).not.toHaveText("Traduciendo");
   await expect(page.getByTestId("participant-pane-B").locator("li")).toHaveText("Él: Sí.");
+  await expect(page.getByTestId("participant-pane-B").locator(".turn-author")).toHaveText("Él:");
+  await expect(page.getByTestId("participant-pane-B").locator(".recent-turn-primary")).toHaveAttribute("lang", "es");
 });
+
+
+test("unknown-language captions follow new output and preserve intentional manual reading", async ({ page }) => {
+  const harness = await MockLiveHarness.attach(page);
+  await harness.startListeningConversation();
+  for (let index = 0; index < 14; index++) {
+    await harness.outputDelta("OK.");
+    await harness.advance(900);
+  }
+  const scroll = page.locator(".unattributed-output");
+  await expect(scroll.locator("li")).toHaveCount(14);
+  await expect.poll(() => scroll.evaluate(el => el.scrollHeight > el.clientHeight)).toBe(true);
+  await expect.poll(() => scroll.evaluate(el => el.scrollHeight - el.scrollTop - el.clientHeight)).toBeLessThan(2);
+  await expect(scroll.locator("li").last()).toBeInViewport();
+  await scroll.evaluate(el => { el.scrollTop = 0; el.dispatchEvent(new Event("scroll")); });
+  await harness.outputDelta("OK!"); await harness.advance(900);
+  await expect(scroll.locator("li")).toHaveCount(15);
+  expect(await scroll.evaluate(el => el.scrollTop)).toBe(0);
+  await scroll.evaluate(el => { el.scrollTop = el.scrollHeight; el.dispatchEvent(new Event("scroll")); });
+  await harness.outputDelta("OK?"); await harness.advance(900);
+  await expect(scroll.locator("li")).toHaveCount(16);
+  await expect(scroll.locator("li").last()).toHaveText("OK?");
+  await expect(scroll.locator(".turn-author")).toHaveCount(0);
+  await expect(scroll.locator("li").last()).toBeInViewport();
+});
+
+for (const ambiguous of [false, true]) {
+  test(`B's timed-out speech gets B-facing Spanish recovery, ambiguous=${ambiguous}`, async ({ page }) => {
+    const harness = await MockLiveHarness.attach(page);
+    await page.addInitScript(() => {
+      localStorage.setItem("live-translator-owner-language", "ru");
+      localStorage.setItem("live-translator-interlocutor-language", "es");
+    });
+    await page.goto("/");
+    await page.getByRole("button", { name: "Начать перевод", exact: true }).click();
+    await expect(page.getByRole("button", { name: "Завершить", exact: true })).toBeVisible();
+    await harness.sourceActive();
+    await harness.inputDelta("¿Dónde está la estación de tren?");
+    await harness.sourceQuiet();
+    if (ambiguous) { await harness.playbackActive(); await harness.playbackIdle(); }
+    await harness.advance(6000);
+    const b = page.getByTestId("participant-pane-B");
+    const prompt = b.getByTestId("participant-recovery-B");
+    await expect(b.getByRole("status")).toContainText(ambiguous ? "Si no has oído la traducción, repite la frase" : "Repite");
+    await expect(prompt).toHaveText(ambiguous ? "Si no has oído la traducción, repite la frase" : "Repite");
+    await expect(prompt).toHaveAttribute("lang", "es");
+    await expect(prompt).toBeInViewport();
+    expect(await b.evaluate(el => new DOMMatrix(getComputedStyle(el).transform).a)).toBeCloseTo(-1);
+    await expect(page.getByTestId("participant-pane-A").getByText("Повторите", { exact: true })).toHaveCount(0);
+    await expect(page.locator(".conversation-center").getByText(/Повторите|Если перевод/)).toHaveCount(0);
+  });
+}

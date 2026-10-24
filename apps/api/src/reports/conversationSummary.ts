@@ -1,5 +1,5 @@
 import type { SessionRow } from "../accounting/types.js";
-import { counterNames } from "../accounting/mergeUsage.js";
+import { attributionCounterNames, counterNames } from "../accounting/mergeUsage.js";
 const sum = (values: number[]) => values.reduce((total, value) => total + value, 0);
 const counts = (values: (string | null)[]) => {
   const result: Record<string, number> = Object.create(null) as Record<string, number>;
@@ -33,8 +33,22 @@ export function conversationSummary(rows: SessionRow[]) {
   const metrics: Record<string, number> = {};
   for (const row of rows) {
     const data = row.metrics_json ? JSON.parse(row.metrics_json) as Record<string, unknown> : {};
-    for (const name of counterNames) if (typeof data[name] === "number" && Number.isFinite(data[name])) metrics[name] = (metrics[name] ?? 0) + data[name];
+    for (const name of counterNames.filter(name => !(attributionCounterNames as readonly string[]).includes(name))) if (typeof data[name] === "number" && Number.isFinite(data[name])) metrics[name] = (metrics[name] ?? 0) + data[name];
   }
+  const attributionMetrics = Object.fromEntries(attributionCounterNames.map(name => {
+    const measured = dispatched.flatMap(row => {
+      const data = row.metrics_json ? JSON.parse(row.metrics_json) as Record<string, unknown> : {};
+      const value = data[name];
+      return typeof value === "number" && Number.isSafeInteger(value) && value >= 0 ? [{ row, value }] : [];
+    });
+    const observedSubtotal = measured.length ? sum(measured.map(item => item.value)) : null;
+    const finalizedMeasuredAttempts = measured.filter(item => item.row.app_metrics_finalized === 1).length;
+    const complete = dispatched.length > 0 && measured.length === dispatched.length &&
+      finalizedMeasuredAttempts === dispatched.length && dispatched.every(row => row.measurement_version === "active-time-v1");
+    return [name, { observedSubtotal, total: complete ? observedSubtotal : null, eligibleAttempts: dispatched.length,
+      measuredAttempts: measured.length, finalizedMeasuredAttempts,
+      coverage: !dispatched.length ? "not_applicable" : !measured.length ? "unavailable" : complete ? "complete" : "partial" }];
+  }));
   return {
     summaryVersion: 1, cohort: "dispatched_provider_attempts",
     attempts: { total: rows.length, dispatched: dispatched.length, notDispatched: rows.length - dispatched.length,
@@ -52,9 +66,10 @@ export function conversationSummary(rows: SessionRow[]) {
     ratios: { providerSecondsPerActiveMinute: ratio(durations.activeInterpreterMs, completeApp),
       providerSecondsPerAcceptedSpeechMinute: ratio(durations.acceptedSourceSpeechMs, completeSpeech),
       providerSecondsPerCompletedSpeechMinute: ratio(durations.completedSourceSpeechMs, completeSpeech) },
-    providerSecondsByPhase: null, phaseAllocation: "not_measured", metrics,
+    providerSecondsByPhase: null, phaseAllocation: "not_measured", metrics, attributionMetrics,
+    metricsSemantics: "Historical technical decisions; attributionMetrics use dispatched attempts. Current source attribution is not stored.",
     closeConfirmationSources: counts(dispatched.map(row => row.close_confirmation_source)),
     providerCloseReasons: counts(dispatched.map(row => row.provider_close_reason)), appEndReasons: counts(rows.map(row => row.app_end_reason)),
-    limitations: ["Browser-forwarded usage is not independently verified billing.", "Completed-source speech is a technical audio-delivery proxy, not semantic translation quality.", "Phase wall times are not provider phase costs. Estimates are never added to observations.", "Ratios require complete comparable provider/application coverage; monetary calibration is separate."],
+    limitations: ["Browser-forwarded usage is not independently verified billing.", "Completed-source speech and completed/failed/watchdog counts are historical technical decisions, not current source attribution or translation quality.", "Phase wall times are not provider phase costs. Estimates are never added to observations.", "Ratios require complete comparable provider/application coverage; monetary calibration is separate."],
   };
 }

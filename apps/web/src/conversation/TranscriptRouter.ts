@@ -21,6 +21,7 @@ export class TranscriptRouter {
   reset(): void { this.pending = []; this.currentSide = undefined; this.sourceText = ""; }
 
   get hasPending(): boolean { return this.pending.length > 0; }
+  get pendingFragments(): readonly TranscriptFragment[] { return this.pending; }
 
   push(fragment: TranscriptFragment, languages: ConversationLanguages, currentSide?: Side, sourceText = ""): RoutedTranscript[] {
     this.pending.push(fragment);

@@ -1,5 +1,6 @@
 /** Versioned metadata-only wire contract. No transcript, context, SDP or audio fields. */
-export const COUNTER_NAMES = ["earlyOutputCount", "completedTurnCount", "sourceTailClippingReports", "noOutputWatchdogCount", "textOnlyCompletionCount", "vamFalseActiveCount", "audioCompletedTurnCount", "textOnlyCompletedTurnCount", "failedTurnCount", "discardedTurnCount", "deliveryDegradedCount"] as const;
+export const ATTRIBUTION_COUNTER_NAMES = ["noObservedOutputDeadlineCount", "unresolvedSourceOutcomeCount", "lateOutputAfterDeadlineCount", "attributionRevokedCount"] as const;
+export const COUNTER_NAMES = [...ATTRIBUTION_COUNTER_NAMES, "earlyOutputCount", "completedTurnCount", "sourceTailClippingReports", "noOutputWatchdogCount", "textOnlyCompletionCount", "vamFalseActiveCount", "audioCompletedTurnCount", "textOnlyCompletedTurnCount", "failedTurnCount", "discardedTurnCount", "deliveryDegradedCount"] as const;
 export type MetricCounters = Partial<Record<typeof COUNTER_NAMES[number], number>>;
 export interface AppMetricsReport {
   activityReportSeq: number; measurementVersion: "active-time-v1";
@@ -35,7 +36,10 @@ export function coalesceUsage(old: UsageReport | undefined, update: UsageReport)
       if (validReason(close.reason)) result.providerClosed.reason ??= close.reason;
     }
     if (item.localCloseUnconfirmed) result.localCloseUnconfirmed = true;
-    if (item.app && (!result.app || item.app.activityReportSeq > result.app.activityReportSeq)) result.app = structuredClone(item.app);
+    if (item.app && (!result.app || item.app.activityReportSeq > result.app.activityReportSeq)) {
+      const counters = { ...result.app?.counters, ...item.app.counters };
+      result.app = { ...structuredClone(item.app), counters };
+    }
   }
   return result;
 }

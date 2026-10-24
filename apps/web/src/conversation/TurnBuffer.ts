@@ -12,6 +12,7 @@ const TERMINAL_STATUSES: ReadonlySet<Turn["status"]> = new Set([
   "completed",
   "discarded",
   "failed",
+  "unresolved",
 ]);
 
 /** Pure constructor for a stored transcript fragment, keeping optional timing. */

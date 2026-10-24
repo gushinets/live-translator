@@ -1,4 +1,5 @@
 import { earliestFragmentStart, orderTranscriptFragments, type TranscriptFragment } from "../conversation/TranscriptFragment";
+import type { AttributedOutput } from "../conversation/OutputAttribution";
 import type { Side, Turn } from "../conversation/Turn";
 import {
   appendOutputTextToTurn,
@@ -45,8 +46,10 @@ export type SessionAction =
   | { type: "AUDIO_INTERRUPTED"; nowMs: number; turnId: string }
   | { type: "PLAYBACK_ENDED"; nowMs: number; turnId?: string }
   | { type: "OUTPUT_IDLE" }
-  | { type: "TURN_CLOSED"; speaker: Side | undefined; turnId?: string }
+  | { type: "TURN_CLOSED"; speaker: Side | undefined; turnId?: string; recordOutcome?: boolean }
   | { type: "TURN_FAILED"; turnId?: string }
+  | { type: "OUTPUT_ATTRIBUTION"; outputs: readonly AttributedOutput[]; sourceIds: readonly string[] }
+  | { type: "OUTPUT_DEADLINE"; turnId: string; atMs: number; outcome: "no_observed_output" | "unresolved" }
   // Suspension flow (§11.3).
   | { type: "SUSPEND" }
   | { type: "RESUME" }
@@ -327,7 +330,7 @@ export function sessionReducer(session: TranslationSession, action: SessionActio
     case "SOURCE_TARGETED_FRAGMENT": {
       assertSourceAppendAllowed(session);
       return updateSessionTurn(session, action.turnId, turn => {
-        if (turn.status === "completed" || turn.status === "failed") {
+        if (["completed", "failed", "discarded", "unresolved"].includes(turn.status)) {
           const sourceFragments = orderTranscriptFragments([...turn.sourceFragments, action.fragment]);
           return { ...turn, sourceFragments, originalText: sourceFragments.map(fragment => fragment.text).join("") };
         }
@@ -392,6 +395,60 @@ export function sessionReducer(session: TranslationSession, action: SessionActio
       return handleTurnClosed(session, action);
     case "TURN_FAILED":
       return handleTurnFailed(session, action.turnId);
+    case "OUTPUT_DEADLINE": {
+      const target = findSessionTurn(session, action.turnId);
+      if (!target || target.outputDeadline) return session;
+      const closed = handleTurnFailed(session, action.turnId);
+      return updateSessionTurn(closed, action.turnId, turn => ({ ...turn,
+        status: action.outcome === "unresolved" ? "unresolved" : "failed",
+        outputDeadline: { atMs: action.atMs, outcome: action.outcome } }));
+    }
+    case "OUTPUT_ATTRIBUTION": {
+      const sourceIds = new Set(action.sourceIds);
+      const turns = new Map([...session.recentTurns, ...(session.pendingTurns ?? []),
+        ...(session.activeTurn ? [session.activeTurn] : [])].map(turn => [turn.id, turn]));
+      const sourceOutputs = new Map<string, AttributedOutput[]>();
+      for (const output of action.outputs) {
+        if (!output.sourceId) continue;
+        const outputs = sourceOutputs.get(output.sourceId) ?? [];
+        outputs.push(output);
+        sourceOutputs.set(output.sourceId, outputs);
+      }
+      const project = (turn: Turn): Turn => {
+        if (turn.translationOnly || !sourceIds.has(turn.id)) return turn;
+        const outputs = sourceOutputs.get(turn.id) ?? [];
+        const fragments = outputs.flatMap(output => output.fragments);
+        const ordered = orderTranscriptFragments(fragments);
+        const outputSide = outputs[0]?.side;
+        const speaker = turn.speaker ?? (outputSide === "A" ? "B" : outputSide === "B" ? "A" : undefined);
+        return { ...turn, speaker, sideSource: turn.speaker === undefined && speaker !== undefined ? "translation" : turn.sideSource,
+          status: ordered.length && turn.status === "streaming" ? "outputting" : turn.status, outputFragments: ordered, translatedText: ordered.length ? ordered.map(part => part.text).join("") : undefined,
+          firstOutputTextAtMs: ordered.length ? Math.min(...ordered.map(part => part.receivedAtMs)) : undefined,
+          outputTextAfterPlaybackEdge: turn.playbackEndAtMs !== undefined && ordered.some(part =>
+            part.receivedAtMs >= turn.playbackEndAtMs! && !turn.outputFragments?.some(known => known.id === part.id))
+            ? true : turn.outputTextAfterPlaybackEdge,
+          outputTextEndAtMs: ordered.length ? Math.max(...ordered.map(part => part.receivedAtMs)) : undefined };
+      };
+      const standalone = action.outputs.filter(output => !output.sourceId).map(output => {
+        const known = turns.get(output.id);
+        const fragments = orderTranscriptFragments(output.fragments);
+        return { ...(known ?? createTurn({ id: output.id, speaker: undefined, sideSource: "unresolved", nowMs: output.firstReceivedAtMs })),
+          translationOnly: true, status: known?.status ?? (output.technicalCompleted ? "completed" as const : "outputting" as const), sourceIdleAtMs: output.firstReceivedAtMs,
+          speaker: output.side === "A" ? "B" as const : output.side === "B" ? "A" as const : undefined,
+          outputFragments: fragments, translatedText: fragments.map(part => part.text).join(""),
+          firstOutputTextAtMs: output.firstReceivedAtMs, outputTextEndAtMs: Math.max(...fragments.map(part => part.receivedAtMs)) };
+      });
+      const outputIds = new Set(action.outputs.map(output => output.id));
+      const activeTurn = session.activeTurn ? project(session.activeTurn) : undefined;
+      const pendingTurns = [...(session.pendingTurns ?? []).filter(turn => !outputIds.has(turn.id)).map(project),
+        ...standalone.filter(turn => !["completed", "discarded"].includes(turn.status))];
+      const state = session.state === "outputting" && !activeTurn && !pendingTurns.length ? "listening"
+        : session.state === "listening" && action.outputs.some(output =>
+          !output.sourceId ? !turns.has(output.id) || turns.get(output.id)?.status !== "completed" :
+          ["streaming", "outputting"].includes(turns.get(output.sourceId)?.status ?? "")) ? "outputting" : session.state;
+      return { ...session, state, activeTurn, pendingTurns,
+        recentTurns: [...session.recentTurns.filter(turn => !outputIds.has(turn.id)).map(project), ...standalone.filter(turn => ["completed", "discarded"].includes(turn.status))] };
+    }
 
     case "SUSPEND":
       return handleSuspend(session);

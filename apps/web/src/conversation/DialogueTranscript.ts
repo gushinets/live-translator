@@ -12,6 +12,8 @@ export interface DialogueBlock {
   side?: Side;
   language?: string;
   receivedAtMs: number;
+  outputId?: string;
+  attribution?: "matched" | "unattributed";
 }
 interface Stream {
   id: number;
@@ -27,6 +29,8 @@ export class DialogueTranscript {
   private history: DialogueBlock[] = [];
   private streams: Partial<Record<DialogueBlock["kind"], Stream>> = {};
   private sequence = 0;
+  private outputs = new Map<string, { fragments: TranscriptFragment[]; languages: ConversationLanguages; sourceId?: string }>();
+  private outputRuns = new Map<string, { text: string; languages: ConversationLanguages; runs: Array<{ text: string; side?: Side }> }>();
   private readonly detector = eld.newInstance();
 
   push(kind: DialogueBlock["kind"], fragment: TranscriptFragment, languages: ConversationLanguages): void {
@@ -62,21 +66,62 @@ export class DialogueTranscript {
     this.publish();
   }
 
+  setOutputs(outputs: readonly { id: string; fragments: TranscriptFragment[]; sourceId?: string }[], languages: ConversationLanguages): void {
+    for (const { id, fragments, sourceId } of outputs) this.outputs.set(id, { fragments, languages, sourceId });
+    this.publish();
+  }
+
   /** A transport/language boundary seals context, but retains the visible history. */
   seal(): void {
     this.history = [...this.blocks];
     this.streams = {};
+    this.outputs.clear();
+    this.outputRuns.clear();
   }
 
   clear(): void {
     this.history = [];
     this.streams = {};
     this.blocks = [];
+    this.outputs.clear();
+    this.outputRuns.clear();
   }
 
   private publish(): void {
     const blocks = [...this.history];
     const cursors = Object.values(this.streams).map(stream => ({ blocks: stream.blocks, index: 0 }));
+    const outputs = [...this.outputs].map(([id, output]) => ({ id, ...output, fragments: [...output.fragments] }));
+    const phrases: typeof outputs = [];
+    for (const output of outputs) {
+      const previous = phrases.at(-1);
+      // Late language evidence may confirm a continuation without merging journal identities.
+      if (previous && output.sourceId !== undefined && previous.sourceId === output.sourceId &&
+          previous.languages.A === output.languages.A && previous.languages.B === output.languages.B &&
+          previous.fragments.at(-1)?.endMs !== undefined && previous.fragments.at(-1)!.endMs === output.fragments[0]?.startMs &&
+          !hasSentenceTerminator(previous.fragments.map(part => part.text).join(""))) {
+        previous.fragments.push(...output.fragments);
+      } else phrases.push(output);
+    }
+    const phraseIds = new Set(phrases.map(output => output.id));
+    for (const id of this.outputRuns.keys()) if (!phraseIds.has(id)) this.outputRuns.delete(id);
+    for (const { id, ...output } of phrases) {
+      const outputBlocks: DialogueBlock[] = [];
+      const fragments = orderTranscriptFragments(output.fragments);
+      const text = fragments.map(part => part.text).join("");
+      const cached = this.outputRuns.get(id);
+      const runs = cached?.text === text && cached.languages.A === output.languages.A && cached.languages.B === output.languages.B
+        ? cached.runs : this.languageRuns(text, output.languages);
+      this.outputRuns.set(id, { text, languages: { ...output.languages }, runs });
+      let offset = 0;
+      for (const run of runs) {
+        outputBlocks.push({ ...run, id: `output:${id}:${offset}`, outputId: id, kind: "output",
+          language: run.side ? output.languages[run.side] : undefined,
+          attribution: output.sourceId ? "matched" : "unattributed",
+          receivedAtMs: Math.min(...fragments.map(part => part.receivedAtMs)) });
+        offset += run.text.length;
+      }
+      cursors.push({ blocks: outputBlocks, index: 0 });
+    }
     // Merge stream heads by arrival, without undoing timestamp order inside a stream.
     while (true) {
       const available = cursors.filter(cursor => cursor.index < cursor.blocks.length);
