@@ -41,6 +41,7 @@ class FakeConversationController implements ConversationScreenController {
   inputReady = true;
   playbackInputState: ConversationScreenController["playbackInputState"] = "idle";
   recoveryPrompt: RecoveryPrompt | undefined;
+  recoveryPromptSide: Side | undefined;
   recoveryPromptIsTurnFailure = false;
   ownerError: string | undefined;
   suspendReason: LifecycleSuspendReason | undefined;
@@ -360,6 +361,24 @@ describe("ConversationScreen orientation and status", () => {
     render(<ConversationScreen controller={controller} />);
     expect(screen.queryByTestId("participant-guidance-A")).not.toBeInTheDocument();
     expect(screen.queryByTestId("participant-guidance-B")).not.toBeInTheDocument();
+  });
+
+  it("asks both RU/ES participants to pause and repeat only after capture reopens", () => {
+    const controller = new FakeConversationController(session({
+      state: "listening",
+      participantA: { ...participant("A"), language: "ru" },
+      participantB: { ...participant("B"), language: "es" },
+    }));
+    controller.playbackInputState = "waiting"; controller.inputReady = false;
+    controller.recoveryPrompt = "conditional-repeat"; controller.recoveryPromptSide = "A";
+    render(<ConversationScreen controller={controller} />);
+    expect(screen.getByTestId("participant-guidance-A")).toHaveTextContent("Микрофон ещё выключен");
+    expect(screen.getByTestId("participant-guidance-B")).toHaveTextContent("El micrófono sigue apagado");
+    act(() => { controller.playbackInputState = "repeat"; controller.inputReady = true; controller.notify(); });
+    expect(screen.getByTestId("participant-guidance-A")).toHaveTextContent("Микрофон включён. Повторите фразу целиком.");
+    expect(screen.getByTestId("participant-guidance-B")).toHaveTextContent("Micrófono encendido. Repite la frase completa.");
+    act(() => { controller.playbackInputState = "idle"; controller.notify(); });
+    expect(screen.getByTestId("participant-status-A")).toHaveTextContent("Можно говорить");
   });
 
   it("does not show YOUR TURN while the expected source input is not ready", () => {
@@ -710,21 +729,31 @@ it("shows an addressed no-output repeat hint only when input is ready", () => {
 });
 
 
-it("keeps an unowned Spanish translation readable without inventing an author", () => {
+it.each([
+  { A: "ru", B: "es", ownA: "Я", otherA: "Он", ownB: "Yo", otherB: "Él" },
+  { A: "es", B: "ru", ownA: "Yo", otherA: "Él", ownB: "Я", otherB: "Он" },
+])("labels every $A/$B caption from its pane's viewpoint regardless of source matching", ({ A, B, ownA, otherA, ownB, otherB }) => {
   const controller = new FakeConversationController(session({
-    participantA: { ...participant("A"), language: "ru" },
-    participantB: { ...participant("B"), language: "es" },
+    participantA: { ...participant("A"), language: A },
+    participantB: { ...participant("B"), language: B },
   }));
-  controller.captionBlocks = [{ id: "unowned", outputId: "output", kind: "output", side: "B", language: "es",
-    attribution: "unattributed", text: "La estación está cerca.", receivedAtMs: 1 }];
+  controller.captionBlocks = [
+    { id: "own-a", kind: "input", side: "A", language: A, text: "A original", receivedAtMs: 1 },
+    { id: "other-b", kind: "output", side: "B", language: B, text: "A translated", attribution: "unattributed", receivedAtMs: 2 },
+    { id: "own-b", kind: "input", side: "B", language: B, text: "B original", receivedAtMs: 3 },
+    { id: "other-a", kind: "output", side: "A", language: A, text: "B translated", attribution: "unattributed", receivedAtMs: 4 },
+  ];
   const view = render(<ConversationScreen controller={controller} />);
-  const text = screen.getByText("La estación está cerca.");
-  expect(text).toHaveAttribute("lang", "es");
-  expect(text.closest("li")?.querySelector(".turn-author")).toBeNull();
-  expect(screen.getAllByText("La estación está cerca.")).toHaveLength(1);
-  controller.captionBlocks = controller.captionBlocks.map(block => ({ ...block, attribution: "matched" }));
-  view.rerender(<ConversationScreen controller={controller} />);
-  expect(screen.getByText("La estación está cerca.").closest("li")?.querySelector(".turn-author")).not.toBeNull();
+  for (const attribution of ["unattributed", "matched", "unattributed"] as const) {
+    controller.captionBlocks = controller.captionBlocks.map(block => block.kind === "output" ? { ...block, attribution } : block);
+    view.rerender(<ConversationScreen controller={controller} />);
+    expect([...screen.getByTestId("participant-pane-A").querySelectorAll("li")].map(row => row.textContent))
+      .toEqual([`${ownA}: A original`, `${otherA}: B translated`]);
+    expect([...screen.getByTestId("participant-pane-B").querySelectorAll("li")].map(row => row.textContent))
+      .toEqual([`${otherB}: A translated`, `${ownB}: B original`]);
+    expect(screen.getByText("A translated")).toHaveAttribute("lang", B);
+    expect(screen.getByText("B translated")).toHaveAttribute("lang", A);
+  }
 });
 
 

@@ -1,0 +1,6443 @@
+[
+  {
+    "voice": [
+      {
+        "active": true,
+        "receivedAtMs": 1793264502183.9
+      },
+      {
+        "active": false,
+        "receivedAtMs": 1793264506182.7
+      },
+      {
+        "active": true,
+        "receivedAtMs": 1793264511579.8
+      },
+      {
+        "active": false,
+        "receivedAtMs": 1793264515682
+      },
+      {
+        "active": true,
+        "receivedAtMs": 1793264520833
+      },
+      {
+        "active": false,
+        "receivedAtMs": 1793264524781.2
+      },
+      {
+        "active": true,
+        "receivedAtMs": 1793264528433.2
+      },
+      {
+        "active": false,
+        "receivedAtMs": 1793264532881.2
+      },
+      {
+        "active": true,
+        "receivedAtMs": 1793264537031.5999
+      },
+      {
+        "active": false,
+        "receivedAtMs": 1793264541879.5
+      },
+      {
+        "active": true,
+        "receivedAtMs": 1793264548134.3
+      },
+      {
+        "active": false,
+        "receivedAtMs": 1793264551879.7
+      },
+      {
+        "active": true,
+        "receivedAtMs": 1793264556732.0999
+      },
+      {
+        "active": false,
+        "receivedAtMs": 1793264560280.8
+      },
+      {
+        "active": true,
+        "receivedAtMs": 1793264565437.5999
+      },
+      {
+        "active": false,
+        "receivedAtMs": 1793264569531.5
+      },
+      {
+        "active": true,
+        "receivedAtMs": 1793264573632.5999
+      },
+      {
+        "active": false,
+        "receivedAtMs": 1793264577331.5
+      },
+      {
+        "active": true,
+        "receivedAtMs": 1793264583089
+      },
+      {
+        "active": false,
+        "receivedAtMs": 1793264586179.2
+      },
+      {
+        "active": true,
+        "receivedAtMs": 1793264591234
+      },
+      {
+        "active": false,
+        "receivedAtMs": 1793264596881.7
+      },
+      {
+        "active": true,
+        "receivedAtMs": 1793264603795.3
+      },
+      {
+        "active": false,
+        "receivedAtMs": 1793264606931
+      }
+    ],
+    "name": "01-series B-AAAA-BBB-ABAB with negation numbers and WhatsApp / h12",
+    "evidence": "results/extended-browser-extended--4a225-gation-numbers-and-WhatsApp-chromium-real-live/evidence.json",
+    "generation": 1,
+    "input": [
+      {
+        "id": "input:0",
+        "text": " Buenas",
+        "startMs": 4200,
+        "endMs": 4400,
+        "receivedAtMs": 1793264503501.9
+      },
+      {
+        "id": "input:1",
+        "text": " tardes",
+        "startMs": 4800,
+        "endMs": 5000,
+        "receivedAtMs": 1793264504097.2
+      },
+      {
+        "id": "input:2",
+        "text": ". Tiene una",
+        "startMs": 5600,
+        "endMs": 5800,
+        "receivedAtMs": 1793264504908.5
+      },
+      {
+        "id": "input:3",
+        "text": " reserva a",
+        "startMs": 6200,
+        "endMs": 6400,
+        "receivedAtMs": 1793264505561.5999
+      },
+      {
+        "id": "input:4",
+        "text": " nombre de",
+        "startMs": 6600,
+        "endMs": 6800,
+        "receivedAtMs": 1793264505860.8
+      },
+      {
+        "id": "input:5",
+        "text": " Lucía",
+        "startMs": 7200,
+        "endMs": 7400,
+        "receivedAtMs": 1793264506430.8
+      },
+      {
+        "id": "input:6",
+        "text": " Да",
+        "startMs": 13600,
+        "endMs": 13800,
+        "receivedAtMs": 1793264512836.5999
+      },
+      {
+        "id": "input:7",
+        "text": ", бронь",
+        "startMs": 14600,
+        "endMs": 14800,
+        "receivedAtMs": 1793264513823.3
+      },
+      {
+        "id": "input:8",
+        "text": " на",
+        "startMs": 15000,
+        "endMs": 15200,
+        "receivedAtMs": 1793264514235.4
+      },
+      {
+        "id": "input:9",
+        "text": " фамилию",
+        "startMs": 15800,
+        "endMs": 16000,
+        "receivedAtMs": 1793264515032.9
+      },
+      {
+        "id": "input:10",
+        "text": " Смир",
+        "startMs": 16400,
+        "endMs": 16600,
+        "receivedAtMs": 1793264515641.7
+      },
+      {
+        "id": "input:11",
+        "text": "нов",
+        "startMs": 17000,
+        "endMs": 17200,
+        "receivedAtMs": 1793264516230.7
+      },
+      {
+        "id": "input:12",
+        "text": " Нас",
+        "startMs": 23200,
+        "endMs": 23400,
+        "receivedAtMs": 1793264522441.7
+      },
+      {
+        "id": "input:13",
+        "text": " будет",
+        "startMs": 23800,
+        "endMs": 24000,
+        "receivedAtMs": 1793264523041.0999
+      },
+      {
+        "id": "input:14",
+        "text": " трое",
+        "startMs": 24600,
+        "endMs": 24800,
+        "receivedAtMs": 1793264523843.8
+      },
+      {
+        "id": "input:15",
+        "text": ", а",
+        "startMs": 25200,
+        "endMs": 25400,
+        "receivedAtMs": 1793264524487
+      },
+      {
+        "id": "input:16",
+        "text": " не",
+        "startMs": 25400,
+        "endMs": 25600,
+        "receivedAtMs": 1793264524622.5999
+      },
+      {
+        "id": "input:17",
+        "text": " двое",
+        "startMs": 26000,
+        "endMs": 26200,
+        "receivedAtMs": 1793264525345.4
+      },
+      {
+        "id": "input:18",
+        "text": " Мы",
+        "startMs": 30400,
+        "endMs": 30600,
+        "receivedAtMs": 1793264529630.7
+      },
+      {
+        "id": "input:19",
+        "text": " приедем",
+        "startMs": 31200,
+        "endMs": 31400,
+        "receivedAtMs": 1793264530473.9
+      },
+      {
+        "id": "input:20",
+        "text": " в",
+        "startMs": 31400,
+        "endMs": 31600,
+        "receivedAtMs": 1793264530642.0999
+      },
+      {
+        "id": "input:21",
+        "text": " пятницу",
+        "startMs": 32000,
+        "endMs": 32200,
+        "receivedAtMs": 1793264531241.0999
+      },
+      {
+        "id": "input:22",
+        "text": ", ",
+        "startMs": 32400,
+        "endMs": 32600,
+        "receivedAtMs": 1793264531630.5999
+      },
+      {
+        "id": "input:23",
+        "text": "23",
+        "startMs": 33200,
+        "endMs": 33400,
+        "receivedAtMs": 1793264532429.8
+      },
+      {
+        "id": "input:24",
+        "text": " числа",
+        "startMs": 34000,
+        "endMs": 34200,
+        "receivedAtMs": 1793264533351.2
+      },
+      {
+        "id": "input:25",
+        "text": " Нужен",
+        "startMs": 39400,
+        "endMs": 39600,
+        "receivedAtMs": 1793264538671.2
+      },
+      {
+        "id": "input:26",
+        "text": " тихий",
+        "startMs": 40000,
+        "endMs": 40200,
+        "receivedAtMs": 1793264539252
+      },
+      {
+        "id": "input:27",
+        "text": " номер",
+        "startMs": 40600,
+        "endMs": 40800,
+        "receivedAtMs": 1793264539850.3
+      },
+      {
+        "id": "input:28",
+        "text": " с",
+        "startMs": 41000,
+        "endMs": 41200,
+        "receivedAtMs": 1793264540239.8
+      },
+      {
+        "id": "input:29",
+        "text": " двумя",
+        "startMs": 41400,
+        "endMs": 41600,
+        "receivedAtMs": 1793264540635.4
+      },
+      {
+        "id": "input:30",
+        "text": " отдельными",
+        "startMs": 42200,
+        "endMs": 42400,
+        "receivedAtMs": 1793264541447
+      },
+      {
+        "id": "input:31",
+        "text": " кроватями",
+        "startMs": 43000,
+        "endMs": 43200,
+        "receivedAtMs": 1793264542244.7
+      },
+      {
+        "id": "input:32",
+        "text": " La",
+        "startMs": 50000,
+        "endMs": 50200,
+        "receivedAtMs": 1793264549229.9
+      },
+      {
+        "id": "input:33",
+        "text": " habitación",
+        "startMs": 50600,
+        "endMs": 50800,
+        "receivedAtMs": 1793264549864.7
+      },
+      {
+        "id": "input:34",
+        "text": " estará",
+        "startMs": 51200,
+        "endMs": 51400,
+        "receivedAtMs": 1793264550440.4
+      },
+      {
+        "id": "input:35",
+        "text": " lista",
+        "startMs": 51600,
+        "endMs": 51800,
+        "receivedAtMs": 1793264550901.9
+      },
+      {
+        "id": "input:36",
+        "text": " a",
+        "startMs": 51800,
+        "endMs": 52000,
+        "receivedAtMs": 1793264551078.3
+      },
+      {
+        "id": "input:37",
+        "text": " las",
+        "startMs": 52000,
+        "endMs": 52200,
+        "receivedAtMs": 1793264551235.8
+      },
+      {
+        "id": "input:38",
+        "text": " tres de",
+        "startMs": 52400,
+        "endMs": 52600,
+        "receivedAtMs": 1793264551678.0999
+      },
+      {
+        "id": "input:39",
+        "text": " la",
+        "startMs": 52600,
+        "endMs": 52800,
+        "receivedAtMs": 1793264551832.5
+      },
+      {
+        "id": "input:40",
+        "text": " tarde",
+        "startMs": 53200,
+        "endMs": 53400,
+        "receivedAtMs": 1793264552560.7
+      },
+      {
+        "id": "input:41",
+        "text": " El",
+        "startMs": 58600,
+        "endMs": 58800,
+        "receivedAtMs": 1793264557843.7
+      },
+      {
+        "id": "input:42",
+        "text": " desayuno",
+        "startMs": 59200,
+        "endMs": 59400,
+        "receivedAtMs": 1793264558449.2
+      },
+      {
+        "id": "input:43",
+        "text": " cuesta",
+        "startMs": 59600,
+        "endMs": 59800,
+        "receivedAtMs": 1793264558840.2
+      },
+      {
+        "id": "input:44",
+        "text": " nueve",
+        "startMs": 60000,
+        "endMs": 60200,
+        "receivedAtMs": 1793264559410.9
+      },
+      {
+        "id": "input:45",
+        "text": " euros",
+        "startMs": 60600,
+        "endMs": 60800,
+        "receivedAtMs": 1793264559889.3
+      },
+      {
+        "id": "input:46",
+        "text": " por",
+        "startMs": 60800,
+        "endMs": 61000,
+        "receivedAtMs": 1793264560029.5999
+      },
+      {
+        "id": "input:47",
+        "text": " persona",
+        "startMs": 61400,
+        "endMs": 61600,
+        "receivedAtMs": 1793264560656.4
+      },
+      {
+        "id": "input:48",
+        "text": " No",
+        "startMs": 67600,
+        "endMs": 67800,
+        "receivedAtMs": 1793264566838.3
+      },
+      {
+        "id": "input:49",
+        "text": " se",
+        "startMs": 68000,
+        "endMs": 68200,
+        "receivedAtMs": 1793264567223.4
+      },
+      {
+        "id": "input:50",
+        "text": " permite",
+        "startMs": 68600,
+        "endMs": 68800,
+        "receivedAtMs": 1793264567826.3
+      },
+      {
+        "id": "input:51",
+        "text": " fumar",
+        "startMs": 69000,
+        "endMs": 69200,
+        "receivedAtMs": 1793264568230
+      },
+      {
+        "id": "input:52",
+        "text": " dentro",
+        "startMs": 69600,
+        "endMs": 69800,
+        "receivedAtMs": 1793264568893.2
+      },
+      {
+        "id": "input:53",
+        "text": " de la",
+        "startMs": 69800,
+        "endMs": 70000,
+        "receivedAtMs": 1793264569041.2
+      },
+      {
+        "id": "input:54",
+        "text": " habitación",
+        "startMs": 70600,
+        "endMs": 70800,
+        "receivedAtMs": 1793264569832.0999
+      },
+      {
+        "id": "input:55",
+        "text": " Можно",
+        "startMs": 76000,
+        "endMs": 76200,
+        "receivedAtMs": 1793264575231.8
+      },
+      {
+        "id": "input:56",
+        "text": " оставить",
+        "startMs": 76400,
+        "endMs": 76600,
+        "receivedAtMs": 1793264575630.8
+      },
+      {
+        "id": "input:57",
+        "text": " чемоданы",
+        "startMs": 77200,
+        "endMs": 77400,
+        "receivedAtMs": 1793264576444
+      },
+      {
+        "id": "input:58",
+        "text": " до",
+        "startMs": 77600,
+        "endMs": 77800,
+        "receivedAtMs": 1793264576843.7
+      },
+      {
+        "id": "input:59",
+        "text": " заселения",
+        "startMs": 78400,
+        "endMs": 78600,
+        "receivedAtMs": 1793264577627.2
+      },
+      {
+        "id": "input:60",
+        "text": " Sí",
+        "startMs": 85200,
+        "endMs": 85400,
+        "receivedAtMs": 1793264584440
+      },
+      {
+        "id": "input:61",
+        "text": ", puede",
+        "startMs": 86000,
+        "endMs": 86200,
+        "receivedAtMs": 1793264585245.8
+      },
+      {
+        "id": "input:62",
+        "text": " dejarlos",
+        "startMs": 86400,
+        "endMs": 86600,
+        "receivedAtMs": 1793264585794.2
+      },
+      {
+        "id": "input:63",
+        "text": " aquí",
+        "startMs": 86600,
+        "endMs": 86800,
+        "receivedAtMs": 1793264585853.9
+      },
+      {
+        "id": "input:64",
+        "text": " sin",
+        "startMs": 87000,
+        "endMs": 87200,
+        "receivedAtMs": 1793264586243.5999
+      },
+      {
+        "id": "input:65",
+        "text": " pagar",
+        "startMs": 87400,
+        "endMs": 87600,
+        "receivedAtMs": 1793264586770.0999
+      },
+      {
+        "id": "input:66",
+        "text": " Подтверж",
+        "startMs": 94000,
+        "endMs": 94200,
+        "receivedAtMs": 1793264593268.4
+      },
+      {
+        "id": "input:67",
+        "text": "дение",
+        "startMs": 94200,
+        "endMs": 94400,
+        "receivedAtMs": 1793264593440
+      },
+      {
+        "id": "input:68",
+        "text": " отправьте",
+        "startMs": 95000,
+        "endMs": 95200,
+        "receivedAtMs": 1793264594264.0999
+      },
+      {
+        "id": "input:69",
+        "text": " мне",
+        "startMs": 95200,
+        "endMs": 95400,
+        "receivedAtMs": 1793264594482
+      },
+      {
+        "id": "input:70",
+        "text": " в",
+        "startMs": 95400,
+        "endMs": 95600,
+        "receivedAtMs": 1793264594636
+      },
+      {
+        "id": "input:71",
+        "text": " WhatsApp",
+        "startMs": 96000,
+        "endMs": 96200,
+        "receivedAtMs": 1793264595231.5999
+      },
+      {
+        "id": "input:72",
+        "text": ", а",
+        "startMs": 96400,
+        "endMs": 96600,
+        "receivedAtMs": 1793264595678.5
+      },
+      {
+        "id": "input:73",
+        "text": " не",
+        "startMs": 96600,
+        "endMs": 96800,
+        "receivedAtMs": 1793264595864
+      },
+      {
+        "id": "input:74",
+        "text": " по",
+        "startMs": 96800,
+        "endMs": 97000,
+        "receivedAtMs": 1793264596039.2
+      },
+      {
+        "id": "input:75",
+        "text": " электронной",
+        "startMs": 97400,
+        "endMs": 97600,
+        "receivedAtMs": 1793264596643.2
+      },
+      {
+        "id": "input:76",
+        "text": " почте",
+        "startMs": 98000,
+        "endMs": 98200,
+        "receivedAtMs": 1793264597240.4
+      },
+      {
+        "id": "input:77",
+        "text": " Perfecto",
+        "startMs": 106200,
+        "endMs": 106400,
+        "receivedAtMs": 1793264605433.7
+      },
+      {
+        "id": "input:78",
+        "text": ". Les",
+        "startMs": 106800,
+        "endMs": 107000,
+        "receivedAtMs": 1793264606035.5
+      },
+      {
+        "id": "input:79",
+        "text": " esperamos",
+        "startMs": 107400,
+        "endMs": 107600,
+        "receivedAtMs": 1793264606680.9
+      },
+      {
+        "id": "input:80",
+        "text": " esta",
+        "startMs": 107600,
+        "endMs": 107800,
+        "receivedAtMs": 1793264606846.9
+      },
+      {
+        "id": "input:81",
+        "text": " tarde",
+        "startMs": 108000,
+        "endMs": 108200,
+        "receivedAtMs": 1793264607354.0999
+      }
+    ],
+    "outputs": [
+      {
+        "id": "754b7d67-f443-4da4-a742-d7d8584ea7e1",
+        "fragments": [
+          {
+            "id": "4c476f58-7c57-440c-82c8-c83a12622ed1",
+            "text": " Добрый",
+            "receivedAtMs": 1793264507159,
+            "startMs": 7800,
+            "endMs": 8000
+          },
+          {
+            "id": "0d9a8dc3-2b62-4b99-ac18-d99a3ae9e940",
+            "text": " вечер.",
+            "receivedAtMs": 1793264507343,
+            "startMs": 8000,
+            "endMs": 8200
+          }
+        ]
+      },
+      {
+        "id": "4b4e6c3f-34c7-4a6e-87ea-b8b397b37d85",
+        "fragments": [
+          {
+            "id": "f180c432-6a64-43df-808b-e8533cd281b5",
+            "text": " У",
+            "receivedAtMs": 1793264507746,
+            "startMs": 8400,
+            "endMs": 8600
+          },
+          {
+            "id": "df4b5a59-0b73-4f68-a605-24f73bd1f93b",
+            "text": " вас",
+            "receivedAtMs": 1793264507949,
+            "startMs": 8600,
+            "endMs": 8800
+          },
+          {
+            "id": "84f1341c-d30b-4bbe-a330-0c5e7cfcc8a7",
+            "text": " есть",
+            "receivedAtMs": 1793264508159,
+            "startMs": 8800,
+            "endMs": 9000
+          }
+        ]
+      },
+      {
+        "id": "312a0b09-3cb0-4289-aaa2-5750e8ea46a2",
+        "fragments": [
+          {
+            "id": "1b86e31e-f35d-4360-89a2-b9d0712a3e7e",
+            "text": " бронь",
+            "receivedAtMs": 1793264508330,
+            "startMs": 9000,
+            "endMs": 9200
+          },
+          {
+            "id": "6d31be33-6a5b-42de-a7e1-cb5356516f8c",
+            "text": " на имя",
+            "receivedAtMs": 1793264508773,
+            "startMs": 9400,
+            "endMs": 9600
+          }
+        ]
+      },
+      {
+        "id": "16093c9c-361c-4a2a-a097-aa3aa64245ea",
+        "fragments": [
+          {
+            "id": "abcd396c-b7df-4773-8cf8-cbee0e62a09e",
+            "text": " Люсия",
+            "receivedAtMs": 1793264508951,
+            "startMs": 9600,
+            "endMs": 9800
+          },
+          {
+            "id": "796e1b62-7a4f-4882-a230-6b9675b079df",
+            "text": "?",
+            "receivedAtMs": 1793264509146,
+            "startMs": 9800,
+            "endMs": 10000
+          }
+        ]
+      },
+      {
+        "id": "c96b1f72-66c7-42d8-88f2-e53a4976afbf",
+        "fragments": [
+          {
+            "id": "32b17054-f1b8-470b-a51e-c118c1b3595c",
+            "text": " Sí,",
+            "receivedAtMs": 1793264516722,
+            "startMs": 17400,
+            "endMs": 17600
+          },
+          {
+            "id": "190cb318-59ba-43f8-9a07-3d54688593bc",
+            "text": " la",
+            "receivedAtMs": 1793264517146,
+            "startMs": 17800,
+            "endMs": 18000
+          },
+          {
+            "id": "95a3cd6e-3ae2-4ac8-b46d-cf42b4d8565a",
+            "text": " reserva",
+            "receivedAtMs": 1793264517329,
+            "startMs": 18000,
+            "endMs": 18200
+          },
+          {
+            "id": "f04dd0c1-caae-4920-9f0c-8f5e95edf7f2",
+            "text": " está",
+            "receivedAtMs": 1793264517813,
+            "startMs": 18400,
+            "endMs": 18600
+          }
+        ]
+      },
+      {
+        "id": "3e4877a5-844f-4467-bf5c-ffcebe0a0600",
+        "fragments": [
+          {
+            "id": "989a2a4b-afff-449d-905a-a5dab3a2a01a",
+            "text": " a",
+            "receivedAtMs": 1793264517981,
+            "startMs": 18600,
+            "endMs": 18800
+          },
+          {
+            "id": "59ba54b1-3ecb-4fd9-af3d-f4c85d1d15e4",
+            "text": " nombre",
+            "receivedAtMs": 1793264518157,
+            "startMs": 18800,
+            "endMs": 19000
+          },
+          {
+            "id": "817b7400-22eb-4c40-b909-d0a84de95785",
+            "text": " de",
+            "receivedAtMs": 1793264518343,
+            "startMs": 19000,
+            "endMs": 19200
+          }
+        ]
+      },
+      {
+        "id": "9ae9b169-525b-4c12-bc73-9d2e26ca76a7",
+        "fragments": [
+          {
+            "id": "fdf0c648-3a4c-40f1-aa1f-7537cd13cf00",
+            "text": " Smir",
+            "receivedAtMs": 1793264518551,
+            "startMs": 19200,
+            "endMs": 19400
+          },
+          {
+            "id": "1345ec4d-1929-42ef-9a79-84693797afe0",
+            "text": "nov.",
+            "receivedAtMs": 1793264518725,
+            "startMs": 19400,
+            "endMs": 19600
+          }
+        ]
+      },
+      {
+        "id": "2459c37e-e9ec-416d-b5ad-61fd340e79fd",
+        "fragments": [
+          {
+            "id": "00d272f1-1b01-4291-9e82-1a2ab42d8e52",
+            "text": " Seremos",
+            "receivedAtMs": 1793264525548,
+            "startMs": 26200,
+            "endMs": 26400
+          },
+          {
+            "id": "7e498972-d4d0-4a0e-9e35-d1f0c7d381e4",
+            "text": " tres,",
+            "receivedAtMs": 1793264525814,
+            "startMs": 26400,
+            "endMs": 26600
+          }
+        ]
+      },
+      {
+        "id": "5478c14a-542d-4341-aeee-51571b0368e5",
+        "fragments": [
+          {
+            "id": "a899d301-ec11-4d1f-b81b-dbe118e190d5",
+            "text": " no",
+            "receivedAtMs": 1793264525948,
+            "startMs": 26600,
+            "endMs": 26800
+          },
+          {
+            "id": "3d3c025a-24c5-45cf-88f3-2ecd98492b40",
+            "text": " dos.",
+            "receivedAtMs": 1793264526136,
+            "startMs": 26800,
+            "endMs": 27000
+          }
+        ]
+      },
+      {
+        "id": "27948cbc-e4ad-412b-b31a-d3383c3ad977",
+        "fragments": [
+          {
+            "id": "a7a78c8b-7f10-4900-b151-ea2d763bf2a0",
+            "text": " Llegaremos",
+            "receivedAtMs": 1793264533543,
+            "startMs": 34200,
+            "endMs": 34400
+          },
+          {
+            "id": "a5139573-7457-4f56-accf-19cb0f55734f",
+            "text": " el viernes",
+            "receivedAtMs": 1793264534006,
+            "startMs": 34600,
+            "endMs": 34800
+          }
+        ]
+      },
+      {
+        "id": "599ddd43-3d11-4494-91d7-485d0e006e90",
+        "fragments": [
+          {
+            "id": "882f2070-2dce-4597-bb8f-2a1dae25c869",
+            "text": " ",
+            "receivedAtMs": 1793264534368,
+            "startMs": 35000,
+            "endMs": 35200
+          }
+        ]
+      },
+      {
+        "id": "655d54b3-afc8-43b4-b2fa-9b527c47ec14",
+        "fragments": [
+          {
+            "id": "bf7bc4ae-6253-4948-a289-1120ec6f860a",
+            "text": "23.",
+            "receivedAtMs": 1793264534585,
+            "startMs": 35200,
+            "endMs": 35400
+          }
+        ]
+      },
+      {
+        "id": "3ed99619-65e9-450e-ab7a-47bc0998e98e",
+        "fragments": [
+          {
+            "id": "0ba33e96-e756-4c49-afc4-8dddc399e02c",
+            "text": " Necesito",
+            "receivedAtMs": 1793264542744,
+            "startMs": 43400,
+            "endMs": 43600
+          },
+          {
+            "id": "eba37bda-0266-4516-86de-715445d31f9f",
+            "text": " una",
+            "receivedAtMs": 1793264543269,
+            "startMs": 43800,
+            "endMs": 44000
+          }
+        ]
+      },
+      {
+        "id": "e6332431-1eb4-4548-8278-b256bd594184",
+        "fragments": [
+          {
+            "id": "8de7593a-1f61-495a-83a7-1196ffc377be",
+            "text": " habitación",
+            "receivedAtMs": 1793264543383,
+            "startMs": 44000,
+            "endMs": 44200
+          },
+          {
+            "id": "85489fea-8a46-47f6-ae26-176be6d88077",
+            "text": " tranquila",
+            "receivedAtMs": 1793264543977,
+            "startMs": 44600,
+            "endMs": 44800
+          }
+        ]
+      },
+      {
+        "id": "4d947291-cbec-455d-b92d-2810947748f5",
+        "fragments": [
+          {
+            "id": "8b03f9a1-a94a-4e70-81d9-877d1be2255a",
+            "text": " con dos",
+            "receivedAtMs": 1793264544576,
+            "startMs": 45200,
+            "endMs": 45400
+          },
+          {
+            "id": "238d3992-a2c8-46db-a027-a56dbbe2b5c2",
+            "text": " camas",
+            "receivedAtMs": 1793264544745,
+            "startMs": 45400,
+            "endMs": 45600
+          },
+          {
+            "id": "2a780772-f4ce-47f7-a2e6-b4d030060eb7",
+            "text": " individuales.",
+            "receivedAtMs": 1793264545145,
+            "startMs": 45800,
+            "endMs": 46000
+          }
+        ]
+      },
+      {
+        "id": "c0c0a8ad-f763-45da-9c26-d0e63d4c9177",
+        "fragments": [
+          {
+            "id": "bece2581-b269-4c7f-ab12-26f4417fd289",
+            "text": " Комната",
+            "receivedAtMs": 1793264552747,
+            "startMs": 53400,
+            "endMs": 53600
+          },
+          {
+            "id": "991ce16f-2aca-4a00-9cd9-0042649cb1c8",
+            "text": " будет",
+            "receivedAtMs": 1793264552954,
+            "startMs": 53600,
+            "endMs": 53800
+          }
+        ]
+      },
+      {
+        "id": "2804b204-41f5-45ce-a335-eb78f0f3f16e",
+        "fragments": [
+          {
+            "id": "b8870748-7b46-44db-af62-a5b923e79fd8",
+            "text": " готова",
+            "receivedAtMs": 1793264553142,
+            "startMs": 53800,
+            "endMs": 54000
+          }
+        ]
+      },
+      {
+        "id": "f62e28f3-e040-41fb-a3b7-876cd9c255c6",
+        "fragments": [
+          {
+            "id": "8493863a-b4bf-4cab-b9bc-c43fbb04b7c6",
+            "text": " в три",
+            "receivedAtMs": 1793264553782,
+            "startMs": 54400,
+            "endMs": 54600
+          },
+          {
+            "id": "1d105c3e-7b3f-4ba0-bcab-c690cf871b38",
+            "text": " часа",
+            "receivedAtMs": 1793264553938,
+            "startMs": 54600,
+            "endMs": 54800
+          }
+        ]
+      },
+      {
+        "id": "f4a2e4f9-d6c6-47bb-9325-cb2b12a4477e",
+        "fragments": [
+          {
+            "id": "68a18ba5-b3bf-4194-964b-1e8c685d2f4c",
+            "text": " дня.",
+            "receivedAtMs": 1793264554347,
+            "startMs": 55000,
+            "endMs": 55200
+          }
+        ]
+      },
+      {
+        "id": "d2950743-a656-4805-95c1-8018fc66172c",
+        "fragments": [
+          {
+            "id": "3747bbf5-818a-4b5b-a406-501b41fcab14",
+            "text": " Завт",
+            "receivedAtMs": 1793264561156,
+            "startMs": 61800,
+            "endMs": 62000
+          },
+          {
+            "id": "29378105-41f3-4a22-816c-7bd3f2f8b376",
+            "text": "рак стоит",
+            "receivedAtMs": 1793264561322,
+            "startMs": 62000,
+            "endMs": 62200
+          }
+        ]
+      },
+      {
+        "id": "52195358-9d92-4622-b7d0-2c481ebe2438",
+        "fragments": [
+          {
+            "id": "a0491e10-b535-4129-8813-24e5ef042735",
+            "text": " девять",
+            "receivedAtMs": 1793264561941,
+            "startMs": 62600,
+            "endMs": 62800
+          },
+          {
+            "id": "baa4afb2-ab2f-4313-ba48-b9643c68f870",
+            "text": " евро",
+            "receivedAtMs": 1793264562334,
+            "startMs": 63000,
+            "endMs": 63200
+          }
+        ]
+      },
+      {
+        "id": "cd32613a-4488-48c2-b4b7-0efb6b56e790",
+        "fragments": [
+          {
+            "id": "67609b0d-2e49-412f-b487-2da971182ac0",
+            "text": " с человека",
+            "receivedAtMs": 1793264562744,
+            "startMs": 63400,
+            "endMs": 63600
+          },
+          {
+            "id": "2802bd39-2f85-42c1-8fd0-85ddbde23626",
+            "text": ".",
+            "receivedAtMs": 1793264562922,
+            "startMs": 63600,
+            "endMs": 63800
+          }
+        ]
+      },
+      {
+        "id": "802cc44b-c313-4470-b2be-ad3aea9ed784",
+        "fragments": [
+          {
+            "id": "cdeb0df4-73e3-4514-9a86-c516e3933608",
+            "text": " Курить",
+            "receivedAtMs": 1793264570344,
+            "startMs": 71000,
+            "endMs": 71200
+          },
+          {
+            "id": "db933877-c31e-4753-a290-b1a782c51d7e",
+            "text": " в",
+            "receivedAtMs": 1793264570757,
+            "startMs": 71200,
+            "endMs": 71400
+          }
+        ]
+      },
+      {
+        "id": "fd39e2f0-8c23-4ece-a682-e185c0fa822a",
+        "fragments": [
+          {
+            "id": "c4456e28-def8-4dd4-8be7-5dcee174c621",
+            "text": " номере",
+            "receivedAtMs": 1793264570858,
+            "startMs": 71400,
+            "endMs": 71600
+          },
+          {
+            "id": "478d3fa1-b7f9-4a9d-b606-57f1aea6538c",
+            "text": " нельзя.",
+            "receivedAtMs": 1793264571150,
+            "startMs": 71800,
+            "endMs": 72000
+          }
+        ]
+      },
+      {
+        "id": "981aae50-f469-4443-9eb4-64356e60be54",
+        "fragments": [
+          {
+            "id": "d599a557-115d-4ff1-92eb-97197a1ab080",
+            "text": " ¿Se",
+            "receivedAtMs": 1793264578349,
+            "startMs": 79000,
+            "endMs": 79200
+          },
+          {
+            "id": "bc2f9356-82df-439b-ae0d-221a3dfdbf6f",
+            "text": " pueden dejar",
+            "receivedAtMs": 1793264578538,
+            "startMs": 79200,
+            "endMs": 79400
+          }
+        ]
+      },
+      {
+        "id": "c59094a8-a4f7-47d3-9820-ba3e5c5c3644",
+        "fragments": [
+          {
+            "id": "490eff73-02e8-4cd5-bd81-82471b57a631",
+            "text": " las",
+            "receivedAtMs": 1793264578947,
+            "startMs": 79600,
+            "endMs": 79800
+          },
+          {
+            "id": "bc5907dc-610c-491e-86a1-8216927a21e2",
+            "text": " maletas",
+            "receivedAtMs": 1793264579129,
+            "startMs": 79800,
+            "endMs": 80000
+          },
+          {
+            "id": "85482889-6987-47a8-96f1-e86a7852dd36",
+            "text": " antes",
+            "receivedAtMs": 1793264579552,
+            "startMs": 80200,
+            "endMs": 80400
+          }
+        ]
+      },
+      {
+        "id": "c5446f16-dbfb-4a4d-b3b8-4feeb275fea4",
+        "fragments": [
+          {
+            "id": "f9c1eb32-7d02-4d6c-83ff-8af4c9d53ef0",
+            "text": " del check",
+            "receivedAtMs": 1793264579963,
+            "startMs": 80600,
+            "endMs": 80800
+          },
+          {
+            "id": "fbbfb703-b94c-47b6-8622-f0624f82e891",
+            "text": "-in?",
+            "receivedAtMs": 1793264580131,
+            "startMs": 80800,
+            "endMs": 81000
+          }
+        ]
+      },
+      {
+        "id": "d9e6f025-0621-4c4c-b514-57b28f7d5eec",
+        "fragments": [
+          {
+            "id": "2496a0db-ce5f-4e96-a330-4d3ef69b4ca0",
+            "text": " Да,",
+            "receivedAtMs": 1793264586775,
+            "startMs": 87400,
+            "endMs": 87600
+          },
+          {
+            "id": "168afdf2-337e-4540-8e80-c0f502c3ff15",
+            "text": " вы можете",
+            "receivedAtMs": 1793264586943,
+            "startMs": 87600,
+            "endMs": 87800
+          },
+          {
+            "id": "d0758e2a-ba47-494f-bebf-adfa40299eeb",
+            "text": " оставить",
+            "receivedAtMs": 1793264587538,
+            "startMs": 88200,
+            "endMs": 88400
+          }
+        ]
+      },
+      {
+        "id": "fb54016e-5f2e-4f35-b193-fd298839ef74",
+        "fragments": [
+          {
+            "id": "04a667b3-be12-4349-8e9b-50c19102064d",
+            "text": " их",
+            "receivedAtMs": 1793264587972,
+            "startMs": 88600,
+            "endMs": 88800
+          },
+          {
+            "id": "26d75740-ee74-4c88-a746-eeb060e3b04f",
+            "text": " здесь",
+            "receivedAtMs": 1793264588151,
+            "startMs": 88800,
+            "endMs": 89000
+          },
+          {
+            "id": "f18b0758-2c07-45cf-abc4-c68c6bcca852",
+            "text": " бесплатно.",
+            "receivedAtMs": 1793264588344,
+            "startMs": 89000,
+            "endMs": 89200
+          }
+        ]
+      },
+      {
+        "id": "b262d830-c30a-47cf-a043-bcc28c3a4c2b",
+        "fragments": [
+          {
+            "id": "a9086319-d4ee-4a1b-8974-aad079201436",
+            "text": " Enví",
+            "receivedAtMs": 1793264597752,
+            "startMs": 98400,
+            "endMs": 98600
+          },
+          {
+            "id": "69ad4997-4d30-4cd9-911e-27dd44b96689",
+            "text": "enme",
+            "receivedAtMs": 1793264597976,
+            "startMs": 98600,
+            "endMs": 98800
+          },
+          {
+            "id": "04fe11bb-9595-4556-85bd-8b61ad14a639",
+            "text": " la confirm",
+            "receivedAtMs": 1793264598169,
+            "startMs": 98800,
+            "endMs": 99000
+          }
+        ]
+      },
+      {
+        "id": "4cd6eebd-d3c1-4fe4-adb3-193179fa2962",
+        "fragments": [
+          {
+            "id": "8722ee30-9804-43b0-af51-66f23b8f76f6",
+            "text": "ación",
+            "receivedAtMs": 1793264598331,
+            "startMs": 99000,
+            "endMs": 99200
+          }
+        ]
+      },
+      {
+        "id": "a58cbac1-fd21-47fb-a73e-8c0cab29c8e8",
+        "fragments": [
+          {
+            "id": "bcc3404c-0ea5-4f51-b1d9-738aa5a3651c",
+            "text": " por",
+            "receivedAtMs": 1793264598954,
+            "startMs": 99600,
+            "endMs": 99800
+          },
+          {
+            "id": "fe71c4f0-74d4-41ec-ba70-a8185bac5a6e",
+            "text": " WhatsApp",
+            "receivedAtMs": 1793264599146,
+            "startMs": 99800,
+            "endMs": 100000
+          },
+          {
+            "id": "7db94325-bb15-42e0-9df0-df231be23be4",
+            "text": ",",
+            "receivedAtMs": 1793264599334,
+            "startMs": 100000,
+            "endMs": 100200
+          }
+        ]
+      },
+      {
+        "id": "51320ac3-43cb-4a31-ae41-707f774728b7",
+        "fragments": [
+          {
+            "id": "45709ab8-a650-46d2-9bd8-b6dfc95d8615",
+            "text": " no",
+            "receivedAtMs": 1793264599952,
+            "startMs": 100600,
+            "endMs": 100800
+          },
+          {
+            "id": "b5714e7a-d5b6-4e79-a3d7-e3fe8ab86918",
+            "text": " por",
+            "receivedAtMs": 1793264600174,
+            "startMs": 100800,
+            "endMs": 101000
+          },
+          {
+            "id": "efda5e20-d321-4b7f-9353-9e9f1b77d477",
+            "text": " correo",
+            "receivedAtMs": 1793264600325,
+            "startMs": 101000,
+            "endMs": 101200
+          },
+          {
+            "id": "a50da88d-01a4-4126-947c-6d8fc8f2cd9b",
+            "text": " electrónico.",
+            "receivedAtMs": 1793264600734,
+            "startMs": 101400,
+            "endMs": 101600
+          }
+        ]
+      },
+      {
+        "id": "a5094b97-69d7-4db2-b92b-ff2de785697b",
+        "fragments": [
+          {
+            "id": "18cc71f3-02d8-476b-b23c-6b7cce22d1b3",
+            "text": " Отлично",
+            "receivedAtMs": 1793264607557,
+            "startMs": 108200,
+            "endMs": 108400
+          },
+          {
+            "id": "190af9a1-717b-4fc8-a65d-15ca89a9e08d",
+            "text": ".",
+            "receivedAtMs": 1793264607748,
+            "startMs": 108400,
+            "endMs": 108600
+          }
+        ]
+      },
+      {
+        "id": "f88bcb6a-1c5f-4cd1-9b65-04bd43b9a690",
+        "fragments": [
+          {
+            "id": "5c145331-dcc1-432b-8c34-4c5032b2d40f",
+            "text": " Жд",
+            "receivedAtMs": 1793264607950,
+            "startMs": 108600,
+            "endMs": 108800
+          },
+          {
+            "id": "1c064538-3ecd-41fd-8dd6-b557bbd775e2",
+            "text": "ём",
+            "receivedAtMs": 1793264608150,
+            "startMs": 108800,
+            "endMs": 109000
+          },
+          {
+            "id": "78a16c77-708d-472a-9033-fdc0f25b6406",
+            "text": " вас",
+            "receivedAtMs": 1793264608350,
+            "startMs": 109000,
+            "endMs": 109200
+          },
+          {
+            "id": "42363a82-0dce-44c9-9e7a-0d2039018c53",
+            "text": " сегодня",
+            "receivedAtMs": 1793264608558,
+            "startMs": 109200,
+            "endMs": 109400
+          }
+        ]
+      },
+      {
+        "id": "d8c4192d-df0b-491c-b007-856a1fe5eadc",
+        "fragments": [
+          {
+            "id": "aec4401a-c38e-4beb-b004-14ffd60d51f8",
+            "text": " дн",
+            "receivedAtMs": 1793264608958,
+            "startMs": 109600,
+            "endMs": 109800
+          },
+          {
+            "id": "c584b7b4-0da7-4987-a61d-3d78c25744b8",
+            "text": "ём.",
+            "receivedAtMs": 1793264609140,
+            "startMs": 109800,
+            "endMs": 110000
+          }
+        ]
+      }
+    ],
+    "expected": {
+      "input": {
+        "A": " Да, бронь на фамилию Смирнов Нас будет трое, а не двое Мы приедем в пятницу, 23 числа Нужен тихий номер с двумя отдельными кроватями Можно оставить чемоданы до заселения Подтверждение отправьте мне в WhatsApp, а не по электронной почте",
+        "B": " Buenas tardes. Tiene una reserva a nombre de Lucía La habitación estará lista a las tres de la tarde El desayuno cuesta nueve euros por persona No se permite fumar dentro de la habitación Sí, puede dejarlos aquí sin pagar Perfecto. Les esperamos esta tarde"
+      },
+      "output": {
+        "A": " Добрый вечер. У вас есть бронь на имя Люсия? Комната будет готова в три часа дня. Завтрак стоит девять евро с человека. Курить в номере нельзя. Да, вы можете оставить их здесь бесплатно. Отлично. Ждём вас сегодня днём.",
+        "B": " Sí, la reserva está a nombre de Smirnov. Seremos tres, no dos. Llegaremos el viernes 23. Necesito una habitación tranquila con dos camas individuales. ¿Se pueden dejar las maletas antes del check-in? Envíenme la confirmación por WhatsApp, no por correo electrónico."
+      }
+    }
+  },
+  {
+    "voice": [
+      {
+        "active": true,
+        "receivedAtMs": 1793264619210.0999
+      },
+      {
+        "active": false,
+        "receivedAtMs": 1793264622160.9
+      },
+      {
+        "active": true,
+        "receivedAtMs": 1793264627109.5999
+      },
+      {
+        "active": false,
+        "receivedAtMs": 1793264628311
+      },
+      {
+        "active": true,
+        "receivedAtMs": 1793264632072.0999
+      },
+      {
+        "active": false,
+        "receivedAtMs": 1793264634259.7
+      },
+      {
+        "active": true,
+        "receivedAtMs": 1793264640411.9
+      },
+      {
+        "active": false,
+        "receivedAtMs": 1793264641409.7998
+      },
+      {
+        "active": true,
+        "receivedAtMs": 1793264646260.2
+      },
+      {
+        "active": false,
+        "receivedAtMs": 1793264647560.5999
+      },
+      {
+        "active": true,
+        "receivedAtMs": 1793264651310.4
+      },
+      {
+        "active": false,
+        "receivedAtMs": 1793264653210.5
+      },
+      {
+        "active": true,
+        "receivedAtMs": 1793264657610.7998
+      },
+      {
+        "active": false,
+        "receivedAtMs": 1793264658709.5999
+      },
+      {
+        "active": true,
+        "receivedAtMs": 1793264662810.2
+      },
+      {
+        "active": false,
+        "receivedAtMs": 1793264664410.0999
+      },
+      {
+        "active": true,
+        "receivedAtMs": 1793264668512
+      },
+      {
+        "active": false,
+        "receivedAtMs": 1793264669610.4
+      },
+      {
+        "active": true,
+        "receivedAtMs": 1793264673359.7998
+      },
+      {
+        "active": false,
+        "receivedAtMs": 1793264675359.4
+      },
+      {
+        "active": true,
+        "receivedAtMs": 1793264679460.2
+      },
+      {
+        "active": false,
+        "receivedAtMs": 1793264680410.5
+      },
+      {
+        "active": true,
+        "receivedAtMs": 1793264684259.9
+      },
+      {
+        "active": false,
+        "receivedAtMs": 1793264685359.9
+      },
+      {
+        "active": true,
+        "receivedAtMs": 1793264689310.5
+      },
+      {
+        "active": false,
+        "receivedAtMs": 1793264691659.9
+      },
+      {
+        "active": true,
+        "receivedAtMs": 1793264696310.5
+      },
+      {
+        "active": false,
+        "receivedAtMs": 1793264697460.4
+      },
+      {
+        "active": true,
+        "receivedAtMs": 1793264701159.7998
+      },
+      {
+        "active": false,
+        "receivedAtMs": 1793264703367.9
+      },
+      {
+        "active": true,
+        "receivedAtMs": 1793264707809.4
+      },
+      {
+        "active": false,
+        "receivedAtMs": 1793264709167.2998
+      }
+    ],
+    "name": "02-short contextual replies yes no three seven and thanks / thanks",
+    "evidence": "results/extended-browser-extended--8c463-s-no-three-seven-and-thanks-chromium-real-live/evidence.json",
+    "generation": 1,
+    "input": [
+      {
+        "id": "input:0",
+        "text": " У",
+        "startMs": 3800,
+        "endMs": 4000,
+        "receivedAtMs": 1793264620285.9
+      },
+      {
+        "id": "input:1",
+        "text": " вас",
+        "startMs": 4200,
+        "endMs": 4400,
+        "receivedAtMs": 1793264620692.5999
+      },
+      {
+        "id": "input:2",
+        "text": " есть",
+        "startMs": 4600,
+        "endMs": 4800,
+        "receivedAtMs": 1793264621120.2998
+      },
+      {
+        "id": "input:3",
+        "text": " вегет",
+        "startMs": 5400,
+        "endMs": 5600,
+        "receivedAtMs": 1793264621977.4
+      },
+      {
+        "id": "input:4",
+        "text": "арианские",
+        "startMs": 5600,
+        "endMs": 5800,
+        "receivedAtMs": 1793264622087.4
+      },
+      {
+        "id": "input:5",
+        "text": " блюда",
+        "startMs": 6000,
+        "endMs": 6200,
+        "receivedAtMs": 1793264622606.0999
+      },
+      {
+        "id": "input:6",
+        "text": " Sí",
+        "startMs": 12200,
+        "endMs": 12400,
+        "receivedAtMs": 1793264628810.4
+      },
+      {
+        "id": "input:7",
+        "text": " А",
+        "startMs": 16600,
+        "endMs": 16800,
+        "receivedAtMs": 1793264633356.2998
+      },
+      {
+        "id": "input:8",
+        "text": " без",
+        "startMs": 17000,
+        "endMs": 17200,
+        "receivedAtMs": 1793264633586.2
+      },
+      {
+        "id": "input:9",
+        "text": " молока",
+        "startMs": 17600,
+        "endMs": 17800,
+        "receivedAtMs": 1793264634180.2
+      },
+      {
+        "id": "input:10",
+        "text": " можно",
+        "startMs": 18200,
+        "endMs": 18400,
+        "receivedAtMs": 1793264634779
+      },
+      {
+        "id": "input:11",
+        "text": " No",
+        "startMs": 25200,
+        "endMs": 25400,
+        "receivedAtMs": 1793264641761.4
+      },
+      {
+        "id": "input:12",
+        "text": " Понятно",
+        "startMs": 31400,
+        "endMs": 31600,
+        "receivedAtMs": 1793264648215.5
+      },
+      {
+        "id": "input:13",
+        "text": " ¿Quiere",
+        "startMs": 36000,
+        "endMs": 36200,
+        "receivedAtMs": 1793264652627.0999
+      },
+      {
+        "id": "input:14",
+        "text": " agua",
+        "startMs": 36400,
+        "endMs": 36600,
+        "receivedAtMs": 1793264653023
+      },
+      {
+        "id": "input:15",
+        "text": " con",
+        "startMs": 36600,
+        "endMs": 36800,
+        "receivedAtMs": 1793264653176.4
+      },
+      {
+        "id": "input:16",
+        "text": " gas",
+        "startMs": 37000,
+        "endMs": 37200,
+        "receivedAtMs": 1793264653704.0999
+      },
+      {
+        "id": "input:17",
+        "text": " Нет",
+        "startMs": 42800,
+        "endMs": 43000,
+        "receivedAtMs": 1793264659376.4
+      },
+      {
+        "id": "input:18",
+        "text": " ¿Sin",
+        "startMs": 47600,
+        "endMs": 47800,
+        "receivedAtMs": 1793264664202.7
+      },
+      {
+        "id": "input:19",
+        "text": " gas",
+        "startMs": 48200,
+        "endMs": 48400,
+        "receivedAtMs": 1793264664823.9
+      },
+      {
+        "id": "input:20",
+        "text": " Да",
+        "startMs": 53400,
+        "endMs": 53600,
+        "receivedAtMs": 1793264669984.2
+      },
+      {
+        "id": "input:21",
+        "text": " Dos",
+        "startMs": 58400,
+        "endMs": 58600,
+        "receivedAtMs": 1793264674997
+      },
+      {
+        "id": "input:22",
+        "text": " vasos",
+        "startMs": 59200,
+        "endMs": 59400,
+        "receivedAtMs": 1793264675765.2998
+      },
+      {
+        "id": "input:23",
+        "text": " Три",
+        "startMs": 64200,
+        "endMs": 64400,
+        "receivedAtMs": 1793264680777.7
+      },
+      {
+        "id": "input:24",
+        "text": " Vale",
+        "startMs": 69200,
+        "endMs": 69400,
+        "receivedAtMs": 1793264685765
+      },
+      {
+        "id": "input:25",
+        "text": " Ст",
+        "startMs": 74200,
+        "endMs": 74400,
+        "receivedAtMs": 1793264690850.9
+      },
+      {
+        "id": "input:26",
+        "text": "олик",
+        "startMs": 74400,
+        "endMs": 74600,
+        "receivedAtMs": 1793264690980.2998
+      },
+      {
+        "id": "input:27",
+        "text": " номер",
+        "startMs": 75000,
+        "endMs": 75200,
+        "receivedAtMs": 1793264691622.2998
+      },
+      {
+        "id": "input:28",
+        "text": " семь",
+        "startMs": 75200,
+        "endMs": 75400,
+        "receivedAtMs": 1793264691769.7998
+      },
+      {
+        "id": "input:29",
+        "text": " ¿S",
+        "startMs": 81000,
+        "endMs": 81200,
+        "receivedAtMs": 1793264697635.9
+      },
+      {
+        "id": "input:30",
+        "text": "iete",
+        "startMs": 81200,
+        "endMs": 81400,
+        "receivedAtMs": 1793264697800.2998
+      },
+      {
+        "id": "input:31",
+        "text": " Да",
+        "startMs": 86200,
+        "endMs": 86400,
+        "receivedAtMs": 1793264702762.5999
+      },
+      {
+        "id": "input:32",
+        "text": ", семь",
+        "startMs": 87200,
+        "endMs": 87400,
+        "receivedAtMs": 1793264703797.4
+      },
+      {
+        "id": "input:33",
+        "text": " Gracias",
+        "startMs": 93000,
+        "endMs": 93200,
+        "receivedAtMs": 1793264709575.5999
+      }
+    ],
+    "outputs": [
+      {
+        "id": "bf0c3692-6f57-4952-8bc2-5f3c2f32c635",
+        "sourceId": "c6ac6e75-f68c-405c-a8e4-66676e724929",
+        "fragments": [
+          {
+            "id": "bf5cfb38-1f78-4e42-ae89-8742f414772b",
+            "text": "¿T",
+            "receivedAtMs": 1793264623730,
+            "startMs": 6800,
+            "endMs": 7000
+          },
+          {
+            "id": "80b65688-20b6-4d44-8e59-96806c137fa3",
+            "text": "ienen platos",
+            "receivedAtMs": 1793264623850,
+            "startMs": 7000,
+            "endMs": 7200
+          },
+          {
+            "id": "57671a35-25e6-4250-96e3-41eeb7524542",
+            "text": " vegetarianos",
+            "receivedAtMs": 1793264624159,
+            "startMs": 7400,
+            "endMs": 7600
+          },
+          {
+            "id": "79962842-2aed-4012-8a5e-21f468d08bfe",
+            "text": "?",
+            "receivedAtMs": 1793264624282,
+            "startMs": 7600,
+            "endMs": 7800
+          }
+        ]
+      },
+      {
+        "id": "04c3b16b-9069-4880-b82a-dbfefbadd419",
+        "fragments": [
+          {
+            "id": "bea60d8e-9a8f-46f1-8d3b-dc02178b5322",
+            "text": " Да.",
+            "receivedAtMs": 1793264629879,
+            "startMs": 13200,
+            "endMs": 13400
+          }
+        ]
+      },
+      {
+        "id": "9d399b43-3bfd-4a62-97b6-8f3043e386b1",
+        "fragments": [
+          {
+            "id": "a8d919d2-ffa2-4c34-9c0a-a4a5b3a6209d",
+            "text": "¿Y",
+            "receivedAtMs": 1793264635716,
+            "startMs": 19000,
+            "endMs": 19200
+          },
+          {
+            "id": "a259c76e-6890-4c96-b375-04f4ac629923",
+            "text": " podría ser",
+            "receivedAtMs": 1793264635835,
+            "startMs": 19200,
+            "endMs": 19400
+          }
+        ]
+      },
+      {
+        "id": "d630c893-dcba-4369-804f-b811ade12618",
+        "fragments": [
+          {
+            "id": "4274dabd-deea-488b-9bce-a5c0ecaa50d7",
+            "text": " sin",
+            "receivedAtMs": 1793264636390,
+            "startMs": 19600,
+            "endMs": 19800
+          }
+        ]
+      },
+      {
+        "id": "283d1451-f6db-432e-8391-8b3a533d4c1b",
+        "fragments": [
+          {
+            "id": "fd6027b9-b07d-4bd5-a9d3-454cfa8cd8eb",
+            "text": " leche?",
+            "receivedAtMs": 1793264637226,
+            "startMs": 19800,
+            "endMs": 20000
+          }
+        ]
+      },
+      {
+        "id": "6519ce39-9aed-4583-87be-5ca1ac045a35",
+        "fragments": [
+          {
+            "id": "76a11bcb-90bb-40e7-9e8e-c92815a0bdb1",
+            "text": " Нет.",
+            "receivedAtMs": 1793264643232,
+            "startMs": 26600,
+            "endMs": 26800
+          }
+        ]
+      },
+      {
+        "id": "e0141f94-bcbd-4755-8f87-5ea8fe4465ce",
+        "fragments": [
+          {
+            "id": "b87f0e31-3b85-4ee8-a322-7b4442cb7196",
+            "text": " Entiendo",
+            "receivedAtMs": 1793264648778,
+            "startMs": 32000,
+            "endMs": 32200
+          },
+          {
+            "id": "6aa1b22d-29b3-465f-b81b-e8dd820c8bad",
+            "text": ".",
+            "receivedAtMs": 1793264648905,
+            "startMs": 32200,
+            "endMs": 32400
+          }
+        ]
+      },
+      {
+        "id": "1524e6e6-2a14-4a66-b6ba-32f84f3b5ee7",
+        "fragments": [
+          {
+            "id": "27c96020-f0aa-4b4f-933d-f1071650bcfd",
+            "text": " Вы хотите",
+            "receivedAtMs": 1793264653868,
+            "startMs": 37200,
+            "endMs": 37400
+          },
+          {
+            "id": "0f60b5fd-218f-46db-a789-64f79f29de35",
+            "text": " газирован",
+            "receivedAtMs": 1793264654310,
+            "startMs": 37600,
+            "endMs": 37800
+          }
+        ]
+      },
+      {
+        "id": "e654c738-f53d-47a4-b0fc-a5ae2ef54005",
+        "fragments": [
+          {
+            "id": "d0c97494-2003-4d39-9e15-1ea778c9c28a",
+            "text": "ную",
+            "receivedAtMs": 1793264654478,
+            "startMs": 37800,
+            "endMs": 38000
+          }
+        ]
+      },
+      {
+        "id": "98c04f08-e681-4bde-b4ba-742fe98d2547",
+        "fragments": [
+          {
+            "id": "0dac26f5-2a53-409a-9769-3f9197abfdfc",
+            "text": " воду?",
+            "receivedAtMs": 1793264655085,
+            "startMs": 38400,
+            "endMs": 38600
+          }
+        ]
+      },
+      {
+        "id": "b922f532-d07b-423b-9dae-11478f7cb067",
+        "fragments": [
+          {
+            "id": "6e728c11-66d3-41bd-abc0-fac374b887a3",
+            "text": " No.",
+            "receivedAtMs": 1793264660460,
+            "startMs": 43800,
+            "endMs": 44000
+          }
+        ]
+      },
+      {
+        "id": "83e68def-8ca2-46fa-a24a-fcdb2bcb955b",
+        "fragments": [
+          {
+            "id": "b5d6a79a-c15c-4029-b411-632db97e3d49",
+            "text": " Без газа",
+            "receivedAtMs": 1793264665953,
+            "startMs": 49200,
+            "endMs": 49400
+          },
+          {
+            "id": "817640a4-0d0c-4e40-ad14-f6dbc2cb6ae3",
+            "text": "?",
+            "receivedAtMs": 1793264666121,
+            "startMs": 49400,
+            "endMs": 49600
+          }
+        ]
+      },
+      {
+        "id": "7f97003c-f65c-4493-bffd-8d7f091cd3ec",
+        "fragments": [
+          {
+            "id": "5db6bdfb-9bb5-4054-abaf-c06c0ae8891c",
+            "text": " Sí.",
+            "receivedAtMs": 1793264671095,
+            "startMs": 54400,
+            "endMs": 54600
+          }
+        ]
+      },
+      {
+        "id": "68758524-b5ba-4c8a-828d-41bb896c0f7a",
+        "fragments": [
+          {
+            "id": "c8dc8873-0aa2-4463-beb4-905b1f87f2a0",
+            "text": " Два",
+            "receivedAtMs": 1793264676491,
+            "startMs": 59800,
+            "endMs": 60000
+          },
+          {
+            "id": "3452706b-3042-424c-a0c8-9f401b4cf9fd",
+            "text": " стакана",
+            "receivedAtMs": 1793264676696,
+            "startMs": 60000,
+            "endMs": 60200
+          },
+          {
+            "id": "e6f33894-6656-4a24-8760-7abd04e3c4f1",
+            "text": "?",
+            "receivedAtMs": 1793264676887,
+            "startMs": 60200,
+            "endMs": 60400
+          }
+        ]
+      },
+      {
+        "id": "1aecc3b2-b4c2-46c7-a2d0-9d4d74dcc369",
+        "fragments": [
+          {
+            "id": "4ec2ac0a-f3bd-458f-8c6a-1a27073381d4",
+            "text": " Tres.",
+            "receivedAtMs": 1793264681837,
+            "startMs": 65000,
+            "endMs": 65200
+          }
+        ]
+      },
+      {
+        "id": "4594f786-8037-4d1b-bcf5-ad603ebc817e",
+        "fragments": [
+          {
+            "id": "90ac9ed1-b9de-49ef-9692-bf5cbfe1256d",
+            "text": " Хорошо",
+            "receivedAtMs": 1793264686702,
+            "startMs": 70000,
+            "endMs": 70200
+          },
+          {
+            "id": "58f6cdb8-b639-46b2-ba6c-2a9c126516d2",
+            "text": ".",
+            "receivedAtMs": 1793264686889,
+            "startMs": 70200,
+            "endMs": 70400
+          }
+        ]
+      },
+      {
+        "id": "a7669f71-2513-4f6b-bd7f-237a23141291",
+        "fragments": [
+          {
+            "id": "86be87b4-1dbd-43e8-99ca-bc9057c2dd09",
+            "text": " Mesa",
+            "receivedAtMs": 1793264693135,
+            "startMs": 76400,
+            "endMs": 76600
+          },
+          {
+            "id": "b6c5f835-d327-47fe-b975-2774eabd1d4c",
+            "text": " número",
+            "receivedAtMs": 1793264693248,
+            "startMs": 76600,
+            "endMs": 76800
+          },
+          {
+            "id": "3b4a942e-899c-4d71-bd9f-a6d5dcb1bd55",
+            "text": " siete.",
+            "receivedAtMs": 1793264693667,
+            "startMs": 77000,
+            "endMs": 77200
+          }
+        ]
+      },
+      {
+        "id": "ac7ba5a3-4c9a-4c1b-bc2e-44330e94da93",
+        "fragments": [
+          {
+            "id": "c028d324-80df-461c-8dcc-d3724eba559a",
+            "text": " Семь",
+            "receivedAtMs": 1793264698878,
+            "startMs": 82200,
+            "endMs": 82400
+          },
+          {
+            "id": "cbe72ff9-549a-4894-85bd-eecbf2fd765b",
+            "text": "?",
+            "receivedAtMs": 1793264699077,
+            "startMs": 82400,
+            "endMs": 82600
+          }
+        ]
+      },
+      {
+        "id": "c2382b7d-f4e5-4ec1-b562-2c7afde68490",
+        "fragments": [
+          {
+            "id": "d82c3acf-12c4-410d-9a74-d2b52f8bc086",
+            "text": " Sí,",
+            "receivedAtMs": 1793264704989,
+            "startMs": 88200,
+            "endMs": 88400
+          },
+          {
+            "id": "cb96ad67-2b70-4ace-9d76-f068451b9b2d",
+            "text": " siete.",
+            "receivedAtMs": 1793264705163,
+            "startMs": 88400,
+            "endMs": 88600
+          }
+        ]
+      },
+      {
+        "id": "5ab7b113-4bb5-42a9-ae8a-31a119cf4e27",
+        "fragments": [
+          {
+            "id": "3d76115c-21f9-47de-863c-680a0e800dd2",
+            "text": " Спасибо.",
+            "receivedAtMs": 1793264710316,
+            "startMs": 93600,
+            "endMs": 93800
+          }
+        ]
+      }
+    ],
+    "expected": {
+      "input": {
+        "A": " У вас есть вегетарианские блюда А без молока можно Понятно Нет Да Три Столик номер семь Да, семь",
+        "B": " Sí No ¿Quiere agua con gas ¿Sin gas Dos vasos Vale ¿Siete Gracias"
+      },
+      "output": {
+        "A": " Да. Нет. Вы хотите газированную воду? Без газа? Два стакана? Хорошо. Семь? Спасибо.",
+        "B": "¿Tienen platos vegetarianos?¿Y podría ser sin leche? Entiendo. No. Sí. Tres. Mesa número siete. Sí, siete."
+      }
+    }
+  },
+  {
+    "voice": [
+      {
+        "active": true,
+        "receivedAtMs": 1793264721067.7
+      },
+      {
+        "active": false,
+        "receivedAtMs": 1793264729266.7
+      },
+      {
+        "active": true,
+        "receivedAtMs": 1793264740967.4
+      },
+      {
+        "active": false,
+        "receivedAtMs": 1793264745566.3
+      },
+      {
+        "active": true,
+        "receivedAtMs": 1793264751067
+      },
+      {
+        "active": false,
+        "receivedAtMs": 1793264754566.5
+      },
+      {
+        "active": true,
+        "receivedAtMs": 1793264754616.7
+      },
+      {
+        "active": false,
+        "receivedAtMs": 1793264758416.5
+      },
+      {
+        "active": true,
+        "receivedAtMs": 1793264764466.7
+      },
+      {
+        "active": false,
+        "receivedAtMs": 1793264770167.5
+      }
+    ],
+    "name": "03-human interruptions in both directions with 250ms overlap / resume_es",
+    "evidence": "results/extended-browser-extended--43ed6-rections-with-250ms-overlap-chromium-real-live/evidence.json",
+    "generation": 1,
+    "input": [
+      {
+        "id": "input:0",
+        "text": " Я",
+        "startMs": 4200,
+        "endMs": 4400,
+        "receivedAtMs": 1793264722294.0999
+      },
+      {
+        "id": "input:1",
+        "text": " хочу",
+        "startMs": 5000,
+        "endMs": 5200,
+        "receivedAtMs": 1793264723078.3
+      },
+      {
+        "id": "input:2",
+        "text": " заказать",
+        "startMs": 5600,
+        "endMs": 5800,
+        "receivedAtMs": 1793264723689.5
+      },
+      {
+        "id": "input:3",
+        "text": " доставку",
+        "startMs": 6200,
+        "endMs": 6400,
+        "receivedAtMs": 1793264724318.5
+      },
+      {
+        "id": "input:4",
+        "text": " на",
+        "startMs": 6400,
+        "endMs": 6600,
+        "receivedAtMs": 1793264724488.5
+      },
+      {
+        "id": "input:5",
+        "text": " субботу",
+        "startMs": 7000,
+        "endMs": 7200,
+        "receivedAtMs": 1793264725086.3
+      },
+      {
+        "id": "input:6",
+        "text": " утром",
+        "startMs": 7400,
+        "endMs": 7600,
+        "receivedAtMs": 1793264725474.0999
+      },
+      {
+        "id": "input:7",
+        "text": ". Perdón",
+        "startMs": 8200,
+        "endMs": 8400,
+        "receivedAtMs": 1793264726433.2
+      },
+      {
+        "id": "input:8",
+        "text": ", el",
+        "startMs": 8400,
+        "endMs": 8600,
+        "receivedAtMs": 1793264726625.5999
+      },
+      {
+        "id": "input:9",
+        "text": " sábado",
+        "startMs": 8800,
+        "endMs": 9000,
+        "receivedAtMs": 1793264727027.5999
+      },
+      {
+        "id": "input:10",
+        "text": " estamos",
+        "startMs": 9200,
+        "endMs": 9400,
+        "receivedAtMs": 1793264727424.3
+      },
+      {
+        "id": "input:11",
+        "text": " cerrados",
+        "startMs": 10000,
+        "endMs": 10200,
+        "receivedAtMs": 1793264728251.7
+      },
+      {
+        "id": "input:12",
+        "text": " Podemos",
+        "startMs": 10800,
+        "endMs": 11000,
+        "receivedAtMs": 1793264729021.5999
+      },
+      {
+        "id": "input:13",
+        "text": " el",
+        "startMs": 11000,
+        "endMs": 11200,
+        "receivedAtMs": 1793264729135
+      },
+      {
+        "id": "input:14",
+        "text": " lunes",
+        "startMs": 12800,
+        "endMs": 13000,
+        "receivedAtMs": 1793264731192.7
+      },
+      {
+        "id": "input:15",
+        "text": " Тогда",
+        "startMs": 24200,
+        "endMs": 24400,
+        "receivedAtMs": 1793264742312.5
+      },
+      {
+        "id": "input:16",
+        "text": " в",
+        "startMs": 24400,
+        "endMs": 24600,
+        "receivedAtMs": 1793264742482.3
+      },
+      {
+        "id": "input:17",
+        "text": " понедельник",
+        "startMs": 25200,
+        "endMs": 25400,
+        "receivedAtMs": 1793264743280
+      },
+      {
+        "id": "input:18",
+        "text": " после",
+        "startMs": 25600,
+        "endMs": 25800,
+        "receivedAtMs": 1793264743676.9
+      },
+      {
+        "id": "input:19",
+        "text": " десяти",
+        "startMs": 26200,
+        "endMs": 26400,
+        "receivedAtMs": 1793264744283.5
+      },
+      {
+        "id": "input:20",
+        "text": " El",
+        "startMs": 34000,
+        "endMs": 34200,
+        "receivedAtMs": 1793264752084.9
+      },
+      {
+        "id": "input:21",
+        "text": " autobús",
+        "startMs": 34600,
+        "endMs": 34800,
+        "receivedAtMs": 1793264752714.9
+      },
+      {
+        "id": "input:22",
+        "text": " sale",
+        "startMs": 34800,
+        "endMs": 35000,
+        "receivedAtMs": 1793264752872.8
+      },
+      {
+        "id": "input:23",
+        "text": " mañana",
+        "startMs": 35400,
+        "endMs": 35600,
+        "receivedAtMs": 1793264753525.8
+      },
+      {
+        "id": "input:24",
+        "text": " a",
+        "startMs": 35600,
+        "endMs": 35800,
+        "receivedAtMs": 1793264753726.7
+      },
+      {
+        "id": "input:25",
+        "text": " las",
+        "startMs": 35800,
+        "endMs": 36000,
+        "receivedAtMs": 1793264753879.9
+      },
+      {
+        "id": "input:26",
+        "text": " ocho de",
+        "startMs": 36200,
+        "endMs": 36400,
+        "receivedAtMs": 1793264754321.0999
+      },
+      {
+        "id": "input:27",
+        "text": " la",
+        "startMs": 36400,
+        "endMs": 36600,
+        "receivedAtMs": 1793264754479.8
+      },
+      {
+        "id": "input:28",
+        "text": " mañana",
+        "startMs": 36800,
+        "endMs": 37000,
+        "receivedAtMs": 1793264754888.5
+      },
+      {
+        "id": "input:29",
+        "text": " Извините",
+        "startMs": 38800,
+        "endMs": 39000,
+        "receivedAtMs": 1793264757035
+      },
+      {
+        "id": "input:30",
+        "text": ", не в",
+        "startMs": 39000,
+        "endMs": 39200,
+        "receivedAtMs": 1793264757231.3
+      },
+      {
+        "id": "input:31",
+        "text": " Мадрид",
+        "startMs": 39800,
+        "endMs": 40000,
+        "receivedAtMs": 1793264758013.0999
+      },
+      {
+        "id": "input:32",
+        "text": ", а в",
+        "startMs": 40000,
+        "endMs": 40200,
+        "receivedAtMs": 1793264758163.2
+      },
+      {
+        "id": "input:33",
+        "text": " Севиль",
+        "startMs": 40600,
+        "endMs": 40800,
+        "receivedAtMs": 1793264758720
+      },
+      {
+        "id": "input:34",
+        "text": "ю",
+        "startMs": 40800,
+        "endMs": 41000,
+        "receivedAtMs": 1793264759056.3
+      },
+      {
+        "id": "input:35",
+        "text": " De",
+        "startMs": 47400,
+        "endMs": 47600,
+        "receivedAtMs": 1793264765485.4
+      },
+      {
+        "id": "input:36",
+        "text": " acuerdo. Camb",
+        "startMs": 49200,
+        "endMs": 49400,
+        "receivedAtMs": 1793264767370.2
+      },
+      {
+        "id": "input:37",
+        "text": "iaremos el",
+        "startMs": 49400,
+        "endMs": 49600,
+        "receivedAtMs": 1793264767473.0999
+      },
+      {
+        "id": "input:38",
+        "text": " destino",
+        "startMs": 49800,
+        "endMs": 50000,
+        "receivedAtMs": 1793264767914.4
+      },
+      {
+        "id": "input:39",
+        "text": " a",
+        "startMs": 50000,
+        "endMs": 50200,
+        "receivedAtMs": 1793264768078
+      },
+      {
+        "id": "input:40",
+        "text": " Sevilla",
+        "startMs": 50400,
+        "endMs": 50600,
+        "receivedAtMs": 1793264768471.7
+      },
+      {
+        "id": "input:41",
+        "text": " y",
+        "startMs": 50800,
+        "endMs": 51000,
+        "receivedAtMs": 1793264769086.0999
+      },
+      {
+        "id": "input:42",
+        "text": " mantendremos",
+        "startMs": 51400,
+        "endMs": 51600,
+        "receivedAtMs": 1793264769648.5
+      },
+      {
+        "id": "input:43",
+        "text": " la",
+        "startMs": 51600,
+        "endMs": 51800,
+        "receivedAtMs": 1793264769822.5999
+      },
+      {
+        "id": "input:44",
+        "text": " salida a",
+        "startMs": 51800,
+        "endMs": 52000,
+        "receivedAtMs": 1793264770008.7
+      },
+      {
+        "id": "input:45",
+        "text": " las",
+        "startMs": 52000,
+        "endMs": 52200,
+        "receivedAtMs": 1793264770249.5
+      },
+      {
+        "id": "input:46",
+        "text": " ocho",
+        "startMs": 52400,
+        "endMs": 52600,
+        "receivedAtMs": 1793264770606.5999
+      }
+    ],
+    "outputs": [
+      {
+        "id": "8db8680f-7608-41a3-80c5-37f822c9e4df",
+        "fragments": [
+          {
+            "id": "650d6a41-439e-421b-9f2c-a83fa51b2f52",
+            "text": " Quiero",
+            "receivedAtMs": 1793264726444,
+            "startMs": 8200,
+            "endMs": 8400
+          },
+          {
+            "id": "63eb7edc-acb3-4936-b5e4-5c34c7f02c2a",
+            "text": " programar",
+            "receivedAtMs": 1793264726628,
+            "startMs": 8400,
+            "endMs": 8600
+          },
+          {
+            "id": "535d23de-562d-4f5f-9413-011f0b0bc4a5",
+            "text": " una",
+            "receivedAtMs": 1793264726823,
+            "startMs": 8600,
+            "endMs": 8800
+          }
+        ]
+      },
+      {
+        "id": "8c474377-14e8-4500-b667-c24c2aee34b0",
+        "fragments": [
+          {
+            "id": "e8d6f303-b08c-4c92-b390-47dbcce586bc",
+            "text": " entrega",
+            "receivedAtMs": 1793264727033,
+            "startMs": 8800,
+            "endMs": 9000
+          },
+          {
+            "id": "613b01fb-834e-4f0e-97a8-eb31da7493b3",
+            "text": " para",
+            "receivedAtMs": 1793264727208,
+            "startMs": 9000,
+            "endMs": 9200
+          },
+          {
+            "id": "60aaaada-88af-4a47-b92c-dc0ecd1a242f",
+            "text": " el sábado",
+            "receivedAtMs": 1793264727607,
+            "startMs": 9400,
+            "endMs": 9600
+          }
+        ]
+      },
+      {
+        "id": "36a43bc4-2752-4581-919f-e448a0539e6d",
+        "fragments": [
+          {
+            "id": "7532e457-dbd6-43a7-bebb-51faa141fe95",
+            "text": " por",
+            "receivedAtMs": 1793264728033,
+            "startMs": 9800,
+            "endMs": 10000
+          },
+          {
+            "id": "e1c82e4f-b441-4d60-84fa-b3566d085b6c",
+            "text": " la mañana",
+            "receivedAtMs": 1793264728253,
+            "startMs": 10000,
+            "endMs": 10200
+          },
+          {
+            "id": "ee3a2bab-b6f9-4b26-8a1a-9718ed3c9227",
+            "text": ".",
+            "receivedAtMs": 1793264728439,
+            "startMs": 10200,
+            "endMs": 10400
+          }
+        ]
+      },
+      {
+        "id": "6acbfe76-65dd-4be1-81cf-9234be9a808a",
+        "fragments": [
+          {
+            "id": "89a2778e-0182-49fe-92be-1b3817ec1e7c",
+            "text": " Perdón",
+            "receivedAtMs": 1793264730759,
+            "startMs": 12400,
+            "endMs": 12600
+          },
+          {
+            "id": "03bb032d-fa59-43d3-849c-31de1cf3f95b",
+            "text": ", el",
+            "receivedAtMs": 1793264730958,
+            "startMs": 12600,
+            "endMs": 12800
+          },
+          {
+            "id": "2db3b4c2-3e50-486e-870d-d595d872952b",
+            "text": " sábado",
+            "receivedAtMs": 1793264731236,
+            "startMs": 12800,
+            "endMs": 13000
+          }
+        ]
+      },
+      {
+        "id": "700ca5dd-55d9-4e64-82dc-483394e9e3b5",
+        "fragments": [
+          {
+            "id": "5b82a6e9-a10c-4a54-a8ac-6c754187d86b",
+            "text": " estamos",
+            "receivedAtMs": 1793264731641,
+            "startMs": 13200,
+            "endMs": 13400
+          },
+          {
+            "id": "afd6c379-61bd-4f5e-87fd-e4f8f76f63aa",
+            "text": " cerrados",
+            "receivedAtMs": 1793264732143,
+            "startMs": 13600,
+            "endMs": 13800
+          },
+          {
+            "id": "10283d47-f650-4296-bbe0-e703aea7b222",
+            "text": ".",
+            "receivedAtMs": 1793264732305,
+            "startMs": 13800,
+            "endMs": 14000
+          }
+        ]
+      },
+      {
+        "id": "516ecd89-5212-4d81-b246-061383d635af",
+        "fragments": [
+          {
+            "id": "94f72eb7-7faf-4cec-b95e-88d541f8fc39",
+            "text": " Podemos",
+            "receivedAtMs": 1793264732647,
+            "startMs": 14200,
+            "endMs": 14400
+          },
+          {
+            "id": "65eba631-427e-4a8f-a3df-86c35e403b0e",
+            "text": " el",
+            "receivedAtMs": 1793264733019,
+            "startMs": 14600,
+            "endMs": 14800
+          },
+          {
+            "id": "41c4cbee-0b25-4f88-acc9-a27a59e69361",
+            "text": " lunes.",
+            "receivedAtMs": 1793264733185,
+            "startMs": 14800,
+            "endMs": 15000
+          }
+        ]
+      },
+      {
+        "id": "58bb543b-7c3b-40ca-bb20-ad0c477a3512",
+        "fragments": [
+          {
+            "id": "e7153fe8-f0b5-4038-a7af-a93640af8809",
+            "text": " Извин",
+            "receivedAtMs": 1793264734627,
+            "startMs": 16400,
+            "endMs": 16600
+          },
+          {
+            "id": "f1a0d3c2-86b7-4fc2-9111-3d1b80faafc7",
+            "text": "ите,",
+            "receivedAtMs": 1793264734830,
+            "startMs": 16600,
+            "endMs": 16800
+          }
+        ]
+      },
+      {
+        "id": "30e8a2a3-0cb5-49c6-b194-3473bd66b1ae",
+        "fragments": [
+          {
+            "id": "b0092034-11cb-4ddc-b2b8-57364cf2b376",
+            "text": " в",
+            "receivedAtMs": 1793264735031,
+            "startMs": 16800,
+            "endMs": 17000
+          },
+          {
+            "id": "1363fca0-5698-4052-a521-062f18f98387",
+            "text": " суббот",
+            "receivedAtMs": 1793264735230,
+            "startMs": 17000,
+            "endMs": 17200
+          },
+          {
+            "id": "9950cc4f-ea3f-44c1-81de-3c1c3dc45981",
+            "text": "у",
+            "receivedAtMs": 1793264735436,
+            "startMs": 17200,
+            "endMs": 17400
+          },
+          {
+            "id": "b098456d-55d6-4c15-9190-c9c5601d7104",
+            "text": " мы",
+            "receivedAtMs": 1793264735638,
+            "startMs": 17400,
+            "endMs": 17600
+          }
+        ]
+      },
+      {
+        "id": "46a8e287-f4fb-4904-94f1-be0753875054",
+        "fragments": [
+          {
+            "id": "b48b8046-991b-47dd-a236-e7c53fa5f931",
+            "text": " закрыты",
+            "receivedAtMs": 1793264735824,
+            "startMs": 17600,
+            "endMs": 17800
+          },
+          {
+            "id": "9884373c-def6-4bf8-ae9e-f2a005dd7217",
+            "text": ".",
+            "receivedAtMs": 1793264736008,
+            "startMs": 17800,
+            "endMs": 18000
+          }
+        ]
+      },
+      {
+        "id": "6eb223ae-4fa1-48e3-bbc6-8b39466b1e46",
+        "fragments": [
+          {
+            "id": "3e50f6b5-1338-45c6-aae3-90fe21207e39",
+            "text": " Можно",
+            "receivedAtMs": 1793264736424,
+            "startMs": 18200,
+            "endMs": 18400
+          },
+          {
+            "id": "626e8f03-21d1-46a0-8c65-207eb26d47d5",
+            "text": " в",
+            "receivedAtMs": 1793264736620,
+            "startMs": 18400,
+            "endMs": 18600
+          }
+        ]
+      },
+      {
+        "id": "321a473c-4f2d-4cc0-a1ae-dd2a8361289b",
+        "fragments": [
+          {
+            "id": "584f943b-abe2-44f4-90ec-af97671d0625",
+            "text": " понедель",
+            "receivedAtMs": 1793264736846,
+            "startMs": 18600,
+            "endMs": 18800
+          },
+          {
+            "id": "6ffd605a-cb4d-4fd8-a361-357f808d9876",
+            "text": "ник.",
+            "receivedAtMs": 1793264737004,
+            "startMs": 18800,
+            "endMs": 19000
+          }
+        ]
+      },
+      {
+        "id": "29bd7b12-db96-43f8-8aee-237c5e970bc4",
+        "fragments": [
+          {
+            "id": "63f1711b-6152-4941-bf06-c30562f96230",
+            "text": " Entonces,",
+            "receivedAtMs": 1793264746615,
+            "startMs": 28400,
+            "endMs": 28600
+          }
+        ]
+      },
+      {
+        "id": "f371854e-2df8-49f7-819a-7b7d9c8e4e21",
+        "fragments": [
+          {
+            "id": "51e48d5f-0f9a-4921-9369-d344095cad5f",
+            "text": " el lunes",
+            "receivedAtMs": 1793264747018,
+            "startMs": 28800,
+            "endMs": 29000
+          },
+          {
+            "id": "9d07f17d-a6ac-4d97-bdfa-0a2adb24b281",
+            "text": " después",
+            "receivedAtMs": 1793264747423,
+            "startMs": 29200,
+            "endMs": 29400
+          }
+        ]
+      },
+      {
+        "id": "6337c22a-c464-4814-9629-c716b3155fcc",
+        "fragments": [
+          {
+            "id": "8b4f21f0-64c8-4235-9428-bca0caa91c89",
+            "text": " de las",
+            "receivedAtMs": 1793264747851,
+            "startMs": 29600,
+            "endMs": 29800
+          },
+          {
+            "id": "cf6d4c2b-b1ec-497c-9b8c-f17d89be646f",
+            "text": " diez,",
+            "receivedAtMs": 1793264748018,
+            "startMs": 29800,
+            "endMs": 30000
+          }
+        ]
+      },
+      {
+        "id": "f422d817-3c55-46d9-bef8-e2d2009f33a0",
+        "fragments": [
+          {
+            "id": "72f54658-4bd7-47ac-867a-d6f61d09dd7e",
+            "text": " por",
+            "receivedAtMs": 1793264748453,
+            "startMs": 30200,
+            "endMs": 30400
+          },
+          {
+            "id": "dd21d015-aac3-4544-8dd5-011362ee7ac5",
+            "text": " favor.",
+            "receivedAtMs": 1793264748618,
+            "startMs": 30400,
+            "endMs": 30600
+          }
+        ]
+      },
+      {
+        "id": "f7ffc962-d6a6-443f-8d54-7ddf7dff6564",
+        "fragments": [
+          {
+            "id": "9d29a736-c0cd-4330-bdc6-32d44bbe1840",
+            "text": " Автоб",
+            "receivedAtMs": 1793264755862,
+            "startMs": 37600,
+            "endMs": 37800
+          },
+          {
+            "id": "296da63f-3319-48d7-93fc-e60726b49a42",
+            "text": "ус отправ",
+            "receivedAtMs": 1793264756038,
+            "startMs": 37800,
+            "endMs": 38000
+          }
+        ]
+      },
+      {
+        "id": "4d3b4044-6997-4e8f-b142-1de0f1cdab9c",
+        "fragments": [
+          {
+            "id": "1d694cae-abca-4e09-9bc8-a69f4b232268",
+            "text": "ляется",
+            "receivedAtMs": 1793264756219,
+            "startMs": 38000,
+            "endMs": 38200
+          },
+          {
+            "id": "fd857979-bd65-47e6-9d96-465c0a92db5a",
+            "text": " завтра",
+            "receivedAtMs": 1793264756612,
+            "startMs": 38400,
+            "endMs": 38600
+          }
+        ]
+      },
+      {
+        "id": "feebdae6-146f-4cd6-b3b8-7776961ee4ff",
+        "fragments": [
+          {
+            "id": "570011b6-1b3a-4886-9b61-4f69e8356dff",
+            "text": " в вос",
+            "receivedAtMs": 1793264757076,
+            "startMs": 38800,
+            "endMs": 39000
+          },
+          {
+            "id": "c495b174-fd00-4037-95fd-9c8082f292d1",
+            "text": "емь",
+            "receivedAtMs": 1793264757233,
+            "startMs": 39000,
+            "endMs": 39200
+          },
+          {
+            "id": "fa4d8dca-6205-47da-8e64-7ab7c52588fb",
+            "text": " утра.",
+            "receivedAtMs": 1793264757416,
+            "startMs": 39200,
+            "endMs": 39400
+          }
+        ]
+      },
+      {
+        "id": "adb179ac-780b-44f4-92ef-325a14407225",
+        "fragments": [
+          {
+            "id": "a11f220c-b391-45eb-9d55-7a978506913b",
+            "text": " Discul",
+            "receivedAtMs": 1793264759224,
+            "startMs": 41000,
+            "endMs": 41200
+          },
+          {
+            "id": "ba67eba9-6a09-4df6-8527-e5f3ec688e22",
+            "text": "pe,",
+            "receivedAtMs": 1793264759421,
+            "startMs": 41200,
+            "endMs": 41400
+          },
+          {
+            "id": "9ca35395-edf5-4aec-a669-3e45350e9ae6",
+            "text": " no a",
+            "receivedAtMs": 1793264759620,
+            "startMs": 41400,
+            "endMs": 41600
+          }
+        ]
+      },
+      {
+        "id": "b36bfd58-6105-4130-b3b9-d3c1d6f09d61",
+        "fragments": [
+          {
+            "id": "13cb5adb-c3db-43c3-8e3a-a1b3e32ce9cc",
+            "text": " Madrid,",
+            "receivedAtMs": 1793264759807,
+            "startMs": 41600,
+            "endMs": 41800
+          },
+          {
+            "id": "641bb48c-4677-47f7-be34-0a330765859d",
+            "text": " sino",
+            "receivedAtMs": 1793264760230,
+            "startMs": 42000,
+            "endMs": 42200
+          },
+          {
+            "id": "6ae6c9c4-07b5-44b1-bb2a-73d912b6a2b8",
+            "text": " a Sevilla",
+            "receivedAtMs": 1793264760439,
+            "startMs": 42200,
+            "endMs": 42400
+          },
+          {
+            "id": "19e533a0-6d57-4bed-a05f-d64147132f49",
+            "text": ".",
+            "receivedAtMs": 1793264760602,
+            "startMs": 42400,
+            "endMs": 42600
+          }
+        ]
+      },
+      {
+        "id": "b14156b6-9c7b-4c23-8c6a-0fb3fe0401e8",
+        "fragments": [
+          {
+            "id": "8512126f-f892-48d6-b1ea-1e3953697929",
+            "text": " Хорошо",
+            "receivedAtMs": 1793264769241,
+            "startMs": 51000,
+            "endMs": 51200
+          },
+          {
+            "id": "a9573832-1dc0-4b0f-a340-d3f4a984f415",
+            "text": ".",
+            "receivedAtMs": 1793264769444,
+            "startMs": 51200,
+            "endMs": 51400
+          }
+        ]
+      },
+      {
+        "id": "5eef4dba-8de0-4d27-9136-8071e741d4f1",
+        "fragments": [
+          {
+            "id": "cb299802-8a09-4f9e-9754-97613f9c55a5",
+            "text": " Мы",
+            "receivedAtMs": 1793264769650,
+            "startMs": 51400,
+            "endMs": 51600
+          },
+          {
+            "id": "dfd88f81-8beb-4225-8fec-120405361503",
+            "text": " изменим",
+            "receivedAtMs": 1793264769824,
+            "startMs": 51600,
+            "endMs": 51800
+          }
+        ]
+      },
+      {
+        "id": "705f9e09-5b62-4b80-af16-d4dd339e74d9",
+        "fragments": [
+          {
+            "id": "f606b8b9-3534-4fcb-a788-ff7d504194a9",
+            "text": " пункт",
+            "receivedAtMs": 1793264770436,
+            "startMs": 52200,
+            "endMs": 52400
+          },
+          {
+            "id": "7e5db2de-c413-446d-947a-e14ed40b37c2",
+            "text": " назначения",
+            "receivedAtMs": 1793264770608,
+            "startMs": 52400,
+            "endMs": 52600
+          }
+        ]
+      },
+      {
+        "id": "b4dffa4e-0e41-4f87-a4e8-98271e6025b4",
+        "fragments": [
+          {
+            "id": "09438e38-bb86-4424-adb0-bd32d1a18466",
+            "text": " на",
+            "receivedAtMs": 1793264771243,
+            "startMs": 53000,
+            "endMs": 53200
+          },
+          {
+            "id": "c8a0a284-c211-4d67-9a7d-489b8dac91fd",
+            "text": " Сев",
+            "receivedAtMs": 1793264771440,
+            "startMs": 53200,
+            "endMs": 53400
+          },
+          {
+            "id": "0a0f4621-ec4b-4003-a82e-6eda44ea204d",
+            "text": "илью",
+            "receivedAtMs": 1793264771638,
+            "startMs": 53400,
+            "endMs": 53600
+          },
+          {
+            "id": "5104b290-9585-45fb-a220-5c38163ca741",
+            "text": " и",
+            "receivedAtMs": 1793264771845,
+            "startMs": 53600,
+            "endMs": 53800
+          }
+        ]
+      },
+      {
+        "id": "03f7fb75-babd-4f1a-85b4-55c3e2566bad",
+        "fragments": [
+          {
+            "id": "efbaaa9a-1ff6-48d8-aee9-1dff4e618655",
+            "text": " сохра",
+            "receivedAtMs": 1793264772103,
+            "startMs": 53800,
+            "endMs": 54000
+          },
+          {
+            "id": "5700d36d-baa7-4103-b827-66ee1353e605",
+            "text": "ним",
+            "receivedAtMs": 1793264772311,
+            "startMs": 54000,
+            "endMs": 54200
+          },
+          {
+            "id": "6decc111-a506-4c19-bdcf-1c7388f9bd59",
+            "text": " время",
+            "receivedAtMs": 1793264772469,
+            "startMs": 54200,
+            "endMs": 54400
+          }
+        ]
+      },
+      {
+        "id": "152f4bfd-a305-4d78-af08-5840b80e4b8c",
+        "fragments": [
+          {
+            "id": "e2069b54-f7a5-4f9c-9831-7de2b0645242",
+            "text": " отправления",
+            "receivedAtMs": 1793264772942,
+            "startMs": 54600,
+            "endMs": 54800
+          },
+          {
+            "id": "2620740f-8ab1-44a0-807e-229fbd9cdd99",
+            "text": " в вос",
+            "receivedAtMs": 1793264773474,
+            "startMs": 55200,
+            "endMs": 55400
+          }
+        ]
+      },
+      {
+        "id": "02fea503-eb34-4e5b-950e-26a6f831a90d",
+        "fragments": [
+          {
+            "id": "c761967a-6924-4cc6-a122-5d20c332ad41",
+            "text": "емь",
+            "receivedAtMs": 1793264773661,
+            "startMs": 55400,
+            "endMs": 55600
+          },
+          {
+            "id": "237b9daa-0dd6-4678-9d37-451176bb04d9",
+            "text": ".",
+            "receivedAtMs": 1793264773836,
+            "startMs": 55600,
+            "endMs": 55800
+          }
+        ]
+      }
+    ],
+    "expected": {
+      "input": {
+        "A": " Я хочу заказать доставку на субботу утром.  Тогда в понедельник после десяти Извините, не в Мадрид, а в Севилью",
+        "B": "Perdón, el sábado estamos cerrados Podemos el lunes El autobús sale mañana a las ocho de la mañana De acuerdo. Cambiaremos el destino a Sevilla y mantendremos la salida a las ocho"
+      },
+      "output": {
+        "A": " Извините, в субботу мы закрыты. Можно в понедельник. Автобус отправляется завтра в восемь утра. Хорошо. Мы изменим пункт назначения на Севилью и сохраним время отправления в восемь.",
+        "B": " Quiero programar una entrega para el sábado por la mañana. Perdón, el sábado estamos cerrados. Podemos el lunes. Entonces, el lunes después de las diez, por favor. Disculpe, no a Madrid, sino a Sevilla."
+      }
+    }
+  },
+  {
+    "voice": [
+      {
+        "active": true,
+        "receivedAtMs": 1793264783554
+      },
+      {
+        "active": false,
+        "receivedAtMs": 1793264787504.4001
+      },
+      {
+        "active": true,
+        "receivedAtMs": 1793264787553.5
+      },
+      {
+        "active": false,
+        "receivedAtMs": 1793264790753.9001
+      },
+      {
+        "active": true,
+        "receivedAtMs": 1793264798653.9001
+      },
+      {
+        "active": false,
+        "receivedAtMs": 1793264801563.6
+      },
+      {
+        "active": true,
+        "receivedAtMs": 1793264802457.6
+      },
+      {
+        "active": false,
+        "receivedAtMs": 1793264811204
+      },
+      {
+        "active": true,
+        "receivedAtMs": 1793264820403.5
+      },
+      {
+        "active": false,
+        "receivedAtMs": 1793264824606.5
+      },
+      {
+        "active": true,
+        "receivedAtMs": 1793264825052.9001
+      },
+      {
+        "active": false,
+        "receivedAtMs": 1793264829303.4001
+      }
+    ],
+    "name": "04-rapid language changes with 100 300 and 700ms gaps / rapid-700ms",
+    "evidence": "results/extended-browser-extended--753eb-with-100-300-and-700ms-gaps-chromium-real-live/evidence.json",
+    "generation": 1,
+    "input": [
+      {
+        "id": "input:0",
+        "text": " Здравствуйте",
+        "startMs": 4800,
+        "endMs": 5000,
+        "receivedAtMs": 1793264785296.9001
+      },
+      {
+        "id": "input:1",
+        "text": ", мне",
+        "startMs": 5400,
+        "endMs": 5600,
+        "receivedAtMs": 1793264785919.6
+      },
+      {
+        "id": "input:2",
+        "text": " нужно",
+        "startMs": 5800,
+        "endMs": 6000,
+        "receivedAtMs": 1793264786321.2002
+      },
+      {
+        "id": "input:3",
+        "text": " отправить",
+        "startMs": 6200,
+        "endMs": 6400,
+        "receivedAtMs": 1793264786713.2002
+      },
+      {
+        "id": "input:4",
+        "text": " посылку",
+        "startMs": 6800,
+        "endMs": 7000,
+        "receivedAtMs": 1793264787344.4001
+      },
+      {
+        "id": "input:5",
+        "text": " в",
+        "startMs": 7000,
+        "endMs": 7200,
+        "receivedAtMs": 1793264787519
+      },
+      {
+        "id": "input:6",
+        "text": " Мадрид",
+        "startMs": 7600,
+        "endMs": 7800,
+        "receivedAtMs": 1793264788104.8
+      },
+      {
+        "id": "input:7",
+        "text": ". Espere",
+        "startMs": 8400,
+        "endMs": 8600,
+        "receivedAtMs": 1793264788904.7002
+      },
+      {
+        "id": "input:8",
+        "text": ". La",
+        "startMs": 9000,
+        "endMs": 9200,
+        "receivedAtMs": 1793264789620.2002
+      },
+      {
+        "id": "input:9",
+        "text": " entrega",
+        "startMs": 9400,
+        "endMs": 9600,
+        "receivedAtMs": 1793264790041.5
+      },
+      {
+        "id": "input:10",
+        "text": " será",
+        "startMs": 9800,
+        "endMs": 10000,
+        "receivedAtMs": 1793264790394.8
+      },
+      {
+        "id": "input:11",
+        "text": " en",
+        "startMs": 10000,
+        "endMs": 10200,
+        "receivedAtMs": 1793264790630.8
+      },
+      {
+        "id": "input:12",
+        "text": " Sevilla",
+        "startMs": 10400,
+        "endMs": 10600,
+        "receivedAtMs": 1793264791008.1
+      },
+      {
+        "id": "input:13",
+        "text": " Buenos",
+        "startMs": 19400,
+        "endMs": 19600,
+        "receivedAtMs": 1793264799919.4001
+      },
+      {
+        "id": "input:14",
+        "text": " días",
+        "startMs": 19800,
+        "endMs": 20000,
+        "receivedAtMs": 1793264800312.4001
+      },
+      {
+        "id": "input:15",
+        "text": ", ¿cu",
+        "startMs": 20400,
+        "endMs": 20600,
+        "receivedAtMs": 1793264800966.1
+      },
+      {
+        "id": "input:16",
+        "text": "ánto pesa",
+        "startMs": 20600,
+        "endMs": 20800,
+        "receivedAtMs": 1793264801146.6
+      },
+      {
+        "id": "input:17",
+        "text": " el",
+        "startMs": 20800,
+        "endMs": 21000,
+        "receivedAtMs": 1793264801305.9001
+      },
+      {
+        "id": "input:18",
+        "text": " paquete",
+        "startMs": 21200,
+        "endMs": 21400,
+        "receivedAtMs": 1793264801715
+      },
+      {
+        "id": "input:19",
+        "text": " Посылка",
+        "startMs": 23600,
+        "endMs": 23800,
+        "receivedAtMs": 1793264804139.1
+      },
+      {
+        "id": "input:20",
+        "text": " весит",
+        "startMs": 24200,
+        "endMs": 24400,
+        "receivedAtMs": 1793264804706.7002
+      },
+      {
+        "id": "input:21",
+        "text": " два",
+        "startMs": 24600,
+        "endMs": 24800,
+        "receivedAtMs": 1793264805109.4001
+      },
+      {
+        "id": "input:22",
+        "text": " килограмма,",
+        "startMs": 26200,
+        "endMs": 26400,
+        "receivedAtMs": 1793264806737.7002
+      },
+      {
+        "id": "input:23",
+        "text": " внутри",
+        "startMs": 26400,
+        "endMs": 26600,
+        "receivedAtMs": 1793264806901.3
+      },
+      {
+        "id": "input:24",
+        "text": " книги",
+        "startMs": 27000,
+        "endMs": 27200,
+        "receivedAtMs": 1793264807506.4001
+      },
+      {
+        "id": "input:25",
+        "text": " и",
+        "startMs": 27400,
+        "endMs": 27600,
+        "receivedAtMs": 1793264807912.5
+      },
+      {
+        "id": "input:26",
+        "text": " одежда",
+        "startMs": 28000,
+        "endMs": 28200,
+        "receivedAtMs": 1793264808651.4001
+      },
+      {
+        "id": "input:27",
+        "text": " Entonces, el",
+        "startMs": 29400,
+        "endMs": 29600,
+        "receivedAtMs": 1793264810040.5
+      },
+      {
+        "id": "input:28",
+        "text": " precio",
+        "startMs": 30000,
+        "endMs": 30200,
+        "receivedAtMs": 1793264810629.2002
+      },
+      {
+        "id": "input:29",
+        "text": " es",
+        "startMs": 30200,
+        "endMs": 30400,
+        "receivedAtMs": 1793264810807.7002
+      },
+      {
+        "id": "input:30",
+        "text": " once",
+        "startMs": 30400,
+        "endMs": 30600,
+        "receivedAtMs": 1793264811024.7002
+      },
+      {
+        "id": "input:31",
+        "text": " euros",
+        "startMs": 31000,
+        "endMs": 31200,
+        "receivedAtMs": 1793264811599.9001
+      },
+      {
+        "id": "input:32",
+        "text": " Пожалуйста",
+        "startMs": 42400,
+        "endMs": 42600,
+        "receivedAtMs": 1793264822988.6
+      },
+      {
+        "id": "input:33",
+        "text": ", добавьте",
+        "startMs": 42600,
+        "endMs": 42800,
+        "receivedAtMs": 1793264823125.3
+      },
+      {
+        "id": "input:34",
+        "text": " страхование",
+        "startMs": 43200,
+        "endMs": 43400,
+        "receivedAtMs": 1793264823715.2002
+      },
+      {
+        "id": "input:35",
+        "text": " на сто",
+        "startMs": 43800,
+        "endMs": 44000,
+        "receivedAtMs": 1793264824323.9001
+      },
+      {
+        "id": "input:36",
+        "text": " евро",
+        "startMs": 44400,
+        "endMs": 44600,
+        "receivedAtMs": 1793264825053.5
+      },
+      {
+        "id": "input:37",
+        "text": " El",
+        "startMs": 45600,
+        "endMs": 45800,
+        "receivedAtMs": 1793264826284.8
+      },
+      {
+        "id": "input:38",
+        "text": " seguro",
+        "startMs": 46000,
+        "endMs": 46200,
+        "receivedAtMs": 1793264826645.9001
+      },
+      {
+        "id": "input:39",
+        "text": " cuesta",
+        "startMs": 46400,
+        "endMs": 46600,
+        "receivedAtMs": 1793264827009
+      },
+      {
+        "id": "input:40",
+        "text": " cinco",
+        "startMs": 47000,
+        "endMs": 47200,
+        "receivedAtMs": 1793264827543.2002
+      },
+      {
+        "id": "input:41",
+        "text": " euros",
+        "startMs": 47400,
+        "endMs": 47600,
+        "receivedAtMs": 1793264827962.6
+      },
+      {
+        "id": "input:42",
+        "text": " más",
+        "startMs": 47600,
+        "endMs": 47800,
+        "receivedAtMs": 1793264828111.1
+      },
+      {
+        "id": "input:43",
+        "text": " y",
+        "startMs": 48000,
+        "endMs": 48200,
+        "receivedAtMs": 1793264828518.9001
+      },
+      {
+        "id": "input:44",
+        "text": " cubre",
+        "startMs": 48400,
+        "endMs": 48600,
+        "receivedAtMs": 1793264828947.9001
+      },
+      {
+        "id": "input:45",
+        "text": " la",
+        "startMs": 48600,
+        "endMs": 48800,
+        "receivedAtMs": 1793264829114.3
+      },
+      {
+        "id": "input:46",
+        "text": " pérdida",
+        "startMs": 49000,
+        "endMs": 49200,
+        "receivedAtMs": 1793264829518
+      }
+    ],
+    "outputs": [
+      {
+        "id": "a5c274e0-5579-4243-b7c4-b9747fbe0ec7",
+        "fragments": [
+          {
+            "id": "c29452e4-71b4-4f3b-a5bc-e71cd8abc4a6",
+            "text": " Hola,",
+            "receivedAtMs": 1793264789624,
+            "startMs": 9000,
+            "endMs": 9200
+          },
+          {
+            "id": "54926467-f970-40cb-a845-d587e6f60373",
+            "text": " necesito",
+            "receivedAtMs": 1793264789832,
+            "startMs": 9200,
+            "endMs": 9400
+          },
+          {
+            "id": "3d26d741-edc6-44a3-84ba-9512df7c1bbe",
+            "text": " enviar",
+            "receivedAtMs": 1793264790043,
+            "startMs": 9400,
+            "endMs": 9600
+          }
+        ]
+      },
+      {
+        "id": "6ee675f2-fafc-469a-8103-33944b23968e",
+        "fragments": [
+          {
+            "id": "f1b1368c-8880-40a2-b5f9-6f06ee347359",
+            "text": " un",
+            "receivedAtMs": 1793264790231,
+            "startMs": 9600,
+            "endMs": 9800
+          },
+          {
+            "id": "0cbd7d80-8270-44d5-a5d1-e578242d266b",
+            "text": " paquete",
+            "receivedAtMs": 1793264790396,
+            "startMs": 9800,
+            "endMs": 10000
+          },
+          {
+            "id": "a11fc72e-504c-41ed-8e6d-d78826a2505c",
+            "text": " a Madrid",
+            "receivedAtMs": 1793264790866,
+            "startMs": 10200,
+            "endMs": 10400
+          },
+          {
+            "id": "3740bd61-2ce1-445f-b728-0eea617e7905",
+            "text": ".",
+            "receivedAtMs": 1793264791010,
+            "startMs": 10400,
+            "endMs": 10600
+          }
+        ]
+      },
+      {
+        "id": "1124c1b3-4b12-46e8-acd2-56a831e7b55d",
+        "fragments": [
+          {
+            "id": "d793cc1b-a480-4286-9f69-b8150499ac85",
+            "text": " Espere",
+            "receivedAtMs": 1793264792055,
+            "startMs": 11400,
+            "endMs": 11600
+          },
+          {
+            "id": "8e7f3930-dc1a-4cba-8e76-823f7846aca5",
+            "text": ".",
+            "receivedAtMs": 1793264792241,
+            "startMs": 11600,
+            "endMs": 11800
+          }
+        ]
+      },
+      {
+        "id": "cbcde94c-0291-4a9b-892d-9ef4c8cb1550",
+        "fragments": [
+          {
+            "id": "1212de0c-f87c-4dd3-ad17-27a5a79e79fb",
+            "text": " La",
+            "receivedAtMs": 1793264792623,
+            "startMs": 12000,
+            "endMs": 12200
+          },
+          {
+            "id": "cfe1fc00-44b9-42d3-926e-23f2631722b5",
+            "text": " entrega",
+            "receivedAtMs": 1793264792847,
+            "startMs": 12200,
+            "endMs": 12400
+          },
+          {
+            "id": "4069f8a6-3dff-4970-83c4-e1c51d804e51",
+            "text": " será",
+            "receivedAtMs": 1793264793003,
+            "startMs": 12400,
+            "endMs": 12600
+          }
+        ]
+      },
+      {
+        "id": "8cc38807-e6e8-408f-82b9-bff0c345c7bf",
+        "fragments": [
+          {
+            "id": "2d4d3e33-de85-4cd9-8a6d-0db5ce0b44af",
+            "text": " en Sevilla",
+            "receivedAtMs": 1793264793444,
+            "startMs": 12800,
+            "endMs": 13000
+          },
+          {
+            "id": "96f7b7ce-f8a8-41f9-9632-5af9e7771208",
+            "text": ".",
+            "receivedAtMs": 1793264793613,
+            "startMs": 13000,
+            "endMs": 13200
+          }
+        ]
+      },
+      {
+        "id": "76f0a094-303f-4594-b8ff-4d8d2b02dfb6",
+        "fragments": [
+          {
+            "id": "c4a10217-96d9-44a8-9677-e60031c15fb3",
+            "text": " Подожд",
+            "receivedAtMs": 1793264794859,
+            "startMs": 14200,
+            "endMs": 14400
+          },
+          {
+            "id": "43704ef1-ddaa-48dc-8589-9c66a73342e1",
+            "text": "ите.",
+            "receivedAtMs": 1793264795027,
+            "startMs": 14400,
+            "endMs": 14600
+          }
+        ]
+      },
+      {
+        "id": "e03e5497-b991-4f3f-86e0-7a130521b0db",
+        "fragments": [
+          {
+            "id": "758b30ba-3ffa-46eb-bd4a-6f42c30bf8d3",
+            "text": " Доставка",
+            "receivedAtMs": 1793264795423,
+            "startMs": 14800,
+            "endMs": 15000
+          },
+          {
+            "id": "943ff8b0-e516-4528-92f9-a561e93163e8",
+            "text": " будет",
+            "receivedAtMs": 1793264795810,
+            "startMs": 15200,
+            "endMs": 15400
+          }
+        ]
+      },
+      {
+        "id": "e79c7ea8-1fcb-4a31-b4cf-29e74a526236",
+        "fragments": [
+          {
+            "id": "6d36afc4-fcb3-4998-ab20-252019adc65a",
+            "text": " в С",
+            "receivedAtMs": 1793264796218,
+            "startMs": 15600,
+            "endMs": 15800
+          },
+          {
+            "id": "7498245a-07f6-4558-954b-4f0dd9607056",
+            "text": "евиль",
+            "receivedAtMs": 1793264796427,
+            "startMs": 15800,
+            "endMs": 16000
+          },
+          {
+            "id": "ffb45805-371a-4bf6-ae0d-70c72ca80d5e",
+            "text": "ю.",
+            "receivedAtMs": 1793264796622,
+            "startMs": 16000,
+            "endMs": 16200
+          }
+        ]
+      },
+      {
+        "id": "d68f6792-81ca-4250-b3b0-23fb3637dce1",
+        "fragments": [
+          {
+            "id": "938ac36c-aac6-40b6-a6b7-1fb57dc21169",
+            "text": " Добрый",
+            "receivedAtMs": 1793264802442,
+            "startMs": 21800,
+            "endMs": 22000
+          },
+          {
+            "id": "1de8f4c5-d183-451d-a529-01800a1c9380",
+            "text": " день,",
+            "receivedAtMs": 1793264802626,
+            "startMs": 22000,
+            "endMs": 22200
+          }
+        ]
+      },
+      {
+        "id": "b00dfa6e-e836-448a-81db-d5ddb6ecc064",
+        "fragments": [
+          {
+            "id": "91ac0c53-a834-4eec-beae-dc5a7d66c668",
+            "text": " сколько",
+            "receivedAtMs": 1793264802825,
+            "startMs": 22200,
+            "endMs": 22400
+          },
+          {
+            "id": "b8133eec-7581-466e-b2a5-ecf7e02706be",
+            "text": " весит",
+            "receivedAtMs": 1793264803022,
+            "startMs": 22400,
+            "endMs": 22600
+          }
+        ]
+      },
+      {
+        "id": "d4dc0dd8-1545-454d-a8ab-209f72e29484",
+        "fragments": [
+          {
+            "id": "20d7bcc9-196a-4be3-99a1-369f8e629ef4",
+            "text": " посыл",
+            "receivedAtMs": 1793264803491,
+            "startMs": 22800,
+            "endMs": 23000
+          },
+          {
+            "id": "ae45bdec-1f85-41ea-8147-53fabc1442ca",
+            "text": "ка?",
+            "receivedAtMs": 1793264803606,
+            "startMs": 23000,
+            "endMs": 23200
+          }
+        ]
+      },
+      {
+        "id": "2d1a2f6c-0207-4aa1-be09-60e61875181d",
+        "fragments": [
+          {
+            "id": "b5b29da1-6eb2-4d94-b40b-1427557a1d94",
+            "text": " El paquete",
+            "receivedAtMs": 1793264808841,
+            "startMs": 28200,
+            "endMs": 28400
+          },
+          {
+            "id": "847afdce-6601-43c6-aef0-a5dfc4bdeadd",
+            "text": " pesa",
+            "receivedAtMs": 1793264809029,
+            "startMs": 28400,
+            "endMs": 28600
+          }
+        ]
+      },
+      {
+        "id": "798d5f5b-be46-4e20-b504-98e8ac0e8c09",
+        "fragments": [
+          {
+            "id": "45a8a4ca-96b6-4e2d-894b-c585e457ff68",
+            "text": " dos",
+            "receivedAtMs": 1793264809424,
+            "startMs": 28800,
+            "endMs": 29000
+          },
+          {
+            "id": "160a3508-70f2-4bbd-8776-a51d8f55cdf0",
+            "text": " kilos;",
+            "receivedAtMs": 1793264809616,
+            "startMs": 29000,
+            "endMs": 29200
+          }
+        ]
+      },
+      {
+        "id": "fa5eae4c-99a5-4959-b192-b758fb959cbe",
+        "fragments": [
+          {
+            "id": "983ecf4d-56b5-448f-9308-54ce5242dac9",
+            "text": " dentro",
+            "receivedAtMs": 1793264810209,
+            "startMs": 29600,
+            "endMs": 29800
+          },
+          {
+            "id": "c0443fb4-be03-4a37-9661-2e0cb7e9fc70",
+            "text": " hay",
+            "receivedAtMs": 1793264810630,
+            "startMs": 30000,
+            "endMs": 30200
+          },
+          {
+            "id": "3e6563ff-b882-4353-ad59-ce52235110d5",
+            "text": " libros",
+            "receivedAtMs": 1793264810808,
+            "startMs": 30200,
+            "endMs": 30400
+          }
+        ]
+      },
+      {
+        "id": "dc818548-5d11-483e-a7b8-594942eb8520",
+        "fragments": [
+          {
+            "id": "a3c7508f-32b4-42f6-a5d9-ed5ccf23456d",
+            "text": " y ropa",
+            "receivedAtMs": 1793264811216,
+            "startMs": 30600,
+            "endMs": 30800
+          },
+          {
+            "id": "94080b05-8380-4bb9-8165-1292309505a4",
+            "text": ".",
+            "receivedAtMs": 1793264811417,
+            "startMs": 30800,
+            "endMs": 31000
+          }
+        ]
+      },
+      {
+        "id": "0208325f-a2d8-422e-8984-a4c6a16423ea",
+        "fragments": [
+          {
+            "id": "e2ba85e7-c1a0-4edc-ad6a-207fd1d3234e",
+            "text": " Тогда цена",
+            "receivedAtMs": 1793264812812,
+            "startMs": 32200,
+            "endMs": 32400
+          }
+        ]
+      },
+      {
+        "id": "67768831-af47-45cf-8968-3fa5d0c0fcde",
+        "fragments": [
+          {
+            "id": "f5701142-86ce-4290-978d-44e237e16567",
+            "text": " — один",
+            "receivedAtMs": 1793264813234,
+            "startMs": 32600,
+            "endMs": 32800
+          },
+          {
+            "id": "719d3f1d-1e51-419a-b384-502cdc3a7de8",
+            "text": "надцать",
+            "receivedAtMs": 1793264813418,
+            "startMs": 32800,
+            "endMs": 33000
+          },
+          {
+            "id": "62e88442-966e-4bc0-8237-fc5a2c9dea6a",
+            "text": " евро.",
+            "receivedAtMs": 1793264813820,
+            "startMs": 33200,
+            "endMs": 33400
+          }
+        ]
+      },
+      {
+        "id": "72186e72-8b9c-4063-8b20-035f44d2ba26",
+        "fragments": [
+          {
+            "id": "9c9f034f-7285-4b4f-aa07-5b7ed369b8f6",
+            "text": " Por favor",
+            "receivedAtMs": 1793264825226,
+            "startMs": 44600,
+            "endMs": 44800
+          },
+          {
+            "id": "9f7d2a2d-df61-4f7a-95a0-21adbf671c1c",
+            "text": ",",
+            "receivedAtMs": 1793264825426,
+            "startMs": 44800,
+            "endMs": 45000
+          }
+        ]
+      },
+      {
+        "id": "4f925e4b-5e47-44ac-a9e8-e4f29ede5144",
+        "fragments": [
+          {
+            "id": "509419dc-5128-42e6-8245-265129783064",
+            "text": " añada",
+            "receivedAtMs": 1793264825673,
+            "startMs": 45000,
+            "endMs": 45200
+          },
+          {
+            "id": "10d7dacf-cbed-4a27-89b3-334ee01fb91f",
+            "text": " un",
+            "receivedAtMs": 1793264825866,
+            "startMs": 45200,
+            "endMs": 45400
+          },
+          {
+            "id": "2b0f606c-7f9c-40f8-8996-7e22fbf822cb",
+            "text": " seguro",
+            "receivedAtMs": 1793264826026,
+            "startMs": 45400,
+            "endMs": 45600
+          }
+        ]
+      },
+      {
+        "id": "84e6a10c-8bf9-41d6-94b6-63eb0b10534c",
+        "fragments": [
+          {
+            "id": "fc2b0f00-9127-4af5-b91a-2e259539c2b9",
+            "text": " por cien",
+            "receivedAtMs": 1793264826401,
+            "startMs": 45800,
+            "endMs": 46000
+          },
+          {
+            "id": "c7f3fe5a-fee0-4df5-b81a-0b33b62e584b",
+            "text": " euros.",
+            "receivedAtMs": 1793264826801,
+            "startMs": 46200,
+            "endMs": 46400
+          }
+        ]
+      },
+      {
+        "id": "b4e27452-17b2-46e6-934e-cbaefa793b1f",
+        "fragments": [
+          {
+            "id": "1aa3d563-55e3-4e7d-907f-d1f94f5ef40d",
+            "text": " Страх",
+            "receivedAtMs": 1793264830026,
+            "startMs": 49400,
+            "endMs": 49600
+          },
+          {
+            "id": "ca30a528-693c-4083-bb65-1cf4cba2a303",
+            "text": "овка",
+            "receivedAtMs": 1793264830233,
+            "startMs": 49600,
+            "endMs": 49800
+          },
+          {
+            "id": "38cdc0d6-24a8-450c-a48a-8d70aaf97765",
+            "text": " стоит",
+            "receivedAtMs": 1793264830452,
+            "startMs": 49800,
+            "endMs": 50000
+          }
+        ]
+      },
+      {
+        "id": "7f74a456-15cb-4944-b84e-707ad6bd2705",
+        "fragments": [
+          {
+            "id": "63baf45b-9340-475f-93f7-2351a26671df",
+            "text": " ещё",
+            "receivedAtMs": 1793264830663,
+            "startMs": 50000,
+            "endMs": 50200
+          },
+          {
+            "id": "e99e6e47-7a5b-433d-811d-b4bd804fb7dc",
+            "text": " пять",
+            "receivedAtMs": 1793264830816,
+            "startMs": 50200,
+            "endMs": 50400
+          },
+          {
+            "id": "e0afd2ba-dbb4-4df3-a7ae-06949142a239",
+            "text": " евро",
+            "receivedAtMs": 1793264831215,
+            "startMs": 50600,
+            "endMs": 50800
+          }
+        ]
+      },
+      {
+        "id": "0fe5364b-ea9c-4795-b110-388d066953ef",
+        "fragments": [
+          {
+            "id": "b995f4a3-f091-448a-ae7f-fe993639fef5",
+            "text": " и",
+            "receivedAtMs": 1793264831653,
+            "startMs": 51000,
+            "endMs": 51200
+          },
+          {
+            "id": "006fe5c6-591b-40fc-8978-6d08666a1560",
+            "text": " покрывает",
+            "receivedAtMs": 1793264831818,
+            "startMs": 51200,
+            "endMs": 51400
+          },
+          {
+            "id": "7f3cba22-d9a1-4d27-b53f-bcdac0a1e7cd",
+            "text": " потерю",
+            "receivedAtMs": 1793264832226,
+            "startMs": 51600,
+            "endMs": 51800
+          },
+          {
+            "id": "8fc84520-606f-4c92-bab1-3ce3540013eb",
+            "text": ".",
+            "receivedAtMs": 1793264832458,
+            "startMs": 51800,
+            "endMs": 52000
+          }
+        ]
+      }
+    ],
+    "expected": {
+      "input": {
+        "A": " Здравствуйте, мне нужно отправить посылку в Мадрид.  Посылка весит два килограмма, внутри книги и одежда Пожалуйста, добавьте страхование на сто евро",
+        "B": "Espere. La entrega será en Sevilla Buenos días, ¿cuánto pesa el paquete Entonces, el precio es once euros El seguro cuesta cinco euros más y cubre la pérdida"
+      },
+      "output": {
+        "A": " Подождите. Доставка будет в Севилью. Добрый день, сколько весит посылка? Тогда цена — одиннадцать евро. Страховка стоит ещё пять евро и покрывает потерю.",
+        "B": " Hola, necesito enviar un paquete a Madrid. Espere. La entrega será en Sevilla. El paquete pesa dos kilos; dentro hay libros y ropa. Por favor, añada un seguro por cien euros."
+      }
+    }
+  },
+  {
+    "voice": [
+      {
+        "active": true,
+        "receivedAtMs": 1793264843695.0999
+      },
+      {
+        "active": false,
+        "receivedAtMs": 1793264847895.2998
+      },
+      {
+        "active": true,
+        "receivedAtMs": 1793264847945.7998
+      },
+      {
+        "active": false,
+        "receivedAtMs": 1793264858794.7998
+      },
+      {
+        "active": true,
+        "receivedAtMs": 1793264870844.7998
+      },
+      {
+        "active": false,
+        "receivedAtMs": 1793264875594.7
+      },
+      {
+        "active": true,
+        "receivedAtMs": 1793264881095
+      },
+      {
+        "active": false,
+        "receivedAtMs": 1793264889746.2998
+      },
+      {
+        "active": true,
+        "receivedAtMs": 1793264899446.7998
+      },
+      {
+        "active": false,
+        "receivedAtMs": 1793264903295.5
+      },
+      {
+        "active": true,
+        "receivedAtMs": 1793264908345.2998
+      },
+      {
+        "active": false,
+        "receivedAtMs": 1793264912344.5999
+      },
+      {
+        "active": true,
+        "receivedAtMs": 1793264920444.2998
+      },
+      {
+        "active": false,
+        "receivedAtMs": 1793264923944.5999
+      },
+      {
+        "active": true,
+        "receivedAtMs": 1793264929145.5999
+      },
+      {
+        "active": false,
+        "receivedAtMs": 1793264933195.0999
+      },
+      {
+        "active": true,
+        "receivedAtMs": 1793264942496.5
+      },
+      {
+        "active": false,
+        "receivedAtMs": 1793264947194.7998
+      }
+    ],
+    "name": "05-model playback interruptions and exact microphone reopening RU-ES / complete-repeat-interrupt_es",
+    "evidence": "results/extended-browser-extended--49197--microphone-reopening-RU-ES-chromium-real-live/evidence.json",
+    "generation": 1,
+    "input": [
+      {
+        "id": "input:0",
+        "text": " Я",
+        "startMs": 4200,
+        "endMs": 4400,
+        "receivedAtMs": 1793264844912.2998
+      },
+      {
+        "id": "input:1",
+        "text": " хочу",
+        "startMs": 5000,
+        "endMs": 5200,
+        "receivedAtMs": 1793264845703.5
+      },
+      {
+        "id": "input:2",
+        "text": " заказать",
+        "startMs": 5600,
+        "endMs": 5800,
+        "receivedAtMs": 1793264846321.4
+      },
+      {
+        "id": "input:3",
+        "text": " доставку",
+        "startMs": 6200,
+        "endMs": 6400,
+        "receivedAtMs": 1793264846947.2998
+      },
+      {
+        "id": "input:4",
+        "text": " на",
+        "startMs": 6400,
+        "endMs": 6600,
+        "receivedAtMs": 1793264847104.0999
+      },
+      {
+        "id": "input:5",
+        "text": " субботу",
+        "startMs": 7000,
+        "endMs": 7200,
+        "receivedAtMs": 1793264847698.5
+      },
+      {
+        "id": "input:6",
+        "text": " утром",
+        "startMs": 7400,
+        "endMs": 7600,
+        "receivedAtMs": 1793264848123.0999
+      },
+      {
+        "id": "input:7",
+        "text": ". В",
+        "startMs": 8000,
+        "endMs": 8200,
+        "receivedAtMs": 1793264848706.9
+      },
+      {
+        "id": "input:8",
+        "text": " посылке",
+        "startMs": 8600,
+        "endMs": 8800,
+        "receivedAtMs": 1793264849312.5999
+      },
+      {
+        "id": "input:9",
+        "text": " лежат",
+        "startMs": 9000,
+        "endMs": 9200,
+        "receivedAtMs": 1793264849702.7998
+      },
+      {
+        "id": "input:10",
+        "text": " книги",
+        "startMs": 9400,
+        "endMs": 9600,
+        "receivedAtMs": 1793264850119.7
+      },
+      {
+        "id": "input:11",
+        "text": " и",
+        "startMs": 9800,
+        "endMs": 10000,
+        "receivedAtMs": 1793264850522.5999
+      },
+      {
+        "id": "input:12",
+        "text": " зимняя",
+        "startMs": 10200,
+        "endMs": 10400,
+        "receivedAtMs": 1793264850916.5
+      },
+      {
+        "id": "input:13",
+        "text": " одежда",
+        "startMs": 11000,
+        "endMs": 11200,
+        "receivedAtMs": 1793264851712.7998
+      },
+      {
+        "id": "input:14",
+        "text": ". Пожал",
+        "startMs": 13200,
+        "endMs": 13400,
+        "receivedAtMs": 1793264853995.2
+      },
+      {
+        "id": "input:15",
+        "text": "уйста, поз",
+        "startMs": 13400,
+        "endMs": 13600,
+        "receivedAtMs": 1793264854170
+      },
+      {
+        "id": "input:16",
+        "text": "воните",
+        "startMs": 13600,
+        "endMs": 13800,
+        "receivedAtMs": 1793264854302.4
+      },
+      {
+        "id": "input:17",
+        "text": " получателю",
+        "startMs": 14000,
+        "endMs": 14200,
+        "receivedAtMs": 1793264854711.9
+      },
+      {
+        "id": "input:18",
+        "text": " заранее, потому",
+        "startMs": 15200,
+        "endMs": 15400,
+        "receivedAtMs": 1793264855934.2998
+      },
+      {
+        "id": "input:19",
+        "text": " что",
+        "startMs": 15400,
+        "endMs": 15600,
+        "receivedAtMs": 1793264856108
+      },
+      {
+        "id": "input:20",
+        "text": " вход во",
+        "startMs": 15800,
+        "endMs": 16000,
+        "receivedAtMs": 1793264856550.9
+      },
+      {
+        "id": "input:21",
+        "text": " двор",
+        "startMs": 16000,
+        "endMs": 16200,
+        "receivedAtMs": 1793264856705.5999
+      },
+      {
+        "id": "input:22",
+        "text": " закрыт",
+        "startMs": 16600,
+        "endMs": 16800,
+        "receivedAtMs": 1793264857311.7998
+      },
+      {
+        "id": "input:23",
+        "text": ", а",
+        "startMs": 17000,
+        "endMs": 17200,
+        "receivedAtMs": 1793264857719.5999
+      },
+      {
+        "id": "input:24",
+        "text": " домофон",
+        "startMs": 17600,
+        "endMs": 17800,
+        "receivedAtMs": 1793264858476.7
+      },
+      {
+        "id": "input:25",
+        "text": " не",
+        "startMs": 17800,
+        "endMs": 18000,
+        "receivedAtMs": 1793264858653.7998
+      },
+      {
+        "id": "input:26",
+        "text": " работает",
+        "startMs": 18400,
+        "endMs": 18600,
+        "receivedAtMs": 1793264859280
+      },
+      {
+        "id": "input:27",
+        "text": " Perdón,",
+        "startMs": 32000,
+        "endMs": 32200,
+        "receivedAtMs": 1793264872745
+      },
+      {
+        "id": "input:28",
+        "text": " el",
+        "startMs": 32200,
+        "endMs": 32400,
+        "receivedAtMs": 1793264872934.5
+      },
+      {
+        "id": "input:29",
+        "text": " sábado",
+        "startMs": 32400,
+        "endMs": 32600,
+        "receivedAtMs": 1793264873112.4
+      },
+      {
+        "id": "input:30",
+        "text": " estamos",
+        "startMs": 33000,
+        "endMs": 33200,
+        "receivedAtMs": 1793264873698.4
+      },
+      {
+        "id": "input:31",
+        "text": " cerrados",
+        "startMs": 33600,
+        "endMs": 33800,
+        "receivedAtMs": 1793264874310.9
+      },
+      {
+        "id": "input:32",
+        "text": ". Podemos el",
+        "startMs": 34600,
+        "endMs": 34800,
+        "receivedAtMs": 1793264875313.2998
+      },
+      {
+        "id": "input:33",
+        "text": " lunes",
+        "startMs": 35200,
+        "endMs": 35400,
+        "receivedAtMs": 1793264876055.4
+      },
+      {
+        "id": "input:34",
+        "text": " El",
+        "startMs": 41400,
+        "endMs": 41600,
+        "receivedAtMs": 1793264882101
+      },
+      {
+        "id": "input:35",
+        "text": " autobús",
+        "startMs": 42000,
+        "endMs": 42200,
+        "receivedAtMs": 1793264882777.5
+      },
+      {
+        "id": "input:36",
+        "text": " sale",
+        "startMs": 42200,
+        "endMs": 42400,
+        "receivedAtMs": 1793264882893.5
+      },
+      {
+        "id": "input:37",
+        "text": " mañana",
+        "startMs": 42800,
+        "endMs": 43000,
+        "receivedAtMs": 1793264883549.2998
+      },
+      {
+        "id": "input:38",
+        "text": " a",
+        "startMs": 43000,
+        "endMs": 43200,
+        "receivedAtMs": 1793264883739.9
+      },
+      {
+        "id": "input:39",
+        "text": " las",
+        "startMs": 43200,
+        "endMs": 43400,
+        "receivedAtMs": 1793264883932.5999
+      },
+      {
+        "id": "input:40",
+        "text": " ocho",
+        "startMs": 43400,
+        "endMs": 43600,
+        "receivedAtMs": 1793264884159.2
+      },
+      {
+        "id": "input:41",
+        "text": " de la",
+        "startMs": 43600,
+        "endMs": 43800,
+        "receivedAtMs": 1793264884295.5999
+      },
+      {
+        "id": "input:42",
+        "text": " mañana",
+        "startMs": 44200,
+        "endMs": 44400,
+        "receivedAtMs": 1793264884907.5
+      },
+      {
+        "id": "input:43",
+        "text": ". Primero",
+        "startMs": 45200,
+        "endMs": 45400,
+        "receivedAtMs": 1793264885913.5
+      },
+      {
+        "id": "input:44",
+        "text": " iremos a",
+        "startMs": 45800,
+        "endMs": 46000,
+        "receivedAtMs": 1793264886508.7998
+      },
+      {
+        "id": "input:45",
+        "text": " Madrid, y",
+        "startMs": 46800,
+        "endMs": 47000,
+        "receivedAtMs": 1793264887595.5999
+      },
+      {
+        "id": "input:46",
+        "text": " después",
+        "startMs": 47200,
+        "endMs": 47400,
+        "receivedAtMs": 1793264887904.5
+      },
+      {
+        "id": "input:47",
+        "text": " haremos una",
+        "startMs": 47800,
+        "endMs": 48000,
+        "receivedAtMs": 1793264888644.7
+      },
+      {
+        "id": "input:48",
+        "text": " parada",
+        "startMs": 48200,
+        "endMs": 48400,
+        "receivedAtMs": 1793264889051.9
+      },
+      {
+        "id": "input:49",
+        "text": " de",
+        "startMs": 48400,
+        "endMs": 48600,
+        "receivedAtMs": 1793264889227.0999
+      },
+      {
+        "id": "input:50",
+        "text": " veinte",
+        "startMs": 48800,
+        "endMs": 49000,
+        "receivedAtMs": 1793264889632.5
+      },
+      {
+        "id": "input:51",
+        "text": " Извините",
+        "startMs": 61000,
+        "endMs": 61200,
+        "receivedAtMs": 1793264901768.4
+      },
+      {
+        "id": "input:52",
+        "text": ", не в",
+        "startMs": 61200,
+        "endMs": 61400,
+        "receivedAtMs": 1793264901907.9
+      },
+      {
+        "id": "input:53",
+        "text": " Мадрид",
+        "startMs": 61600,
+        "endMs": 61800,
+        "receivedAtMs": 1793264902326.2998
+      },
+      {
+        "id": "input:54",
+        "text": ", а в",
+        "startMs": 62200,
+        "endMs": 62400,
+        "receivedAtMs": 1793264902926.7998
+      },
+      {
+        "id": "input:55",
+        "text": " Севиль",
+        "startMs": 62800,
+        "endMs": 63000,
+        "receivedAtMs": 1793264903611.2
+      },
+      {
+        "id": "input:56",
+        "text": "ю",
+        "startMs": 63000,
+        "endMs": 63200,
+        "receivedAtMs": 1793264903690
+      },
+      {
+        "id": "input:57",
+        "text": " Здравствуйте.",
+        "startMs": 70000,
+        "endMs": 70200,
+        "receivedAtMs": 1793264910728.2
+      },
+      {
+        "id": "input:58",
+        "text": " Мне",
+        "startMs": 70200,
+        "endMs": 70400,
+        "receivedAtMs": 1793264910930.2998
+      },
+      {
+        "id": "input:59",
+        "text": " нужно",
+        "startMs": 70400,
+        "endMs": 70600,
+        "receivedAtMs": 1793264911090.9
+      },
+      {
+        "id": "input:60",
+        "text": " отправить",
+        "startMs": 70800,
+        "endMs": 71000,
+        "receivedAtMs": 1793264911480.5
+      },
+      {
+        "id": "input:61",
+        "text": " посылку",
+        "startMs": 71400,
+        "endMs": 71600,
+        "receivedAtMs": 1793264912128
+      },
+      {
+        "id": "input:62",
+        "text": " в",
+        "startMs": 71600,
+        "endMs": 71800,
+        "receivedAtMs": 1793264912289.2998
+      },
+      {
+        "id": "input:63",
+        "text": " Мадрид",
+        "startMs": 72000,
+        "endMs": 72200,
+        "receivedAtMs": 1793264912891
+      },
+      {
+        "id": "input:64",
+        "text": " Нет, страх",
+        "startMs": 82200,
+        "endMs": 82400,
+        "receivedAtMs": 1793264922944.2998
+      },
+      {
+        "id": "input:65",
+        "text": "ование на",
+        "startMs": 82400,
+        "endMs": 82600,
+        "receivedAtMs": 1793264923095.0999
+      },
+      {
+        "id": "input:66",
+        "text": " 200",
+        "startMs": 83000,
+        "endMs": 83200,
+        "receivedAtMs": 1793264923682.9
+      },
+      {
+        "id": "input:67",
+        "text": " евро",
+        "startMs": 83400,
+        "endMs": 83600,
+        "receivedAtMs": 1793264924080.4
+      },
+      {
+        "id": "input:68",
+        "text": " Здравствуйте.",
+        "startMs": 90800,
+        "endMs": 91000,
+        "receivedAtMs": 1793264931521.0999
+      },
+      {
+        "id": "input:69",
+        "text": " Мне",
+        "startMs": 91000,
+        "endMs": 91200,
+        "receivedAtMs": 1793264931736.9
+      },
+      {
+        "id": "input:70",
+        "text": " нужно",
+        "startMs": 91200,
+        "endMs": 91400,
+        "receivedAtMs": 1793264931888.4
+      },
+      {
+        "id": "input:71",
+        "text": " отправить",
+        "startMs": 91600,
+        "endMs": 91800,
+        "receivedAtMs": 1793264932322.9
+      },
+      {
+        "id": "input:72",
+        "text": " посылку",
+        "startMs": 92200,
+        "endMs": 92400,
+        "receivedAtMs": 1793264932927.9
+      },
+      {
+        "id": "input:73",
+        "text": " в",
+        "startMs": 92400,
+        "endMs": 92600,
+        "receivedAtMs": 1793264933088.9
+      },
+      {
+        "id": "input:74",
+        "text": " Мадрид",
+        "startMs": 92800,
+        "endMs": 93000,
+        "receivedAtMs": 1793264933476.7998
+      },
+      {
+        "id": "input:75",
+        "text": " Perdón,",
+        "startMs": 103600,
+        "endMs": 103800,
+        "receivedAtMs": 1793264944338.0999
+      },
+      {
+        "id": "input:76",
+        "text": " el",
+        "startMs": 103800,
+        "endMs": 104000,
+        "receivedAtMs": 1793264944483.5999
+      },
+      {
+        "id": "input:77",
+        "text": " sábado",
+        "startMs": 104200,
+        "endMs": 104400,
+        "receivedAtMs": 1793264944886.9
+      },
+      {
+        "id": "input:78",
+        "text": " estamos",
+        "startMs": 104600,
+        "endMs": 104800,
+        "receivedAtMs": 1793264945281.2
+      },
+      {
+        "id": "input:79",
+        "text": " cerrados",
+        "startMs": 105200,
+        "endMs": 105400,
+        "receivedAtMs": 1793264945878.7998
+      },
+      {
+        "id": "input:80",
+        "text": ". Podemos",
+        "startMs": 106200,
+        "endMs": 106400,
+        "receivedAtMs": 1793264946938.4
+      },
+      {
+        "id": "input:81",
+        "text": " el",
+        "startMs": 106400,
+        "endMs": 106600,
+        "receivedAtMs": 1793264947091.5
+      },
+      {
+        "id": "input:82",
+        "text": " lunes",
+        "startMs": 106800,
+        "endMs": 107000,
+        "receivedAtMs": 1793264947634.9
+      }
+    ],
+    "outputs": [
+      {
+        "id": "982b40eb-82dc-4017-995f-6eb1f0ed14c1",
+        "fragments": [
+          {
+            "id": "f1fdc5af-525b-4b1d-aae4-0f9fe8dbd175",
+            "text": " Quiero",
+            "receivedAtMs": 1793264858480,
+            "startMs": 17600,
+            "endMs": 17800
+          },
+          {
+            "id": "303778fb-9562-41fb-b189-6620fc27e35d",
+            "text": " pedir una",
+            "receivedAtMs": 1793264858656,
+            "startMs": 17800,
+            "endMs": 18000
+          }
+        ]
+      },
+      {
+        "id": "0ccf0804-3a67-4939-88cb-9ce4fbb29055",
+        "fragments": [
+          {
+            "id": "e34e09c8-71b3-4369-8bc9-93a5f94eed78",
+            "text": " entrega",
+            "receivedAtMs": 1793264858831,
+            "startMs": 18000,
+            "endMs": 18200
+          },
+          {
+            "id": "ddeb34b2-29e3-4548-86e4-dbfcc9a1e0c6",
+            "text": " para el",
+            "receivedAtMs": 1793264859285,
+            "startMs": 18400,
+            "endMs": 18600
+          }
+        ]
+      },
+      {
+        "id": "ec0596fc-da1e-4ece-919b-6e1087803ad1",
+        "fragments": [
+          {
+            "id": "65f1406d-5a47-4106-9884-7f9697deb3b1",
+            "text": " sábado",
+            "receivedAtMs": 1793264859462,
+            "startMs": 18600,
+            "endMs": 18800
+          },
+          {
+            "id": "c8409cfe-ac5d-46e2-8030-bc55e39836e6",
+            "text": " por la",
+            "receivedAtMs": 1793264859847,
+            "startMs": 19000,
+            "endMs": 19200
+          },
+          {
+            "id": "a9801865-ea4b-4ab7-8526-e64e35c450db",
+            "text": " mañana.",
+            "receivedAtMs": 1793264860044,
+            "startMs": 19200,
+            "endMs": 19400
+          }
+        ]
+      },
+      {
+        "id": "7c8433e5-0544-4908-b408-568612097bf1",
+        "fragments": [
+          {
+            "id": "410813e3-5c81-4ee1-8176-f47d5fa0322c",
+            "text": " En el",
+            "receivedAtMs": 1793264860663,
+            "startMs": 19800,
+            "endMs": 20000
+          },
+          {
+            "id": "55cc9b4d-5bbd-4186-9d61-85a1b3b8a745",
+            "text": " paquete",
+            "receivedAtMs": 1793264860838,
+            "startMs": 20000,
+            "endMs": 20200
+          },
+          {
+            "id": "7fc09980-d652-4ec9-94ab-a647f3ddef61",
+            "text": " hay libros",
+            "receivedAtMs": 1793264861248,
+            "startMs": 20400,
+            "endMs": 20600
+          }
+        ]
+      },
+      {
+        "id": "f57638b3-ce2a-4deb-b38b-5e217913f90c",
+        "fragments": [
+          {
+            "id": "af947170-5c37-4f26-b812-b3db01af3170",
+            "text": " y",
+            "receivedAtMs": 1793264861653,
+            "startMs": 20800,
+            "endMs": 21000
+          },
+          {
+            "id": "914f7317-15ee-4c5d-85df-43f67428b35f",
+            "text": " ropa",
+            "receivedAtMs": 1793264861848,
+            "startMs": 21000,
+            "endMs": 21200
+          },
+          {
+            "id": "3f795655-7a8d-403f-9b48-35790b47a313",
+            "text": " de",
+            "receivedAtMs": 1793264862045,
+            "startMs": 21200,
+            "endMs": 21400
+          },
+          {
+            "id": "15a1681e-bd4a-491c-90f6-ffdb570445d3",
+            "text": " invierno.",
+            "receivedAtMs": 1793264862238,
+            "startMs": 21400,
+            "endMs": 21600
+          }
+        ]
+      },
+      {
+        "id": "20d73c41-df35-4995-9e62-fdd95a35c4f7",
+        "fragments": [
+          {
+            "id": "fc0740d5-6936-4609-9f5a-1ee9b4782710",
+            "text": " Por",
+            "receivedAtMs": 1793264862660,
+            "startMs": 21800,
+            "endMs": 22000
+          },
+          {
+            "id": "1dfb9fc2-99f1-40b1-a823-9758cff2eb7b",
+            "text": " favor,",
+            "receivedAtMs": 1793264862838,
+            "startMs": 22000,
+            "endMs": 22200
+          }
+        ]
+      },
+      {
+        "id": "db101cdf-a8c8-405b-ae39-03bc0ef5b350",
+        "fragments": [
+          {
+            "id": "fef815fd-7ef6-42d2-8a52-e2c047bbea03",
+            "text": " llame",
+            "receivedAtMs": 1793264863245,
+            "startMs": 22400,
+            "endMs": 22600
+          },
+          {
+            "id": "d87560e6-89b5-452b-9565-c3a6099e9b13",
+            "text": " al destinat",
+            "receivedAtMs": 1793264863460,
+            "startMs": 22600,
+            "endMs": 22800
+          }
+        ]
+      },
+      {
+        "id": "9194003c-86f0-40f3-a067-07308293e956",
+        "fragments": [
+          {
+            "id": "5cbb867e-47fe-42cc-ab07-a483921b9c4b",
+            "text": "ario",
+            "receivedAtMs": 1793264863631,
+            "startMs": 22800,
+            "endMs": 23000
+          }
+        ]
+      },
+      {
+        "id": "6f08582e-6707-4b1b-9c7b-ea4d25da2d15",
+        "fragments": [
+          {
+            "id": "fdb80150-cfcc-47cc-b60e-16df4376be7f",
+            "text": " con ant",
+            "receivedAtMs": 1793264864284,
+            "startMs": 23400,
+            "endMs": 23600
+          },
+          {
+            "id": "d8ee05ec-95a6-45f7-8e3f-56100c493ddf",
+            "text": "elación",
+            "receivedAtMs": 1793264864446,
+            "startMs": 23600,
+            "endMs": 23800
+          },
+          {
+            "id": "c823e01c-6b81-4e6a-8f8f-718712386259",
+            "text": ",",
+            "receivedAtMs": 1793264864639,
+            "startMs": 23800,
+            "endMs": 24000
+          }
+        ]
+      },
+      {
+        "id": "e4692f91-d3bb-4788-8c80-2aa2e75303b8",
+        "fragments": [
+          {
+            "id": "8fb0a927-d5a0-488c-9de8-1a3d430fc0cc",
+            "text": " porque",
+            "receivedAtMs": 1793264865034,
+            "startMs": 24200,
+            "endMs": 24400
+          },
+          {
+            "id": "3ff47069-d3d4-4415-9bd4-907f11583951",
+            "text": " la entrada",
+            "receivedAtMs": 1793264865432,
+            "startMs": 24600,
+            "endMs": 24800
+          }
+        ]
+      },
+      {
+        "id": "325915dc-ac13-4625-93ae-46c9d95fda1c",
+        "fragments": [
+          {
+            "id": "4bb4f26c-9792-4df8-b6b0-7d2d09a3ec2a",
+            "text": " al patio",
+            "receivedAtMs": 1793264865855,
+            "startMs": 25000,
+            "endMs": 25200
+          },
+          {
+            "id": "8e0292e8-7405-4d3c-9630-58f9c10070c9",
+            "text": " está",
+            "receivedAtMs": 1793264866055,
+            "startMs": 25200,
+            "endMs": 25400
+          }
+        ]
+      },
+      {
+        "id": "784332d1-dc73-4296-88d1-f8acf249cdda",
+        "fragments": [
+          {
+            "id": "26ec3d1d-c303-4e90-97e1-8b67be755a64",
+            "text": " cerrada",
+            "receivedAtMs": 1793264866231,
+            "startMs": 25400,
+            "endMs": 25600
+          }
+        ]
+      },
+      {
+        "id": "0a0c935f-dd35-4454-bd94-293137b5d2e3",
+        "fragments": [
+          {
+            "id": "49f4bfb4-6cb2-4439-84c6-eb41a08420c5",
+            "text": " y",
+            "receivedAtMs": 1793264866864,
+            "startMs": 26000,
+            "endMs": 26200
+          },
+          {
+            "id": "44431e0f-a7a8-46ff-8fed-9a3ac053176a",
+            "text": " el port",
+            "receivedAtMs": 1793264867050,
+            "startMs": 26200,
+            "endMs": 26400
+          },
+          {
+            "id": "e85eea60-349b-4445-813b-aa8dc4db3809",
+            "text": "ero",
+            "receivedAtMs": 1793264867263,
+            "startMs": 26400,
+            "endMs": 26600
+          },
+          {
+            "id": "d08a2ca3-58c8-49be-add7-24ecde30a9c6",
+            "text": " automático",
+            "receivedAtMs": 1793264867436,
+            "startMs": 26600,
+            "endMs": 26800
+          }
+        ]
+      },
+      {
+        "id": "6cce8986-df82-4b19-aa1d-252210b82017",
+        "fragments": [
+          {
+            "id": "3815d522-41a2-4e8a-aa6d-639e2ede1bfa",
+            "text": " no funciona",
+            "receivedAtMs": 1793264868049,
+            "startMs": 27200,
+            "endMs": 27400
+          },
+          {
+            "id": "4df8a043-c476-47b2-81f7-a7f77c271c34",
+            "text": ".",
+            "receivedAtMs": 1793264868236,
+            "startMs": 27400,
+            "endMs": 27600
+          }
+        ]
+      },
+      {
+        "id": "f9b7ea23-0888-4478-8cc9-5160ae22d93a",
+        "fragments": [
+          {
+            "id": "12b627e2-f12d-4af7-a81d-242a0046c749",
+            "text": " Извин",
+            "receivedAtMs": 1793264876058,
+            "startMs": 35200,
+            "endMs": 35400
+          },
+          {
+            "id": "a52d2d4f-26de-4ce0-a668-75add4bc153e",
+            "text": "ите,",
+            "receivedAtMs": 1793264876256,
+            "startMs": 35400,
+            "endMs": 35600
+          }
+        ]
+      },
+      {
+        "id": "e5459fcf-5c46-4f43-9550-671682eba010",
+        "fragments": [
+          {
+            "id": "cd716f83-9c48-4e4e-a074-dfb650c6e145",
+            "text": " в суб",
+            "receivedAtMs": 1793264876497,
+            "startMs": 35600,
+            "endMs": 35800
+          },
+          {
+            "id": "4c65bc74-89bc-4f23-9692-4ac1f22683c8",
+            "text": "боту",
+            "receivedAtMs": 1793264876655,
+            "startMs": 35800,
+            "endMs": 36000
+          },
+          {
+            "id": "8cba6ed2-805e-4a43-8ebf-fccead39ff58",
+            "text": " мы",
+            "receivedAtMs": 1793264877051,
+            "startMs": 36200,
+            "endMs": 36400
+          }
+        ]
+      },
+      {
+        "id": "f8431770-282e-4ea6-8de3-feed4ab8c4d8",
+        "fragments": [
+          {
+            "id": "34d7bd5d-47a2-4883-9741-871ae1691f9b",
+            "text": " закрыты",
+            "receivedAtMs": 1793264877269,
+            "startMs": 36400,
+            "endMs": 36600
+          },
+          {
+            "id": "e7befee7-5777-4974-aab2-03c2b599c6af",
+            "text": ".",
+            "receivedAtMs": 1793264877452,
+            "startMs": 36600,
+            "endMs": 36800
+          }
+        ]
+      },
+      {
+        "id": "4b306d75-7942-4ed0-aef6-9183e53e860f",
+        "fragments": [
+          {
+            "id": "7264f231-0b7b-46ec-8a82-2fdbc31b4a2d",
+            "text": " Мож",
+            "receivedAtMs": 1793264877839,
+            "startMs": 37000,
+            "endMs": 37200
+          },
+          {
+            "id": "9f278bcb-535e-4b38-b27d-3edb9a72f4d2",
+            "text": "ем",
+            "receivedAtMs": 1793264878074,
+            "startMs": 37200,
+            "endMs": 37400
+          },
+          {
+            "id": "e50ed7ba-6cf1-485a-977b-8df75c6ac4bb",
+            "text": " в",
+            "receivedAtMs": 1793264878248,
+            "startMs": 37400,
+            "endMs": 37600
+          }
+        ]
+      },
+      {
+        "id": "8ff4e174-ce0d-4586-bdcb-dcf4d942e4d2",
+        "fragments": [
+          {
+            "id": "99772720-5227-47dd-8087-2e2302b7f58e",
+            "text": " понедель",
+            "receivedAtMs": 1793264878461,
+            "startMs": 37600,
+            "endMs": 37800
+          },
+          {
+            "id": "4bf520e2-3688-4132-a297-a1a1c9666643",
+            "text": "ник.",
+            "receivedAtMs": 1793264878635,
+            "startMs": 37800,
+            "endMs": 38000
+          }
+        ]
+      },
+      {
+        "id": "4f830468-4d6e-4e53-b828-1012fc30c84e",
+        "fragments": [
+          {
+            "id": "99ec945c-7d15-46ec-94f0-a8671a43c532",
+            "text": " Автоб",
+            "receivedAtMs": 1793264888646,
+            "startMs": 47800,
+            "endMs": 48000
+          },
+          {
+            "id": "00beb77a-a12d-4762-a5ba-0235fad1aebb",
+            "text": "ус",
+            "receivedAtMs": 1793264888834,
+            "startMs": 48000,
+            "endMs": 48200
+          },
+          {
+            "id": "56d43b17-d6eb-4baa-bba0-52b64b220e2e",
+            "text": " уез",
+            "receivedAtMs": 1793264889053,
+            "startMs": 48200,
+            "endMs": 48400
+          }
+        ]
+      },
+      {
+        "id": "1d1e630b-8f95-40e9-ab93-55e2f613ec57",
+        "fragments": [
+          {
+            "id": "173e3148-55f2-4e54-bf52-5a5000fb2ba7",
+            "text": "жает",
+            "receivedAtMs": 1793264889229,
+            "startMs": 48400,
+            "endMs": 48600
+          },
+          {
+            "id": "95e2f429-fbc6-43ab-8dcf-a158ec9f3a9b",
+            "text": " завтра",
+            "receivedAtMs": 1793264889634,
+            "startMs": 48800,
+            "endMs": 49000
+          }
+        ]
+      },
+      {
+        "id": "ee212d92-e17b-496e-9ea0-dd6ad1795d60",
+        "fragments": [
+          {
+            "id": "86bc943e-3f06-44ad-af6b-a9f77d3b1998",
+            "text": " в вос",
+            "receivedAtMs": 1793264890041,
+            "startMs": 49200,
+            "endMs": 49400
+          },
+          {
+            "id": "40085c52-6bc5-43dd-9e81-00bbfa05805a",
+            "text": "емь",
+            "receivedAtMs": 1793264890253,
+            "startMs": 49400,
+            "endMs": 49600
+          },
+          {
+            "id": "8a4deafd-5472-4d41-8bda-46a9bb088bf2",
+            "text": " утра.",
+            "receivedAtMs": 1793264890429,
+            "startMs": 49600,
+            "endMs": 49800
+          }
+        ]
+      },
+      {
+        "id": "b0a5a7e1-38b2-45c2-93cd-b6f346baae4b",
+        "fragments": [
+          {
+            "id": "fd3b3a6a-b5f6-415e-8f37-780f7062a8e8",
+            "text": " Сначала",
+            "receivedAtMs": 1793264890834,
+            "startMs": 50000,
+            "endMs": 50200
+          }
+        ]
+      },
+      {
+        "id": "40e8b39b-c848-4b1b-a220-1f39de14207b",
+        "fragments": [
+          {
+            "id": "ecdbf8e9-d8f9-490b-9930-05f8e09fc276",
+            "text": " мы",
+            "receivedAtMs": 1793264891460,
+            "startMs": 50600,
+            "endMs": 50800
+          },
+          {
+            "id": "97038a2f-6970-426c-81fb-4fb9131184ac",
+            "text": " поед",
+            "receivedAtMs": 1793264891666,
+            "startMs": 50800,
+            "endMs": 51000
+          },
+          {
+            "id": "2503de46-e1e0-4848-bc3f-df7f74a27ef7",
+            "text": "ем",
+            "receivedAtMs": 1793264891848,
+            "startMs": 51000,
+            "endMs": 51200
+          },
+          {
+            "id": "eeacbb31-2033-44c6-bac6-e95369fdcac1",
+            "text": " в М",
+            "receivedAtMs": 1793264892061,
+            "startMs": 51200,
+            "endMs": 51400
+          }
+        ]
+      },
+      {
+        "id": "49ca626f-61b5-4130-9032-980072d17860",
+        "fragments": [
+          {
+            "id": "6b2879f2-90d9-43da-b180-4339f1f06767",
+            "text": "адрид",
+            "receivedAtMs": 1793264892253,
+            "startMs": 51400,
+            "endMs": 51600
+          },
+          {
+            "id": "9902d476-d001-4bf1-9cf4-9b9b47f1fffc",
+            "text": ",",
+            "receivedAtMs": 1793264892466,
+            "startMs": 51600,
+            "endMs": 51800
+          }
+        ]
+      },
+      {
+        "id": "e2f0f59c-7a86-4252-aa78-92da173b39a6",
+        "fragments": [
+          {
+            "id": "a6bc4677-084e-4ed5-afc0-2bc4ebe08c1a",
+            "text": " а затем",
+            "receivedAtMs": 1793264892626,
+            "startMs": 51800,
+            "endMs": 52000
+          },
+          {
+            "id": "75ce2491-43e6-45ed-8ade-f0c20614bbe2",
+            "text": " сделаем",
+            "receivedAtMs": 1793264893042,
+            "startMs": 52200,
+            "endMs": 52400
+          }
+        ]
+      },
+      {
+        "id": "20994e73-032b-432b-bff7-7280545ba39b",
+        "fragments": [
+          {
+            "id": "7bcf464e-1c6d-43a5-bc0a-b89ef5fa5c9d",
+            "text": " остановку",
+            "receivedAtMs": 1793264893646,
+            "startMs": 52800,
+            "endMs": 53000
+          }
+        ]
+      },
+      {
+        "id": "510e7daa-f41c-4a37-be6a-acf7e92f0abe",
+        "fragments": [
+          {
+            "id": "b3e78d1f-445c-415c-9e43-3ff7ce5ea44f",
+            "text": " на двад",
+            "receivedAtMs": 1793264894282,
+            "startMs": 53400,
+            "endMs": 53600
+          },
+          {
+            "id": "6a653648-8afc-440e-ae0d-6871cd0afeac",
+            "text": "цать",
+            "receivedAtMs": 1793264894445,
+            "startMs": 53600,
+            "endMs": 53800
+          },
+          {
+            "id": "1cd283c4-dedd-4d18-a98a-e81a7cd2f2f6",
+            "text": " минут.",
+            "receivedAtMs": 1793264894824,
+            "startMs": 54000,
+            "endMs": 54200
+          }
+        ]
+      },
+      {
+        "id": "45c0363d-2e84-4db2-80e5-a7cefe8202de",
+        "fragments": [
+          {
+            "id": "81bdf58b-4296-4407-b282-9206a34ad899",
+            "text": " Perdón",
+            "receivedAtMs": 1793264904247,
+            "startMs": 63400,
+            "endMs": 63600
+          },
+          {
+            "id": "a46693c9-8887-49fb-8f48-2fa8f36da2d2",
+            "text": ", no",
+            "receivedAtMs": 1793264904450,
+            "startMs": 63600,
+            "endMs": 63800
+          },
+          {
+            "id": "832a3730-67d8-46f0-b8f9-2f949dea84d0",
+            "text": " a Madrid",
+            "receivedAtMs": 1793264904653,
+            "startMs": 63800,
+            "endMs": 64000
+          },
+          {
+            "id": "4de339f0-95bf-44c9-ac3d-600f11336567",
+            "text": ",",
+            "receivedAtMs": 1793264904849,
+            "startMs": 64000,
+            "endMs": 64200
+          }
+        ]
+      },
+      {
+        "id": "c43885dd-b899-47d0-b3c9-02b45ebfad73",
+        "fragments": [
+          {
+            "id": "a6c0cbca-62e2-4f21-be82-f809c65df3ab",
+            "text": " sino",
+            "receivedAtMs": 1793264905029,
+            "startMs": 64200,
+            "endMs": 64400
+          },
+          {
+            "id": "11fd7f85-791b-4906-a679-dec3e478c14a",
+            "text": " a Sevilla",
+            "receivedAtMs": 1793264905433,
+            "startMs": 64600,
+            "endMs": 64800
+          },
+          {
+            "id": "c33e7d72-952c-4a67-9e9a-215ed7457a14",
+            "text": ".",
+            "receivedAtMs": 1793264905626,
+            "startMs": 64800,
+            "endMs": 65000
+          }
+        ]
+      },
+      {
+        "id": "d9328677-f39c-4894-8657-87154856d420",
+        "fragments": [
+          {
+            "id": "92e2349b-2a31-4874-a404-201304d29f27",
+            "text": " Hola.",
+            "receivedAtMs": 1793264913067,
+            "startMs": 72200,
+            "endMs": 72400
+          }
+        ]
+      },
+      {
+        "id": "1bd998e0-2809-438a-8a7c-1b8679dfaf77",
+        "fragments": [
+          {
+            "id": "d1476163-f921-44af-b9f9-bb195334ad84",
+            "text": " Necesito",
+            "receivedAtMs": 1793264913247,
+            "startMs": 72400,
+            "endMs": 72600
+          },
+          {
+            "id": "81530adf-ecdd-4886-b716-c2d7a442c029",
+            "text": " enviar",
+            "receivedAtMs": 1793264913616,
+            "startMs": 72800,
+            "endMs": 73000
+          }
+        ]
+      },
+      {
+        "id": "f06e7936-2f1e-4ac2-bf3e-23bbe2eb68f1",
+        "fragments": [
+          {
+            "id": "4ff8f8ab-dd22-441b-a964-4246177d2ca9",
+            "text": " un paquete",
+            "receivedAtMs": 1793264914024,
+            "startMs": 73200,
+            "endMs": 73400
+          }
+        ]
+      },
+      {
+        "id": "56d997e5-dd1e-4d1b-abaf-a29895244078",
+        "fragments": [
+          {
+            "id": "8ab0c483-6818-4dc6-985b-ebc61592f94b",
+            "text": " a Madrid",
+            "receivedAtMs": 1793264914646,
+            "startMs": 73800,
+            "endMs": 74000
+          },
+          {
+            "id": "3afb57cf-4e46-43df-9478-5bd84e2d06e6",
+            "text": ".",
+            "receivedAtMs": 1793264914821,
+            "startMs": 74000,
+            "endMs": 74200
+          }
+        ]
+      },
+      {
+        "id": "54d349b8-1358-40b4-b01a-d64ca290be8f",
+        "fragments": [
+          {
+            "id": "64849fdd-58d3-4872-8223-2485220b59f3",
+            "text": " No,",
+            "receivedAtMs": 1793264924641,
+            "startMs": 83800,
+            "endMs": 84000
+          },
+          {
+            "id": "a5f0488c-9602-40a1-b14e-cc8511112a2d",
+            "text": " el",
+            "receivedAtMs": 1793264924843,
+            "startMs": 84000,
+            "endMs": 84200
+          },
+          {
+            "id": "7d56eefb-d198-4a23-916d-5af753b76f5d",
+            "text": " seguro",
+            "receivedAtMs": 1793264925020,
+            "startMs": 84200,
+            "endMs": 84400
+          },
+          {
+            "id": "d953dad0-2427-4569-a363-57bf08651872",
+            "text": " de",
+            "receivedAtMs": 1793264925442,
+            "startMs": 84600,
+            "endMs": 84800
+          }
+        ]
+      },
+      {
+        "id": "b040badb-890a-4c0a-9308-7f9d5e69536f",
+        "fragments": [
+          {
+            "id": "1fc0e20d-5632-4bcf-b692-b0bb825f674b",
+            "text": " 200",
+            "receivedAtMs": 1793264925618,
+            "startMs": 84800,
+            "endMs": 85000
+          }
+        ]
+      },
+      {
+        "id": "8dca2e49-b74a-499c-bc20-3aab7ccd7a2f",
+        "fragments": [
+          {
+            "id": "5c200208-ca2c-457e-b14e-8612d4f56265",
+            "text": " euros.",
+            "receivedAtMs": 1793264926226,
+            "startMs": 85400,
+            "endMs": 85600
+          }
+        ]
+      },
+      {
+        "id": "e9b4b75a-f260-457b-b33d-96245e753082",
+        "fragments": [
+          {
+            "id": "c79e550c-e930-472a-8429-80ef2131c6d7",
+            "text": " Hola.",
+            "receivedAtMs": 1793264934238,
+            "startMs": 93400,
+            "endMs": 93600
+          }
+        ]
+      },
+      {
+        "id": "6e8dd604-170c-4365-aae0-f799574f6e08",
+        "fragments": [
+          {
+            "id": "1b8547d5-7ea4-42e9-bfb7-41624969a14c",
+            "text": " Necesito",
+            "receivedAtMs": 1793264934425,
+            "startMs": 93600,
+            "endMs": 93800
+          }
+        ]
+      },
+      {
+        "id": "858cf131-3ca3-4934-9b08-9faf1de080c7",
+        "fragments": [
+          {
+            "id": "1976f38c-5904-42ed-881c-660e751e6b9b",
+            "text": " enviar",
+            "receivedAtMs": 1793264935050,
+            "startMs": 94200,
+            "endMs": 94400
+          },
+          {
+            "id": "16848da4-7b28-4cec-a257-df40878cbcaf",
+            "text": " un",
+            "receivedAtMs": 1793264935226,
+            "startMs": 94400,
+            "endMs": 94600
+          },
+          {
+            "id": "4c8d948d-2932-4aad-b712-6a228b3e5b35",
+            "text": " paquete",
+            "receivedAtMs": 1793264935418,
+            "startMs": 94600,
+            "endMs": 94800
+          }
+        ]
+      },
+      {
+        "id": "2b2f3005-f526-4994-b138-c926d29f51bc",
+        "fragments": [
+          {
+            "id": "121b7651-4676-4826-9777-34eeac030efa",
+            "text": " a Madrid",
+            "receivedAtMs": 1793264935838,
+            "startMs": 95000,
+            "endMs": 95200
+          },
+          {
+            "id": "eca6fadc-6823-4a3c-b755-52efc2689eed",
+            "text": ".",
+            "receivedAtMs": 1793264936050,
+            "startMs": 95200,
+            "endMs": 95400
+          }
+        ]
+      },
+      {
+        "id": "19d6c317-82bc-4420-99bc-a6b6cb0f89ce",
+        "fragments": [
+          {
+            "id": "650868e9-75be-4442-a073-a4eb94a64d39",
+            "text": " Извин",
+            "receivedAtMs": 1793264947641,
+            "startMs": 106800,
+            "endMs": 107000
+          },
+          {
+            "id": "30e69bec-c0fc-4014-ac8b-cddbc9b82eae",
+            "text": "ите,",
+            "receivedAtMs": 1793264947826,
+            "startMs": 107000,
+            "endMs": 107200
+          }
+        ]
+      },
+      {
+        "id": "904aab33-bbb3-4b39-b56a-dc6745aaebef",
+        "fragments": [
+          {
+            "id": "b5257b9e-4862-4ab1-881f-4d6b333603dc",
+            "text": " в суб",
+            "receivedAtMs": 1793264948033,
+            "startMs": 107200,
+            "endMs": 107400
+          },
+          {
+            "id": "2c2b7ed9-20fa-4aaa-9d36-364f6801e0b4",
+            "text": "боту",
+            "receivedAtMs": 1793264948213,
+            "startMs": 107400,
+            "endMs": 107600
+          },
+          {
+            "id": "aa7ddff9-ca7d-49a4-ae2e-907967d252c2",
+            "text": " мы",
+            "receivedAtMs": 1793264948664,
+            "startMs": 107800,
+            "endMs": 108000
+          }
+        ]
+      },
+      {
+        "id": "10ad8ff2-2e4e-477b-935e-4208faa6aa12",
+        "fragments": [
+          {
+            "id": "0b755a2d-18be-4fca-b981-1790fc63b0f8",
+            "text": " закрыты",
+            "receivedAtMs": 1793264948857,
+            "startMs": 108000,
+            "endMs": 108200
+          },
+          {
+            "id": "6400e4be-893b-4790-994c-abffefd5f687",
+            "text": ".",
+            "receivedAtMs": 1793264949018,
+            "startMs": 108200,
+            "endMs": 108400
+          }
+        ]
+      },
+      {
+        "id": "22d1578e-4ba8-488f-9694-002d6174fa8f",
+        "fragments": [
+          {
+            "id": "864d823d-7b25-4283-9d3d-5ac8e82621e8",
+            "text": " Мож",
+            "receivedAtMs": 1793264949431,
+            "startMs": 108600,
+            "endMs": 108800
+          },
+          {
+            "id": "7752c3cc-2648-4839-8962-64278ae2cc45",
+            "text": "ем",
+            "receivedAtMs": 1793264949629,
+            "startMs": 108800,
+            "endMs": 109000
+          },
+          {
+            "id": "c606c974-2d55-4d2c-95c3-bc2952fb9762",
+            "text": " в",
+            "receivedAtMs": 1793264949859,
+            "startMs": 109000,
+            "endMs": 109200
+          }
+        ]
+      },
+      {
+        "id": "251838d4-2080-4e6c-b434-9ec8a339f1fc",
+        "fragments": [
+          {
+            "id": "3417b3ca-6317-4ac7-bb65-7ded6d2d01a4",
+            "text": " понедель",
+            "receivedAtMs": 1793264950040,
+            "startMs": 109200,
+            "endMs": 109400
+          },
+          {
+            "id": "15d3ecb8-5aae-4129-8c46-c2e370a16125",
+            "text": "ник.",
+            "receivedAtMs": 1793264950214,
+            "startMs": 109400,
+            "endMs": 109600
+          }
+        ]
+      }
+    ],
+    "expected": {
+      "input": {
+        "A": " Я хочу заказать доставку на субботу утром. В посылке лежат книги и зимняя одежда. Пожалуйста, позвоните получателю заранее, потому что вход во двор закрыт, а домофон не работает Извините, не в Мадрид, а в Севилью Здравствуйте. Мне нужно отправить посылку в Мадрид Нет, страхование на 200 евро Здравствуйте. Мне нужно отправить посылку в Мадрид",
+        "B": " Perdón, el sábado estamos cerrados. Podemos el lunes El autobús sale mañana a las ocho de la mañana. Primero iremos a Madrid, y después haremos una parada de veinte Perdón, el sábado estamos cerrados. Podemos el lunes"
+      },
+      "output": {
+        "A": " Извините, в субботу мы закрыты. Можем в понедельник. Автобус уезжает завтра в восемь утра. Сначала мы поедем в Мадрид, а затем сделаем остановку на двадцать минут. Извините, в субботу мы закрыты. Можем в понедельник.",
+        "B": " Quiero pedir una entrega para el sábado por la mañana. En el paquete hay libros y ropa de invierno. Por favor, llame al destinatario con antelación, porque la entrada al patio está cerrada y el portero automático no funciona. Perdón, no a Madrid, sino a Sevilla. Hola. Necesito enviar un paquete a Madrid. No, el seguro de 200 euros. Hola. Necesito enviar un paquete a Madrid."
+      }
+    }
+  },
+  {
+    "voice": [
+      {
+        "active": true,
+        "receivedAtMs": 1793264960641.8
+      },
+      {
+        "active": false,
+        "receivedAtMs": 1793264964744.1
+      },
+      {
+        "active": true,
+        "receivedAtMs": 1793264974542.3
+      },
+      {
+        "active": false,
+        "receivedAtMs": 1793264977492.3
+      },
+      {
+        "active": true,
+        "receivedAtMs": 1793264982646.5
+      },
+      {
+        "active": false,
+        "receivedAtMs": 1793264985892.6
+      },
+      {
+        "active": true,
+        "receivedAtMs": 1793264989641.6
+      },
+      {
+        "active": false,
+        "receivedAtMs": 1793264993792.2
+      }
+    ],
+    "name": "06-real events delayed ASR and late output beside fresh source / late-output-beside-fresh-source",
+    "evidence": "results/extended-browser-extended--104ca--output-beside-fresh-source-chromium-real-live/evidence.json",
+    "generation": 1,
+    "input": [
+      {
+        "id": "input:0",
+        "text": " Здравствуйте!",
+        "startMs": 5200,
+        "endMs": 5400,
+        "receivedAtMs": 1793264971188.7
+      },
+      {
+        "id": "input:1",
+        "text": " Мне",
+        "startMs": 5400,
+        "endMs": 5600,
+        "receivedAtMs": 1793264971390.4
+      },
+      {
+        "id": "input:2",
+        "text": " нужно",
+        "startMs": 5600,
+        "endMs": 5800,
+        "receivedAtMs": 1793264971547.6
+      },
+      {
+        "id": "input:3",
+        "text": " отправить",
+        "startMs": 6000,
+        "endMs": 6200,
+        "receivedAtMs": 1793264971943.1
+      },
+      {
+        "id": "input:4",
+        "text": " посылку",
+        "startMs": 6600,
+        "endMs": 6800,
+        "receivedAtMs": 1793264972592
+      },
+      {
+        "id": "input:5",
+        "text": " в",
+        "startMs": 6800,
+        "endMs": 7000,
+        "receivedAtMs": 1793264972758
+      },
+      {
+        "id": "input:6",
+        "text": " Мадрид",
+        "startMs": 7200,
+        "endMs": 7400,
+        "receivedAtMs": 1793264973157.2
+      },
+      {
+        "id": "input:7",
+        "text": " Buenos",
+        "startMs": 17800,
+        "endMs": 18000,
+        "receivedAtMs": 1793264975727.8
+      },
+      {
+        "id": "input:8",
+        "text": " días, ",
+        "startMs": 18600,
+        "endMs": 18800,
+        "receivedAtMs": 1793264976540.4
+      },
+      {
+        "id": "input:9",
+        "text": "¿cuánto",
+        "startMs": 19000,
+        "endMs": 19200,
+        "receivedAtMs": 1793264977011.5
+      },
+      {
+        "id": "input:10",
+        "text": " pesa el",
+        "startMs": 19200,
+        "endMs": 19400,
+        "receivedAtMs": 1793264977147.6
+      },
+      {
+        "id": "input:11",
+        "text": " paquete",
+        "startMs": 20400,
+        "endMs": 20600,
+        "receivedAtMs": 1793264978343.1
+      },
+      {
+        "id": "input:12",
+        "text": " До",
+        "startMs": 25800,
+        "endMs": 26000,
+        "receivedAtMs": 1793264983758
+      },
+      {
+        "id": "input:13",
+        "text": " ставка",
+        "startMs": 26400,
+        "endMs": 26600,
+        "receivedAtMs": 1793264984339.2
+      },
+      {
+        "id": "input:14",
+        "text": " стоит",
+        "startMs": 27000,
+        "endMs": 27200,
+        "receivedAtMs": 1793264984953
+      },
+      {
+        "id": "input:15",
+        "text": " 41",
+        "startMs": 27600,
+        "endMs": 27800,
+        "receivedAtMs": 1793264985545.9
+      },
+      {
+        "id": "input:16",
+        "text": " евро",
+        "startMs": 28200,
+        "endMs": 28400,
+        "receivedAtMs": 1793264986148.4
+      },
+      {
+        "id": "input:17",
+        "text": " Son",
+        "startMs": 33000,
+        "endMs": 33200,
+        "receivedAtMs": 1793264990960.2
+      },
+      {
+        "id": "input:18",
+        "text": " ",
+        "startMs": 33800,
+        "endMs": 34000,
+        "receivedAtMs": 1793264991751.9
+      },
+      {
+        "id": "input:19",
+        "text": "52",
+        "startMs": 34200,
+        "endMs": 34400,
+        "receivedAtMs": 1793264992166
+      },
+      {
+        "id": "input:20",
+        "text": " euros, no",
+        "startMs": 35200,
+        "endMs": 35400,
+        "receivedAtMs": 1793264993220.8
+      },
+      {
+        "id": "input:21",
+        "text": " ",
+        "startMs": 35400,
+        "endMs": 35600,
+        "receivedAtMs": 1793264993338.3
+      },
+      {
+        "id": "input:22",
+        "text": "41",
+        "startMs": 36200,
+        "endMs": 36400,
+        "receivedAtMs": 1793264994149.5
+      }
+    ],
+    "outputs": [
+      {
+        "id": "4c7c9b79-16b1-4269-aa1d-615499939feb",
+        "fragments": [
+          {
+            "id": "7636a967-b4ba-4afb-b3ae-b562eb4fbd42",
+            "text": " ¡Hola",
+            "receivedAtMs": 1793264965915,
+            "startMs": 7800,
+            "endMs": 8000
+          },
+          {
+            "id": "0e5754a5-0da6-4988-aed8-04423f402e41:head",
+            "text": "! ",
+            "receivedAtMs": 1793264966111,
+            "startMs": 8000,
+            "endMs": 8200
+          }
+        ]
+      },
+      {
+        "id": "03e8af7c-e99e-4c4d-bf77-2d46ad859dac",
+        "fragments": [
+          {
+            "id": "0e5754a5-0da6-4988-aed8-04423f402e41:tail",
+            "text": "Neces",
+            "receivedAtMs": 1793264966111,
+            "startMs": 8000,
+            "endMs": 8200
+          },
+          {
+            "id": "5fa0d5fc-a06a-43fb-8f54-fe28c614e54e",
+            "text": "ito",
+            "receivedAtMs": 1793264966288,
+            "startMs": 8200,
+            "endMs": 8400
+          },
+          {
+            "id": "c120b949-c0b6-47e8-a5ae-70e817d3b364",
+            "text": " enviar",
+            "receivedAtMs": 1793264966480,
+            "startMs": 8400,
+            "endMs": 8600
+          }
+        ]
+      },
+      {
+        "id": "4d71d2fc-a09c-480c-be5e-39abdc06af49",
+        "fragments": [
+          {
+            "id": "7bef253c-cc0d-4d67-918a-9a7da01f050f",
+            "text": " un paquete",
+            "receivedAtMs": 1793264966652,
+            "startMs": 8600,
+            "endMs": 8800
+          },
+          {
+            "id": "f3669ff8-5938-451c-a891-b0a3fba0ebb5",
+            "text": " a Madrid",
+            "receivedAtMs": 1793264967087,
+            "startMs": 9000,
+            "endMs": 9200
+          },
+          {
+            "id": "5f41bdd9-e64e-423b-9c49-8a3e9bc254ee",
+            "text": ".",
+            "receivedAtMs": 1793264967250,
+            "startMs": 9200,
+            "endMs": 9400
+          }
+        ]
+      },
+      {
+        "id": "b277ff89-6111-4ffa-8a65-7736abe0f9a8",
+        "fragments": [
+          {
+            "id": "aa884bca-6295-4f5a-b01d-c99880c84cc7",
+            "text": " Добро",
+            "receivedAtMs": 1793264978898,
+            "startMs": 20800,
+            "endMs": 21000
+          },
+          {
+            "id": "f7f0fd5b-79cb-44e7-bafd-48930b63529b",
+            "text": "е ут",
+            "receivedAtMs": 1793264979075,
+            "startMs": 21000,
+            "endMs": 21200
+          },
+          {
+            "id": "37ef0776-dac3-4272-954c-1287d530aae5",
+            "text": "ро!",
+            "receivedAtMs": 1793264979286,
+            "startMs": 21200,
+            "endMs": 21400
+          }
+        ]
+      },
+      {
+        "id": "052249b8-38b7-438b-ba8d-f5f1f06a0d91",
+        "fragments": [
+          {
+            "id": "d3e22e36-2b28-4b4c-9b98-0cf71e3eb773",
+            "text": " Сколько",
+            "receivedAtMs": 1793264979452,
+            "startMs": 21400,
+            "endMs": 21600
+          },
+          {
+            "id": "4a942de2-0a3f-445c-9488-72e5a198c279",
+            "text": " весит",
+            "receivedAtMs": 1793264979893,
+            "startMs": 21800,
+            "endMs": 22000
+          }
+        ]
+      },
+      {
+        "id": "ae65604f-6834-4b84-9239-98b129633036",
+        "fragments": [
+          {
+            "id": "0656af78-24c8-42d0-8e55-5d00ee45450e",
+            "text": " посыл",
+            "receivedAtMs": 1793264980085,
+            "startMs": 22000,
+            "endMs": 22200
+          },
+          {
+            "id": "1fb8b4b0-d9fb-4113-881d-63c125018ade",
+            "text": "ка?",
+            "receivedAtMs": 1793264980482,
+            "startMs": 22200,
+            "endMs": 22400
+          }
+        ]
+      },
+      {
+        "id": "c88e6882-7f4e-4f46-b12f-49326a7bdbdb",
+        "fragments": [
+          {
+            "id": "ec1ff9fb-1f6c-463f-8297-0e2e4b764349",
+            "text": " Пять",
+            "receivedAtMs": 1793264994686,
+            "startMs": 36600,
+            "endMs": 36800
+          },
+          {
+            "id": "ceb74dbc-e6f8-45c9-a48f-18cc4c5a0840",
+            "text": "десят",
+            "receivedAtMs": 1793264994876,
+            "startMs": 36800,
+            "endMs": 37000
+          },
+          {
+            "id": "a73a8e44-41bb-4376-83a3-b5f5a1ca8987",
+            "text": " два евро",
+            "receivedAtMs": 1793264995067,
+            "startMs": 37000,
+            "endMs": 37200
+          },
+          {
+            "id": "8677a80f-b81d-48ef-ba2c-d7fbd68c9551",
+            "text": ",",
+            "receivedAtMs": 1793264995257,
+            "startMs": 37200,
+            "endMs": 37400
+          }
+        ]
+      },
+      {
+        "id": "b62099b6-2e4a-472a-8573-65e09e160c8b",
+        "fragments": [
+          {
+            "id": "1d7e7f61-fb2d-47ae-9cf3-29e00e206781",
+            "text": " не сор",
+            "receivedAtMs": 1793264995687,
+            "startMs": 37600,
+            "endMs": 37800
+          },
+          {
+            "id": "694748d0-ff93-45ef-b10f-c0a1a4e09af8",
+            "text": "ок",
+            "receivedAtMs": 1793264995875,
+            "startMs": 37800,
+            "endMs": 38000
+          },
+          {
+            "id": "07caa076-f962-4a8f-b5ae-26abb9effaea",
+            "text": " один.",
+            "receivedAtMs": 1793264996051,
+            "startMs": 38000,
+            "endMs": 38200
+          }
+        ]
+      },
+      {
+        "id": "41b51992-630d-45be-9c41-4173b3648753",
+        "fragments": [
+          {
+            "id": "e7829bf6-4685-4bf1-8335-fc9bb0314c68",
+            "text": " El envío",
+            "receivedAtMs": 1793264996693,
+            "startMs": 28600,
+            "endMs": 28800
+          },
+          {
+            "id": "02634508-d81f-4722-aa3f-6681a14d6a6e",
+            "text": " cuesta",
+            "receivedAtMs": 1793264996898,
+            "startMs": 28800,
+            "endMs": 29000
+          },
+          {
+            "id": "99f6347f-07f2-4fb6-a8d1-ed45fb3675ac",
+            "text": " ",
+            "receivedAtMs": 1793264997083,
+            "startMs": 29000,
+            "endMs": 29200
+          }
+        ]
+      },
+      {
+        "id": "e5ed3736-b63e-4746-b60d-031fe2f99661",
+        "fragments": [
+          {
+            "id": "271a5f4b-f14a-4913-bf3f-9a1bfb8ab6ef",
+            "text": "41",
+            "receivedAtMs": 1793264997248,
+            "startMs": 29200,
+            "endMs": 29400
+          }
+        ]
+      },
+      {
+        "id": "6f393e21-ed12-4f23-abba-7ca906a4a72c",
+        "fragments": [
+          {
+            "id": "1f13bb04-4297-44dd-b966-9fa4c981aaee",
+            "text": " euros.",
+            "receivedAtMs": 1793264997858,
+            "startMs": 29800,
+            "endMs": 30000
+          }
+        ]
+      }
+    ],
+    "expected": {
+      "input": {
+        "A": " Здравствуйте! Мне нужно отправить посылку в Мадрид До ставка стоит 41 евро",
+        "B": " Buenos días, ¿cuánto pesa el paquete Son 52 euros, no 41"
+      },
+      "output": {
+        "A": " Доброе утро! Сколько весит посылка? Пятьдесят два евро, не сорок один.",
+        "B": " ¡Hola! Necesito enviar un paquete a Madrid. El envío cuesta 41 euros."
+      }
+    }
+  },
+  {
+    "voice": [
+      {
+        "active": true,
+        "receivedAtMs": 1793265011342.7
+      },
+      {
+        "active": false,
+        "receivedAtMs": 1793265015342.3
+      }
+    ],
+    "name": "07-End and new generation while old transcript callbacks are queued / warmup",
+    "evidence": "results/extended-browser-extended--86b72-script-callbacks-are-queued-chromium-real-live/evidence.json",
+    "generation": 1,
+    "input": [
+      {
+        "id": "input:0",
+        "text": " З",
+        "startMs": 4000,
+        "endMs": 4200,
+        "receivedAtMs": 1793265012278.7
+      },
+      {
+        "id": "input:1",
+        "text": "дравствуйте",
+        "startMs": 4600,
+        "endMs": 4800,
+        "receivedAtMs": 1793265012899.2
+      },
+      {
+        "id": "input:2",
+        "text": ", мне",
+        "startMs": 5400,
+        "endMs": 5600,
+        "receivedAtMs": 1793265013729.1
+      },
+      {
+        "id": "input:3",
+        "text": " нужно",
+        "startMs": 5600,
+        "endMs": 5800,
+        "receivedAtMs": 1793265013897.8
+      },
+      {
+        "id": "input:4",
+        "text": " отправить",
+        "startMs": 6200,
+        "endMs": 6400,
+        "receivedAtMs": 1793265014493.7
+      },
+      {
+        "id": "input:5",
+        "text": " посыл",
+        "startMs": 6600,
+        "endMs": 6800,
+        "receivedAtMs": 1793265014940.3
+      },
+      {
+        "id": "input:6",
+        "text": "ку в",
+        "startMs": 6800,
+        "endMs": 7000,
+        "receivedAtMs": 1793265015091.5
+      },
+      {
+        "id": "input:7",
+        "text": " Мадрид",
+        "startMs": 7200,
+        "endMs": 7400,
+        "receivedAtMs": 1793265015487.9
+      }
+    ],
+    "outputs": [
+      {
+        "id": "74d7d1ab-d6b1-4277-b57c-5c4b199372f3",
+        "fragments": [
+          {
+            "id": "b9f0d652-b986-48d8-a44f-0a2d42d29edd",
+            "text": " Hola,",
+            "receivedAtMs": 1793265016014,
+            "startMs": 7600,
+            "endMs": 7800
+          },
+          {
+            "id": "1d839aa6-28e2-4f4b-b30b-54e34c747950",
+            "text": " necesito",
+            "receivedAtMs": 1793265016191,
+            "startMs": 7800,
+            "endMs": 8000
+          },
+          {
+            "id": "de104f6d-2f15-42d2-abba-992d52348c9e",
+            "text": " enviar",
+            "receivedAtMs": 1793265016784,
+            "startMs": 8400,
+            "endMs": 8600
+          }
+        ]
+      },
+      {
+        "id": "5921e343-4b22-4354-8b88-b944bf76fb1f",
+        "fragments": [
+          {
+            "id": "aedcf25b-ead1-4815-9df0-ab62ee3692bb",
+            "text": " un",
+            "receivedAtMs": 1793265017202,
+            "startMs": 8800,
+            "endMs": 9000
+          },
+          {
+            "id": "831dada6-4815-42e9-851d-df40d4b447c1",
+            "text": " paquete",
+            "receivedAtMs": 1793265017403,
+            "startMs": 9000,
+            "endMs": 9200
+          },
+          {
+            "id": "696de601-fbb9-43e8-9015-a1990f61e5c2",
+            "text": " a Madrid",
+            "receivedAtMs": 1793265017824,
+            "startMs": 9400,
+            "endMs": 9600
+          },
+          {
+            "id": "9fb320af-c52c-4737-a371-8af27ecf8b3c",
+            "text": ".",
+            "receivedAtMs": 1793265018008,
+            "startMs": 9600,
+            "endMs": 9800
+          }
+        ]
+      }
+    ],
+    "expected": {
+      "input": {
+        "A": " Здравствуйте, мне нужно отправить посылку в Мадрид",
+        "B": ""
+      },
+      "output": {
+        "A": "",
+        "B": " Hola, necesito enviar un paquete a Madrid."
+      }
+    }
+  },
+  {
+    "voice": [
+      {
+        "active": true,
+        "receivedAtMs": 1793265038842.2
+      },
+      {
+        "active": false,
+        "receivedAtMs": 1793265043042
+      }
+    ],
+    "name": "07-End and new generation while old transcript callbacks are queued / new-generation-82",
+    "evidence": "results/extended-browser-extended--86b72-script-callbacks-are-queued-chromium-real-live/evidence.json",
+    "generation": 2,
+    "input": [
+      {
+        "id": "input:0",
+        "text": " Este",
+        "startMs": 11200,
+        "endMs": 11400,
+        "receivedAtMs": 1793265040195.5
+      },
+      {
+        "id": "input:1",
+        "text": " es",
+        "startMs": 11400,
+        "endMs": 11600,
+        "receivedAtMs": 1793265040431
+      },
+      {
+        "id": "input:2",
+        "text": " un",
+        "startMs": 11600,
+        "endMs": 11800,
+        "receivedAtMs": 1793265040570.1
+      },
+      {
+        "id": "input:3",
+        "text": " pedido",
+        "startMs": 12000,
+        "endMs": 12200,
+        "receivedAtMs": 1793265040949.5
+      },
+      {
+        "id": "input:4",
+        "text": " nuevo",
+        "startMs": 12400,
+        "endMs": 12600,
+        "receivedAtMs": 1793265041358.8
+      },
+      {
+        "id": "input:5",
+        "text": ": número",
+        "startMs": 13200,
+        "endMs": 13400,
+        "receivedAtMs": 1793265042170.8
+      },
+      {
+        "id": "input:6",
+        "text": " ",
+        "startMs": 13600,
+        "endMs": 13800,
+        "receivedAtMs": 1793265042559.3
+      },
+      {
+        "id": "input:7",
+        "text": "82",
+        "startMs": 14200,
+        "endMs": 14400,
+        "receivedAtMs": 1793265043152.9
+      }
+    ],
+    "outputs": [
+      {
+        "id": "f6b8940f-2e0a-4640-820d-97fccb44ff77",
+        "fragments": [
+          {
+            "id": "bb1d73be-23af-410c-9a7b-cf26c64a9c4b",
+            "text": " Это новый",
+            "receivedAtMs": 1793265044076,
+            "startMs": 15000,
+            "endMs": 15200
+          },
+          {
+            "id": "2d60756a-b9ad-485c-927b-4aa0e085c652",
+            "text": " заказ:",
+            "receivedAtMs": 1793265044482,
+            "startMs": 15400,
+            "endMs": 15600
+          }
+        ]
+      },
+      {
+        "id": "29bbb47c-8d3f-4666-b996-95d86dd1f635",
+        "fragments": [
+          {
+            "id": "5c4024a0-b84c-4d3a-b1f5-781dca721e62",
+            "text": " номер",
+            "receivedAtMs": 1793265044887,
+            "startMs": 15800,
+            "endMs": 16000
+          },
+          {
+            "id": "b05edb5b-bb26-4346-8e97-f201a6c7acc4",
+            "text": " 82",
+            "receivedAtMs": 1793265045101,
+            "startMs": 16000,
+            "endMs": 16200
+          },
+          {
+            "id": "8ae14bc0-2100-41b5-bae5-d8fe96776218",
+            "text": ".",
+            "receivedAtMs": 1793265045256,
+            "startMs": 16200,
+            "endMs": 16400
+          }
+        ]
+      }
+    ],
+    "expected": {
+      "input": {
+        "A": "",
+        "B": " Este es un pedido nuevo: número 82"
+      },
+      "output": {
+        "A": " Это новый заказ: номер 82.",
+        "B": ""
+      }
+    }
+  }
+]

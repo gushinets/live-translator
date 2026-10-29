@@ -14,9 +14,9 @@ export interface TranscriptFragment {
 }
 
 /** Keep known timing order; untimed tails follow the latest known text at arrival. */
-export function orderTranscriptFragments(fragments: TranscriptFragment[]): TranscriptFragment[] {
-  const prefix: TranscriptFragment[] = [];
-  const groups: Array<{ startMs: number; fragments: TranscriptFragment[] }> = [];
+export function orderTranscriptFragments<T extends TranscriptFragment>(fragments: T[]): T[] {
+  const prefix: T[] = [];
+  const groups: Array<{ startMs: number; fragments: T[] }> = [];
   let tail: typeof groups[number] | undefined;
   for (const fragment of fragments) {
     if (fragment.startMs === undefined) {

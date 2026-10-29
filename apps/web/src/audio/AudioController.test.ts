@@ -496,6 +496,93 @@ describe("buffered audio output", () => {
     const generation = node.port.postMessage.mock.calls.filter(([m]) => m.generation !== undefined).at(-1)![0].generation;
     node.port.onmessage!({ data: { type: "playback", value, requestId, generation } } as MessageEvent);
   }
+  it.each([0, 250, 299])("does not transmit the tail of speech starting %s ms into microphone release", async startMs => {
+    vi.useFakeTimers();
+    const { controller, context, nodes } = setup();
+    try {
+      await controller.primeOutput(); await controller.startCapture();
+      controller.attachRemoteStream(fakeStream(new FakeAudioTrack())); controller.setOutputAudible(true);
+      const track = controller.getCaptureStream()!.getAudioTracks()[0]!;
+      const observed = vi.fn(); controller.onVoiceActivity = observed;
+      sendPlayback(nodes[0]!, true); sendPlayback(nodes[0]!, false);
+      await vi.advanceTimersByTimeAsync(startMs);
+      context.analysers[0]!.fill(.08); // The beginning (e.g. "No") is already gated.
+      await vi.advanceTimersByTimeAsync(1500);
+      expect(track.enabled).toBe(false);
+      expect(controller.playbackInputState).toBe("waiting");
+      expect(observed).not.toHaveBeenCalled();
+      context.analysers[0]!.fill(0);
+      await vi.advanceTimersByTimeAsync(600); // Real ES recording pauses ~550 ms between its sentences.
+      expect(track.enabled).toBe(false);
+      context.analysers[0]!.fill(.08);
+      await vi.advanceTimersByTimeAsync(500);
+      expect(track.enabled).toBe(false);
+      context.analysers[0]!.fill(0);
+      await vi.advanceTimersByTimeAsync(800);
+      expect(track.enabled).toBe(true);
+      expect(controller.playbackInputState).toBe("repeat");
+      expect(observed).not.toHaveBeenCalled();
+      context.analysers[0]!.fill(.08); // Entire repeated utterance is admitted from its onset.
+      expect(track.enabled).toBe(true);
+      await vi.advanceTimersByTimeAsync(150);
+      expect(observed).toHaveBeenCalledWith(expect.objectContaining({ active: true }));
+      expect(controller.playbackInputState).toBe("idle");
+    } finally { controller.dispose(); vi.useRealTimers(); }
+  });
+  it("uses the learned ambient level when checking whether microphone release is quiet", async () => {
+    vi.useFakeTimers();
+    const { controller, context, nodes } = setup();
+    try {
+      await controller.primeOutput(); await controller.startCapture();
+      context.analysers[0]!.fill(.02);
+      await vi.advanceTimersByTimeAsync(10_000);
+      controller.attachRemoteStream(fakeStream(new FakeAudioTrack())); controller.setOutputAudible(true);
+      sendPlayback(nodes[0]!, true); sendPlayback(nodes[0]!, false);
+      await vi.advanceTimersByTimeAsync(runtime.playbackEchoTailMs);
+      expect(controller.playbackInputState).toBe("idle");
+      expect(controller.getCaptureStream()!.getAudioTracks()[0]!.enabled).toBe(true);
+    } finally { controller.dispose(); vi.useRealTimers(); }
+  });
+  it("can adapt to a changed quiet background during release instead of waiting forever", async () => {
+    vi.useFakeTimers();
+    const { controller, context, nodes } = setup();
+    try {
+      await controller.primeOutput(); await controller.startCapture();
+      controller.attachRemoteStream(fakeStream(new FakeAudioTrack())); controller.setOutputAudible(true);
+      sendPlayback(nodes[0]!, true); sendPlayback(nodes[0]!, false);
+      context.analysers[0]!.fill(.02);
+      await vi.advanceTimersByTimeAsync(3000);
+      expect(controller.playbackInputBlocked).toBe(false);
+      expect(controller.getCaptureStream()!.getAudioTracks()[0]!.enabled).toBe(true);
+    } finally { controller.dispose(); vi.useRealTimers(); }
+  });
+  it.each(["playback", "suspend", "stop", "dispose"])("keeps release polling safe across %s while waiting for speech to end", async boundary => {
+    vi.useFakeTimers();
+    const { controller, context, nodes } = setup();
+    try {
+      await controller.primeOutput(); await controller.startCapture();
+      controller.attachRemoteStream(fakeStream(new FakeAudioTrack())); controller.setOutputAudible(true);
+      const track = controller.getCaptureStream()!.getAudioTracks()[0]!;
+      sendPlayback(nodes[0]!, true); sendPlayback(nodes[0]!, false);
+      context.analysers[0]!.fill(.08);
+      await vi.advanceTimersByTimeAsync(500);
+      expect(controller.playbackInputState).toBe("waiting");
+      if (boundary === "playback") sendPlayback(nodes[0]!, true);
+      if (boundary === "suspend") { controller.setCaptureEnabled(false); controller.setOutputAudible(false); }
+      if (boundary === "stop") controller.stopCapture();
+      if (boundary === "dispose") controller.dispose();
+      context.analysers[0]!.fill(0);
+      await vi.advanceTimersByTimeAsync(1000);
+      expect(track.enabled && track.readyState === "live").toBe(false);
+      if (boundary === "playback") {
+        expect(controller.playbackInputState).toBe("playing");
+        sendPlayback(nodes[0]!, false);
+        await vi.advanceTimersByTimeAsync(800);
+        expect(controller.playbackInputState).toBe("repeat");
+        expect(track.enabled).toBe(true);
+      }
+    } finally { controller.dispose(); vi.useRealTimers(); }
+  });
   it("closes microphone and analysis before permitting PCM, ignores speech, then restores capture after the echo tail", async () => {
     vi.useFakeTimers();
     const { controller, context, nodes } = setup();
@@ -535,7 +622,7 @@ describe("buffered audio output", () => {
       expect(observed).toHaveBeenCalledWith(expect.objectContaining({ active: true }));
     } finally { controller.dispose(); vi.useRealTimers(); }
   });
-  it("emits a pending source idle before blocking capture when the sampler is delayed", async () => {
+  it("waits for the full source-idle edge before granting playback, even with delayed sampling", async () => {
     vi.useFakeTimers(); vi.setSystemTime(0);
     const { controller, context, nodes } = setup();
     try {
@@ -553,11 +640,15 @@ describe("buffered audio output", () => {
       context.analysers[0]!.fill(0);
       await vi.advanceTimersByTimeAsync(500);
       expect(observed.mock.calls).toEqual([[{ active: true, atMs: 150 }]]);
-      expect(nodes[0]!.port.postMessage).toHaveBeenLastCalledWith({ type: "speaking", value: false });
+      expect(nodes[0]!.port.postMessage).toHaveBeenLastCalledWith({ type: "speaking", value: true });
       // Worklet time advances independently while main-thread sampling is delayed.
       vi.setSystemTime(950);
       sendPlayback(nodes[0]!, true);
-      expect(observed.mock.calls).toEqual([[{ active: true, atMs: 150 }], [{ active: false, atMs: 950 }]]);
+      expect(controller.playbackInputBlocked).toBe(false);
+      expect(controller.getCaptureStream()!.getAudioTracks()[0]!.enabled).toBe(true);
+      await vi.advanceTimersByTimeAsync(50);
+      expect(observed.mock.calls).toEqual([[{ active: true, atMs: 150 }], [{ active: false, atMs: 1000 }]]);
+      sendPlayback(nodes[0]!, true);
       expect(controller.playbackInputBlocked).toBe(true);
       expect(controller.getCaptureStream()!.getAudioTracks()[0]!.enabled).toBe(false);
       expect(nodes[0]!.port.postMessage).toHaveBeenLastCalledWith(expect.objectContaining({ type: "playback", value: true }));
@@ -568,6 +659,29 @@ describe("buffered audio output", () => {
       context.analysers[0]!.fill(.08);
       await vi.advanceTimersByTimeAsync(150);
       expect(observed).toHaveBeenLastCalledWith(expect.objectContaining({ active: true }));
+    } finally { controller.dispose(); vi.useRealTimers(); }
+  });
+  it.each([0, 1])("rechecks a resumed voice before permitting PCM with %s sampled onset frames", async frames => {
+    vi.useFakeTimers();
+    const { controller, context, nodes } = setup();
+    try {
+      await controller.primeOutput(); await controller.startCapture();
+      controller.attachRemoteStream(fakeStream(new FakeAudioTrack())); controller.setOutputAudible(true);
+      context.analysers[0]!.fill(.001);
+      await vi.advanceTimersByTimeAsync(100);
+      context.analysers[0]!.fill(.08);
+      await vi.advanceTimersByTimeAsync(frames * 50);
+      const voice = vi.fn(); controller.onVoiceActivity = voice;
+      sendPlayback(nodes[0]!, true);
+      expect(controller.getCaptureStream()!.getAudioTracks()[0]!.enabled).toBe(true);
+      expect(context.sourceStreams[0]!.getAudioTracks()[0]!.enabled).toBe(true);
+      expect(nodes[0]!.port.postMessage).toHaveBeenLastCalledWith(expect.objectContaining({ type: "playback", value: false }));
+      await vi.advanceTimersByTimeAsync(150);
+      expect(voice).toHaveBeenCalledWith(expect.objectContaining({ active: true }));
+      context.analysers[0]!.fill(0);
+      await vi.advanceTimersByTimeAsync(800);
+      sendPlayback(nodes[0]!, true);
+      expect(controller.playbackInputBlocked).toBe(true);
     } finally { controller.dispose(); vi.useRealTimers(); }
   });
   it("reports resumed playback during the echo tail without reopening the microphone", async () => {
@@ -610,7 +724,7 @@ describe("buffered audio output", () => {
       sendReset(nodes[0]!);
       expect(controller.audioElement.muted).toBe(false);
       await vi.advanceTimersByTimeAsync(runtime.playbackEchoTailMs - 1);
-      expect(track.enabled).toBe(false); expect(analysis.enabled).toBe(false);
+      expect(track.enabled).toBe(false); expect(analysis.enabled).toBe(true);
       await vi.advanceTimersByTimeAsync(1);
       expect(track.enabled).toBe(true); expect(analysis.enabled).toBe(true);
       expect(controller.playbackInputBlocked).toBe(false);
