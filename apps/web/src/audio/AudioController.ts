@@ -1,6 +1,6 @@
 import playbackWorkletUrl from "./BufferedPlaybackProcessor.ts?worker&url";
 import { PlaybackActivityDetector } from "./PlaybackActivityDetector";
-import { VAM_SAMPLE_INTERVAL_MS } from "./VoiceActivityEstimator";
+import { VoiceActivityEstimator, VAM_EXIT_QUIET_MS, VAM_SAMPLE_INTERVAL_MS } from "./VoiceActivityEstimator";
 import { runtime } from "../config/runtime";
 import {
   VoiceActivityMonitor,
@@ -9,7 +9,7 @@ import {
 
 /** `owned` events identify the PCM currently leaving the queue, including an unknown owner. */
 export type PlaybackActivityEvent = AudioActivityEvent & { owned?: boolean; turnId?: string; retired?: boolean };
-export type PlaybackInputState = "idle" | "playing" | "tail";
+export type PlaybackInputState = "idle" | "playing" | "tail" | "waiting" | "repeat";
 
 export interface MicrophoneSettingsDiagnostics {
   echoCancellation: boolean | undefined;
@@ -76,6 +76,7 @@ export class AudioController {
   onSourceSample: ((event: AudioActivityEvent & { reset?: boolean }) => void) | null = null;
   onVoiceActivity: ((event: AudioActivityEvent) => void) | null = null;
   onPlaybackActivity: ((event: PlaybackActivityEvent) => void) | null = null;
+  onPcmReceived: ((atMs: number) => void) | null = null;
   onPlaybackInputBlocked: (() => void) | null = null;
   onRemoteAudioSample: ((event: AudioActivityEvent) => void) | null = null;
   onAudioInterruption: (() => void) | null = null;
@@ -92,6 +93,7 @@ export class AudioController {
   private readonly createAudioContext: () => AudioContext;
   private readonly nowMs: () => number;
   private readonly voiceActivityMonitor = new VoiceActivityMonitor();
+  private readonly inputReopenEstimator = new VoiceActivityEstimator();
   private readonly playbackDetector = new PlaybackActivityDetector();
   private readonly rawPlaybackDetector = new PlaybackActivityDetector();
 
@@ -120,9 +122,16 @@ export class AudioController {
   private captureEnabled = false;
   private inputBlocked = false;
   private playbackReleaseTimer: number | null = null;
+  private lastBlockedSpeechAtMs = 0;
+  private inputRepeatNeeded = false;
+  private playbackGeneration = 0;
+  private playbackRequestId: number | null = null;
+  private playbackResetPending = false;
+  private outputAudible = false;
   get playbackInputBlocked(): boolean { return this.inputBlocked; }
   get playbackInputState(): PlaybackInputState {
-    return !this.inputBlocked ? "idle" : this.playbackReleaseTimer === null ? "playing" : "tail";
+    if (!this.inputBlocked) return this.inputRepeatNeeded ? "repeat" : "idle";
+    return this.playbackReleaseTimer === null ? "playing" : this.inputRepeatNeeded ? "waiting" : "tail";
   }
   get hasPendingPlayback(): boolean { return this.queuedPlayback; }
   get rawPlaybackActive(): boolean | undefined {
@@ -151,7 +160,12 @@ export class AudioController {
       this.onVoiceActivity?.(event);
     };
     this.voiceActivityMonitor.onSample = event => {
-      this.sourceSpeaking = event.active;
+      if (event.active && this.inputRepeatNeeded) {
+        this.inputRepeatNeeded = false;
+        this.onPlaybackInputBlocked?.();
+      }
+      // Playback must wait through the same sentence-pause grace as source bookkeeping.
+      this.sourceSpeaking = this.voiceActivityMonitor.active;
       this.sendSourceActivity();
       this.onSourceSample?.({ active: event.active, atMs: performance.now() });
     };
@@ -279,6 +293,8 @@ export class AudioController {
       throw new Error("Microphone capture has not started");
     }
     this.captureEnabled = false;
+    this.inputRepeatNeeded = false;
+    this.inputReopenEstimator.resetBaseline();
     this.captureTrack.removeEventListener("ended", this.handleCaptureEnded);
     for (const track of this.captureStream.getTracks()) {
       track.stop();
@@ -299,6 +315,10 @@ export class AudioController {
       throw new Error("Microphone capture has not started");
     }
     this.captureEnabled = enabled;
+    if (!enabled) {
+      this.inputRepeatNeeded = false;
+      this.inputReopenEstimator.resetBaseline();
+    }
     this.applyCaptureGate();
     this.notifyMeteringBoundary();
   }
@@ -306,7 +326,10 @@ export class AudioController {
   private applyCaptureGate(): void {
     const enabled = this.captureEnabled && !this.inputBlocked;
     if (this.captureTrack) this.captureTrack.enabled = enabled;
-    for (const track of this.micAnalysisStream?.getAudioTracks() ?? []) track.enabled = enabled;
+    // Observe the release window locally; only the capture track is sent to the provider.
+    for (const track of this.micAnalysisStream?.getAudioTracks() ?? []) {
+      track.enabled = this.captureEnabled && (!this.inputBlocked || this.playbackReleaseTimer !== null);
+    }
   }
 
   private blockPlaybackInput(blocked: boolean): void {
@@ -322,26 +345,55 @@ export class AudioController {
   private cancelPlaybackRelease(): void {
     if (this.playbackReleaseTimer !== null) window.clearTimeout(this.playbackReleaseTimer);
     this.playbackReleaseTimer = null;
+    for (const track of this.micAnalysisStream?.getAudioTracks() ?? []) track.enabled = this.captureEnabled && !this.inputBlocked;
+  }
+
+  private observeBlockedSpeech(rms: number): void {
+    if (this.inputReopenEstimator.isQuiet(rms)) return;
+    this.lastBlockedSpeechAtMs = this.nowMs();
+    if (!this.inputRepeatNeeded) {
+      this.inputRepeatNeeded = true;
+      this.onPlaybackInputBlocked?.();
+    }
   }
 
   private releasePlaybackInput(): void {
     this.cancelPlaybackRelease();
-    if (!this.inputBlocked) return;
+    if (!this.inputBlocked || this.playbackResetPending) return;
     if (!this.captureEnabled) {
       this.blockPlaybackInput(false);
       return;
     }
-    this.playbackReleaseTimer = window.setTimeout(() => {
+    this.lastBlockedSpeechAtMs = this.nowMs();
+    const reopen = () => {
+      if (this.captureEnabled && this.micAnalyser !== null) {
+        const fresh = this.audioContext?.state === "running";
+        if (fresh) this.observeBlockedSpeech(rmsFromAnalyser(this.micAnalyser));
+        // Use the full source-idle window so a pause between sentences cannot release a gated suffix.
+        if (!fresh || (this.inputRepeatNeeded && this.nowMs() - this.lastBlockedSpeechAtMs < VAM_EXIT_QUIET_MS + runtime.sourceTailGraceMs)) {
+          this.playbackReleaseTimer = window.setTimeout(reopen, VAM_SAMPLE_INTERVAL_MS);
+          return;
+        }
+      }
       this.playbackReleaseTimer = null;
       this.blockPlaybackInput(false);
-    }, runtime.playbackEchoTailMs);
+    };
+    this.playbackReleaseTimer = window.setTimeout(reopen, runtime.playbackEchoTailMs);
+    this.applyCaptureGate();
     this.onPlaybackInputBlocked?.();
   }
 
   /** Gate C: mute local GPT playback. Never uses Live input mute. */
   setOutputAudible(audible: boolean): void {
-    this.audioElement.muted = !audible;
-    this.playbackNode?.port.postMessage({ type: "audible", value: audible });
+    this.outputAudible = audible;
+    if (!audible) {
+      this.playbackGeneration++;
+      this.playbackRequestId = null;
+      this.playbackResetPending = this.playbackNode !== null;
+    }
+    // A prior render task packet can still contain an ACK until reset is confirmed.
+    this.audioElement.muted = !audible || this.playbackResetPending;
+    this.playbackNode?.port.postMessage({ type: "audible", value: audible, generation: this.playbackGeneration });
     if (!audible) {
       this.releasePlaybackInput();
       this.queuedPlayback = false;
@@ -358,9 +410,12 @@ export class AudioController {
   setNonInterrupting(enabled: boolean): void {
     if (enabled && !this.playbackNode) throw new Error("Buffered playback unavailable");
     this.nonInterrupting = enabled;
-    this.playbackNode?.port.postMessage({ type: "enabled", value: enabled });
+    this.playbackGeneration++;
+    this.playbackRequestId = null;
+    this.playbackResetPending = this.playbackNode !== null;
+    this.playbackNode?.port.postMessage({ type: "enabled", value: enabled, generation: this.playbackGeneration });
     this.sendSourceActivity();
-    if (!enabled) this.releasePlaybackInput();
+    this.releasePlaybackInput();
   }
 
   private sendSourceActivity(): void {
@@ -383,7 +438,6 @@ export class AudioController {
   }
 
   private releasePlayback(): void {
-    this.releasePlaybackInput();
     if (this.remoteDecoder) {
       this.remoteDecoder.onerror = null;
       this.remoteDecoder.pause();
@@ -403,11 +457,17 @@ export class AudioController {
     this.playedAnalyser = null;
     this.queuedPlayback = false;
     this.lastSourceSpeaking = null;
+    this.playbackResetPending = false;
+    this.audioElement.muted = !this.outputAudible;
+    this.releasePlaybackInput();
   }
 
   private connectPlayback(context: AudioContext, remoteStream: MediaStream): void {
     const node = this.createPlaybackNode(context);
     this.playbackNode = node;
+    this.playbackGeneration++;
+    this.playbackRequestId = null;
+    let lastRequestId = 0;
     this.playbackDestination = context.createMediaStreamDestination();
     const fail = () => {
       if (this.playbackNode !== node) return;
@@ -415,32 +475,55 @@ export class AudioController {
       this.onPlaybackBufferError?.();
     };
     node.onprocessorerror = fail;
-    node.port.onmessage = ({ data }: MessageEvent<{ type: string; value?: boolean; turnId?: string }>) => {
+    node.port.onmessage = ({ data }: MessageEvent<{ type: string; value?: boolean; turnId?: string; requestId?: number; generation?: number }>) => {
       if (this.playbackNode !== node) return;
+      if (data.type === "reset" && this.playbackResetPending && data.generation === this.playbackGeneration) {
+        this.playbackResetPending = false;
+        this.audioElement.muted = !this.outputAudible;
+        this.releasePlaybackInput();
+      }
       if (data.type === "playback" && !this.audioElement.muted && this.nonInterrupting) {
+        if (data.generation !== this.playbackGeneration || !Number.isSafeInteger(data.requestId) || data.requestId! <= 0) return;
+        const requestId = data.requestId!;
+        const generation = data.generation;
         if (data.value === true) {
-          if (this.sourceSpeaking && !this.inputBlocked) {
-            node.port.postMessage({ type: "playback", value: false });
-            return;
-          }
-          const wasTail = this.playbackReleaseTimer !== null;
-          this.cancelPlaybackRelease();
+          if (requestId <= lastRequestId) return;
+          lastRequestId = requestId;
           try {
+            // A voice can resume between sampler ticks, before VAD confirms its second frame.
+            if (!this.inputBlocked && (this.sourceSpeaking || (this.captureEnabled && this.micAnalyser !== null &&
+                (this.audioContext?.state !== "running" || !this.inputReopenEstimator.isQuiet(rmsFromAnalyser(this.micAnalyser)))))) {
+              node.port.postMessage({ type: "playback", value: false, requestId, generation });
+              return;
+            }
+            const wasTail = this.playbackReleaseTimer !== null;
+            this.cancelPlaybackRelease();
             this.blockPlaybackInput(true);
             if (wasTail) this.onPlaybackInputBlocked?.();
-            if (this.playbackNode === node && !this.audioElement.muted) node.port.postMessage({ type: "playback", value: true });
+            if (this.playbackNode === node && !this.audioElement.muted && this.playbackGeneration === generation) {
+              this.playbackRequestId = requestId;
+              node.port.postMessage({ type: "playback", value: true, requestId, generation });
+            }
           } catch { fail(); }
-        } else this.releasePlaybackInput();
+        } else if (requestId === this.playbackRequestId) {
+          this.playbackRequestId = null;
+          this.releasePlaybackInput();
+        }
       }
-      if (data.type === "pending") this.queuedPlayback = !this.audioElement.muted && data.value === true;
+      if (data.type === "pending" && data.generation === this.playbackGeneration) {
+        // A reset barrier mutes output temporarily; fresh held PCM still prevents logical completion.
+        const received = this.outputAudible && data.value === true && !this.queuedPlayback;
+        this.queuedPlayback = this.outputAudible && data.value === true;
+        if (received) this.onPcmReceived?.(this.nowMs());
+      }
       if (data.type === "turn" && !this.audioElement.muted) {
         this.onPlaybackActivity?.({ active: data.value === true, atMs: this.nowMs(), owned: true,
           turnId: typeof data.turnId === "string" ? data.turnId : undefined });
       }
       if (data.type === "error") fail();
     };
-    node.port.postMessage({ type: "enabled", value: this.nonInterrupting });
-    node.port.postMessage({ type: "audible", value: !this.audioElement.muted });
+    node.port.postMessage({ type: "enabled", value: this.nonInterrupting, generation: this.playbackGeneration });
+    node.port.postMessage({ type: "audible", value: !this.audioElement.muted, generation: this.playbackGeneration });
     this.sendSourceActivity();
     this.remoteSource!.connect(node);
     this.playedAnalyser = context.createAnalyser();
@@ -612,9 +695,16 @@ export class AudioController {
       this.playbackDetector.pushRms(playedRms, atMs);
       if (fresh) this.onRemoteAudioSample?.({ active: this.rawPlaybackDetector.active, atMs });
     }
-    if (this.micAnalyser !== null && this.captureTrack?.enabled) {
+    if (this.micAnalyser !== null && this.captureEnabled && this.audioContext?.state === "running") {
+      const rms = rmsFromAnalyser(this.micAnalyser);
+      if (this.playbackReleaseTimer !== null) {
+        this.inputReopenEstimator.pushRms(rms, false, atMs);
+        this.observeBlockedSpeech(rms);
+      }
+      if (!this.captureTrack?.enabled) return;
+      this.inputReopenEstimator.pushRms(rms, !this.audioElement.muted && this.playbackDetector.active, atMs);
       this.voiceActivityMonitor.pushRms(
-        rmsFromAnalyser(this.micAnalyser),
+        rms,
         !this.audioElement.muted && this.playbackDetector.active,
         atMs,
       );

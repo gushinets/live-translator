@@ -19,6 +19,8 @@ export type ParticipantStatusLabel =
   | "SPEAKING"
   | "PLAYBACK"
   | "PLAYBACK TAIL"
+  | "WAIT FOR QUIET"
+  | "REPEAT"
   | "PAUSED"
   | "ENDING"
   | "ENDED"
@@ -48,6 +50,8 @@ export function deriveParticipantStatus(input: {
 
   if (input.playbackInputState === "playing") return "PLAYBACK";
   if (input.playbackInputState === "tail") return "PLAYBACK TAIL";
+  if (input.playbackInputState === "waiting") return "WAIT FOR QUIET";
+  if (input.playbackInputState === "repeat" && input.inputReady && !input.sourceActive) return "REPEAT";
 
   if (input.sourceActive && input.sourceSpeaker === undefined) return "DETECTING";
 
@@ -81,15 +85,17 @@ export function ParticipantStatus({
   side,
   label,
   language,
+  recoveryText,
 }: {
   side: Side;
   label: ParticipantStatusLabel;
   language?: string;
+  recoveryText?: string;
 }) {
   const guidanceRef = useRef<HTMLDivElement>(null);
   useLayoutEffect(() => {
     if (guidanceRef.current) guidanceRef.current.scrollTop = 0;
-  }, [label, language]);
+  }, [label, language, recoveryText]);
   const messages: Record<ParticipantStatusLabel, readonly [string, string?]> = {
     DETECTING: ["Определяю язык", "Продолжайте говорить на своём языке."],
     "YOUR TURN": ["Можно говорить", "Микрофон включён. Говорите по очереди."],
@@ -99,6 +105,8 @@ export function ParticipantStatus({
     SPEAKING: ["Слушайте перевод", "Дождитесь окончания озвучки."],
     PLAYBACK: ["Идёт озвучка", "Подождите. Сейчас ваша речь не записывается."],
     "PLAYBACK TAIL": ["Ещё мгновение", "Пока не говорите. Микрофон скоро включится."],
+    "WAIT FOR QUIET": ["Сделайте паузу", "Микрофон ещё выключен. После паузы повторите фразу целиком."],
+    REPEAT: ["Повторите фразу", "Микрофон включён. Повторите фразу целиком."],
     PAUSED: ["Пауза"],
     ENDING: ["Завершаю…"],
     ENDED: ["Разговор завершён"],
@@ -106,8 +114,9 @@ export function ParticipantStatus({
   };
   const [title, detail] = messages[label];
   const hasGuidance = detail !== undefined;
-  const listening = label === "YOUR TURN" || label === "LISTENING" || label === "DETECTING";
-  const blocked = label === "PLAYBACK" || label === "PLAYBACK TAIL";
+  const listening = label === "YOUR TURN" || label === "LISTENING" || label === "DETECTING" || label === "REPEAT";
+  const blocked = label === "PLAYBACK" || label === "PLAYBACK TAIL" || label === "WAIT FOR QUIET";
+  const visibleRecovery = blocked || label === "REPEAT" ? undefined : recoveryText;
   // Keep this live-region node mounted so pause and resume are announced as updates.
   return (
     <div ref={guidanceRef} className={hasGuidance ? "participant-guidance" : "participant-status"}
@@ -127,7 +136,9 @@ export function ParticipantStatus({
         </svg>
         <div className="participant-guidance-copy">
           <p id={`participant-guidance-title-${side}`} className="participant-guidance-title" data-testid={`participant-status-${side}`}>{translate(title, language)}</p>
-          <p id={`participant-guidance-detail-${side}`} className="participant-guidance-detail">{translate(detail, language)}</p>
+          <p id={`participant-guidance-detail-${side}`} className="participant-guidance-detail"
+            lang={visibleRecovery ? uiLocale(language) : undefined}
+            data-testid={visibleRecovery ? `participant-recovery-${side}` : undefined}>{visibleRecovery ?? translate(detail, language)}</p>
         </div>
       </> : <>
         {label === "PAUSED" && language !== undefined ? `${languageName(language, uiLocale(language))} · ` : null}

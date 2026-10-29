@@ -1,7 +1,8 @@
 import { eld } from "eld/extrasmall";
-import { hasSentenceTerminator } from "./sentenceBoundaries";
+import { runtime } from "../config/runtime";
+import { hasSentenceTerminator, isSentenceComplete } from "./sentenceBoundaries";
 import type { ConversationLanguages } from "../side/SideResolver";
-import { orderTranscriptFragments, type TranscriptFragment } from "./TranscriptFragment";
+import { earliestFragmentStart, orderTranscriptFragments, type TranscriptFragment } from "./TranscriptFragment";
 import type { Side } from "./Turn";
 import { completeScriptSide, shortReplyEvidence, isExplicitShortReply, languageScripts, scriptPattern, splitLanguageSentences, languageDetectionSample, isDottedContinuation } from "./languageScripts";
 
@@ -12,6 +13,8 @@ export interface DialogueBlock {
   side?: Side;
   language?: string;
   receivedAtMs: number;
+  outputId?: string;
+  attribution?: "matched" | "unattributed";
 }
 interface Stream {
   id: number;
@@ -27,6 +30,8 @@ export class DialogueTranscript {
   private history: DialogueBlock[] = [];
   private streams: Partial<Record<DialogueBlock["kind"], Stream>> = {};
   private sequence = 0;
+  private outputs = new Map<string, { fragments: TranscriptFragment[]; languages: ConversationLanguages; sourceId?: string }>();
+  private outputRuns = new Map<string, { text: string; languages: ConversationLanguages; runs: Array<{ text: string; side?: Side }> }>();
   private readonly detector = eld.newInstance();
 
   push(kind: DialogueBlock["kind"], fragment: TranscriptFragment, languages: ConversationLanguages): void {
@@ -36,8 +41,57 @@ export class DialogueTranscript {
     const stream = this.streams[kind] ??= { id: this.sequence++, kind, languages: { ...languages }, fragments: [], blocks: [] };
     stream.fragments.push(fragment);
     const fragments = orderTranscriptFragments(stream.fragments);
-    const text = fragments.map(part => part.text).join("");
-    const runs = this.languageRuns(text, languages);
+    const scriptsA = languageScripts(languages.A), scriptsB = languageScripts(languages.B);
+    const distinctScripts = !scriptsA.some(script => scriptsB.includes(script));
+    const a = scriptPattern(scriptsA), b = scriptPattern(scriptsB);
+    const contexts: string[] = [];
+    let context = "", endMs: number | undefined;
+    for (const part of fragments) {
+      // Provider audio silence bounds language context; network arrival gaps do not.
+      if (kind === "input" && distinctScripts && endMs !== undefined && part.startMs !== undefined && part.startMs - endMs >= runtime.captionIdleMs &&
+          (/\s$/u.test(context) || /^\s/u.test(part.text))) {
+        contexts.push(context);
+        context = "";
+      }
+      context += part.text;
+      endMs = part.endMs === undefined ? undefined : Math.max(endMs ?? part.endMs, part.endMs);
+    }
+    if (context) contexts.push(context);
+    const scriptSide = (text: string) => {
+      const letters = text.match(/\p{L}/gu) ?? [];
+      if (!letters.length) return undefined;
+      return letters.every(letter => a?.test(letter) && !b?.test(letter)) ? "A"
+        : letters.every(letter => b?.test(letter) && !a?.test(letter)) ? "B" : undefined;
+    };
+    const phrases: string[] = [];
+    for (const text of contexts) {
+      const previous = phrases.at(-1);
+      const before = scriptSide(previous ?? "");
+      // The next audio context can contain a later interruption in another language.
+      const after = scriptSide(text.match(/\p{L}/u)?.[0] ?? "");
+      if (previous && before !== undefined && before === after) phrases[phrases.length - 1] += text;
+      else phrases.push(text);
+    }
+    const runs: Array<{ text: string; side?: Side }> = [];
+    for (const text of phrases) for (let run of this.languageRuns(text, languages, kind)) {
+      const pending = runs.at(-1), before = runs.at(-2);
+      // Audio pauses can isolate numbers; only agreeing neighbours can resolve their side.
+      if (kind === "input" && distinctScripts && pending && pending.side === undefined && !/\p{L}/u.test(pending.text) &&
+          run.side !== undefined && (!before || before.side === run.side)) {
+        run = { ...run, text: pending.text + run.text };
+        runs.pop();
+      }
+      const last = runs.at(-1);
+      if (last && last.side === run.side) last.text += run.text;
+      else runs.push({ ...run });
+    }
+    const tail = runs.at(-1), beforeTail = runs.at(-2);
+    // A pause before a final number does not end an unfinished source sentence.
+    if (kind === "input" && distinctScripts && tail && tail.side === undefined && !/\p{L}/u.test(tail.text) &&
+        beforeTail?.side !== undefined && !isSentenceComplete(beforeTail.text)) {
+      beforeTail.text += tail.text;
+      runs.pop();
+    }
     let position = 0;
     const bounds = fragments.map(part => {
       const start = position;
@@ -62,21 +116,78 @@ export class DialogueTranscript {
     this.publish();
   }
 
+  setOutputs(outputs: readonly { id: string; fragments: TranscriptFragment[]; sourceId?: string }[], languages: ConversationLanguages): void {
+    for (const { id, fragments, sourceId } of outputs) this.outputs.set(id, { fragments, languages, sourceId });
+    this.publish();
+  }
+
   /** A transport/language boundary seals context, but retains the visible history. */
   seal(): void {
     this.history = [...this.blocks];
     this.streams = {};
+    this.outputs.clear();
+    this.outputRuns.clear();
   }
 
   clear(): void {
     this.history = [];
     this.streams = {};
     this.blocks = [];
+    this.outputs.clear();
+    this.outputRuns.clear();
   }
 
   private publish(): void {
     const blocks = [...this.history];
     const cursors = Object.values(this.streams).map(stream => ({ blocks: stream.blocks, index: 0 }));
+    const outputs = orderTranscriptFragments([...this.outputs].map(([id, output]) => {
+      const fragments = orderTranscriptFragments(output.fragments);
+      return { id, ...output, fragments, text: fragments.map(part => part.text).join(""),
+        startMs: earliestFragmentStart(fragments), endMs: fragments.at(-1)?.endMs,
+        receivedAtMs: Math.min(...fragments.map(part => part.receivedAtMs)) };
+    }));
+    const phrases: typeof outputs = [];
+    for (const output of outputs) {
+      const previous = phrases.at(-1);
+      const a = languageScripts(output.languages.A), b = languageScripts(output.languages.B);
+      const lastLetter = previous?.text.match(/\p{L}(?=\P{L}*$)/u)?.[0];
+      const firstLetter = output.text.match(/\p{L}/u)?.[0];
+      const compatibleScript = !a.some(script => b.includes(script)) &&
+        (!lastLetter || !firstLetter || [...a, ...b].some(script => {
+          const pattern = scriptPattern([script]);
+          return pattern?.test(lastLetter) && pattern.test(firstLetter);
+        }));
+      // Journal ownership is not a caption boundary; timed continuations keep their language context.
+      if (previous && (compatibleScript || (output.sourceId !== undefined && previous.sourceId === output.sourceId)) &&
+          previous.languages.A === output.languages.A && previous.languages.B === output.languages.B &&
+          previous.endMs !== undefined && output.startMs !== undefined && previous.endMs <= output.startMs &&
+          !isSentenceComplete(previous.text)) {
+        previous.fragments.push(...output.fragments);
+        previous.text += output.text;
+        previous.endMs = output.endMs;
+        if (previous.sourceId !== output.sourceId) previous.sourceId = undefined;
+      } else phrases.push(output);
+    }
+    const phraseIds = new Set(phrases.map(output => output.id));
+    for (const id of this.outputRuns.keys()) if (!phraseIds.has(id)) this.outputRuns.delete(id);
+    for (const { id, ...output } of phrases) {
+      const outputBlocks: DialogueBlock[] = [];
+      const fragments = orderTranscriptFragments(output.fragments);
+      const text = fragments.map(part => part.text).join("");
+      const cached = this.outputRuns.get(id);
+      const runs = cached?.text === text && cached.languages.A === output.languages.A && cached.languages.B === output.languages.B
+        ? cached.runs : this.languageRuns(text, output.languages, "output");
+      this.outputRuns.set(id, { text, languages: { ...output.languages }, runs });
+      let offset = 0;
+      for (const run of runs) {
+        outputBlocks.push({ ...run, id: `output:${id}:${offset}`, outputId: id, kind: "output",
+          language: run.side ? output.languages[run.side] : undefined,
+          attribution: output.sourceId ? "matched" : "unattributed",
+          receivedAtMs: Math.min(...fragments.map(part => part.receivedAtMs)) });
+        offset += run.text.length;
+      }
+      cursors.push({ blocks: outputBlocks, index: 0 });
+    }
     // Merge stream heads by arrival, without undoing timestamp order inside a stream.
     while (true) {
       const available = cursors.filter(cursor => cursor.index < cursor.blocks.length);
@@ -87,10 +198,12 @@ export class DialogueTranscript {
     this.blocks = blocks;
   }
 
-  private languageRuns(text: string, languages: ConversationLanguages): Array<{ text: string; side?: Side }> {
+  private languageRuns(text: string, languages: ConversationLanguages, kind: DialogueBlock["kind"]): Array<{ text: string; side?: Side }> {
     const scriptsA = languageScripts(languages.A), scriptsB = languageScripts(languages.B);
     const a = scriptPattern(scriptsA), b = scriptPattern(scriptsB);
     const runs: Array<{ text: string; side?: Side }> = [];
+    const isReply = (run: { text: string; side?: Side }) => run.side !== undefined &&
+      (kind === "input" || isSentenceComplete(run.text)) && isExplicitShortReply(run.text, languages[run.side]);
     this.detector.setLanguageSubset([languages.A, languages.B]);
     const append = (text: string, side?: Side) => {
       const last = runs.at(-1);
@@ -121,7 +234,7 @@ export class DialogueTranscript {
         }
       }
       const contextual = sentences.map((run, index) => {
-        if (run.side !== undefined && isExplicitShortReply(run.text, languages[run.side])) return run;
+        if (isReply(run)) return run;
         const previous = sentences[index - 1], next = sentences[index + 1];
         const before = previous?.text.match(/\P{Sentence_Terminal}*$/u)?.[0] ?? "";
         const after = next?.text.match(/^\P{Sentence_Terminal}*/u)?.[0] ?? "";
@@ -157,7 +270,7 @@ export class DialogueTranscript {
       for (let index = 0; index < phrases.length; index++) {
         const run = phrases[index]!;
         const letters = (run.text.match(/\p{L}/gu) ?? []).length;
-        if (letters >= 4 || completeScriptSide(run.text, languages) === run.side) continue;
+        if (letters >= (kind === "input" ? 3 : 4) || completeScriptSide(run.text, languages) === run.side || isReply(run)) continue;
         if (!letters && phrases[index - 1]?.side === run.side) continue;
         run.side = undefined;
       }

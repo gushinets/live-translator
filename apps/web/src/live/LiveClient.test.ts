@@ -988,6 +988,41 @@ describe("LiveClient event dispatch", () => {
     expect(onUsage).toHaveBeenNthCalledWith(2, { seconds: 8 });
   });
 
+  it("does not record malformed error payloads as provider errors", async () => {
+    const { client, channel } = await connectedClient();
+    const onError = vi.fn();
+    client.onError = onError;
+    channel.emitMessage({ type: "error", error: { message: 42 } });
+    expect(onError).toHaveBeenCalled();
+    expect(client.diagnostics.entries).toEqual([]);
+  });
+
+  it("does not retain arbitrary personal text in an unknown event type", async () => {
+    const { client, channel } = await connectedClient();
+    channel.emitMessage({ type: "patient.jane.doe" });
+    channel.emitMessage({ type: "session.patient.jane.doe" });
+    expect(JSON.stringify(client.diagnostics.entries)).not.toContain("jane.doe");
+    expect(client.diagnostics.entries).toEqual([expect.objectContaining({
+      kind: "unknown_event", type: "unknown_event", count: 2,
+    })]);
+  });
+
+  it("keeps bounded provider diagnostics before error handling without retaining payload or speech", async () => {
+    const { client, channel } = await connectedClient();
+    client.onError = () => { expect(client.diagnostics.entries.some(entry => entry.kind === "provider_error")).toBe(true); };
+    for (let index = 0; index < 100; index++) channel.emitMessage({ type: "session.future.event", delta: "PRIVATE SPEECH", payload: { secret: "PRIVATE PAYLOAD" } });
+    channel.emitMessage({ type: "error", error: { message: "PRIVATE ERROR", code: "PRIVATE CODE" } });
+    const repeated = client.diagnostics.entries.find(entry => entry.type === "unknown_event");
+    expect(repeated).toMatchObject({ count: 100, kind: "unknown_event" });
+    expect(client.diagnostics.entries.find(entry => entry.kind === "provider_error")).toMatchObject({ type: "error", count: 1 });
+    expect(repeated?.generation).toBeDefined();
+    expect(repeated?.lastAtMs).toBeGreaterThanOrEqual(repeated!.firstAtMs);
+    for (let index = 0; index < 100; index++) channel.emitMessage({ type: `future.${index}` });
+    channel.emitMessage({ type: "PRIVATE SPEECH ".repeat(100) });
+    expect(client.diagnostics.entries.length).toBeLessThanOrEqual(32);
+    expect(JSON.stringify(client.diagnostics.entries)).not.toContain("PRIVATE");
+  });
+
   it("ignores unknown type-bearing events and still dispatches known events", async () => {
     const { client, channel } = await connectedClient();
     const onError = vi.fn();

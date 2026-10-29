@@ -2,6 +2,10 @@
 
 > Follow-up (2026-10-04): the user accepted the phone-tested mode as the default. The [default-caption plan](../plans/2026-10-04-default-dialogue-captions.md) supersedes the opt-in URL and unresolved-text disclosure below: all URLs use caption blocks, unresolved text stays buffered internally and is hidden until its language resolves. The remaining prototype evidence and limitations below are historical context.
 
+> Label agreement (2026-10-29): every caption row in a participant pane starts with its localized relative author: own input is «Я:» / «Yo:», translated partner speech is «Он:» / «Él:». These labels describe the pane's viewpoint and do not depend on matching an output to a particular source turn in the attribution journal.
+
+> Saved-event regression (2026-10-29): timed output groups with compatible script context continue an unfinished caption even when the attribution journal cannot match their source or audio timestamps contain gaps. A completed sentence, incompatible script or lifecycle boundary keeps independent context. Source pauses must not hide a leading word or a final number of an unfinished sentence. The RU/ES replay fixture covers eight recorded sessions, exact text on both panes, delayed packets and localized author labels; it does not change journal ownership, audio capture or model output.
+
 
 The user's phone test found good translated audio but broken captions: tiny suffixes on both panes, split names, and unrelated waiting/repeat rows. Both own speech and translated partner speech must remain visible.
 

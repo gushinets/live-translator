@@ -87,11 +87,12 @@ export class MockLiveHarness {
     await this.emitVoiceActivity(false);
   }
 
-  async outputDelta(text: string, startMs?: number): Promise<void> {
+  async outputDelta(text: string, startMs?: number, endMs?: number): Promise<void> {
     await this.emitLiveEvent({
       type: "session.output_transcript.delta",
       delta: text,
       start_ms: startMs,
+      end_ms: endMs,
     });
   }
 
@@ -345,11 +346,28 @@ export class MockLiveHarness {
       }
 
       class FakeAudioWorkletNode extends FakeAudioNode {
-        readonly port = { postMessage: () => {}, close: () => {}, onmessage: null as ((event: MessageEvent) => void) | null };
+        private requestId = 0;
+        private generation = 0;
+        readonly port = {
+          postMessage: (message: { type: string; value?: boolean; generation?: number }) => {
+            if (message.generation !== undefined) this.generation = message.generation;
+            if (message.type === "enabled" || (message.type === "audible" && !message.value)) {
+              queueMicrotask(() => this.port.onmessage?.(new MessageEvent("message", {
+                data: { type: "reset", generation: message.generation },
+              })));
+            }
+          },
+          close: () => {}, onmessage: null as ((event: MessageEvent) => void) | null,
+        };
         constructor() {
           super();
           window.__liveTranslatorTestPlayback = {
-            emit: active => this.port.onmessage?.(new MessageEvent("message", { data: { type: "playback", value: active } })),
+            emit: active => {
+              if (active) this.requestId++;
+              this.port.onmessage?.(new MessageEvent("message", {
+                data: { type: "playback", value: active, requestId: this.requestId, generation: this.generation },
+              }));
+            },
           };
         }
       }

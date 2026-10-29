@@ -3,7 +3,9 @@ import type { CloseObservation, ObservationSource, SessionRow } from "./types.js
 
 const nonNegative = z.number().finite().nonnegative();
 const integer = nonNegative.int().max(Number.MAX_SAFE_INTEGER);
+export const attributionCounterNames = ["noObservedOutputDeadlineCount", "unresolvedSourceOutcomeCount", "lateOutputAfterDeadlineCount", "attributionRevokedCount"] as const;
 export const counterNames = [
+  ...attributionCounterNames,
   "earlyOutputCount", "completedTurnCount", "sourceTailClippingReports", "noOutputWatchdogCount",
   "textOnlyCompletionCount", "vamFalseActiveCount",
   "audioCompletedTurnCount", "textOnlyCompletedTurnCount", "failedTurnCount", "discardedTurnCount",
@@ -120,7 +122,7 @@ export function mergeAppMetrics(row: SessionRow, app: AppMetricsReport): { accep
     if (before !== null && (after === null || after < before)) return { accepted: false, reason: "regressive_app_totals", fields: {} };
   }
   const previous = row.metrics_json ? JSON.parse(row.metrics_json) as Record<string, number> : {};
-  for (const key of counterNames) if ((app.counters[key] ?? 0) < (previous[key] ?? 0)) return { accepted: false, reason: "regressive_app_counters", fields: {} };
+  for (const key of counterNames) if (previous[key] !== undefined && (app.counters[key] === undefined || app.counters[key]! < previous[key]!)) return { accepted: false, reason: "regressive_app_counters", fields: {} };
   return { accepted: true, fields: {
     ...Object.fromEntries(Object.entries(durationFields).map(([key, column]) => [column, app[key as keyof typeof durationFields]])),
     activity_report_seq: app.activityReportSeq, measurement_version: app.measurementVersion,

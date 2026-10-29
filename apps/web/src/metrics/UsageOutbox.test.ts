@@ -329,3 +329,16 @@ describe("usage transport retries", () => {
 
 });
 
+
+it("coalesces a newer snapshot without erasing an already measured zero or adding new legacy keys", () => {
+  const app = { activityReportSeq: 1, measurementVersion: "active-time-v1" as const, observedWallMs: 0, setupMs: 0,
+    activeInterpreterMs: 0, visiblePausedMs: 0, acceptedSourceSpeechMs: null, completedSourceSpeechMs: null,
+    speechMeasurementVersion: "vam-pre-tail-v1" as const, speechMeasurementStatus: "unavailable" as const,
+    appMetricsFinalized: false, counters: { noObservedOutputDeadlineCount: 0 } };
+  const old: UsageReport = { schemaVersion: 1, app };
+  const combined = coalesceUsage(old, { schemaVersion: 1, checkpointSeconds: 15, app: { ...app, activityReportSeq: 2, counters: {} } });
+  expect(combined.app?.counters).toEqual({ noObservedOutputDeadlineCount: 0 });
+  expect(combined.checkpointSeconds).toBe(15);
+  expect(old.app?.activityReportSeq).toBe(1);
+  expect(coalesceUsage(undefined, { schemaVersion: 1, app: { ...app, counters: {} } }).app?.counters).toEqual({});
+});
