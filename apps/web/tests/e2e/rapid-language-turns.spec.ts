@@ -14,7 +14,7 @@ async function startRussianEnglish(page: Page, languages = { A: "ru", B: "en" })
   return harness;
 }
 
-test("a rapid B reply retains originals and late translations without inventing output authors", async ({ page }, testInfo) => {
+test("a rapid B reply retains originals and labels late translations from each pane's viewpoint", async ({ page }, testInfo) => {
   const harness = await startRussianEnglish(page);
   const startupEvents = await harness.sentClientEvents();
   await harness.sourceActive();
@@ -27,11 +27,11 @@ test("a rapid B reply retains originals and late translations without inventing 
   await expect(b.locator(".turn-author").last()).toHaveText("Me:");
   await expect(a.locator("li")).toHaveText("Я: Подскажите, где находится вокзал?");
   await harness.outputDelta("Where is the train station?");
-  await expect(b.locator("li")).toHaveText(["Me: The station is straight ahead.", "Where is the train station?"]);
+  await expect(b.locator("li")).toHaveText(["Me: The station is straight ahead.", "Him: Where is the train station?"]);
   await harness.outputDelta("Вокзал находится прямо впереди.");
   await expect(a.locator(".recent-turn-primary").last()).toHaveText("Вокзал находится прямо впереди.");
-  await expect(a.locator("li").last().locator(".turn-author")).toHaveCount(0);
-  await expect(b.locator("li").last().locator(".turn-author")).toHaveCount(0);
+  await expect(a.locator("li").last().locator(".turn-author")).toHaveText("Он:");
+  await expect(b.locator("li").last().locator(".turn-author")).toHaveText("Him:");
   await expect(a.locator(".recent-turn-primary").last()).toHaveAttribute("lang", "ru");
   await expect(b.locator(".recent-turn-primary").last()).toHaveAttribute("lang", "en");
   expect(await harness.sentClientEvents()).toEqual(startupEvents);
@@ -107,7 +107,7 @@ test("ambiguous A-B-A output stays an independent unowned block after source tim
   const output = b.getByText("Thank you, I will walk there.", { exact: true });
   await expect(output).toHaveCount(1);
   await expect(output).toHaveAttribute("lang", "en");
-  await expect(output.locator("..").locator(".turn-author")).toHaveCount(0);
+  await expect(output.locator("..").locator(".turn-author")).toHaveText("Him:");
   await expect(a.getByText("Thank you, I will walk there.")).toHaveCount(0);
   await expect(a.locator("li")).toHaveCount(2);
   await expect(b.locator("li")).toHaveCount(2);

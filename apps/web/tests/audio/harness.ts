@@ -121,10 +121,17 @@ document.querySelector("#start")!.addEventListener("click", async () => {
   };
   controller.onPlaybackBufferError = () => { window.audioHarness.errors++; };
   const listeners = new Set<() => void>();
+  const recordInputTransition = controller.onPlaybackInputBlocked!;
+  controller.onPlaybackInputBlocked = () => {
+    recordInputTransition();
+    for (const listener of listeners) listener();
+  };
   const uiController = {
     session: { ...createInitialSession({ side: "A", language: "ru", hasAcceptedConversationSpeech: true },
-      { side: "B", language: "en", hasAcceptedConversationSpeech: true }), state: "listening" as const },
-    captionBlocks: [], inputReady: true,
+      { side: "B", language: "es", hasAcceptedConversationSpeech: true }), state: "listening" as const },
+    captionBlocks: [],
+    get inputReady() { return !controller.playbackInputBlocked; },
+    get playbackInputState() { return controller.playbackInputState; },
     subscribe(listener: () => void) { listeners.add(listener); return () => { listeners.delete(listener); }; },
     async endConversation() { controller.setOutputAudible(false); },
     async resumeFromSourceTimeout() {},

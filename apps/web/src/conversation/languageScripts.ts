@@ -41,9 +41,8 @@ export function completeScriptSide(text: string, languages: ConversationLanguage
   return undefined;
 }
 
-/** Shared decisive reply evidence for routing and displayed sentence context. */
+/** Lexical reply evidence; callers that require a sentence boundary check it separately. */
 export function isExplicitShortReply(text: string, language: string): boolean {
-  if (!isSentenceComplete(text)) return false;
   const words = text.normalize("NFC").toLowerCase().match(/[\p{L}\p{M}]+/gu) ?? [];
   // Full localized replies protect short interruptions; keyboard abbreviations are not speech.
   return words.length > 0 && words.every(word => shortReplies[language]?.includes(word) ||
@@ -58,6 +57,7 @@ const pairReplies: Readonly<Record<string, Readonly<Record<string, readonly stri
   "en/fr": { en: ["yes", "no"], fr: ["oui", "non"] },
 };
 export function shortReplyEvidence(text: string, languages: ConversationLanguages): Side | "ambiguous" | undefined {
+  if (!isSentenceComplete(text)) return undefined;
   if (!isExplicitShortReply(text, languages.A) && !isExplicitShortReply(text, languages.B)) return undefined;
   const scriptSide = completeScriptSide(text, languages);
   if (scriptSide !== undefined) return scriptSide;

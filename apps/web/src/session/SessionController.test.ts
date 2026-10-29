@@ -6995,7 +6995,7 @@ describe("output evidence across source callback order", () => {
       expect(metrics).toMatchObject({ completedTurnCount: 0, noOutputWatchdogCount: 2, unresolvedSourceOutcomeCount: 1, noObservedOutputDeadlineCount: 1 });
       const root = document.createElement("div");
       root.innerHTML = renderToStaticMarkup(createElement(ConversationScreen, { controller }));
-      expect([...root.querySelectorAll('[data-testid="participant-pane-A"] li')].map(row => row.textContent)).toContain(prefix + suffix);
+      expect([...root.querySelectorAll('[data-testid="participant-pane-A"] li')].map(row => row.textContent)).toContain("Он: " + prefix + suffix);
       expect(root.querySelectorAll(".unattributed-output li")).toHaveLength(0);
       const trace = structuredClone(controller.attributionTrace);
       const decisions = trace.filter(entry => entry.outputId === first.outputId && entry.revision !== undefined);
@@ -7044,7 +7044,7 @@ it.each([true, false].flatMap(sourceFirst => [false, true].flatMap(timed =>
   const root = document.createElement("div");
   root.innerHTML = renderToStaticMarkup(createElement(ConversationScreen, { controller }));
   expect([...root.querySelectorAll(".unattributed-output li")].map(row => row.textContent)).toEqual(["Да"]);
-  expect([...root.querySelectorAll('[data-testid="participant-pane-B"] li')].map(row => row.textContent)).toContain("Where is the train station?");
+  expect([...root.querySelectorAll('[data-testid="participant-pane-B"] li')].map(row => row.textContent)).toContain("Him: Where is the train station?");
   await controller.endConversation();
 });
 

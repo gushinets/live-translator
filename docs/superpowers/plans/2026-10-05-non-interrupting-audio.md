@@ -84,3 +84,18 @@ then repeat the phone test before opening the new PR.
 - Stream replacement/terminal detachment sends an explicit worklet dispose message and closes the main-thread port. The processor clears its queue, closes its port, and returns false, including without inputs/outputs. Ordinary silence, clear and temporary muting keep it alive.
 - Regression RED: eight failures confirmed the review issues. The targeted GREEN run passed 280 tests, including processor lifetime, decoder refusal, pending startup retirement and End/Cancel cleanup.
 - Full unit/integration run: 1410 tests across 62 files passed. Typecheck, lint and production build passed. The four real Chromium audio/WebRTC scenarios pass using the same startup method as production. Logs: .data/pr33-review-red.log, .data/pr33-review-green.log, .data/pr33-review-all-unit.log, .data/pr33-review-audio.log, .data/pr33-review-e2e.log.
+
+## Microphone reopening correction (2026-10-29)
+
+- The capture track stays closed if speech is detected during the echo-release window. A local analyser observes that window without forwarding speech or counting it as accepted source activity. Reopening waits for the full source-idle interval (450 + 250 ms) and asks both participants to repeat the entire phrase; ordinary quiet release retains its 300 ms echo delay.
+- Regression coverage includes onset just before release, a 600 ms sentence pause, ambient-noise adaptation, resumed playback, suspension, stop and disposal. The real ES fixture exposed a ~550 ms sentence pause that defeated an initial 450 ms guard.
+- Targeted paid RU/ES acceptance: no leaked suffixes in the final run, complete repeats preserved «Нет» and «Perdón», localized repeat guidance displayed. All three verification sessions were closed. Evidence: `.data/mic-reopen-live-verified-2026-10-29/report.html`.
+- This remains half-duplex. Speech begun while input is closed must be repeated. Quiet detection is acoustic: a pause of 700 ms is treated as a boundary; phone echo/noise still requires hardware acceptance.
+
+## Long source / early playback correction (2026-10-29)
+
+- Playback had consumed the estimator's early idle edge (450 ms), bypassing the monitor's 250 ms source-tail grace. With the queue's 300 ms delay, a sentence pause could release buffered translation just as the speaker resumed, before VAD confirmed the second onset frame.
+- Playback now follows the monitor's full idle edge and checks fresh microphone energy before acknowledging a playback request. Capture and analysis remain open when voice has resumed; source metering still reports the original estimator samples. Journal attribution and echo-tail reopening are unchanged.
+- Regression failed before and passed after: an 800 ms sentence pause with real AudioWorklet/WebRTC, onset with zero or one sampled frame, and delayed main-thread sampling. Eight Chromium audio tests and 1948 web tests pass; typecheck, lint and builds pass.
+- Paid browser acceptance: two real `gpt-live-1` sessions, four long RU/ES phrases (14.1–14.8 seconds), plus replies containing 200 and 7. No gated or overlapping voiced samples among 833 observations; both final clauses, negations, numbers and localized labels retained. In the second session, audio arrived at 8.27 s (RU) and 6.26 s (ES) but played only after source completion. Both sessions closed. One evaluator false positive accepted «двадцатиминутную остановку» on saved evidence without another paid call. Report: `.data/long-source-live-2026-10-29/report.html`.
+- Acoustic end detection remains approximate (full source-idle window plus the queue delay, about one second of quiet). This is not full-duplex barge-in; a real phone's echo/noise is outside this browser acceptance.

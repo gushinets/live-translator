@@ -25,6 +25,11 @@ export class VoiceActivityEstimator {
     return this.isActive;
   }
 
+  isQuiet(rms: number): boolean {
+    return Number.isFinite(rms) && rms >= 0 &&
+      rms < Math.max(VAM_QUIET_FLOOR, (this.noiseFloor ?? 0) * VAM_QUIET_NOISE_MULTIPLIER);
+  }
+
   resetBaseline(): void {
     this.isActive = false;
     this.noiseFloor = null;
@@ -57,16 +62,12 @@ export class VoiceActivityEstimator {
       VAM_ACTIVE_FLOOR,
       this.noiseFloor * VAM_ACTIVE_NOISE_MULTIPLIER,
     );
-    const quietThreshold = Math.max(
-      VAM_QUIET_FLOOR,
-      this.noiseFloor * VAM_QUIET_NOISE_MULTIPLIER,
-    );
     const enterThreshold = playbackActive
       ? activeThreshold * VAM_PLAYBACK_THRESHOLD_MULTIPLIER
       : activeThreshold;
 
     if (this.isActive) {
-      if (rms < quietThreshold) {
+      if (this.isQuiet(rms)) {
         if (this.quietStartedAtMs === null) {
           this.quietStartedAtMs = atMs;
         }

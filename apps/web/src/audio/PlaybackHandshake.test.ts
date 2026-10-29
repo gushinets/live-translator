@@ -461,7 +461,7 @@ describe("physical playback permission with independent render/main queues", () 
     harness.flushWorklet(); harness.render(400);
     expect(harness.capture.enabled).toBe(true);
     expect(harness.played).toHaveLength(0);
-    harness.sampleMic(0, 700);
+    harness.sampleMic(0, 800);
     harness.until(() => harness.played.length > 0);
     harness.until(() => harness.capture.enabled);
     expect(harness.played).toEqual([...new Float32Array(Math.ceil(40 / FRAME_MS) * QUANTUM).fill(.5)]);
@@ -473,7 +473,7 @@ describe("physical playback permission with independent render/main queues", () 
     harness.render(600, .5);
     expect(harness.played).toHaveLength(0);
     expect(harness.capture.enabled).toBe(true);
-    harness.sampleMic(0, 700);
+    harness.sampleMic(0, 800);
     harness.until(() => harness.played.length > 0);
     harness.until(() => harness.capture.enabled);
     expect(harness.played).toEqual([...new Float32Array(Math.ceil(600 / FRAME_MS) * QUANTUM).fill(.5)]);
@@ -809,6 +809,9 @@ it.each([false, true])("does not correlate delayed ASR with a reopened capture c
   while(!harness.controller.hasPendingPlayback)harness.deliverMain();
   const pcmReceivedAt=harness.now;
   harness.flushMain();harness.flushWorklet();
+  harness.render(100);
+  expect(harness.capture.enabled).toBe(true); // A single onset frame must not be cut by the queued ACK.
+  harness.analysers[0]!.amplitude=0;
   harness.until(()=>harness.controller.playbackInputBlocked);
   const closed={atMs:harness.now,capture:harness.capture.enabled,analysis:harness.analysis.enabled};
   // Real disabled tracks produce zero frames. Let the real queue drain and the render clock progress.
