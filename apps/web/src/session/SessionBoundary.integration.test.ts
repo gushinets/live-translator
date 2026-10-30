@@ -112,7 +112,7 @@ function fixture(closeTimeoutMs = 2000, background = false, initialHidden = fals
     abortResume: vi.fn<LedgerApi["abortResume"]>(),
     end: vi.fn<LedgerApi["end"]>(async () => ({ ...c, status: "ended" })),
     usage: vi.fn<NonNullable<LedgerApi["usage"]>>(async (id, _conversationId, report) => {
-      reports.push({ id, report }); return { schemaVersion: 1, appAccepted: true, activityReportSeq: null, appMetricsFinalized: true };
+      reports.push({ id, report }); return { schemaVersion: 1, appAccepted: true, activityReportSeq: null, appMetricsFinalized: true, ...report.clientMetadata };
     }),
   };
   const scope = new ConversationAccounting({ api, budget, autoDelivery: false });
@@ -403,7 +403,7 @@ describe("stage 4 transport/accounting integration", () => {
     expect(f.api.createSession).toHaveBeenCalledTimes(2); expect(f.track.stop).not.toHaveBeenCalled();
     await f.scope.usageOutbox!.flush(); expect(await f.budget.get(first.id)).not.toBeNull();
     persistence.mockRestore(); await f.scope.usageOutbox!.flush(); await f.scope.usageOutbox!.flush();
-    expect(f.reports.find(r => r.id === first.id)?.report).toMatchObject({ checkpointSeconds: 43, providerClosed: { seconds: 46 } });
+    expect(f.reports.find(r => r.id === first.id && r.report.providerClosed)?.report).toMatchObject({ checkpointSeconds: 43, providerClosed: { seconds: 46 } });
     expect(JSON.stringify(f.reports)).not.toContain("private");
     expect(f.api.createSession.mock.calls[1]![0].conversationId).toBe(f.c.conversationId);
     expect(f.api.createSession.mock.calls[1]![0].liveSessionId).not.toBe(first.id);

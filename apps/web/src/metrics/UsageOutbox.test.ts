@@ -11,6 +11,8 @@ describe("shared usage delivery envelope", () => {
     await producer.reserve("id", "conversation", true);
     await producer.enqueueUsage("id", "conversation", { schemaVersion: 1, checkpointSeconds: 2, providerClosed: { seconds: 5 },
       clientMetadata: { clientBuildId: "bundle:index-NEW.js", interpreterPromptId: `sha256:${"a".repeat(64)}` } });
+    await producer.finishUsageProducer("id", "conversation");
+    await producer.finishProducerAndRelease("id", "provider_closed", "conversation");
     await producer.close();
     const consumer = new MetadataDeliveryBudget({ indexedDB, name });
     try {
@@ -21,6 +23,15 @@ describe("shared usage delivery envelope", () => {
       expect(usageReportSchema.safeParse(wire).success).toBe(true);
       expect(wire).toMatchObject({ checkpointSeconds: 2, providerClosed: { seconds: 5 } });
       expect(wire).not.toHaveProperty("clientMetadata");
+      // A base worker ACK clears usage; a later new worker must still deliver the IDs.
+      await consumer.acknowledgeUsage(row.localId, row.conversationId, row.usage!.revision);
+      expect(await consumer.get("id")).toBeNull();
+      const usage = vi.fn().mockImplementation(async (_id, _conversation, report: UsageReport) => ({ ...ack, ...report.clientMetadata }));
+      await new UsageOutbox(consumer, { usage, readConversation: vi.fn() }).flush();
+      expect(usage.mock.calls.at(-1)?.[2].clientMetadata).toEqual({
+        clientBuildId: "bundle:index-NEW.js", interpreterPromptId: `sha256:${"a".repeat(64)}`,
+      });
+      expect(await consumer.clientMetadataEntries()).toEqual([]);
     } finally { await consumer.close(); }
   });
 
@@ -74,6 +85,58 @@ import { vi } from "vitest";
 import { UsageOutbox } from "./UsageOutbox";
 const ack = { schemaVersion: 1 as const, appAccepted: true, activityReportSeq: null, appMetricsFinalized: false };
 describe("usage transport retries", () => {
+  it("keeps identifiers after an old API accepts usage without confirming headers", async () => {
+    const b = new MetadataDeliveryBudget({ indexedDB: new IDBFactory() });
+    const clientMetadata = { clientBuildId: "bundle:index-NEW.js", interpreterPromptId: `sha256:${"a".repeat(64)}` };
+    await b.reserve("id", "c", true);
+    await b.enqueueUsage("id", "c", { ...closed(5), clientMetadata });
+    const transport = { usage: vi.fn().mockResolvedValue(ack), readConversation: vi.fn() };
+    try {
+      await new UsageOutbox(b, transport).flush();
+      expect((await b.get("id"))!.usage).toBeNull();
+      expect(await b.clientMetadataEntries()).toHaveLength(1);
+      transport.usage.mockResolvedValue({ ...ack, ...clientMetadata });
+      await new UsageOutbox(b, transport).flush();
+      expect(await b.clientMetadataEntries()).toEqual([]);
+    } finally { await b.close(); }
+  });
+
+  it("does not ACK a newer prompt ID or another conversation with an older identity receipt", async () => {
+    const b = new MetadataDeliveryBudget({ indexedDB: new IDBFactory() });
+    const build = { clientBuildId: "bundle:index-NEW.js" };
+    const clientMetadata = { ...build, interpreterPromptId: `sha256:${"a".repeat(64)}` };
+    try {
+      await b.reserve("id", "c", true);
+      await b.enqueueUsage("id", "c", { ...closed(5), clientMetadata: build });
+      await b.enqueueUsage("id", "c", { ...closed(5), clientMetadata });
+      await b.acknowledgeClientMetadata("id", "c", build);
+      await b.acknowledgeClientMetadata("id", "foreign", clientMetadata);
+      expect(await b.clientMetadataEntries()).toHaveLength(1);
+      await new UsageOutbox(b, { usage: vi.fn(), readConversation: vi.fn() }).noProvider("id", "c");
+      expect(await b.clientMetadataEntries()).toEqual([]);
+    } finally { await b.close(); }
+  });
+
+  it("bounds independent identification storage without blocking usage and expires it after seven days", async () => {
+    const b = new MetadataDeliveryBudget({ indexedDB: new IDBFactory(), capacity: 1 });
+    const clientMetadata = { clientBuildId: "bundle:index-NEW.js" };
+    const now = Date.now(), clock = vi.spyOn(Date, "now").mockReturnValue(now);
+    const warning = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      await b.reserve("first", "c", true);
+      await b.enqueueUsage("first", "c", { ...closed(5), clientMetadata });
+      await b.finishUsageProducer("first", "c"); await b.finishProducerAndRelease("first", "provider_closed", "c");
+      await b.acknowledgeUsage("first", "c", (await b.get("first"))!.usage!.revision);
+      await b.reserve("second", "c", true);
+      await b.enqueueUsage("second", "c", { ...closed(9), clientMetadata });
+      expect((await b.get("second"))!.usage!.report.providerClosed?.seconds).toBe(9);
+      expect(await b.clientMetadataEntries()).toHaveLength(1);
+      expect(warning).toHaveBeenCalledWith("Client identification persistence degraded");
+      clock.mockReturnValue(now + 7 * 86400000);
+      expect(await b.clientMetadataEntries()).toEqual([]);
+    } finally { clock.mockRestore(); warning.mockRestore(); await b.close(); }
+  });
+
   it("restores persisted diagnostic headers for a different delivery worker", async () => {
     const indexedDB = new IDBFactory(), name = crypto.randomUUID();
     const producer = new MetadataDeliveryBudget({ indexedDB, name });

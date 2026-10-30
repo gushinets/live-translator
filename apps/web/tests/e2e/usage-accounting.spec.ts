@@ -31,7 +31,9 @@ test("ledger-enabled browser retains final metadata across an HTTP outage withou
       if (blockUsage) return json({ code: "simulated_outage" }, 503);
       received.push({ id, body, headers: route.request().headers() });
       const app = body.app as { activityReportSeq: number; appMetricsFinalized: boolean } | undefined;
-      return json({ schemaVersion: 1, appAccepted: true, activityReportSeq: app?.activityReportSeq ?? null, appMetricsFinalized: app?.appMetricsFinalized ?? false });
+      return json({ schemaVersion: 1, appAccepted: true, activityReportSeq: app?.activityReportSeq ?? null, appMetricsFinalized: app?.appMetricsFinalized ?? false,
+        clientBuildId: route.request().headers()["x-live-translator-build"] ?? null,
+        interpreterPromptId: route.request().headers()["x-live-translator-prompt"] ?? null });
     }
     if (action === "handoff") Object.assign(row, { state: "active", handoffAcknowledgedAt: now });
     if (action === "cleanup") Object.assign(row, { state: "unknown", cleanupRequestedAt: now });
@@ -56,9 +58,20 @@ test("ledger-enabled browser retains final metadata across an HTTP outage withou
   await page.evaluate(() => window.dispatchEvent(new Event("online")));
   await expect.poll(() => attempts.get(id)?.state).toBe("closed");
   blockUsage = false;
+  // The base worker sends only usage.report, then can delete the entire envelope on ACK.
+  await page.evaluate(async localId => {
+    const db = await new Promise<IDBDatabase>((resolve, reject) => { const r = indexedDB.open("live-translator-metadata-v1"); r.onsuccess = () => resolve(r.result); r.onerror = reject; });
+    try {
+      const row = await new Promise<{ conversationId: string; usage: { report: object } }>((resolve, reject) => { const r = db.transaction("envelopes").objectStore("envelopes").get(localId); r.onsuccess = () => resolve(r.result); r.onerror = reject; });
+      const response = await fetch(`/api/live/session/${localId}/usage`, { method: "PUT", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ conversationId: row.conversationId, ...row.usage.report }) });
+      if (!response.ok) throw new Error("Legacy usage delivery failed");
+      await new Promise<void>((resolve, reject) => { const tx = db.transaction("envelopes", "readwrite"); tx.objectStore("envelopes").delete(localId); tx.oncomplete = () => resolve(); tx.onerror = reject; });
+    } finally { db.close(); }
+  }, id);
   await page.evaluate(() => window.dispatchEvent(new Event("online")));
-  await expect.poll(() => received.some(item => item.id === id && (item.body.providerClosed as { seconds?: number } | undefined)?.seconds === 46)).toBe(true);
-  const final = received.find(item => item.id === id && item.body.providerClosed)!;
+  await expect.poll(() => received.some(item => item.id === id && item.headers["x-live-translator-prompt"] && (item.body.providerClosed as { seconds?: number } | undefined)?.seconds === 46)).toBe(true);
+  const final = received.find(item => item.id === id && item.headers["x-live-translator-prompt"] && item.body.providerClosed)!;
   const bundle = await page.locator('script[type="module"][src]').first().getAttribute("src");
   expect(final.headers["x-live-translator-build"]).toBe(`bundle:${bundle!.split("/").at(-1)}`);
   expect(final.headers["x-live-translator-prompt"]).toMatch(/^sha256:[a-f0-9]{64}$/);

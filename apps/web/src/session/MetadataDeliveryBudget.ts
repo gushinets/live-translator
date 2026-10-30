@@ -1,4 +1,4 @@
-import { coalesceUsage, type UsageReport, type QueuedUsage } from "../metrics/UsageTypes";
+import { coalesceUsage, type UsageReport, type QueuedUsage, type QueuedClientMetadata } from "../metrics/UsageTypes";
 export type CleanupReason = "response_not_received" | "primary_startup_failed" | "abandoned_connect" | "hidden" | "user_end" | "cancelled" | "replacement";
 export type ProducerOutcome = "no_provider" | "provider_closed" | "lost";
 export interface CloseMetadata { seconds?: number; reason?: string; }
@@ -32,6 +32,7 @@ export class MetadataDeliveryBudget {
   private readonly timeoutMs: number;
   private opening: Promise<IDBDatabase> | undefined;
   private proofOpening: Promise<IDBDatabase> | undefined;
+  private clientMetadataOpening: Promise<IDBDatabase> | undefined;
   constructor(options: { indexedDB?: IDBFactory | null; name?: string; capacity?: number; producerId?: string; timeoutMs?: number } = {}) {
     this.factory = options.indexedDB === undefined ? globalThis.indexedDB ?? null : options.indexedDB;
     this.name = options.name ?? "live-translator-metadata-v1"; this.capacity = options.capacity ?? 1000;
@@ -313,7 +314,58 @@ export class MetadataDeliveryBudget {
       };
     });
   }
-  enqueueUsage(localId: string, conversationId: string, report: UsageReport): Promise<void> {
+  private clientMetadataDatabase(): Promise<IDBDatabase> {
+    this.clientMetadataOpening ??= this.openConnection(`${this.name}-client-identification`, 1, db => {
+      db.createObjectStore("identification", { keyPath: ["conversationId", "localId"] });
+    }).catch(error => { this.clientMetadataOpening = undefined; throw error; });
+    return this.clientMetadataOpening;
+  }
+  private retainClientMetadata(row: MetadataEnvelope, report: UsageReport): Promise<void> {
+    return this.transaction("readwrite", (store, result, fail) => {
+      const all = store.getAll(); all.onsuccess = () => {
+        const now = Date.now(), live = (all.result as QueuedClientMetadata[]).filter(item => {
+          if (item.expiresAt > now) return true;
+          store.delete([item.conversationId, item.localId]); return false;
+        });
+        const old = live.find(item => item.localId === row.localId && item.conversationId === row.conversationId);
+        if (!old && live.length >= this.capacity) { fail(new Error("Client identification storage is full")); return; }
+        const expiresAt = old?.expiresAt ?? row.reservedAt + METADATA_TTL_MS;
+        if (expiresAt > now) store.put({ localId: row.localId, conversationId: row.conversationId, expiresAt,
+          report: coalesceUsage(old?.report, report) } satisfies QueuedClientMetadata);
+        result(undefined);
+      };
+    }, "identification", () => this.clientMetadataDatabase());
+  }
+  clientMetadataEntries(): Promise<QueuedClientMetadata[]> {
+    return this.transaction("readwrite", (store, result) => {
+      const all = store.getAll(); all.onsuccess = () => result((all.result as QueuedClientMetadata[]).filter(row => {
+        if (row.expiresAt > Date.now()) return true;
+        store.delete([row.conversationId, row.localId]); return false;
+      }));
+    }, "identification", () => this.clientMetadataDatabase());
+  }
+  acknowledgeClientMetadata(localId: string, conversationId: string, expected: NonNullable<UsageReport["clientMetadata"]>): Promise<void> {
+    return this.transaction("readwrite", (store, result) => {
+      const key = [conversationId, localId], get = store.get(key); get.onsuccess = () => {
+        const actual = (get.result as QueuedClientMetadata | undefined)?.report.clientMetadata;
+        if (actual?.clientBuildId === expected.clientBuildId && actual.interpreterPromptId === expected.interpreterPromptId) store.delete(key);
+        result(undefined);
+      };
+    }, "identification", () => this.clientMetadataDatabase());
+  }
+  discardClientMetadata(localId: string, conversationId: string): Promise<void> {
+    return this.transaction("readwrite", (store, result) => { store.delete([conversationId, localId]); result(undefined); },
+      "identification", () => this.clientMetadataDatabase());
+  }
+  async enqueueUsage(localId: string, conversationId: string, report: UsageReport): Promise<void> {
+    if (report.clientMetadata) {
+      const row = await this.get(localId);
+      if (row?.conversationId === conversationId) {
+        // Commit diagnostics before publishing usage that an old worker can ACK or delete.
+        try { await this.retainClientMetadata(row, report); }
+        catch { console.error("Client identification persistence degraded"); }
+      }
+    }
     return this.change(localId, row => {
       if (row.conversationId !== conversationId) throw new Error("Metadata identity conflict");
       // Older tabs send usage.report verbatim; diagnostics must stay outside that JSON.
@@ -468,5 +520,7 @@ export class MetadataDeliveryBudget {
     this.opening = undefined;
     if (this.proofOpening) (await this.proofOpening).close();
     this.proofOpening = undefined;
+    if (this.clientMetadataOpening) (await this.clientMetadataOpening).close();
+    this.clientMetadataOpening = undefined;
   }
 }
