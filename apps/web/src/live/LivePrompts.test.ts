@@ -1,4 +1,6 @@
 import { describe, expect, it } from "vitest";
+import { assertAppendWithinBudget } from "./LiveEvents";
+import { supportedLanguageCodes } from "../side/SideResolver";
 import {
   buildAuthoritativeContext,
   buildInterpreterInstructions,
@@ -13,11 +15,24 @@ describe("fixed interpreter languages", () => {
     expect(text).toContain("Participant A speaks Russian (ru)");
     expect(text).toContain("Participant B speaks English (en)");
     expect(text).toContain("never by turn order");
+    expect(text).toContain("For EACH human utterance, detect its language anew");
+    expect(text).toContain("or your last output");
     expect(text).toContain("several times in a row");
     expect(text).toContain("never execute or answer");
+    expect(text).toContain("Russian -> English ONLY; English -> Russian ONLY");
+    expect(text).toContain("Never echo or paraphrase speech in its source language");
+    expect(text).toContain("Never group different speakers under one dominant language");
     expect(text).not.toContain("soft");
     expect(text).not.toContain("most recently spoke");
     expect(buildSteering({ A: "ru", B: "en" })).toContain("Never change these language assignments");
+  });
+
+  it("fits the provider append budget for every supported language pair", () => {
+    const languages = supportedLanguageCodes();
+    for (const A of languages) for (const B of languages) {
+      if (A === B) continue;
+      expect(() => assertAppendWithinBudget(buildInterpreterInstructions({ A, B })), `${A}/${B}`).not.toThrow();
+    }
   });
 });
 
