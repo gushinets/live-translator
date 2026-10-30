@@ -4,6 +4,14 @@ import { MetadataDeliveryBudget } from "../session/MetadataDeliveryBudget";
 import { coalesceUsage, type UsageReport } from "./UsageTypes";
 const closed = (seconds: number): UsageReport => ({ schemaVersion: 1, providerClosed: { seconds } });
 describe("shared usage delivery envelope", () => {
+  it("persists identification with the original attempt across later reports without metadata", async () => {
+    const b = new MetadataDeliveryBudget({ indexedDB: new IDBFactory(), capacity: 1 });
+    await b.reserve("id", "conversation", true);
+    const clientMetadata = { clientBuildId: "bundle:index-OLD.js", interpreterPromptId: `sha256:${"a".repeat(64)}` };
+    await b.enqueueUsage("id", "conversation", { schemaVersion: 1, checkpointSeconds: 2, clientMetadata });
+    await b.enqueueUsage("id", "conversation", closed(5));
+    expect((await b.get("id"))!.usage!.report.clientMetadata).toEqual(clientMetadata);
+  });
   it("retains the envelope across cleanup ACK until the usage producer and final delivery finish", async () => {
     const b = new MetadataDeliveryBudget({ indexedDB: new IDBFactory(), capacity: 1 });
     await b.reserve("id", "c", true); await b.markDispatchStarted("id");

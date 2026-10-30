@@ -6,6 +6,7 @@ export function publicConversation(c: ConversationRow, serverTime: number) {
 }
 export function publicAttempt(s: SessionRow) {
   return { liveSessionId: s.id, conversationId: s.conversation_id, generation: s.generation, openaiSessionId: s.openai_session_id,
+    clientBuildId: s.client_build_id ?? null, interpreterPromptId: s.interpreter_prompt_id ?? null,
     state: s.state, initialMode: s.initial_mode, startReason: s.start_reason,
     providerRequestDispatchedAt: s.provider_request_dispatched_at, creationCompletedAt: s.creation_completed_at,
     handoffAckDeadlineAt: s.handoff_ack_deadline_at, handoffAcknowledgedAt: s.handoff_acknowledged_at,

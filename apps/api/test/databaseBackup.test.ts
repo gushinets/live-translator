@@ -96,6 +96,8 @@ describe("SQLite backup and restore", () => {
 
     const lateConversation = conversation(), lateId = randomUUID();
     start(lateId, lateConversation.id, lateConversation.version);
+    ledger.recordUsage(owner, lateId, lateConversation.id, { schemaVersion: 1, checkpointSeconds: 1 }, "browser",
+      { clientBuildId: "bundle:index-backup.js", interpreterPromptId: `sha256:${"a".repeat(64)}` });
     report(lateId, lateConversation.id, { checkpointSeconds: 105 });
     const ended = ledger.endConversation(owner, lateConversation.id, lateConversation.version, "user_end");
 
@@ -122,7 +124,7 @@ describe("SQLite backup and restore", () => {
     expect(buildUnitEconomicsReport(restoredReadDb, options)).toEqual(before);
     expect(verifyUsageDatabase(backupPath)).toEqual({ integrity: "ok", foreignKeyViolations: 0, ledgerSchema: "compatible" });
     expect(verifyUsageDatabase(restoredPath)).toEqual({ integrity: "ok", foreignKeyViolations: 0, ledgerSchema: "compatible" });
-    const identity = (db: typeof sourceDb) => db.prepare(`SELECT usage_identity_version,provider_checkpoint_seconds,provider_final_seconds,
+    const identity = (db: typeof sourceDb) => db.prepare(`SELECT client_build_id,interpreter_prompt_id,usage_identity_version,provider_checkpoint_seconds,provider_final_seconds,
       usage_conflict,cleanup_requested_at,resume_outcome FROM live_sessions ORDER BY id`).all();
     expect(identity(backupDb)).toEqual(identity(sourceDb));
     expect(identity(restoredReadDb)).toEqual(identity(sourceDb));

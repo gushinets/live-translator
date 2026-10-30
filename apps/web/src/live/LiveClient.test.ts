@@ -1763,6 +1763,12 @@ describe("LiveClient trusted control commands", () => {
     });
 
     await expect(pending).resolves.toEqual({ eventId: "evt-1" });
+    expect(client.interpreterPromptId).toBeUndefined();
+    const steering = client.appendInstructions("Fixed languages: test pair.", { kind: "first_steering", sessionState: "listening" });
+    expect(client.interpreterPromptId).toBeUndefined();
+    channel.emitMessage({ type: "session.instructions.appended", client_event_id: "evt-2" });
+    await steering;
+    expect(client.interpreterPromptId).toMatch(/^sha256:[a-f0-9]{64}$/);
   });
 
   it("sends thinking.append and commentary.append and waits for their acks", async () => {

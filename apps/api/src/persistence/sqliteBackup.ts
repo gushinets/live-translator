@@ -34,6 +34,9 @@ function matchesLedgerSchema(db: DatabaseSync, version: number): boolean {
     if (version === 3 || db.prepare("SELECT 1 FROM pragma_table_info('live_sessions') WHERE name='usage_identity_version'").get()) {
       expected.exec(readFileSync(new URL("./migrations/003-usage-identity.sql", import.meta.url), "utf8"));
     }
+    if (db.prepare("SELECT 1 FROM pragma_table_info('live_sessions') WHERE name='client_build_id'").get()) {
+      expected.exec(readFileSync(new URL("./migrations/004-client-identification.sql", import.meta.url), "utf8"));
+    }
     return schemaFingerprint(db) === schemaFingerprint(expected);
   } finally { expected.close(); }
 }

@@ -38,6 +38,8 @@ export interface ConversationRow {
   conversation_policy_version: string; policy_json: string;
 }
 export interface SessionRow {
+  client_build_id: string | null;
+  interpreter_prompt_id: string | null;
   id: string; conversation_id: string; generation: number; openai_session_id: string | null;
   usage_identity_version: 1 | null;
   state: AttemptState; initial_mode: InitialMode; start_reason: StartReason;
@@ -69,6 +71,7 @@ export interface SessionRow {
 }
 export interface AttemptInput {
   liveSessionId: string; conversationId: string; conversationVersion: number;
+  clientBuildId?: string;
   initialMode: InitialMode; startReason: StartReason; fingerprint: string; usageIdentityVersion?: 1;
 }
 export interface CloseObservation { seconds?: number; reason?: string; invalidSeconds?: boolean; }

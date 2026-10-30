@@ -1,4 +1,5 @@
 import { mergeUsage, mergeAppMetrics, type UsageReport } from "./mergeUsage.js";
+import type { ClientMetadata } from "./clientMetadata.js";
 import { randomUUID } from "node:crypto";
 import type { DatabaseSync, SQLInputValue } from "node:sqlite";
 import { transaction } from "../persistence/database.js";
@@ -116,13 +117,15 @@ export class UsageLedger {
           this.updateAttempt(old.id, { request_fingerprint: input.fingerprint, request_conversation_version: input.conversationVersion });
         }
         if (input.usageIdentityVersion === 1 && old.provider_request_dispatched_at === null) this.updateAttempt(old.id, { usage_identity_version: 1 });
+        if (input.clientBuildId && old.client_build_id === null && old.provider_request_dispatched_at === null) this.updateAttempt(old.id, { client_build_id: input.clientBuildId });
         return this.attempt(old.id);
       }
       if (c.status === "ended") return new LedgerError("conversation_expired", 410);
       if (c.status !== "active" || c.version !== input.conversationVersion || input.startReason === "resume") return new LedgerError("conversation_version_conflict");
       if (this.progressing(c.id)) return new LedgerError("attempt_in_progress");
       const row = this.insertAttempt(c, input.liveSessionId, input.initialMode, input.startReason, input.usageIdentityVersion);
-      this.updateAttempt(row.id, { request_fingerprint: input.fingerprint, request_conversation_version: input.conversationVersion });
+      this.updateAttempt(row.id, { request_fingerprint: input.fingerprint, request_conversation_version: input.conversationVersion,
+        client_build_id: input.clientBuildId ?? null });
       return this.attempt(row.id);
     });
   }
@@ -268,7 +271,7 @@ export class UsageLedger {
     });
   }
   /** One commit for the whole report; close uses the same primitive as PR-2 observers. */
-  recordUsage(owner: string, id: string, conversationId: string | undefined, report: UsageReport, source: ObservationSource = "browser") {
+  recordUsage(owner: string, id: string, conversationId: string | undefined, report: UsageReport, source: ObservationSource = "browser", client: ClientMetadata = {}) {
     return this.atomic(() => {
       let row = this.ownedAttempt(owner, id);
       if (conversationId === undefined && row.usage_identity_version === 1) throw new LedgerError("invalid_request", 400);
@@ -281,7 +284,9 @@ export class UsageLedger {
       row = this.attempt(id);
       const app = report.invalidAppMetrics ? { accepted: false, reason: "invalid_app_metrics", fields: {} }
         : report.app ? mergeAppMetrics(row, report.app) : { accepted: true, fields: {} };
-      this.updateAttempt(id, { ...app.fields, last_report_received_at: now });
+      this.updateAttempt(id, { ...app.fields, last_report_received_at: now,
+        client_build_id: row.client_build_id ?? client.clientBuildId ?? null,
+        interpreter_prompt_id: row.interpreter_prompt_id ?? client.interpreterPromptId ?? null });
       if (report.app && app.accepted && Object.keys(app.fields).length) {
         const c = this.conversation(row.conversation_id);
         this.updateConversation(c.id, { last_product_activity_received_at: now,

@@ -2,8 +2,10 @@ import { ActiveTimeMetrics, type ActivityState } from "./ActiveTimeMetrics";
 import { SourceSpeechMetrics, type SpeechSample } from "./SourceSpeechMetrics";
 import { COUNTER_NAMES, type MetricCounters, type UsageObservation, type UsageReport, type AppMetricsReport } from "./UsageTypes";
 import type { UsageOutbox } from "./UsageOutbox";
+import { CLIENT_BUILD_ID } from "../config/BuildInfo";
 export interface ProductObservation extends ActivityState {
   atMs: number; speechEligible: boolean; counters: MetricCounters;
+  interpreterPromptId?: string;
   turnId?: string; completedTurnId?: string; sample?: SpeechSample; resetSpeech?: boolean;
 }
 const usableSeconds = (s: unknown): s is number => typeof s === "number" && Number.isFinite(s) && s >= 0;
@@ -25,6 +27,7 @@ export class UsageReporter {
   private providerStartedObservedAt: number | undefined;
   private interpreterReadyObservedAt: number | undefined;
   private readyCheckpoint: number | undefined;
+  private interpreterPromptId: string | undefined;
   constructor(private readonly localId: string, private readonly conversationId: string,
     private readonly outbox: Pick<UsageOutbox, "enqueue" | "finishProducer" | "noProvider">,
     options: { now?: () => number; automatic?: boolean; initial?: ProductObservation } = {}) {
@@ -47,6 +50,7 @@ export class UsageReporter {
   providerStarted(): void { this.providerStartedObservedAt ??= Date.now(); }
   observeProduct(observation: ProductObservation): void {
     if (this.finalAppSent) return;
+    this.interpreterPromptId ??= observation.interpreterPromptId;
     for (const name of COUNTER_NAMES) {
       const total = observation.counters[name];
       if (typeof total === "number" && Number.isFinite(total)) this.counters[name] = Math.max(this.counters[name] ?? 0, total - (this.baseline[name] ?? 0));
@@ -102,6 +106,8 @@ export class UsageReporter {
   }
   private emit(report: UsageReport): void {
     if (this.discarded) return;
+    report.clientMetadata = { clientBuildId: CLIENT_BUILD_ID,
+      ...(this.interpreterPromptId ? { interpreterPromptId: this.interpreterPromptId } : {}) };
     const finishedNow = this.finalized && !this.finalAppScheduled;
     if (!this.finalized) report.app = this.snapshot();
     // Freeze time synchronously, but let synchronous teardown/product callbacks record their outcome.

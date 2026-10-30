@@ -25,6 +25,7 @@ import { publicAttempt, publicConversation } from "../../../api/src/accounting/p
 import usageSchema from "../../../api/src/persistence/migrations/001-usage-ledger.sql?raw";
 import recoveryFences from "../../../api/src/persistence/migrations/002-live-session-recovery-fences.sql?raw";
 import usageIdentity from "../../../api/src/persistence/migrations/003-usage-identity.sql?raw";
+import clientIdentification from "../../../api/src/persistence/migrations/004-client-identification.sql?raw";
 
 /** Only the network/media boundary is simulated; controller, accounting and IDB transactions are real. */
 class Channel extends EventTarget {
@@ -224,7 +225,7 @@ function configureResume(f: ReturnType<typeof fixture>) {
 }
 function useRealLedger(f: ReturnType<typeof fixture>, background = true) {
   const db = new DatabaseSync(":memory:"), owner = crypto.randomUUID();
-  db.exec(usageSchema); db.exec(recoveryFences); db.exec(usageIdentity);
+  db.exec(usageSchema); db.exec(recoveryFences); db.exec(usageIdentity); db.exec(clientIdentification);
   let now = Date.now();
   const ledger = new UsageLedger(db, { now: () => now,
     policy: { ...f.c.policy, backgroundSessionCloseEnabled: background } });

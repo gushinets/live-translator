@@ -2,6 +2,7 @@ import type { UsageReport, UsageReceipt } from "../metrics/UsageTypes";
 import type { CreateLiveSessionResponse } from "./BackendClient";
 import type { CleanupReason, CloseMetadata } from "../session/MetadataDeliveryBudget";
 import { MANAGED_SESSION_CREATE_TIMEOUT_MS, type AttemptProof, type CleanupTransport } from "../session/CleanupIntentOutbox";
+import { CLIENT_BUILD_ID } from "../config/BuildInfo";
 export interface ConversationMetadata {
   conversationId: string; version: number; status: "active" | "paused" | "resuming" | "ended";
   productDeadlineAt: number | null; resumeExpiresAt: number | null; resumeAttemptId: string | null;
@@ -44,13 +45,15 @@ export class AccountingRequestError extends Error {
   constructor(readonly status: number, readonly code: string) { super(code); }
 }
 export class AccountingBackend implements LedgerApi {
-  private async json<T>(url: string, method = "GET", body?: unknown, signal?: AbortSignal, timeoutMs = 10000, keepalive = false): Promise<T> {
+  private async json<T>(url: string, method = "GET", body?: unknown, signal?: AbortSignal, timeoutMs = 10000, keepalive = false,
+    metadataHeaders: Record<string, string> = {}): Promise<T> {
     const controller = new AbortController(), abort = () => controller.abort();
     if (signal?.aborted) abort(); else signal?.addEventListener("abort", abort, { once: true });
     const timer = setTimeout(abort, timeoutMs);
     try {
       const response = await fetch(url, { method, keepalive, credentials: "same-origin", signal: controller.signal,
-        ...(body !== undefined ? { headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) } : {}) });
+        headers: { ...metadataHeaders, ...(body !== undefined ? { "Content-Type": "application/json" } : {}) },
+        ...(body !== undefined ? { body: JSON.stringify(body) } : {}) });
       if (!response.ok) {
         const data = await response.json().catch(() => ({})) as { code?: string };
         throw new AccountingRequestError(response.status, data.code ?? "accounting_request_failed");
@@ -59,7 +62,11 @@ export class AccountingBackend implements LedgerApi {
     } finally { clearTimeout(timer); signal?.removeEventListener("abort", abort); }
   }
   usage(id: string, conversationId: string, report: UsageReport, keepalive = false): Promise<UsageReceipt> {
-    return this.json(`/api/live/session/${encodeURIComponent(id)}/usage`, "PUT", { conversationId, ...report }, undefined, 10000, keepalive);
+    const { clientMetadata, ...payload } = report;
+    // Separate headers keep the existing strict JSON contract compatible with older APIs.
+    return this.json(`/api/live/session/${encodeURIComponent(id)}/usage`, "PUT", { conversationId, ...payload }, undefined, 10000, keepalive,
+      clientMetadata ? { "X-Live-Translator-Build": clientMetadata.clientBuildId,
+        ...(clientMetadata.interpreterPromptId ? { "X-Live-Translator-Prompt": clientMetadata.interpreterPromptId } : {}) } : {});
   }
   async policy(): Promise<{ usageLedgerEnabled: boolean; backgroundSessionCloseEnabled: boolean; creationPaused?: boolean }> {
     try { return await this.json("/api/policy"); }
@@ -70,7 +77,8 @@ export class AccountingBackend implements LedgerApi {
     }
   }
   createConversation(createRequestId: string): Promise<ConversationMetadata> { return this.json("/api/conversations", "POST", { createRequestId, appVersion: "ledger-client-v1" }); }
-  createSession(body: ProviderCreateBody, signal: AbortSignal): Promise<CreateLiveSessionResponse> { return this.json("/api/live/session", "POST", { ...body, usageIdentityVersion: 1 }, signal, MANAGED_SESSION_CREATE_TIMEOUT_MS); }
+  createSession(body: ProviderCreateBody, signal: AbortSignal): Promise<CreateLiveSessionResponse> { return this.json("/api/live/session", "POST", { ...body, usageIdentityVersion: 1 }, signal, MANAGED_SESSION_CREATE_TIMEOUT_MS, false,
+    { "X-Live-Translator-Build": CLIENT_BUILD_ID }); }
   handoff(id: string): Promise<AttemptMetadata> { return this.json(`/api/live/session/${encodeURIComponent(id)}/handoff`, "POST", {}); }
   readAttempt(id: string): Promise<AttemptMetadata> { return this.json(`/api/live/session/${encodeURIComponent(id)}`); }
   readConversation(id: string): Promise<ConversationMetadata> { return this.json(`/api/conversations/${encodeURIComponent(id)}`); }

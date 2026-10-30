@@ -2,12 +2,19 @@ import react from "@vitejs/plugin-react";
 import { loadEnv } from "vite";
 import { VitePWA } from "vite-plugin-pwa";
 import { defineConfig } from "vitest/config";
+import { createHash } from "node:crypto";
+import { readFileSync } from "node:fs";
 
 export default defineConfig(({ mode }) => {
   const env = loadEnv(mode, "../..", "");
   const additionalAllowedHost = env.VITE_ADDITIONAL_ALLOWED_HOST?.trim();
 
   return {
+    define: {
+      __INTERPRETER_PROMPT_ID__: JSON.stringify(`sha256:${createHash("sha256").update(
+        readFileSync(new URL("./src/live/LivePrompts.ts", import.meta.url), "utf8").replace(/\r\n/g, "\n"),
+      ).digest("hex")}`),
+    },
     plugins: [
       react(),
       VitePWA({

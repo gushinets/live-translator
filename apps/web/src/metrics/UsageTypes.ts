@@ -15,6 +15,7 @@ export type UsageObservation = { kind: "checkpoint"; seconds?: number } | { kind
 export interface UsageReport {
   schemaVersion: 1; checkpointSeconds?: number; providerClosed?: CloseUsage;
   conflictingProviderClosed?: CloseUsage; localCloseUnconfirmed?: true; app?: AppMetricsReport;
+  clientMetadata?: { clientBuildId: string; interpreterPromptId?: string };
 }
 export interface UsageReceipt { schemaVersion: 1; appAccepted: boolean; appRejection?: string; activityReportSeq: number | null; appMetricsFinalized: boolean; }
 export interface QueuedUsage { revision: number; expiresAt: number; report: UsageReport; }
@@ -25,6 +26,10 @@ export function coalesceUsage(old: UsageReport | undefined, update: UsageReport)
   const result: UsageReport = { schemaVersion: 1 };
   for (const item of [old, update]) {
     if (!item) continue;
+    if (item.clientMetadata) {
+      result.clientMetadata ??= { clientBuildId: item.clientMetadata.clientBuildId };
+      if (item.clientMetadata.interpreterPromptId) result.clientMetadata.interpreterPromptId ??= item.clientMetadata.interpreterPromptId;
+    }
     if (validSeconds(item.checkpointSeconds)) result.checkpointSeconds = Math.max(result.checkpointSeconds ?? 0, item.checkpointSeconds);
     for (const close of [item.providerClosed, item.conflictingProviderClosed]) {
       if (!close) continue;

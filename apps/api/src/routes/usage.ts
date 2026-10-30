@@ -4,6 +4,7 @@ import { usageReportSchema } from "../accounting/mergeUsage.js";
 import { publicAttempt } from "../accounting/publicMetadata.js";
 import type { AnonymousIdentity } from "../security/AnonymousIdentity.js";
 import { parseBody, requireOrigin, uuidSchema } from "./conversations.js";
+import { readClientMetadata } from "../accounting/clientMetadata.js";
 
 export function createUsageRouter(runtime: LedgerRuntime, identity: AnonymousIdentity, webOrigin: string) {
   const router = Router();
@@ -14,7 +15,8 @@ export function createUsageRouter(runtime: LedgerRuntime, identity: AnonymousIde
     const conversationId = rawConversationId === undefined ? undefined : parseBody(uuidSchema, rawConversationId);
     const report = parseBody(usageReportSchema, metadata);
     // Provenance comes from this ingestion path, never from the request body.
-    const result = runtime.ledger.recordUsage(owner, id, conversationId, report, "browser");
+    const result = runtime.ledger.recordUsage(owner, id, conversationId, report, "browser",
+      readClientMetadata(req.get("X-Live-Translator-Build"), req.get("X-Live-Translator-Prompt")));
     runtime.syncAdmission(); runtime.wake(); identity.renew(res, owner);
     res.json({ ...publicAttempt(result.row), schemaVersion: 1, appAccepted: result.appAccepted,
       appRejection: result.appRejection, activityReportSeq: result.row.activity_report_seq,
