@@ -2,15 +2,37 @@ import { IDBFactory } from "fake-indexeddb";
 import { describe, expect, it } from "vitest";
 import { MetadataDeliveryBudget } from "../session/MetadataDeliveryBudget";
 import { coalesceUsage, type UsageReport } from "./UsageTypes";
+import { usageReportSchema } from "../../../api/src/accounting/mergeUsage";
 const closed = (seconds: number): UsageReport => ({ schemaVersion: 1, providerClosed: { seconds } });
 describe("shared usage delivery envelope", () => {
+  it("keeps a new producer's persisted report deliverable by the base client's unchanged JSON spread", async () => {
+    const indexedDB = new IDBFactory(), name = crypto.randomUUID();
+    const producer = new MetadataDeliveryBudget({ indexedDB, name });
+    await producer.reserve("id", "conversation", true);
+    await producer.enqueueUsage("id", "conversation", { schemaVersion: 1, checkpointSeconds: 2, providerClosed: { seconds: 5 },
+      clientMetadata: { clientBuildId: "bundle:index-NEW.js", interpreterPromptId: `sha256:${"a".repeat(64)}` } });
+    await producer.close();
+    const consumer = new MetadataDeliveryBudget({ indexedDB, name });
+    try {
+      const row = (await consumer.get("id"))!;
+      // Base c27f031b sends this persisted report verbatim, without the new header adapter.
+      const { conversationId, ...wire } = JSON.parse(JSON.stringify({ conversationId: row.conversationId, ...row.usage!.report }));
+      expect(conversationId).toBe("conversation");
+      expect(usageReportSchema.safeParse(wire).success).toBe(true);
+      expect(wire).toMatchObject({ checkpointSeconds: 2, providerClosed: { seconds: 5 } });
+      expect(wire).not.toHaveProperty("clientMetadata");
+    } finally { await consumer.close(); }
+  });
+
   it("persists identification with the original attempt across later reports without metadata", async () => {
     const b = new MetadataDeliveryBudget({ indexedDB: new IDBFactory(), capacity: 1 });
     await b.reserve("id", "conversation", true);
     const clientMetadata = { clientBuildId: "bundle:index-OLD.js", interpreterPromptId: `sha256:${"a".repeat(64)}` };
     await b.enqueueUsage("id", "conversation", { schemaVersion: 1, checkpointSeconds: 2, clientMetadata });
     await b.enqueueUsage("id", "conversation", closed(5));
-    expect((await b.get("id"))!.usage!.report.clientMetadata).toEqual(clientMetadata);
+    expect((await b.get("id"))!.usage!.clientMetadata).toEqual(clientMetadata);
+    expect((await b.get("id"))!.usage!.report).not.toHaveProperty("clientMetadata");
+    await b.close();
   });
   it("retains the envelope across cleanup ACK until the usage producer and final delivery finish", async () => {
     const b = new MetadataDeliveryBudget({ indexedDB: new IDBFactory(), capacity: 1 });
@@ -52,6 +74,22 @@ import { vi } from "vitest";
 import { UsageOutbox } from "./UsageOutbox";
 const ack = { schemaVersion: 1 as const, appAccepted: true, activityReportSeq: null, appMetricsFinalized: false };
 describe("usage transport retries", () => {
+  it("restores persisted diagnostic headers for a different delivery worker", async () => {
+    const indexedDB = new IDBFactory(), name = crypto.randomUUID();
+    const producer = new MetadataDeliveryBudget({ indexedDB, name });
+    const clientMetadata = { clientBuildId: "bundle:index-OLD.js", interpreterPromptId: `sha256:${"a".repeat(64)}` };
+    await producer.reserve("id", "conversation", true);
+    await producer.enqueueUsage("id", "conversation", { ...closed(5), clientMetadata });
+    await producer.close();
+    const consumer = new MetadataDeliveryBudget({ indexedDB, name });
+    const transport = { usage: vi.fn().mockResolvedValue(ack), readConversation: vi.fn() };
+    try {
+      await new UsageOutbox(consumer, transport).flush();
+      expect(transport.usage.mock.calls[0]![2]).toMatchObject({ providerClosed: { seconds: 5 }, clientMetadata });
+      expect((await consumer.get("id"))!.usage).toBeNull();
+    } finally { await consumer.close(); }
+  });
+
   it("does not persist a delayed old report into a reused attempt's usage envelope", async () => {
     const b = new MetadataDeliveryBudget({ indexedDB: new IDBFactory() });
     await b.reserve("shared", "original", true);

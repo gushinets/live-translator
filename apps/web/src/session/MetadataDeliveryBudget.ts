@@ -316,9 +316,12 @@ export class MetadataDeliveryBudget {
   enqueueUsage(localId: string, conversationId: string, report: UsageReport): Promise<void> {
     return this.change(localId, row => {
       if (row.conversationId !== conversationId) throw new Error("Metadata identity conflict");
+      // Older tabs send usage.report verbatim; diagnostics must stay outside that JSON.
+      const previous = row.usage ? { ...row.usage.report, clientMetadata: row.usage.clientMetadata } : undefined;
+      const { clientMetadata, ...wireReport } = coalesceUsage(previous, report);
       return { ...row, usagePending: true, usageRevision: (row.usageRevision ?? 0) + 1,
       usage: { revision: (row.usageRevision ?? 0) + 1, expiresAt: row.usage?.expiresAt ?? row.reservedAt + METADATA_TTL_MS,
-        report: coalesceUsage(row.usage?.report, report) } };
+        report: wireReport, ...(clientMetadata ? { clientMetadata } : {}) } };
     });
   }
   acknowledgeUsage(localId: string, conversationId: string, revision: number): Promise<void> {

@@ -154,7 +154,9 @@ export class UsageOutbox {
           if (this.volatile.get(key) === shadow) this.volatile.delete(key);
           continue;
         }
-        shadow ??= { localId: row.localId, conversationId: row.conversationId, report: queued.report, expiresAt: queued.expiresAt, persisted: true, delivered: false };
+        shadow ??= { localId: row.localId, conversationId: row.conversationId,
+          report: { ...queued.report, ...(queued.clientMetadata ? { clientMetadata: queued.clientMetadata } : {}) },
+          expiresAt: queued.expiresAt, persisted: true, delivered: false };
         if (Date.now() >= queued.expiresAt) {
           this.anomaly("usage_delivery_expired"); this.pendingDiscard.set(key, { localId: row.localId, conversationId: row.conversationId });
           this.pendingFinalization.delete(key);

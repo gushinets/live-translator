@@ -15,10 +15,14 @@ export type UsageObservation = { kind: "checkpoint"; seconds?: number } | { kind
 export interface UsageReport {
   schemaVersion: 1; checkpointSeconds?: number; providerClosed?: CloseUsage;
   conflictingProviderClosed?: CloseUsage; localCloseUnconfirmed?: true; app?: AppMetricsReport;
+  /** In memory only; persisted beside the legacy report and delivered as headers. */
   clientMetadata?: { clientBuildId: string; interpreterPromptId?: string };
 }
 export interface UsageReceipt { schemaVersion: 1; appAccepted: boolean; appRejection?: string; activityReportSeq: number | null; appMetricsFinalized: boolean; }
-export interface QueuedUsage { revision: number; expiresAt: number; report: UsageReport; }
+export interface QueuedUsage {
+  revision: number; expiresAt: number; report: Omit<UsageReport, "clientMetadata">;
+  clientMetadata?: UsageReport["clientMetadata"];
+}
 const validSeconds = (value: unknown): value is number => typeof value === "number" && Number.isFinite(value) && value >= 0;
 const validReason = (value: unknown): value is string => typeof value === "string" && value.length > 0 && value.length <= 256 && !Array.from(value).some(c => c.charCodeAt(0) < 32 || c.charCodeAt(0) === 127);
 /** Bounded coalescing: retain the first final and one contradicting observation, never sum snapshots. */

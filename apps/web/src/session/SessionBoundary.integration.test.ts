@@ -303,6 +303,26 @@ afterEach(() => {
 });
 
 describe("stage 4 transport/accounting integration", () => {
+  it("retains the acknowledged prompt ID when the provider closes before input unmute completes", async () => {
+    const f = fixture(40);
+    const handoff = f.api.handoff.getMockImplementation()!;
+    f.api.handoff.mockImplementation(async id => {
+      const channel = f.clients.at(-1)!.peer.channel, send = channel.send.bind(channel);
+      vi.spyOn(channel, "send").mockImplementation(raw => {
+        if (JSON.parse(raw).type === "session.input_audio.unmute" && f.clients.at(-1)!.client.interpreterPromptId) {
+          channel.emit({ type: "session.closed", usage: { seconds: 2 } });
+        } else send(raw);
+      });
+      return handoff(id);
+    });
+    try {
+      await f.controller.startWithLanguages({ A: "ru", B: "es" }).catch(() => undefined);
+      await settle(); await f.scope.usageOutbox!.flush();
+      const final = f.reports.find(item => item.report.providerClosed);
+      expect(final?.report.clientMetadata?.interpreterPromptId).toMatch(/^sha256:[a-f0-9]{64}$/);
+    } finally { await f.controller.endConversation(); await f.controller.dispose(); await f.budget.close(); }
+  });
+
   it.each([false, true])("retains an ended dialogue across hiding without resuming or billing again (paused=%s)", async paused => {
     const f = fixture(40, true), server = useRealLedger(f);
     await f.controller.startWithLanguages({ A: "en", B: "es" });

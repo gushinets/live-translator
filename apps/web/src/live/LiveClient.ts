@@ -236,7 +236,12 @@ export class LiveClient {
       buildInstructionsAppendCommand(eventId, text),
     );
     // First steering follows the acknowledged interpreter contract, also on retained resume.
-    if (policy.kind === "first_steering" && !result.degraded) this.interpreterPromptId = INTERPRETER_PROMPT_ID;
+    if (policy.kind === "first_steering" && !result.degraded) {
+      this.interpreterPromptId = INTERPRETER_PROMPT_ID;
+      // Close can arrive before the controller's next notification (including on resume).
+      if (this.lastProductObservation) this.observeProductMetrics({ ...this.lastProductObservation,
+        atMs: performance.now(), interpreterPromptId: this.interpreterPromptId, sample: undefined, completedTurnId: undefined, resetSpeech: undefined });
+    }
     return result;
   }
 
