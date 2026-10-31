@@ -25,6 +25,7 @@ import { publicAttempt, publicConversation } from "../../../api/src/accounting/p
 import usageSchema from "../../../api/src/persistence/migrations/001-usage-ledger.sql?raw";
 import recoveryFences from "../../../api/src/persistence/migrations/002-live-session-recovery-fences.sql?raw";
 import usageIdentity from "../../../api/src/persistence/migrations/003-usage-identity.sql?raw";
+import clientIdentification from "../../../api/src/persistence/migrations/004-client-identification.sql?raw";
 
 /** Only the network/media boundary is simulated; controller, accounting and IDB transactions are real. */
 class Channel extends EventTarget {
@@ -111,7 +112,7 @@ function fixture(closeTimeoutMs = 2000, background = false, initialHidden = fals
     abortResume: vi.fn<LedgerApi["abortResume"]>(),
     end: vi.fn<LedgerApi["end"]>(async () => ({ ...c, status: "ended" })),
     usage: vi.fn<NonNullable<LedgerApi["usage"]>>(async (id, _conversationId, report) => {
-      reports.push({ id, report }); return { schemaVersion: 1, appAccepted: true, activityReportSeq: null, appMetricsFinalized: true };
+      reports.push({ id, report }); return { schemaVersion: 1, appAccepted: true, activityReportSeq: null, appMetricsFinalized: true, ...report.clientMetadata };
     }),
   };
   const scope = new ConversationAccounting({ api, budget, autoDelivery: false });
@@ -224,7 +225,7 @@ function configureResume(f: ReturnType<typeof fixture>) {
 }
 function useRealLedger(f: ReturnType<typeof fixture>, background = true) {
   const db = new DatabaseSync(":memory:"), owner = crypto.randomUUID();
-  db.exec(usageSchema); db.exec(recoveryFences); db.exec(usageIdentity);
+  db.exec(usageSchema); db.exec(recoveryFences); db.exec(usageIdentity); db.exec(clientIdentification);
   let now = Date.now();
   const ledger = new UsageLedger(db, { now: () => now,
     policy: { ...f.c.policy, backgroundSessionCloseEnabled: background } });
@@ -302,6 +303,26 @@ afterEach(() => {
 });
 
 describe("stage 4 transport/accounting integration", () => {
+  it("retains the acknowledged prompt ID when the provider closes before input unmute completes", async () => {
+    const f = fixture(40);
+    const handoff = f.api.handoff.getMockImplementation()!;
+    f.api.handoff.mockImplementation(async id => {
+      const channel = f.clients.at(-1)!.peer.channel, send = channel.send.bind(channel);
+      vi.spyOn(channel, "send").mockImplementation(raw => {
+        if (JSON.parse(raw).type === "session.input_audio.unmute" && f.clients.at(-1)!.client.interpreterPromptId) {
+          channel.emit({ type: "session.closed", usage: { seconds: 2 } });
+        } else send(raw);
+      });
+      return handoff(id);
+    });
+    try {
+      await f.controller.startWithLanguages({ A: "ru", B: "es" }).catch(() => undefined);
+      await settle(); await f.scope.usageOutbox!.flush();
+      const final = f.reports.find(item => item.report.providerClosed);
+      expect(final?.report.clientMetadata?.interpreterPromptId).toMatch(/^sha256:[a-f0-9]{64}$/);
+    } finally { await f.controller.endConversation(); await f.controller.dispose(); await f.budget.close(); }
+  });
+
   it.each([false, true])("retains an ended dialogue across hiding without resuming or billing again (paused=%s)", async paused => {
     const f = fixture(40, true), server = useRealLedger(f);
     await f.controller.startWithLanguages({ A: "en", B: "es" });
@@ -382,7 +403,7 @@ describe("stage 4 transport/accounting integration", () => {
     expect(f.api.createSession).toHaveBeenCalledTimes(2); expect(f.track.stop).not.toHaveBeenCalled();
     await f.scope.usageOutbox!.flush(); expect(await f.budget.get(first.id)).not.toBeNull();
     persistence.mockRestore(); await f.scope.usageOutbox!.flush(); await f.scope.usageOutbox!.flush();
-    expect(f.reports.find(r => r.id === first.id)?.report).toMatchObject({ checkpointSeconds: 43, providerClosed: { seconds: 46 } });
+    expect(f.reports.find(r => r.id === first.id && r.report.providerClosed)?.report).toMatchObject({ checkpointSeconds: 43, providerClosed: { seconds: 46 } });
     expect(JSON.stringify(f.reports)).not.toContain("private");
     expect(f.api.createSession.mock.calls[1]![0].conversationId).toBe(f.c.conversationId);
     expect(f.api.createSession.mock.calls[1]![0].liveSessionId).not.toBe(first.id);

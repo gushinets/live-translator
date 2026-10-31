@@ -3195,6 +3195,7 @@ export class SessionController {
       for (const name of COUNTER_NAMES) if (name in snapshot) counters[name] = snapshot[name as keyof typeof snapshot] as number;
       this.live.observeProductMetrics({ atMs: sample?.atMs ?? performance.now(), visible, state: this.currentSession.state,
         interpreterReady: this.enteredInterpreter, mediaReady,
+        interpreterPromptId: this.live.interpreterPromptId,
         speechEligible: visible && mediaReady && this.enteredInterpreter && ["listening", "outputting"].includes(this.currentSession.state) && track?.enabled === true && this.live.inputMeteringReady,
         counters, turnId: this.currentSession.activeTurn?.id, completedTurnId,
         ...(sample?.reset ? { resetSpeech: true } : sample ? { sample: { active: sample.active, atMs: sample.atMs } } : {}),

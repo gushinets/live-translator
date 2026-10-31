@@ -55,7 +55,7 @@ export class UsageOutbox {
     this.pendingFinalization.delete(key);
     this.volatile.delete(key);
     this.pendingDiscard.set(key, { localId, conversationId });
-    try { await this.budget.discardUsage(localId, conversationId); this.pendingDiscard.delete(key); }
+    try { await this.budget.discardUsage(localId, conversationId); await this.budget.discardClientMetadata(localId, conversationId); this.pendingDiscard.delete(key); }
     catch { this.anomaly("usage_no_provider_storage_degraded"); this.revision++; if (this.started) { this.onWake(); this.schedule(); } }
   }
   start(): void {
@@ -80,11 +80,20 @@ export class UsageOutbox {
     })().finally(() => { this.flushing = null; });
     return this.flushing;
   }
-  private async send(id: string, conversationId: string, report: UsageReport): Promise<"ack" | "lost" | "retry"> {
+  private async send(id: string, conversationId: string, report: UsageReport, identificationReplay = false): Promise<"ack" | "lost" | "retry"> {
     try {
       const receipt = await this.transport.usage(id, conversationId, report, globalThis.document?.visibilityState === "hidden");
       if (receipt.schemaVersion !== 1 || typeof receipt.appAccepted !== "boolean") return "retry";
-      if (!receipt.appAccepted) this.anomaly("usage_app_report_rejected"); // Provider merge still committed.
+      if (!receipt.appAccepted && !identificationReplay) this.anomaly("usage_app_report_rejected"); // Provider merge still committed.
+      const client = report.clientMetadata;
+      const identified = client && receipt.clientBuildId === client.clientBuildId &&
+        (!client.interpreterPromptId || receipt.interpreterPromptId === client.interpreterPromptId);
+      if (identified) {
+        try { await this.budget.acknowledgeClientMetadata(id, conversationId, client); }
+        catch { this.anomaly("client_identification_storage_degraded"); if (identificationReplay) return "retry"; }
+      }
+      // A rolled-back API may accept usage while ignoring the new headers.
+      if (identificationReplay && !identified) return "retry";
       return "ack";
     } catch (error) {
       if ([401, 403, 404].includes(statusOf(error))) {
@@ -110,7 +119,7 @@ export class UsageOutbox {
     }
     for (const [key, { localId, conversationId }] of this.pendingDiscard) {
       try {
-        await this.budget.discardUsage(localId, conversationId); this.pendingDiscard.delete(key);
+        await this.budget.discardUsage(localId, conversationId); await this.budget.discardClientMetadata(localId, conversationId); this.pendingDiscard.delete(key);
         this.pendingFinalization.delete(key); this.volatile.delete(key);
       }
       catch { this.anomaly("usage_no_provider_storage_degraded"); pending = true; }
@@ -129,6 +138,7 @@ export class UsageOutbox {
         if (row.producerOutcome === "no_provider") {
           this.pendingDiscard.set(key, { localId: row.localId, conversationId: row.conversationId });
           await this.budget.discardUsage(row.localId, row.conversationId);
+          await this.budget.discardClientMetadata(row.localId, row.conversationId);
           this.pendingDiscard.delete(key); this.pendingFinalization.delete(key); this.volatile.delete(key);
           continue;
         }
@@ -154,7 +164,9 @@ export class UsageOutbox {
           if (this.volatile.get(key) === shadow) this.volatile.delete(key);
           continue;
         }
-        shadow ??= { localId: row.localId, conversationId: row.conversationId, report: queued.report, expiresAt: queued.expiresAt, persisted: true, delivered: false };
+        shadow ??= { localId: row.localId, conversationId: row.conversationId,
+          report: { ...queued.report, ...(queued.clientMetadata ? { clientMetadata: queued.clientMetadata } : {}) },
+          expiresAt: queued.expiresAt, persisted: true, delivered: false };
         if (Date.now() >= queued.expiresAt) {
           this.anomaly("usage_delivery_expired"); this.pendingDiscard.set(key, { localId: row.localId, conversationId: row.conversationId });
           this.pendingFinalization.delete(key);
@@ -186,6 +198,16 @@ export class UsageOutbox {
       if (outcome === "retry") pending = true;
       else if (outcome === "ack" || outcome === "lost") pending = true;
     }
+    try {
+      for (const row of await this.budget.clientMetadataEntries()) {
+        if (this.pendingDiscard.has(attemptKey(row.conversationId, row.localId))) {
+          await this.budget.discardClientMetadata(row.localId, row.conversationId); continue;
+        }
+        const outcome = await this.send(row.localId, row.conversationId, row.report, true);
+        if (outcome === "lost") await this.budget.discardClientMetadata(row.localId, row.conversationId);
+        if (outcome === "retry") pending = true;
+      }
+    } catch { this.anomaly("client_identification_storage_degraded"); pending = true; }
     if (pending) { this.schedule(); this.failures++; }
     else { this.failures = 0; if (this.timer !== undefined) clearTimeout(this.timer); this.timer = undefined; }
   }

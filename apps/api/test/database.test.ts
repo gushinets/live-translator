@@ -59,7 +59,8 @@ describe("persistent usage database", () => {
       const ledger = new UsageLedger(upgraded);
       ledger.recordUsage(owner, id, undefined, { schemaVersion: 1, checkpointSeconds: 7 });
       expect(ledger.getAttemptInternal(id)).toMatchObject({ conversation_id: conversationId,
-        usage_identity_version: null, provider_checkpoint_seconds: 7 });
+        usage_identity_version: null, provider_checkpoint_seconds: 7, client_build_id: null, interpreter_prompt_id: null,
+        app_version: "old", prompt_version: "old" });
     } finally { upgraded?.close(); rmSync(dir, { recursive: true, force: true }); }
   });
 

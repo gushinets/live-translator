@@ -1,4 +1,5 @@
 import { LiveDiagnostics } from "./LiveDiagnostics";
+import { INTERPRETER_PROMPT_ID } from "../config/BuildInfo";
 import type { ProductObservation } from "../metrics/UsageReporter";
 import type { UsageObservation } from "../metrics/UsageTypes";
 import type { ProviderAccounting } from "../session/ConversationAccounting";
@@ -138,6 +139,7 @@ function raceAgainstAbort<T>(
  */
 export class LiveClient {
   readonly diagnostics = new LiveDiagnostics();
+  interpreterPromptId: string | undefined;
   onSessionStarted: ((event: SessionStartedEvent) => void) | null = null;
   onTranscriptDelta: ((event: TranscriptDeltaEvent) => void) | null = null;
   onAppendAcknowledged:
@@ -230,9 +232,17 @@ export class LiveClient {
     text: string,
     policy: AppendPolicy,
   ): Promise<AckResult> {
-    return this.appendWithPolicy(policy, (eventId) =>
+    const result = await this.appendWithPolicy(policy, (eventId) =>
       buildInstructionsAppendCommand(eventId, text),
     );
+    // First steering follows the acknowledged interpreter contract, also on retained resume.
+    if (policy.kind === "first_steering" && !result.degraded) {
+      this.interpreterPromptId = INTERPRETER_PROMPT_ID;
+      // Close can arrive before the controller's next notification (including on resume).
+      if (this.lastProductObservation) this.observeProductMetrics({ ...this.lastProductObservation,
+        atMs: performance.now(), interpreterPromptId: this.interpreterPromptId, sample: undefined, completedTurnId: undefined, resetSpeech: undefined });
+    }
+    return result;
   }
 
   async appendThinking(text: string, policy: AppendPolicy): Promise<AckResult> {

@@ -1,6 +1,16 @@
 import { describe, expect, it, vi } from "vitest";
 import { UsageReporter, type ProductObservation } from "./UsageReporter";
 const ready: ProductObservation = { atMs: 0, visible: true, state: "listening", interpreterReady: true, mediaReady: true, speechEligible: true, counters: {} };
+it("reports the prompt only after the transport supplies an acknowledged template ID", async () => {
+  const out = { enqueue: vi.fn().mockResolvedValue(undefined), finishProducer: vi.fn(), noProvider: vi.fn() };
+  const r = new UsageReporter("attempt", "conversation", out, { now: () => 0, automatic: false, initial: ready });
+  r.observeUsage({ kind: "checkpoint", seconds: 1 }); await r.idle();
+  expect(out.enqueue.mock.calls.at(-1)![2].clientMetadata).toEqual({ clientBuildId: "development" });
+  const interpreterPromptId = `sha256:${"a".repeat(64)}`;
+  r.observeProduct({ ...ready, interpreterPromptId });
+  r.observeUsage({ kind: "local_close_unconfirmed" }); await r.idle();
+  expect(out.enqueue.mock.calls.at(-1)![2].clientMetadata).toEqual({ clientBuildId: "development", interpreterPromptId });
+});
 it("binds immutable attempt identity, freezes app metrics and still sends a late final", async () => {
   let now = 0;
   const out = { enqueue: vi.fn().mockResolvedValue(undefined), finishProducer: vi.fn().mockResolvedValue(undefined), noProvider: vi.fn().mockResolvedValue(undefined) };
@@ -10,7 +20,7 @@ it("binds immutable attempt identity, freezes app metrics and still sends a late
   const finalApp = out.enqueue.mock.calls.at(-1)![2].app;
   expect(finalApp).toMatchObject({ activeInterpreterMs: 20000, appMetricsFinalized: true });
   now = 90000; r.observeUsage({ kind: "provider_closed", seconds: 46 }); await r.idle();
-  expect(out.enqueue.mock.calls.at(-1)).toEqual(["old-id", "c", { schemaVersion: 1, providerClosed: { seconds: 46 } }]);
+  expect(out.enqueue.mock.calls.at(-1)).toEqual(["old-id", "c", { schemaVersion: 1, providerClosed: { seconds: 46 }, clientMetadata: { clientBuildId: "development" } }]);
 });
 describe("per-provider application totals", () => {
   it("counts source speech before tail grace and only the completed logical-turn subset", async () => {

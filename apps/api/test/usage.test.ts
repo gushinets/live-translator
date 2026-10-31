@@ -9,7 +9,7 @@ const origin = "http://localhost:5173";
 const databases: ReturnType<typeof openUsageDatabase>[] = [];
 beforeEach(() => vi.stubEnv("OPENAI_API_KEY", "fake-key"));
 afterEach(() => { vi.unstubAllEnvs(); databases.splice(0).forEach(db => db.close()); });
-async function fixture(usageIdentityVersion?: 1) {
+async function fixture(usageIdentityVersion?: 1, clientBuildId?: string) {
   const db = openUsageDatabase(":memory:"); databases.push(db);
   const ledger = new UsageLedger(db);
   const provider = vi.fn(async () => ({ session: { id: randomUUID() }, transport: { type: "webrtc" as const, sdp: "answer" } }));
@@ -17,7 +17,9 @@ async function fixture(usageIdentityVersion?: 1) {
   const agent = request.agent(app);
   const c = (await agent.post("/api/conversations").set("Origin", origin).send({ createRequestId: randomUUID(), appVersion: "usage-test" }).expect(201)).body;
   const id = randomUUID();
-  await agent.post("/api/live/session").set("Origin", origin).send({ sdp: "offer", conversationId: c.conversationId, conversationVersion: c.version, liveSessionId: id, initialMode: "setup", startReason: "initial", ...(usageIdentityVersion ? { usageIdentityVersion } : {}) }).expect(201);
+  const create = agent.post("/api/live/session").set("Origin", origin);
+  if (clientBuildId) create.set("X-Live-Translator-Build", clientBuildId);
+  await create.send({ sdp: "offer", conversationId: c.conversationId, conversationVersion: c.version, liveSessionId: id, initialMode: "setup", startReason: "initial", ...(usageIdentityVersion ? { usageIdentityVersion } : {}) }).expect(201);
   const put = (body: object) => agent.put(`/api/live/session/${id}/usage`).set("Origin", origin).send({ conversationId: c.conversationId, schemaVersion: 1, ...body });
   return { db, ledger, provider, app, agent, c, id, put, row: () => ledger.getAttemptInternal(id) };
 }
@@ -30,6 +32,28 @@ const totals = (activityReportSeq: number, extra = {}) => ({
 });
 
 describe("cumulative usage ingestion", () => {
+  it("records client identification separately, preserves protocol fields, and ignores malformed diagnostics", async () => {
+    const f = await fixture(1, "bundle:index-NEW.js");
+    expect(f.row()).toMatchObject({ client_build_id: "bundle:index-NEW.js", interpreter_prompt_id: null,
+      app_version: "usage-test", prompt_version: "silent-pre-interpreter-v1" });
+    const interpreterPromptId = `sha256:${"a".repeat(64)}`;
+    const response = await f.put({ checkpointSeconds: 2 }).set("X-Live-Translator-Build", "bundle:index-NEW.js")
+      .set("X-Live-Translator-Prompt", interpreterPromptId).expect(200);
+    expect(response.body).toMatchObject({ clientBuildId: "bundle:index-NEW.js", interpreterPromptId });
+    await f.put({ providerClosed: { seconds: 4 } }).set("X-Live-Translator-Build", "bad value")
+      .set("X-Live-Translator-Prompt", "not-a-prompt-id").expect(200);
+    expect(f.row()).toMatchObject({ provider_final_seconds: 4, client_build_id: "bundle:index-NEW.js", interpreter_prompt_id: interpreterPromptId });
+    await f.put({ checkpointSeconds: 3 }).set("X-Live-Translator-Build", "bundle:index-OTHER.js")
+      .set("X-Live-Translator-Prompt", `sha256:${"b".repeat(64)}`).expect(200);
+    expect(f.row()).toMatchObject({ client_build_id: "bundle:index-NEW.js", interpreter_prompt_id: interpreterPromptId });
+  });
+  it("keeps identification unknown for older clients and rejects metadata writes under the wrong conversation", async () => {
+    const f = await fixture(1);
+    expect(f.row()).toMatchObject({ client_build_id: null, interpreter_prompt_id: null });
+    await f.agent.put(`/api/live/session/${f.id}/usage`).set("Origin", origin).set("X-Live-Translator-Build", "bundle:index-ATTACK.js")
+      .send({ conversationId: randomUUID(), schemaVersion: 1, checkpointSeconds: 2 }).expect(404);
+    expect(f.row().client_build_id).toBeNull();
+  });
   it("requires the attempt's conversation identity before mutating usage", async () => {
     const f = await fixture(1);
     const foreign = (await f.agent.post("/api/conversations").set("Origin", origin)

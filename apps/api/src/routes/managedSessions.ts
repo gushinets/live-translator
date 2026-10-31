@@ -6,6 +6,7 @@ import { CLIENT_CLEANUP_REASONS, LedgerError } from "../accounting/types.js";
 import { publicAttempt, publicConversation } from "../accounting/publicMetadata.js";
 import type { AnonymousIdentity } from "../security/AnonymousIdentity.js";
 import { modeSchema, parseBody, requireOrigin, uuidSchema } from "./conversations.js";
+import { readClientMetadata } from "../accounting/clientMetadata.js";
 const creationSchema = z.object({
   sdp: z.string().min(1).max(64000).refine(s => s.trim().length > 0), conversationId: uuidSchema,
   conversationVersion: z.number().int().positive().max(Number.MAX_SAFE_INTEGER), liveSessionId: uuidSchema,
@@ -36,7 +37,8 @@ export function createManagedSessionRouter(runtime: LedgerRuntime, identity: Ano
     const onFinish = () => { finished = true; releaseWaiter(); };
     req.once("aborted", onDisconnect); res.once("close", onDisconnect); res.once("finish", onFinish);
     try {
-      const create = runtime.create(owner, { ...body, fingerprint: createHash("sha256").update(body.sdp).digest("hex") }, body.sdp,
+      const create = runtime.create(owner, { ...body, ...readClientMetadata(req.get("X-Live-Translator-Build")),
+        fingerprint: createHash("sha256").update(body.sdp).digest("hex") }, body.sdp,
         () => disconnected || !runtime.hasCreateWaiters(body.liveSessionId));
       if (!disconnected) { runtime.registerCreateWaiter(body.liveSessionId); waiterRegistered = true; }
       let result;

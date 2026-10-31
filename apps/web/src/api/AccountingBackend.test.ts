@@ -40,3 +40,13 @@ it("advertises scoped usage when creating a provider attempt", async () => {
     method: "POST", body: JSON.stringify({ ...body, usageIdentityVersion: 1 }),
   }));
 });
+
+it("delivers queued identification in headers without changing the legacy usage JSON", async () => {
+  const fetch = vi.fn().mockResolvedValue(new Response(JSON.stringify({ schemaVersion: 1, appAccepted: true })));
+  vi.stubGlobal("fetch", fetch);
+  await new AccountingBackend().usage("attempt", "conversation", { schemaVersion: 1, checkpointSeconds: 7,
+    clientMetadata: { clientBuildId: "bundle:index-OLD.js", interpreterPromptId: `sha256:${"a".repeat(64)}` } });
+  const options = fetch.mock.calls[0]![1] as RequestInit;
+  expect(options.headers).toMatchObject({ "X-Live-Translator-Build": "bundle:index-OLD.js", "X-Live-Translator-Prompt": `sha256:${"a".repeat(64)}` });
+  expect(JSON.parse(options.body as string)).toEqual({ conversationId: "conversation", schemaVersion: 1, checkpointSeconds: 7 });
+});

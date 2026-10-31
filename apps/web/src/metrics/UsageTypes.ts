@@ -15,9 +15,18 @@ export type UsageObservation = { kind: "checkpoint"; seconds?: number } | { kind
 export interface UsageReport {
   schemaVersion: 1; checkpointSeconds?: number; providerClosed?: CloseUsage;
   conflictingProviderClosed?: CloseUsage; localCloseUnconfirmed?: true; app?: AppMetricsReport;
+  /** Client diagnostics; excluded from the legacy persisted report and wire JSON. */
+  clientMetadata?: { clientBuildId: string; interpreterPromptId?: string };
 }
-export interface UsageReceipt { schemaVersion: 1; appAccepted: boolean; appRejection?: string; activityReportSeq: number | null; appMetricsFinalized: boolean; }
-export interface QueuedUsage { revision: number; expiresAt: number; report: UsageReport; }
+export interface UsageReceipt {
+  schemaVersion: 1; appAccepted: boolean; appRejection?: string; activityReportSeq: number | null; appMetricsFinalized: boolean;
+  clientBuildId?: string | null; interpreterPromptId?: string | null;
+}
+export interface QueuedUsage {
+  revision: number; expiresAt: number; report: Omit<UsageReport, "clientMetadata">;
+  clientMetadata?: UsageReport["clientMetadata"];
+}
+export interface QueuedClientMetadata { localId: string; conversationId: string; expiresAt: number; report: UsageReport; }
 const validSeconds = (value: unknown): value is number => typeof value === "number" && Number.isFinite(value) && value >= 0;
 const validReason = (value: unknown): value is string => typeof value === "string" && value.length > 0 && value.length <= 256 && !Array.from(value).some(c => c.charCodeAt(0) < 32 || c.charCodeAt(0) === 127);
 /** Bounded coalescing: retain the first final and one contradicting observation, never sum snapshots. */
@@ -25,6 +34,10 @@ export function coalesceUsage(old: UsageReport | undefined, update: UsageReport)
   const result: UsageReport = { schemaVersion: 1 };
   for (const item of [old, update]) {
     if (!item) continue;
+    if (item.clientMetadata) {
+      result.clientMetadata ??= { clientBuildId: item.clientMetadata.clientBuildId };
+      if (item.clientMetadata.interpreterPromptId) result.clientMetadata.interpreterPromptId ??= item.clientMetadata.interpreterPromptId;
+    }
     if (validSeconds(item.checkpointSeconds)) result.checkpointSeconds = Math.max(result.checkpointSeconds ?? 0, item.checkpointSeconds);
     for (const close of [item.providerClosed, item.conflictingProviderClosed]) {
       if (!close) continue;

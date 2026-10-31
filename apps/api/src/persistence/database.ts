@@ -25,6 +25,12 @@ export function openUsageDatabase(path: string, busyTimeoutMs = 1000): DatabaseS
       // The nullable column is safe for the previous v2 binary to ignore on rollback.
       db.exec("PRAGMA user_version=2");
     });
+    const clientColumns = Number(db.prepare("SELECT COUNT(*) AS n FROM pragma_table_info('live_sessions') WHERE name IN ('client_build_id','interpreter_prompt_id')").get()!.n);
+    if (clientColumns === 1) throw new Error("Incomplete client identification schema");
+    if (clientColumns === 0) transaction(db, () => {
+      db.exec(readFileSync(new URL("./migrations/004-client-identification.sql", import.meta.url), "utf8"));
+      // Nullable metadata leaves the existing v2 API compatible on image rollback.
+    });
     return db;
   } catch (error) { db.close(); throw error; }
 }
