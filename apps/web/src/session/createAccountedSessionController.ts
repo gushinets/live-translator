@@ -67,6 +67,7 @@ export class AccountedSessionController extends SessionController {
   start(): void {
     if (this.started) return;
     this.started = true;
+    this.accounting.startDiagnostics();
     this.startEarlyVisibility();
     this.recoveryChecking = true;
     this.notify();
@@ -244,6 +245,7 @@ export class AccountedSessionController extends SessionController {
         await store?.discard(intent.conversationId);
       }
     } finally {
+      this.accounting.diagnostics?.stop();
       this.accounting.outbox.stop();
       this.accounting.usageOutbox?.stop();
       await this.snapshotStore.then(store => store.dispose(), () => undefined);
@@ -717,6 +719,7 @@ export function createAccountedSessionController(): AccountedSessionController {
   const controller = new AccountedSessionController({
     createLive: () => {
       const journal = diagnostics.stream();
+      scope.bindResumeDiagnostics(journal);
       return new LiveClient({ backend: new BackendClient(), accounting: new LazyAccounting(scope, journal), journal,
         peerFactory: () => new RTCPeerConnection(), onRemoteStream: (stream, source) => controller.handleRemoteStream(stream, source) });
     },

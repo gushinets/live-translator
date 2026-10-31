@@ -24,6 +24,7 @@ export class AckTimeoutError extends Error {
 
 interface PendingAck {
   commandType?: DiagnosticCommand;
+  promptId?: string;
   resolve: (event: { client_event_id: string }) => void;
   reject: (error: Error) => void;
   timer: number;
@@ -43,6 +44,7 @@ export class AckRegistry {
     eventId: string,
     timeoutMs: number,
     traceContext?: StartupTraceContext,
+    promptId?: string,
   ): Promise<{ client_event_id: string }> {
     if (this.pending.has(eventId)) {
       throw new Error(
@@ -62,7 +64,7 @@ export class AckRegistry {
         });
         reject(new AckTimeoutError(eventId));
       }, timeoutMs);
-      this.pending.set(eventId, { resolve, reject, timer, traceContext });
+      this.pending.set(eventId, { resolve, reject, timer, traceContext, promptId });
       traceAckRegistry("ack.wait", {
         clientEventId: eventId,
         pendingCount: this.pending.size,
@@ -81,7 +83,7 @@ export class AckRegistry {
     const waiter = this.pending.get(event.client_event_id);
     if (waiter === undefined) return;
     this.pending.delete(event.client_event_id);
-    if (waiter.commandType) observe(this.diagnostics, "transport.command", { type: waiter.commandType, phase: "ack", commandId: event.client_event_id });
+    if (waiter.commandType) observe(this.diagnostics, "transport.command", { type: waiter.commandType, phase: "ack", commandId: event.client_event_id, ...(waiter.promptId ? { promptId: waiter.promptId } : {}) });
     traceAckRegistry("ack.resolve", {
       clientEventId: event.client_event_id,
       pendingCount: this.pending.size,

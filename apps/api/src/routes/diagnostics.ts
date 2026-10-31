@@ -1,8 +1,8 @@
 import { Router } from "express";
-import { rateLimit } from "express-rate-limit";
+import { rateLimit, ipKeyGenerator } from "express-rate-limit";
 import { z } from "zod";
 import type { UsageLedger } from "../accounting/UsageLedger.js";
-import { DiagnosticError, type DiagnosticJournal, type DiagnosticConversation } from "../diagnostics/DiagnosticJournal.js";
+import { DiagnosticError, diagnosticOwnerId, type DiagnosticJournal, type DiagnosticConversation } from "../diagnostics/DiagnosticJournal.js";
 import { diagnosticBatchSchema, parseDiagnosticEvent } from "../diagnostics/schema.js";
 import type { AnonymousIdentity } from "../security/AnonymousIdentity.js";
 import { requireOrigin, uuidSchema } from "./conversations.js";
@@ -24,7 +24,7 @@ export function createDiagnosticsRouter(journal: DiagnosticJournal, ledger: Usag
         if (event.conversationId !== id || event.liveSessionId && !ledger.db.prepare("SELECT 1 FROM live_sessions WHERE id=? AND conversation_id=?").get(event.liveSessionId, id))
           throw new DiagnosticError("not_found", 404);
       }
-      const receipt = journal.append(conversation, events);
+      const receipt = journal.append(conversation, events, diagnosticOwnerId(`network:${ipKeyGenerator(req.ip ?? "unknown", 56)}`));
       identity.renew(res, owner); res.json(receipt);
     } catch (error) {
       if (error instanceof DiagnosticError) res.status(error.status).json({ code: error.code });

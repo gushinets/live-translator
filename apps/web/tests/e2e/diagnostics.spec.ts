@@ -71,6 +71,30 @@ for (const textEnabled of [false, true]) test(`diagnostic timeline survives deli
   expect(serialized).not.toMatch(/fake-answer|fake-offer|OWNER_CONTEXT|I speak English/);
   if (textEnabled) expect(serialized).toContain("Please show me the railway station.");
   else expect(serialized).not.toMatch(/Please show me|Por favor/);
+  blocked = true;
   await page.getByRole("button", { name: "End", exact: true }).click();
   await expect(page.getByRole("button", { name: "Back to start", exact: true })).toBeVisible();
+  const pending = await page.evaluate(async () => {
+    const db = await new Promise<IDBDatabase>((resolve, reject) => {
+      const request = indexedDB.open("live-translator-diagnostics-v1");
+      request.onsuccess = () => resolve(request.result); request.onerror = () => reject(request.error);
+    });
+    try {
+      return await new Promise<Array<{ key: string }>>((resolve, reject) => {
+        const tx = db.transaction("events"), request = tx.objectStore("events").getAll();
+        tx.oncomplete = () => resolve((request.result as Array<{ key: string }>).map(({ key }) => ({ key })));
+        tx.onerror = () => reject(tx.error);
+      });
+    } finally { db.close(); }
+  });
+  expect(pending.length).toBeGreaterThan(0);
+  const creates = attempts.size;
+  blocked = false;
+  await page.reload();
+  await expect.poll(async () => {
+    await harness.advance(4000);
+    const delivered = new Set(received.map(event => `${event.streamId}:${event.seq}`));
+    return pending.every(({ key }) => delivered.has(key));
+  }).toBe(true);
+  expect(attempts.size).toBe(creates);
 });

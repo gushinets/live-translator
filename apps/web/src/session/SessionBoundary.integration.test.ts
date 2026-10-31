@@ -9,6 +9,7 @@ import type { UsageReport } from "../metrics/UsageTypes";
 import { LiveClient } from "../live/LiveClient";
 import { runtime } from "../config/runtime";
 import { ConversationAccounting } from "./ConversationAccounting";
+import { DiagnosticOutbox } from "../diagnostics/DiagnosticOutbox";
 import { MetadataDeliveryBudget, METADATA_TTL_MS } from "./MetadataDeliveryBudget";
 import { ResumeSnapshotStore } from "./ResumeSnapshotStore";
 import { AccountedSessionController } from "./createAccountedSessionController";
@@ -68,7 +69,7 @@ class Peer extends EventTarget {
   }
 }
 function fixture(closeTimeoutMs = 2000, background = false, initialHidden = false, snapshotGate?: Promise<void>, remoteTrack = true,
-  storageDenied = false, snapshotNow?: () => number, locksAvailable = true) {
+  storageDenied = false, snapshotNow?: () => number, locksAvailable = true, diagnostics?: DiagnosticOutbox) {
   const doc = document;
   let hidden = initialHidden;
   const previousVisibility = Object.getOwnPropertyDescriptor(doc, "visibilityState");
@@ -96,7 +97,8 @@ function fixture(closeTimeoutMs = 2000, background = false, initialHidden = fals
   const states = new Map<string, string>();
   const reports: Array<{ id: string; report: UsageReport }> = [];
   const api = {
-    policy: vi.fn<LedgerApi["policy"]>(async () => ({ usageLedgerEnabled: true, backgroundSessionCloseEnabled: background })),
+    policy: vi.fn<LedgerApi["policy"]>(async () => ({ usageLedgerEnabled: true, backgroundSessionCloseEnabled: background,
+      ...(diagnostics ? { diagnostics: { enabled: true, textEnabled: false, schemaVersion: 1 as const } } : {}) })),
     createConversation: vi.fn<LedgerApi["createConversation"]>(async () => c),
     createSession: vi.fn<LedgerApi["createSession"]>(async body => { states.set(body.liveSessionId, "creating"); return { session: { id: "provider" }, transport: { type: "webrtc", sdp: "answer" } }; }),
     handoff: vi.fn<LedgerApi["handoff"]>(async id => { states.set(id, "active"); return { liveSessionId: id, state: "active", handoffAcknowledgedAt: Date.now(), conversation: c }; }),
@@ -115,7 +117,7 @@ function fixture(closeTimeoutMs = 2000, background = false, initialHidden = fals
       reports.push({ id, report }); return { schemaVersion: 1, appAccepted: true, activityReportSeq: null, appMetricsFinalized: true, ...report.clientMetadata };
     }),
   };
-  const scope = new ConversationAccounting({ api, budget, autoDelivery: false });
+  const scope = new ConversationAccounting({ api, budget, autoDelivery: false, diagnostics });
   const track = { kind: "audio", enabled: false, readyState: "live", stop: vi.fn(), addEventListener: vi.fn(), removeEventListener: vi.fn() };
   const stream = { getTracks: () => [track], getAudioTracks: () => [track] } as unknown as MediaStream;
   let capture: MediaStream | null = null;
@@ -130,7 +132,8 @@ function fixture(closeTimeoutMs = 2000, background = false, initialHidden = fals
   const clients: Array<{ client: LiveClient; peer: Peer; id: string }> = [];
   const controller = new AccountedSessionController({ audio, createLive: () => {
     const peer = new Peer(remoteTrack ? stream : undefined), attempt = scope.newAttempt();
-    const client = new LiveClient({ backend: {} as BackendClient, accounting: attempt,
+    const journal = diagnostics?.stream(); if (journal) scope.bindResumeDiagnostics(journal); attempt.diagnostics = journal;
+    const client = new LiveClient({ backend: {} as BackendClient, accounting: attempt, journal,
       peerFactory: () => peer as unknown as RTCPeerConnection, onRemoteStream: (value, source) => controller.handleRemoteStream(value, source) });
     clients.push({ client, peer, id: attempt.localId }); return client;
   }, visibility,
@@ -300,9 +303,21 @@ afterEach(() => {
   for (const visibility of fixtureVisibilities.splice(0)) visibility.stop();
   restoreDocumentVisibility();
   vi.restoreAllMocks();
+  vi.unstubAllGlobals();
 });
 
 describe("stage 4 transport/accounting integration", () => {
+  it.each([false, true])("stops diagnostic delivery on disposal, including cleanup failure: %s", async fail => {
+    const diagnostics = new DiagnosticOutbox({ automatic: false }), stop = vi.spyOn(diagnostics, "stop");
+    const f = fixture(40, false, false, undefined, true, false, undefined, true, diagnostics);
+    await settle();
+    if (fail) vi.spyOn(f.budget, "ends").mockRejectedValueOnce(new Error("cleanup storage failed"));
+    try {
+      if (fail) await expect(f.controller.dispose()).rejects.toThrow("cleanup storage failed");
+      else await f.controller.dispose();
+      expect(stop).toHaveBeenCalledOnce();
+    } finally { diagnostics.stop(); await f.budget.close(); }
+  });
   it("retains the acknowledged prompt ID when the provider closes before input unmute completes", async () => {
     const f = fixture(40);
     const handoff = f.api.handoff.getMockImplementation()!;
@@ -628,16 +643,25 @@ describe("stage 5 hidden boundary", () => {
     await f.controller.dispose(); await f.budget.close();
   });
   it("A5.13 aborts media failure before dispatch and retries explicitly with a new attempt under the original deadline", async () => {
-    const f = fixture(40, true); configureResume(f);
+    vi.stubGlobal("indexedDB", new IDBFactory());
+    const diagnostics = new DiagnosticOutbox({ automatic: false, fetch: async () => new Response(JSON.stringify({ schemaVersion: 1, serverTime: Date.now(), accepted: [] })) });
+    const enqueue = vi.spyOn(diagnostics, "enqueue");
+    const f = fixture(40, true, false, undefined, true, false, undefined, true, diagnostics); configureResume(f);
     await f.controller.startBootstrap();
     f.setVisible(false);
     await vi.waitFor(() => expect(f.clients[0]!.peer.channel.sent).toContain("session.close"));
     f.clients[0]!.peer.channel.emit({ type: "session.closed" });
     await vi.waitFor(() => expect(f.c.status).toBe("paused"));
     const startCapture = f.audio.startCapture;
-    f.audio.startCapture = vi.fn().mockRejectedValueOnce(new Error("Microphone not ready")).mockImplementation(startCapture);
+    f.audio.startCapture = vi.fn().mockImplementationOnce(async () => {
+      f.audio.diagnostics?.emit("audio.state", { phase: "capture_failed" });
+      throw new Error("Microphone not ready");
+    }).mockImplementation(startCapture);
     f.setVisible(true);
     await vi.waitFor(() => expect(f.api.abortResume).toHaveBeenCalledWith("conversation", 3, expect.any(String), "media_not_ready"));
+    expect(enqueue.mock.calls.map(([event]) => event)).toContainEqual(expect.objectContaining({
+      type: "audio.state", data: { phase: "capture_failed" }, conversationId: "conversation", liveSessionId: f.api.claimResume.mock.calls[0]![2],
+    }));
     expect(f.controller.retainedRecoveryState).toBe("failed");
     expect(f.api.createSession).toHaveBeenCalledTimes(1);
     expect(f.c.resumeExpiresAt).toBeGreaterThan(Date.now());

@@ -37,6 +37,7 @@ interface PendingEndBoundary {
 
 /** One product controller owns this scope; provider attempts keep immutable local IDs. */
 export class ConversationAccounting {
+  readonly diagnostics: DiagnosticOutbox | undefined;
   readonly api: LedgerApi;
   readonly budget: MetadataDeliveryBudget;
   readonly outbox: CleanupIntentOutbox;
@@ -64,7 +65,8 @@ export class ConversationAccounting {
   private readonly pendingNoProviderFinalizations = new Map<string, { localId: string; conversationId: string }>();
   private readonly directRetirementProofs = new Set<string>();
   private snapshotStore: Promise<ResumeSnapshotStore> | undefined;
-  constructor(private readonly options: { api?: LedgerApi; budget?: MetadataDeliveryBudget; autoDelivery?: boolean; diagnostics?: DiagnosticOutbox } = {}) {
+  constructor(options: { api?: LedgerApi; budget?: MetadataDeliveryBudget; autoDelivery?: boolean; diagnostics?: DiagnosticOutbox } = {}) {
+    this.diagnostics = options.diagnostics;
     this.api = options.api ?? new AccountingBackend();
     this.producerId = options.budget?.ownerProducerId ?? crypto.randomUUID();
     this.budget = options.budget ?? new MetadataDeliveryBudget({ producerId: this.producerId });
@@ -104,7 +106,7 @@ export class ConversationAccounting {
   }
   async loadPolicy(): Promise<void> {
     this.enabled ??= this.api.policy().then(p => {
-      this.options.diagnostics?.configure(p.diagnostics);
+      this.diagnostics?.configure(p.diagnostics);
       if (p.creationPaused) throw new Error("New sessions are temporarily paused");
       if (typeof p.usageLedgerEnabled !== "boolean") throw new Error("Invalid accounting policy");
       if (p.backgroundSessionCloseEnabled && !p.usageLedgerEnabled) throw new Error("Background close requires the usage ledger");
@@ -112,6 +114,10 @@ export class ConversationAccounting {
       return p.usageLedgerEnabled;
     }).catch(error => { this.enabled = undefined; throw error; });
     await this.enabled;
+  }
+  startDiagnostics(): void { this.diagnostics?.start(async () => (await this.api.policy()).diagnostics); }
+  bindResumeDiagnostics(stream: DiagnosticStream): void {
+    if (this.resume && this.current?.resumeAttemptId === this.resume.id) stream.bind(this.current.conversationId, this.resume.id);
   }
   beginBackgroundPause(): void { this.pausing = true; }
   beginResume(claim: ResumeClaimMetadata): void {
@@ -562,7 +568,8 @@ export class ProviderAccounting {
       return created;
     } catch (error) {
       if (this.diagnostics) void this.scope.api.readAttempt(this.localId).then(
-        () => this.diagnostics?.bind(c.conversationId, this.localId), () => this.diagnostics?.bind(c.conversationId),
+        () => this.diagnostics?.bind(c.conversationId, this.localId), readError => this.diagnostics?.bind(c.conversationId,
+          readError instanceof AccountingRequestError && readError.status === 404 ? undefined : this.localId),
       ).catch(() => undefined);
       if (isDefinitiveNoProviderError(error)) {
         this.cancelled = true;

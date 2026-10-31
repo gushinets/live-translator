@@ -246,7 +246,6 @@ export class LiveClient {
     // First steering follows the acknowledged interpreter contract, also on retained resume.
     if (policy.kind === "first_steering" && !result.degraded) {
       this.interpreterPromptId = INTERPRETER_PROMPT_ID;
-      this.journal?.emit("transport.command", { type: "session.instructions.append", phase: "ack", commandId: result.eventId, promptId: INTERPRETER_PROMPT_ID });
       // Close can arrive before the controller's next notification (including on resume).
       if (this.lastProductObservation) this.observeProductMetrics({ ...this.lastProductObservation,
         atMs: performance.now(), interpreterPromptId: this.interpreterPromptId, sample: undefined, completedTurnId: undefined, resetSpeech: undefined });
@@ -980,6 +979,7 @@ export class LiveClient {
       eventId,
       runtime.steeringAckTimeoutMs,
       traceContext,
+      command.type === "session.instructions.append" && appendKind === "first_steering" ? INTERPRETER_PROMPT_ID : undefined,
     );
     try {
       this.send(command);

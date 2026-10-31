@@ -31,9 +31,15 @@ export class DiagnosticJournal {
         CREATE TABLE IF NOT EXISTS diagnostic_conversations (
           id TEXT PRIMARY KEY, owner TEXT NOT NULL, created_at INTEGER NOT NULL,
           first_at INTEGER NOT NULL, last_at INTEGER NOT NULL, bytes INTEGER NOT NULL DEFAULT 0,
+          browser_bytes INTEGER NOT NULL DEFAULT 0,
           limited INTEGER NOT NULL DEFAULT 0
         ) STRICT;
         CREATE INDEX IF NOT EXISTS diagnostic_time ON diagnostic_conversations(last_at,first_at);
+        CREATE INDEX IF NOT EXISTS diagnostic_owner ON diagnostic_conversations(owner);
+        CREATE TABLE IF NOT EXISTS diagnostic_ingress (
+          source_key TEXT NOT NULL, window_start INTEGER NOT NULL, bytes INTEGER NOT NULL,
+          PRIMARY KEY(source_key,window_start)
+        ) STRICT;
         CREATE TABLE IF NOT EXISTS diagnostic_streams (
           id TEXT PRIMARY KEY, conversation_id TEXT NOT NULL, live_session_id TEXT, source TEXT NOT NULL
         ) STRICT;
@@ -52,6 +58,9 @@ export class DiagnosticJournal {
         ) STRICT;
         CREATE INDEX IF NOT EXISTS diagnostic_conversation_text ON diagnostic_text(conversation_id);
       `);
+      if (!this.db.prepare("SELECT 1 FROM pragma_table_info('diagnostic_conversations') WHERE name='browser_bytes'").get()) {
+        this.db.exec("ALTER TABLE diagnostic_conversations ADD COLUMN browser_bytes INTEGER NOT NULL DEFAULT 0; UPDATE diagnostic_conversations SET browser_bytes=bytes;");
+      }
       const pending = this.prune();
       if (options.automatic !== false) this.schedulePrune(pending ? 1000 : 3600000);
     } catch (error) { this.db.close(); throw error; }
@@ -70,17 +79,22 @@ export class DiagnosticJournal {
     this.lastWarningAt = this.now();
     (this.options.logger ?? console).error("Conversation diagnostics incomplete: storage unavailable or limit reached");
   }
-  append(conversation: DiagnosticConversation, events: readonly DiagnosticEvent[]) {
+  append(conversation: DiagnosticConversation, events: readonly DiagnosticEvent[], sourceKey?: string) {
     const now = this.now();
+    const windowStart = Math.floor(now / 86400000) * 86400000;
     if (now >= conversation.created_at + DIAGNOSTIC_RETENTION_MS) throw new DiagnosticError("diagnostics_expired", 410);
     let limited = false;
     try {
       return transaction(this.db, () => {
         this.db.prepare("INSERT OR IGNORE INTO diagnostic_conversations(id,owner,created_at,first_at,last_at) VALUES(?,?,?,?,?)")
           .run(conversation.id, diagnosticOwnerId(conversation.anonymous_user_id), conversation.created_at, conversation.created_at, now);
-        const row = this.db.prepare("SELECT bytes FROM diagnostic_conversations WHERE id=?").get(conversation.id)!;
-        let bytes = Number(row.bytes);
-        let total = Number(this.db.prepare("SELECT COALESCE(SUM(bytes),0) AS n FROM diagnostic_conversations").get()!.n);
+        const row = this.db.prepare("SELECT bytes,browser_bytes FROM diagnostic_conversations WHERE id=?").get(conversation.id)!;
+        let bytes = Number(row.bytes), browserBytes = Number(row.browser_bytes);
+        const totals = this.db.prepare("SELECT COALESCE(SUM(bytes),0) AS total,COALESCE(SUM(browser_bytes),0) AS browser FROM diagnostic_conversations").get()!;
+        let total = Number(totals.total), browserTotal = Number(totals.browser);
+        let ownerBytes = Number(this.db.prepare("SELECT COALESCE(SUM(browser_bytes),0) AS n FROM diagnostic_conversations WHERE owner=?").get(diagnosticOwnerId(conversation.anonymous_user_id))!.n);
+        let ingressBytes = sourceKey ? Number(this.db.prepare("SELECT bytes FROM diagnostic_ingress WHERE source_key=? AND window_start=?").get(sourceKey, windowStart)?.bytes ?? 0) : 0;
+        const maxBytes = this.options.maxBytes ?? 1073741824, conversationMax = this.options.conversationMaxBytes ?? 20971520;
         const accepted: Array<{ streamId: string; seq: number }> = [];
         for (const event of events) {
           if (event.conversationId !== conversation.id) throw new DiagnosticError("diagnostics_identity_conflict", 409);
@@ -92,7 +106,10 @@ export class DiagnosticJournal {
           }
           const size = Buffer.byteLength(JSON.stringify(event), "utf8") + 256;
           bytes += size; total += size;
-          if (bytes > (this.options.conversationMaxBytes ?? 20971520) || total > (this.options.maxBytes ?? 1073741824)) {
+          if (event.source === "browser") { browserBytes += size; browserTotal += size; ownerBytes += size; ingressBytes += size; }
+          // Browser traffic cannot consume the last 10% needed for server lifecycle observations.
+          if (bytes > conversationMax || total > maxBytes || event.source === "browser" &&
+              (bytes > conversationMax * 0.9 || browserTotal > maxBytes * 0.9 || ownerBytes > conversationMax || sourceKey !== undefined && ingressBytes > conversationMax)) {
             limited = true; throw new DiagnosticError("diagnostics_limit", 507);
           }
           this.db.prepare("INSERT OR IGNORE INTO diagnostic_streams(id,conversation_id,live_session_id,source) VALUES(?,?,?,?)")
@@ -105,7 +122,8 @@ export class DiagnosticJournal {
             this.db.prepare("INSERT INTO diagnostic_text(stream_id,seq,conversation_id,text) VALUES(?,?,?,?)").run(event.streamId, event.seq, conversation.id, event.text);
           accepted.push({ streamId: event.streamId, seq: event.seq });
         }
-        this.db.prepare("UPDATE diagnostic_conversations SET last_at=?,bytes=? WHERE id=?").run(now, bytes, conversation.id);
+        this.db.prepare("UPDATE diagnostic_conversations SET last_at=?,bytes=?,browser_bytes=? WHERE id=?").run(now, bytes, browserBytes, conversation.id);
+        if (sourceKey) this.db.prepare("INSERT INTO diagnostic_ingress(source_key,window_start,bytes) VALUES(?,?,?) ON CONFLICT(source_key,window_start) DO UPDATE SET bytes=excluded.bytes").run(sourceKey, windowStart, ingressBytes);
         return { schemaVersion: 1 as const, accepted, serverTime: now };
       });
     } catch (error) {
@@ -137,6 +155,7 @@ export class DiagnosticJournal {
       this.db.prepare("DELETE FROM diagnostic_events WHERE rowid IN (SELECT e.rowid FROM diagnostic_events e JOIN diagnostic_conversations c ON c.id=e.conversation_id WHERE c.created_at<=? LIMIT 1000)").run(now - DIAGNOSTIC_RETENTION_MS);
       this.db.prepare("DELETE FROM diagnostic_streams WHERE rowid IN (SELECT s.rowid FROM diagnostic_streams s JOIN diagnostic_conversations c ON c.id=s.conversation_id WHERE c.created_at<=? AND NOT EXISTS(SELECT 1 FROM diagnostic_events e WHERE e.stream_id=s.id) LIMIT 1000)").run(now - DIAGNOSTIC_RETENTION_MS);
       this.db.prepare("DELETE FROM diagnostic_conversations WHERE created_at<=? AND NOT EXISTS(SELECT 1 FROM diagnostic_events e WHERE e.conversation_id=diagnostic_conversations.id) AND NOT EXISTS(SELECT 1 FROM diagnostic_text t WHERE t.conversation_id=diagnostic_conversations.id) AND NOT EXISTS(SELECT 1 FROM diagnostic_streams s WHERE s.conversation_id=diagnostic_conversations.id)").run(now - DIAGNOSTIC_RETENTION_MS);
+      this.db.prepare("DELETE FROM diagnostic_ingress WHERE window_start<?").run(Math.floor(now / 86400000) * 86400000);
     });
     this.db.exec("PRAGMA wal_checkpoint(TRUNCATE); PRAGMA incremental_vacuum(256);");
     for (const key of this.serverStreams.keys()) {

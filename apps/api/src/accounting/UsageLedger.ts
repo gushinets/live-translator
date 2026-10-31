@@ -83,9 +83,9 @@ export class UsageLedger {
     if (this.diagnosticJournal) this.diagnosticChanges.push({ conversationId: c.id, type: "server.conversation",
       data: { status: c.status, version: c.version, ...(c.end_reason ? { reason: c.end_reason } : {}) } });
   }
-  private observeAttempt(s: SessionRow, phase: "registered" | "updated"): void {
+  private observeAttempt(s: SessionRow, phase: DiagnosticData["server.attempt"]["phase"], rearmCause?: DiagnosticData["server.attempt"]["rearmCause"]): void {
     if (this.diagnosticJournal) this.diagnosticChanges.push({ conversationId: s.conversation_id, liveSessionId: s.id, type: "server.attempt",
-      data: { state: s.state, generation: s.generation, phase, ...(s.cleanup_reason ? { cleanupReason: s.cleanup_reason } : {}),
+      data: { state: s.state, generation: s.generation, phase, ...(rearmCause ? { rearmCause } : {}), ...(s.cleanup_reason ? { cleanupReason: s.cleanup_reason } : {}),
         ...(s.cleanup_last_result ? { cleanupResult: s.cleanup_last_result } : {}), ...(s.resume_outcome ? { resumeOutcome: s.resume_outcome } : {}),
         ...(s.openai_session_id ? { providerSessionId: s.openai_session_id } : {}), ...(s.app_end_reason ? { reason: s.app_end_reason } : {}) } });
   }
@@ -380,7 +380,10 @@ export class UsageLedger {
   }
   rearmBlockedCleanup(cause: "startup" | "config_reload" | "credential_refresh" | "operator_retry"): void {
     if (!["startup", "config_reload", "credential_refresh", "operator_retry"].includes(cause)) throw new LedgerError("invalid_rearm_cause", 400);
-    this.atomic(() => { this.db.prepare("UPDATE live_sessions SET cleanup_blocked_at=NULL,cleanup_last_result=NULL,cleanup_last_error_code=NULL,cleanup_next_attempt_at=? WHERE cleanup_blocked_at IS NOT NULL AND cleanup_retry_exhausted_at IS NULL AND cleanup_retry_expires_at>? AND state NOT IN ('closed','failed')").run(this.now(), this.now()); });
+    this.atomic(() => {
+      const rows = this.db.prepare("UPDATE live_sessions SET cleanup_blocked_at=NULL,cleanup_last_result=NULL,cleanup_last_error_code=NULL,cleanup_next_attempt_at=? WHERE cleanup_blocked_at IS NOT NULL AND cleanup_retry_exhausted_at IS NULL AND cleanup_retry_expires_at>? AND state NOT IN ('closed','failed') RETURNING *").all(this.now(), this.now()) as unknown as SessionRow[];
+      for (const row of rows) this.observeAttempt(row, "rearmed", cause);
+    });
   }
   private endInternal(c: ConversationRow, reason: EndReason, now: number): void {
     if (c.status === "ended") return;

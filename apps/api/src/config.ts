@@ -80,7 +80,7 @@ const diagnosticsEnabled = booleanEnv("CONVERSATION_DIAGNOSTICS_ENABLED", false)
 const diagnosticsTextEnabled = booleanEnv("CONVERSATION_DIAGNOSTICS_TEXT_ENABLED", false);
 const diagnosticsDbPath = process.env.DIAGNOSTICS_DB_PATH ?? "/diagnostics/events.sqlite";
 if (!diagnosticsDbPath.trim()) throw new Error("DIAGNOSTICS_DB_PATH must not be empty");
-if (diagnosticsEnabled && resolve(diagnosticsDbPath) === resolve(dbPath())) throw new Error("Diagnostics and usage databases must use separate paths");
+if (resolve(diagnosticsDbPath) === resolve(dbPath())) throw new Error("Diagnostics and usage databases must use separate paths");
 if (diagnosticsEnabled && !usageLedgerEnabled) throw new Error("CONVERSATION_DIAGNOSTICS_ENABLED requires USAGE_LEDGER_ENABLED");
 if (diagnosticsTextEnabled && !diagnosticsEnabled) throw new Error("CONVERSATION_DIAGNOSTICS_TEXT_ENABLED requires CONVERSATION_DIAGNOSTICS_ENABLED");
 if (backgroundSessionCloseEnabled && !usageLedgerEnabled) {

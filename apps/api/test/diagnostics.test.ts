@@ -10,6 +10,7 @@ import { openUsageDatabase } from "../src/persistence/database.js";
 import { DiagnosticJournal, diagnosticOwnerId, DIAGNOSTIC_RETENTION_MS, DIAGNOSTIC_TEXT_RETENTION_MS } from "../src/diagnostics/DiagnosticJournal.js";
 import { buildDiagnosticReport, formatDiagnosticReport } from "../src/reports/diagnostics.js";
 import type { DiagnosticEvent } from "../../../types/diagnostics.js";
+import { apiConfig } from "../src/config.js";
 
 const origin = "http://localhost:5173", resources: Array<() => void> = [];
 afterEach(() => { for (const close of resources.splice(0).reverse()) close(); });
@@ -29,6 +30,51 @@ function fixture(options: ConstructorParameters<typeof DiagnosticJournal>[1] = {
   return { clock, db, ledger, journal, app, owner, c, id, event, post };
 }
 describe("conversation diagnostic ingestion", () => {
+  it("continues retention maintenance of an existing database while collection is disabled", async () => {
+    const directory = mkdtempSync(join(tmpdir(), "diagnostics-disabled-")); resources.push(() => rmSync(directory, { recursive: true, force: true }));
+    const f = fixture(), path = join(directory, "events.sqlite"), now = Date.now(); let clock = now - 31 * 86400000;
+    const disk = new DiagnosticJournal(path, { automatic: false, textEnabled: true, now: () => clock });
+    const stale = { ...f.c, created_at: clock }, older = f.event(1, { text: "PRIVATE_CANARY", wallMs: clock });
+    disk.append(stale, [older]);
+    clock = now - 8 * 86400000;
+    const recent = { ...f.c, id: randomUUID(), created_at: clock };
+    disk.append(recent, [f.event(1, { conversationId: recent.id, text: "PRIVATE_CANARY", wallMs: clock })]); disk.close();
+    const original = apiConfig.diagnosticsDbPath; let app: ReturnType<typeof createApp>;
+    try { apiConfig.diagnosticsDbPath = path; app = createApp({ ledger: f.ledger, diagnosticsEnabled: false, startWorker: false }); }
+    finally { apiConfig.diagnosticsDbPath = original; }
+    const maintenance = app.locals.diagnostics as DiagnosticJournal; resources.push(() => maintenance.close());
+    expect((await request(app).get("/api/policy")).body.diagnostics.enabled).toBe(false);
+    expect(maintenance.db.prepare("SELECT COUNT(*) AS n FROM diagnostic_text").get()!.n).toBe(0);
+    expect(maintenance.db.prepare("SELECT id FROM diagnostic_conversations").all()).toEqual([{ id: recent.id }]);
+    expect(f.ledger.diagnosticJournal).toBeUndefined();
+    await request(app).post(`/api/conversations/${f.c.id}/diagnostics`).set("Origin", origin).send({}).expect(404);
+  });
+  it("observes committed cleanup rearming including its cause", () => {
+    const f = fixture();
+    f.ledger.dispatchProviderAttempt(f.owner, f.id, f.c.version, randomUUID(), f.clock.now + 900000);
+    f.ledger.recordProviderCreated(f.id, randomUUID()); f.ledger.requestCleanup(f.id, "abandoned_connect");
+    f.ledger.recordCleanupFailure(f.id, "blocked_auth_config", "auth");
+    f.ledger.rearmBlockedCleanup("credential_refresh");
+    const records = f.journal.db.prepare("SELECT data_json FROM diagnostic_events WHERE live_session_id=? ORDER BY seq").all(f.id).map(row => JSON.parse(String(row.data_json)));
+    expect(records.at(-1)).toMatchObject({ phase: "rearmed", rearmCause: "credential_refresh" });
+    expect(records.at(-1)).not.toHaveProperty("cleanupResult");
+  });
+  it("limits an owner's aggregate browser traffic and a rotating-cookie network source, preserving server capacity", () => {
+    const f = fixture({ maxBytes: 15000, conversationMaxBytes: 4000, logger: { error() {} } });
+    const make = (owner: string) => f.ledger.createConversation(owner, randomUUID(), "quota-test");
+    const send = (c: typeof f.c, seq: number, sourceKey?: string) => f.journal.append(c, [f.event(seq, { conversationId: c.id,
+      liveSessionId: undefined, streamId: randomUUID(), text: undefined, data: { kind: "input", fragmentId: randomUUID(), charCount: 7 } })], sourceKey);
+    const first = make(f.owner), second = make(f.owner);
+    for (let i = 1; i <= 4; i++) send(first, i);
+    for (let i = 1; i <= 3; i++) send(second, i);
+    expect(() => send(second, 4)).toThrow("diagnostics_limit");
+    const network = "hashed-network", distinct = [make(randomUUID()), make(randomUUID())];
+    for (let i = 1; i <= 4; i++) send(distinct[0]!, i, network);
+    for (let i = 1; i <= 3; i++) send(distinct[1]!, i, network);
+    expect(() => send(distinct[1]!, 4, network)).toThrow("diagnostics_limit");
+    f.journal.record(distinct[1]!, "server.conversation", { status: "ended", version: 2, reason: "user_end" });
+    expect(f.journal.db.prepare("SELECT 1 FROM diagnostic_events WHERE conversation_id=? AND source='server' AND json_extract(data_json,'$.status')='ended'").get(distinct[1]!.id)).toBeTruthy();
+  });
   it("publishes capability, acknowledges only committed events, deduplicates and accepts out-of-order delivery", async () => {
     const f = fixture();
     expect((await request(f.app).get("/api/policy")).body.diagnostics).toEqual({ enabled: true, textEnabled: false, schemaVersion: 1 });
@@ -38,6 +84,19 @@ describe("conversation diagnostic ingestion", () => {
     expect(f.journal.db.prepare("SELECT COUNT(*) AS n FROM diagnostic_events WHERE source='browser'").get()!.n).toBe(2);
     expect(f.ledger.getAttemptInternal(f.id).state).toBe("creating");
     expect(f.journal.db.prepare("SELECT owner FROM diagnostic_conversations WHERE id=?").get(f.c.id)!.owner).toBe(diagnosticOwnerId(f.owner));
+  });
+  it.each([{ maxBytes: 10000, conversationMaxBytes: 20000 }, { maxBytes: 20000, conversationMaxBytes: 10000 }])("reserves lifecycle capacity when browser traffic reaches a journal or conversation limit: %j", limits => {
+    const journal = new DiagnosticJournal(":memory:", { ...limits, automatic: false, logger: { error() {} } }); resources.push(() => journal.close());
+    const conversation = { id: randomUUID(), anonymous_user_id: randomUUID(), created_at: Date.now() }, streamId = randomUUID();
+    let limited = false;
+    for (let seq = 1; seq < 100; seq++) {
+      try { journal.append(conversation, [{ schemaVersion: 1, source: "browser", conversationId: conversation.id,
+        streamId, seq, wallMs: Date.now(), monoMs: seq, type: "app.lifecycle", data: { phase: "end", generation: 1 } }]); }
+      catch (error) { expect(error).toHaveProperty("code", "diagnostics_limit"); limited = true; break; }
+    }
+    expect(limited).toBe(true);
+    journal.record(conversation, "server.conversation", { status: "ended", version: 2, reason: "user_end" });
+    expect(journal.db.prepare("SELECT COUNT(*) AS n FROM diagnostic_events WHERE source='server'").get()!.n).toBe(1);
   });
   it("rejects wrong owner/origin/attempt, server provenance and unknown fields without persisting a batch", async () => {
     const f = fixture();

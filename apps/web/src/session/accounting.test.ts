@@ -6,6 +6,7 @@ import { describe, expect, it, vi } from "vitest";
 import { MetadataDeliveryBudget, METADATA_TTL_MS, noProviderProofDatabaseName } from "./MetadataDeliveryBudget";
 import { ATTEMPT_REGISTRATION_GRACE_MS, CleanupIntentOutbox, type CleanupTransport } from "./CleanupIntentOutbox";
 import { ConversationAccounting } from "./ConversationAccounting";
+import type { DiagnosticStream } from "../diagnostics/DiagnosticOutbox";
 import { AccountingRequestError, type LedgerApi, type ConversationMetadata } from "../api/AccountingBackend";
 import type { ResumeSnapshotStore } from "./ResumeSnapshotStore";
 import { UsageLedger } from "../../../api/src/accounting/UsageLedger";
@@ -1198,6 +1199,17 @@ describe("cleanup and End delivery", () => {
   });
 });
 describe("controller-owned conversation accounting", () => {
+  it.each(["offline", "forbidden", "not_found"])("keeps the attempt diagnostic identity after ambiguous creation unless read-back proves absence: %s", async failure => {
+    const f = fixture(), attempt = f.scope.newAttempt(), bind = vi.fn();
+    attempt.diagnostics = { bind } as unknown as DiagnosticStream;
+    f.api.createSession.mockRejectedValue(new Error("response lost"));
+    f.api.readAttempt.mockRejectedValue(failure === "offline" ? new Error("offline") :
+      new AccountingRequestError(failure === "not_found" ? 404 : 403, failure));
+    try {
+      await expect(attempt.create("offer")).rejects.toThrow("response lost");
+      await vi.waitFor(() => expect(bind).toHaveBeenCalledWith("conversation", failure === "not_found" ? undefined : attempt.localId));
+    } finally { await f.budget.close(); }
+  });
   it("creates only after committed reserve and dispatch marker", async () => {
     const f = fixture(); const attempt = f.scope.newAttempt();
     f.api.createSession.mockImplementation(async body => {

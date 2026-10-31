@@ -6,7 +6,7 @@ export const DIAGNOSTIC_TEXT_KEY = "liveTranslatorDiagnosticText";
 const MAX_BYTES = 5 * 1024 * 1024, TTL_MS = 86400000;
 export interface DiagnosticQueueRow { key: string; event: DiagnosticEvent; queuedAt: number; bytes: number }
 export interface DiagnosticQueue {
-  put(row: DiagnosticQueueRow): Promise<{ expired: number; overflow: number }>;
+  put(row: DiagnosticQueueRow): Promise<{ expired: DiagnosticQueueRow[]; overflow: DiagnosticQueueRow[] }>;
   read(): Promise<DiagnosticQueueRow[]>;
   remove(keys: string[]): Promise<void>;
 }
@@ -24,19 +24,19 @@ export class IndexedDiagnosticQueue implements DiagnosticQueue {
       request.onblocked = () => { this.database = undefined; reject(new Error("diagnostics_storage_blocked")); };
     });
   }
-  async put(row: DiagnosticQueueRow): Promise<{ expired: number; overflow: number }> {
+  async put(row: DiagnosticQueueRow): Promise<{ expired: DiagnosticQueueRow[]; overflow: DiagnosticQueueRow[] }> {
     const db = await this.open();
     return new Promise((resolve, reject) => {
       const tx = db.transaction("events", "readwrite"), store = tx.objectStore("events");
-      const request = store.getAll(); let expired = 0, overflow = 0;
+      const request = store.getAll(); const expired: DiagnosticQueueRow[] = [], overflow: DiagnosticQueueRow[] = [];
       request.onsuccess = () => {
         const rows = (request.result as DiagnosticQueueRow[]).filter(old => old.key !== row.key).sort((a, b) => a.queuedAt - b.queuedAt);
         let bytes = rows.reduce((sum, old) => sum + old.bytes, 0) + row.bytes;
         for (const old of rows) {
           const stale = old.queuedAt + TTL_MS <= this.now();
-          if (stale || bytes > this.maxBytes) { store.delete(old.key); bytes -= old.bytes; if (stale) expired++; else overflow++; }
+          if (stale || bytes > this.maxBytes) { store.delete(old.key); bytes -= old.bytes; (stale ? expired : overflow).push(old); }
         }
-        if (row.bytes <= this.maxBytes) store.put(row); else overflow++;
+        if (row.bytes <= this.maxBytes) store.put(row); else overflow.push(row);
       };
       tx.oncomplete = () => resolve({ expired, overflow });
       tx.onabort = () => reject(new Error("diagnostics_storage_unavailable"));
@@ -65,6 +65,9 @@ export class IndexedDiagnosticQueue implements DiagnosticQueue {
 }
 
 const bytesOf = (value: unknown) => new TextEncoder().encode(JSON.stringify(value)).byteLength;
+function textOptedIn(): boolean {
+  try { return sessionStorage.getItem(DIAGNOSTIC_TEXT_KEY) === "1"; } catch { return false; }
+}
 export class DiagnosticOutbox {
   policy: DiagnosticPolicy | undefined;
   private readonly queue: DiagnosticQueue;
@@ -76,6 +79,9 @@ export class DiagnosticOutbox {
   private retryAt = 0;
   private failures = 0;
   private stopped = false;
+  private loadPolicy: (() => Promise<DiagnosticPolicy | undefined>) | undefined;
+  private policyWork: Promise<void> | undefined;
+  private lastWarningAt = -Infinity;
   constructor(private readonly options: { queue?: DiagnosticQueue; fetch?: typeof fetch; automatic?: boolean; now?: () => number } = {}) {
     this.queue = options.queue ?? new IndexedDiagnosticQueue();
   }
@@ -83,17 +89,31 @@ export class DiagnosticOutbox {
   stream(): DiagnosticStream {
     const stream = new DiagnosticStream(this); this.streams.set(stream.id, stream); return stream;
   }
+  start(loadPolicy: () => Promise<DiagnosticPolicy | undefined>): void {
+    this.loadPolicy = loadPolicy;
+    this.activate();
+  }
   configure(policy?: DiagnosticPolicy): void {
+    if (this.stopped) return;
     this.policy = policy?.schemaVersion === 1 ? policy : { enabled: false, textEnabled: false, schemaVersion: 1 };
     for (const stream of this.streams.values()) stream.drain();
-    if (!this.policy.enabled || this.timer || this.options.automatic === false || this.stopped) return;
+    this.activate();
+  }
+  private activate(): void {
+    if (this.timer || this.options.automatic === false || this.stopped) return;
     this.timer = setInterval(this.wake, 2000);
     globalThis.addEventListener?.("online", this.wake);
     globalThis.addEventListener?.("pagehide", this.pagehide);
     globalThis.document?.addEventListener("visibilitychange", this.wake);
     this.wake();
   }
-  private readonly wake = () => { if (this.now() >= this.retryAt) void this.flush(); };
+  private readonly wake = () => {
+    if (this.stopped || this.now() < this.retryAt) return;
+    if (!this.policy && this.loadPolicy && !this.policyWork) this.policyWork = Promise.resolve().then(() => this.loadPolicy!())
+      .then(policy => this.configure(policy)).catch(() => this.failed(new Error("policy_unavailable")))
+      .finally(() => { this.policyWork = undefined; });
+    void this.flush();
+  };
   private readonly pagehide = () => { void this.flush(true); };
   stop(): void {
     this.stopped = true; if (this.timer) clearInterval(this.timer); this.timer = undefined;
@@ -110,19 +130,20 @@ export class DiagnosticOutbox {
       try {
         const loss = await this.queue.put(row);
         if (event.type !== "diagnostic.loss") {
-          if (loss.expired) this.loss(event, "expired", loss.expired);
-          if (loss.overflow) this.loss(event, "queue_overflow", loss.overflow);
+          this.lossRows(loss.expired, "expired");
+          this.lossRows(loss.overflow, "queue_overflow");
         }
       } catch {
         this.volatile.set(row.key, row);
-        let size = [...this.volatile.values()].reduce((sum, value) => sum + value.bytes, 0), lost = 0;
+        let size = [...this.volatile.values()].reduce((sum, value) => sum + value.bytes, 0);
+        const lost: DiagnosticQueueRow[] = [];
         for (const [key, value] of this.volatile) {
           if (size <= MAX_BYTES) break;
-          this.volatile.delete(key); size -= value.bytes; lost++;
+          this.volatile.delete(key); size -= value.bytes; lost.push(value);
         }
         // One marker per degradation episode, rather than one per failed IndexedDB operation.
         if (event.type !== "diagnostic.loss" && this.volatile.size === 1) this.loss(event, "storage_unavailable", 1);
-        if (event.type !== "diagnostic.loss" && lost) this.loss(event, "queue_overflow", lost);
+        if (event.type !== "diagnostic.loss") this.lossRows(lost, "queue_overflow");
       }
     }).catch(() => console.error("Conversation diagnostics incomplete"));
     if (urgent) void this.work.then(() => this.flush());
@@ -132,25 +153,48 @@ export class DiagnosticOutbox {
     if (!stream) { stream = this.stream(); stream.bind(event.conversationId, event.liveSessionId); }
     stream.emit("diagnostic.loss", { reason, count, affectedStreamId: event.streamId });
   }
+  private lossRows(rows: DiagnosticQueueRow[], reason: DiagnosticData["diagnostic.loss"]["reason"]): void {
+    const groups = new Map<string, { event: DiagnosticEvent; count: number }>();
+    for (const { event } of rows) {
+      if (event.type === "diagnostic.loss") continue;
+      const key = `${event.conversationId}:${event.liveSessionId ?? ""}:${event.streamId}`;
+      const group = groups.get(key) ?? { event, count: 0 }; group.count++; groups.set(key, group);
+    }
+    for (const { event, count } of groups.values()) this.loss(event, reason, count);
+  }
+  private failed(error: unknown): void {
+    this.retryAt = this.now() + Math.min(30000, 1000 * 2 ** Math.min(++this.failures, 5));
+    if (this.now() - this.lastWarningAt < 60000) return;
+    this.lastWarningAt = this.now();
+    const code = error instanceof Error && ["diagnostics_ack_storage_failed", "diagnostics_storage_unavailable", "policy_unavailable"].includes(error.message) ? error.message : "delivery_failed";
+    console.error("Conversation diagnostics retry scheduled", { code });
+  }
   flush(keepalive = false): Promise<void> {
-    if (!this.policy?.enabled || this.stopped) return Promise.resolve();
-    return this.flushing ??= this.runFlush(keepalive).catch(() => {
-      this.retryAt = this.now() + Math.min(30000, 1000 * 2 ** Math.min(++this.failures, 5));
-    }).finally(() => { this.flushing = undefined; });
+    if (this.stopped) return Promise.resolve();
+    return this.flushing ??= this.runFlush(keepalive).catch(error => this.failed(error)).finally(() => { this.flushing = undefined; });
   }
   private async runFlush(keepalive: boolean): Promise<void> {
     await this.work;
     let rows: DiagnosticQueueRow[];
-    try { rows = await this.queue.read(); } catch { rows = []; }
+    try { rows = await this.queue.read(); } catch { rows = []; this.failed(new Error("diagnostics_storage_unavailable")); }
     const merged = new Map(rows.map(row => [row.key, row]));
     for (const [key, row] of this.volatile) merged.set(key, row);
     rows = [...merged.values()];
     const expired = rows.filter(row => row.queuedAt + TTL_MS <= this.now());
     if (expired.length) {
       await this.remove(expired);
-      this.loss(expired[0]!.event, "expired", expired.length);
+      this.lossRows(expired, "expired");
     }
     rows = rows.filter(row => row.queuedAt + TTL_MS > this.now());
+    if (this.policy && (!this.policy.enabled || !this.policy.textEnabled || !textOptedIn())) {
+      for (const row of rows) {
+        if (row.event.text === undefined && row.event.textTruncated === undefined) continue;
+        delete row.event.text; delete row.event.textTruncated; row.bytes = bytesOf(row.event) + 128;
+        try { const lost = await this.queue.put(row); this.lossRows(lost.expired, "expired"); this.lossRows(lost.overflow, "queue_overflow"); }
+        catch { this.volatile.set(row.key, row); this.failed(new Error("diagnostics_storage_unavailable")); }
+      }
+    }
+    if (!this.policy?.enabled || this.stopped) return;
     const first = rows[0]; if (!first) return;
     const batch: DiagnosticQueueRow[] = [];
     for (const row of rows) {
@@ -175,7 +219,7 @@ export class DiagnosticOutbox {
         await this.remove(batch);
         const reason = response.status === 507 ? "server_limit" : response.status === 410 ? "expired" :
           [401, 403, 404].includes(response.status) ? "identity_lost" : "invalid_event";
-        this.loss(batch[0]!.event, reason, batch.length);
+        this.lossRows(batch, reason);
         if ([401, 403, 404, 507].includes(response.status)) {
           // Never relabel an old owner's queue with a new cookie/conversation.
           for (const stream of this.streams.values()) if (stream.conversationId === first.event.conversationId) stream.disable();
@@ -187,12 +231,13 @@ export class DiagnosticOutbox {
     const receipt = await response.json() as DiagnosticReceipt;
     if (receipt.schemaVersion !== 1 || !Array.isArray(receipt.accepted) || !Number.isFinite(receipt.serverTime)) throw new Error("invalid_diagnostics_receipt");
     const accepted = new Set(receipt.accepted.map(row => `${row.streamId}:${row.seq}`));
-    await this.remove(batch.filter(row => accepted.has(row.key)));
+    const committed = batch.filter(row => accepted.has(row.key));
+    await this.remove(committed);
     const receivedAt = this.now(); this.retryAt = 0; this.failures = 0;
-    const stream = this.streams.get(first.event.streamId);
     const roundtrip = Math.max(0, performance.now() - sentMono);
     const wallAdjustment = Math.abs(receivedAt - sentAt - roundtrip);
-    stream?.clock(receipt.serverTime - (sentAt + receivedAt) / 2, (roundtrip + wallAdjustment) / 2);
+    for (const streamId of new Set(committed.map(row => row.event.streamId)))
+      this.streams.get(streamId)?.clock(receipt.serverTime - (sentAt + receivedAt) / 2, (roundtrip + wallAdjustment) / 2);
   }
   private async remove(rows: DiagnosticQueueRow[]): Promise<void> {
     const volatileOnly = rows.every(row => this.volatile.has(row.key));
@@ -213,7 +258,6 @@ export class DiagnosticStream implements DiagnosticSink {
   private pendingBytes = 0;
   private lost = 0;
   private clockRecorded = false;
-  private wantsText: boolean | undefined;
   get enabled(): boolean { return !this.disabled && this.outbox.policy?.enabled === true; }
   constructor(private readonly outbox: DiagnosticOutbox) {}
   bind(conversationId: string, liveSessionId?: string): void {
@@ -224,10 +268,7 @@ export class DiagnosticStream implements DiagnosticSink {
   emit<K extends DiagnosticType>(type: K, data: DiagnosticData[K], text?: string): void {
     try {
       if (this.disabled || this.outbox.policy?.enabled === false || type.startsWith("server.")) return;
-      if (this.wantsText === undefined) {
-        try { this.wantsText = sessionStorage.getItem(DIAGNOSTIC_TEXT_KEY) === "1"; } catch { this.wantsText = false; }
-      }
-      const includeText = this.wantsText && this.outbox.policy?.textEnabled && ["transcript.fragment", "caption.block"].includes(type) && text !== undefined;
+      const includeText = this.outbox.policy?.textEnabled && ["transcript.fragment", "caption.block"].includes(type) && text !== undefined && textOptedIn();
       const event = { schemaVersion: 1 as const, source: "browser" as const, streamId: this.id, seq: ++this.seq,
         wallMs: this.outbox.now(), monoMs: performance.now(), type, data: JSON.parse(JSON.stringify(data)), clientBuildId: CLIENT_BUILD_ID,
         ...(includeText ? { text: text.slice(0, 4096), ...(text.length > 4096 ? { textTruncated: true } : {}) } : {}) };

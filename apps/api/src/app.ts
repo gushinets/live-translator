@@ -30,6 +30,7 @@ export interface AppDependencies {
   startWorker?: boolean;
   ledgerEnabled?: boolean;
   diagnostics?: DiagnosticJournal;
+  diagnosticsEnabled?: boolean;
 }
 
 export function createApp(dependencies: AppDependencies = {}) {
@@ -67,8 +68,12 @@ export function createApp(dependencies: AppDependencies = {}) {
   const retainLedger = enabled || dependencies.ledger !== undefined || existsSync(apiConfig.usageDbPath);
   app.use("/api", (_req, res, next) => { res.set("Cache-Control", "no-store"); next(); });
   let diagnostics: DiagnosticJournal | undefined;
+  const collectDiagnostics = enabled && (dependencies.diagnosticsEnabled ?? (dependencies.diagnostics !== undefined || apiConfig.diagnosticsEnabled));
+  try { diagnostics = dependencies.diagnostics ?? (collectDiagnostics || existsSync(apiConfig.diagnosticsDbPath) ? new DiagnosticJournal(apiConfig.diagnosticsDbPath, { textEnabled: collectDiagnostics && apiConfig.diagnosticsTextEnabled, logger: dependencies.logger }) : undefined); }
+  catch { (dependencies.logger ?? console).error("Conversation diagnostics disabled: storage unavailable"); }
+  app.locals.diagnostics = diagnostics;
   app.get("/api/policy", (_req, res) => res.json({ usageLedgerEnabled: enabled, backgroundSessionCloseEnabled: enabled && apiConfig.backgroundSessionCloseEnabled, creationPaused: !enabled && retainLedger, schemaVersion: 1,
-    diagnostics: { enabled: diagnostics !== undefined, textEnabled: diagnostics?.options.textEnabled ?? false, schemaVersion: 1 } }));
+    diagnostics: { enabled: collectDiagnostics && diagnostics !== undefined, textEnabled: collectDiagnostics && (diagnostics?.options.textEnabled ?? false), schemaVersion: 1 } }));
   if (retainLedger) {
     const ledger = dependencies.ledger ?? new UsageLedger(openUsageDatabase(apiConfig.usageDbPath), { policy: {
       ...DEFAULT_LEDGER_POLICY, conversationRetentionMs: apiConfig.conversationRetentionMs,
@@ -76,17 +81,14 @@ export function createApp(dependencies: AppDependencies = {}) {
       sessionCloseTimeoutMs: apiConfig.sessionCloseTimeoutMs, sessionHandoffAckTimeoutMs: apiConfig.sessionHandoffAckTimeoutMs,
       resumeClaimTimeoutMs: apiConfig.resumeClaimTimeoutMs, backgroundSessionCloseEnabled: apiConfig.backgroundSessionCloseEnabled,
     } });
-    try { diagnostics = dependencies.diagnostics ?? (enabled && apiConfig.diagnosticsEnabled ? new DiagnosticJournal(apiConfig.diagnosticsDbPath, { textEnabled: apiConfig.diagnosticsTextEnabled, logger: dependencies.logger }) : undefined); }
-    catch { (dependencies.logger ?? console).error("Conversation diagnostics disabled: storage unavailable"); }
-    app.locals.diagnostics = diagnostics;
-    ledger.diagnosticJournal = diagnostics;
+    ledger.diagnosticJournal = collectDiagnostics ? diagnostics : undefined;
     const runtime = new LedgerRuntime(ledger, { creator: dependencies.createLiveSession, closeOrphan: dependencies.closeOrphan,
       maxConcurrent: apiConfig.maxConcurrentSessions, leaseMs: apiConfig.leaseMs,
       workerConcurrency: apiConfig.cleanupWorkerConcurrency, workerBatchSize: apiConfig.cleanupWorkerBatchSize,
       logger: dependencies.logger, startWorker: dependencies.startWorker });
     app.locals.ledgerRuntime = runtime;
     const identity = new AnonymousIdentity(process.env.NODE_ENV === "production");
-    if (diagnostics) app.use("/api/conversations", createDiagnosticsRouter(diagnostics, ledger, identity, apiConfig.webOrigin));
+    if (collectDiagnostics && diagnostics) app.use("/api/conversations", createDiagnosticsRouter(diagnostics, ledger, identity, apiConfig.webOrigin));
     app.use("/api/conversations", createConversationRouter(runtime, identity, apiConfig.webOrigin, enabled));
     app.use("/api/live/session", createUsageRouter(runtime, identity, apiConfig.webOrigin));
     app.use("/api/live/session", createManagedSessionRouter(runtime, identity, apiConfig.webOrigin, enabled));

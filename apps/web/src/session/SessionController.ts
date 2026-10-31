@@ -283,6 +283,9 @@ export class SessionController {
     this.retainedResumePhase = "media";
     const current = () => this.backgroundResumeCurrent(generation);
     if (!current()) throw new Error("Resume cancelled");
+    this.retainProviderDiagnostics();
+    const live = this.live = this.deps.createLive();
+    this.bindLive();
     await (primedOutput ?? this.audio.primeOutput());
     if (!current()) throw new Error("Resume cancelled");
     this.audio.setOutputAudible(false);
@@ -292,9 +295,6 @@ export class SessionController {
     if (!stream) throw new Error("Microphone capture stream is unavailable");
     this.assertCaptureStreamLive(stream);
     this.audio.setCaptureEnabled(false);
-    this.retainProviderDiagnostics();
-    const live = this.live = this.deps.createLive();
-    this.bindLive();
     this.retainedProductDeadlineAt = snapshot.productDeadlineAt;
     this.conversationMetrics = new ConversationMetrics();
     this.conversationMetrics.restoreCounters(snapshot.counters);

@@ -11,6 +11,7 @@ import {
 import { STARTUP_TRACE_STORAGE_KEY } from "./StartupTrace";
 import type { CleanupReason } from "../session/MetadataDeliveryBudget";
 import type { DiagnosticStream } from "../diagnostics/DiagnosticOutbox";
+import { INTERPRETER_PROMPT_ID } from "../config/BuildInfo";
 
 class FakeDataChannel extends EventTarget {
   readyState: RTCDataChannelState = "open";
@@ -178,6 +179,25 @@ describe("LiveClient.connect", () => {
       onRemoteStream,
     });
   }
+
+  it("records exactly one first-steering acknowledgment with its prompt version", async () => {
+    const { backend } = makeFakeBackend(), emit = vi.fn();
+    const client = new LiveClient({ backend, peerFactory: () => peer as unknown as RTCPeerConnection,
+      onRemoteStream, journal: { enabled: true, emit } as unknown as DiagnosticStream });
+    try {
+      const connecting = client.connect(makeFakeStream());
+      await vi.waitFor(() => expect(peer.calls).toContain("setRemoteDescription"));
+      peer.dataChannel!.emitMessage({ type: "session.started", session: { id: "test" } }); await connecting;
+      const appending = client.appendInstructions("private instructions", { kind: "first_steering", sessionState: "listening" });
+      await vi.waitFor(() => expect(peer.dataChannel!.sendCalls).toHaveLength(1));
+      const command = JSON.parse(peer.dataChannel!.sendCalls[0]!) as { event_id: string };
+      peer.dataChannel!.emitMessage({ type: "session.instructions.appended", client_event_id: command.event_id });
+      await appending;
+      const acks = emit.mock.calls.filter(([type, data]) => type === "transport.command" && data.phase === "ack");
+      expect(acks).toHaveLength(1);
+      expect(acks[0]![1]).toMatchObject({ commandId: command.event_id, promptId: INTERPRETER_PROMPT_ID });
+    } finally { await client.disconnectImmediately(); }
+  });
 
   it("samples packet and decode counters separately, records unknown fields as unavailable, and stops polling on teardown", async () => {
     vi.useFakeTimers();

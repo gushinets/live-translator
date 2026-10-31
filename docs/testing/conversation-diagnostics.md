@@ -57,7 +57,11 @@ app tab's developer console, **before starting a new conversation**:
 sessionStorage.setItem("liveTranslatorDiagnosticText", "1");
 ```
 
-Disable for subsequent tests with `sessionStorage.removeItem("liveTranslatorDiagnosticText")`.
+Disable with `sessionStorage.removeItem("liveTranslatorDiagnosticText")`. The setting
+is checked for each content event, so enabling it after the page becomes idle works
+and revoking it stops subsequent text capture. Before replay, queued text is removed
+if either the current server policy or tab setting disallows it; event identities and
+technical fields are retained.
 This is a per-tab opt-in, not an administrator authentication mechanism. Both the
 server flag and tab setting are required. Leave the server text flag off on ordinary
 production deployments. This setting is independent of Vite's transport spike:
@@ -110,18 +114,28 @@ The independent IndexedDB database is `live-translator-diagnostics-v1`. Batches
 are sent every two seconds, at most 100 events / 32 KiB. An SQL receipt acknowledges
 individual `streamId`/`seq` pairs; retries are idempotent and may arrive out of order.
 Errors/termination request an earlier flush. Offline retry uses bounded backoff;
-reload resumes the same stored identities. Final pagehide delivery is best effort.
+page startup reads the policy and resumes stored identities without starting a new
+conversation. Retry failures produce a rate-limited, content-free console warning.
+Disposing the controller removes diagnostic timers and wake listeners, including
+when conversation cleanup fails. Final pagehide delivery is best effort.
 
 Client backlog is limited to 5 MiB / 24 hours. IndexedDB failure falls back to bounded
-memory. The server limits journal payload accounting to 1 GiB total / 20 MiB per
-conversation and also bounds SQLite page growth. A rejected batch is not ACKed;
-limits leave an incompleteness marker and do not block the conversation.
+memory. Loss markers identify the affected conversation, attempt and producer stream.
+The server limits journal payload accounting to 1 GiB total / 20 MiB per conversation
+and also bounds SQLite page growth. Browser events have an aggregate 20 MiB allowance
+per anonymous owner over retained conversations and 20 MiB per network source per
+UTC day, independent of cookie rotation. Only a SHA-256 digest of the normalized
+network prefix is stored, never the raw IP. Browser events cannot consume the final
+10% of total or per-conversation capacity reserved for server observations. A rejected
+batch is not ACKed; limits leave an incompleteness marker and do not block the conversation.
 
 Retention is anchored to the server conversation creation time, never retry time:
 text 7 days, technical records 30 days. Startup/hourly/shutdown pruning uses secure
 delete and WAL checkpoint/truncation. Purge batches are bounded and continue every
 second while an expired backlog remains. Expired text is also hidden by the report even
 before the next purge. Deleted SQLite space may remain allocated for reuse.
+Existing server databases and browser queues continue retention cleanup while
+collection is disabled; disabling collection does not extend retention.
 Snapshots exported/copied outside this store are not automatically purged.
 
 The report flags sequence gaps, loss markers, unavailable journals, exhausted storage,

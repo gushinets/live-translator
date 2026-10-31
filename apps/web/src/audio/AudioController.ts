@@ -75,7 +75,7 @@ function readMicrophoneSettings(track: MediaStreamTrack): MicrophoneSettingsDiag
  */
 export class AudioController {
   diagnostics: DiagnosticSink | undefined;
-  get diagnosticContextState(): string | null { return this.audioContext?.state ?? null; }
+  get diagnosticContextState(): AudioContextState | "interrupted" | null { return this.audioContext?.state ?? null; }
   private levelSummary: { fromMs: number; toMs: number; samples: number; sum: number; minRms: number; maxRms: number } | undefined;
   onSourceSample: ((event: AudioActivityEvent & { reset?: boolean }) => void) | null = null;
   onVoiceActivity: ((event: AudioActivityEvent) => void) | null = null;
