@@ -1,5 +1,6 @@
 import { runtime } from "../config/runtime";
 import { VoiceActivityEstimator } from "./VoiceActivityEstimator";
+import { observe, type DiagnosticSink } from "../diagnostics/observe";
 
 export interface AudioActivityEvent {
   active: boolean;
@@ -16,6 +17,7 @@ export interface AudioActivityEvent {
  * short pauses; it does not close input to the Live session.
  */
 export class VoiceActivityMonitor {
+  diagnostics: DiagnosticSink | undefined;
   onSample: ((event: AudioActivityEvent) => void) | null = null;
   onActivity: ((event: AudioActivityEvent) => void) | null = null;
 
@@ -35,8 +37,15 @@ export class VoiceActivityMonitor {
   }
 
   pushRms(rms: number, playbackActive: boolean, atMs: number): void {
+    const raw = this.estimator.active, reported = this.reportedActive;
     try { this.pushProductRms(rms, playbackActive, atMs); }
     finally {
+      if (Number.isFinite(rms) && rms >= 0) {
+        if (raw !== this.estimator.active) observe(this.diagnostics, "audio.vad", { stage: "raw", active: this.estimator.active, atMs, rms,
+          ...this.estimator.diagnosticSnapshot, tailStartedAtMs: this.tailStartedAtMs });
+        if (reported !== this.reportedActive) observe(this.diagnostics, "audio.vad", { stage: "reported", active: this.reportedActive, atMs, rms,
+          ...this.estimator.diagnosticSnapshot, tailStartedAtMs: this.tailStartedAtMs });
+      }
       try { this.onSample?.({ active: this.estimator.active, atMs }); }
       catch { console.error("Source sample metadata observer failed"); }
     }

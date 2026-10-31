@@ -2,6 +2,7 @@ import { earliestFragmentStart, type TranscriptFragment } from "./TranscriptFrag
 import type { Side, Turn } from "./Turn";
 import { isSentenceComplete } from "./sentenceBoundaries";
 import { runtime } from "../config/runtime";
+import { observe, type DiagnosticSink } from "../diagnostics/observe";
 
 export interface AttributedOutput {
   id: string;
@@ -29,6 +30,7 @@ interface AttributionTraceEntry {
 
 /** Client evidence only. Provider transcript time and local receipt time never mix. */
 export class OutputAttribution {
+  diagnostics: DiagnosticSink | undefined;
   readonly outputs: AttributedOutput[] = [];
   readonly trace: AttributionTraceEntry[] = [];
   private readonly generation = crypto.randomUUID();
@@ -43,6 +45,7 @@ export class OutputAttribution {
     return fresh;
   }
   private record(entry: Omit<AttributionTraceEntry, "generation">): void {
+    observe(this.diagnostics, "attribution.decision", { generation: this.generation, ...entry });
     if (this.trace.length === 128) this.trace.shift();
     this.trace.push({ generation: this.generation, ...entry });
   }

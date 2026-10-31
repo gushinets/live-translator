@@ -1,4 +1,5 @@
 import { UsageReporter, type ProductObservation } from "../metrics/UsageReporter";
+import type { DiagnosticOutbox, DiagnosticStream } from "../diagnostics/DiagnosticOutbox";
 import { UsageOutbox } from "../metrics/UsageOutbox";
 import type { UsageObservation } from "../metrics/UsageTypes";
 import { AccountingBackend, AccountingRequestError, type LedgerApi, type ConversationMetadata, type ResumeClaimMetadata, type ResumeAbortReason, type ProviderCreateBody } from "../api/AccountingBackend";
@@ -63,7 +64,7 @@ export class ConversationAccounting {
   private readonly pendingNoProviderFinalizations = new Map<string, { localId: string; conversationId: string }>();
   private readonly directRetirementProofs = new Set<string>();
   private snapshotStore: Promise<ResumeSnapshotStore> | undefined;
-  constructor(options: { api?: LedgerApi; budget?: MetadataDeliveryBudget; autoDelivery?: boolean } = {}) {
+  constructor(private readonly options: { api?: LedgerApi; budget?: MetadataDeliveryBudget; autoDelivery?: boolean; diagnostics?: DiagnosticOutbox } = {}) {
     this.api = options.api ?? new AccountingBackend();
     this.producerId = options.budget?.ownerProducerId ?? crypto.randomUUID();
     this.budget = options.budget ?? new MetadataDeliveryBudget({ producerId: this.producerId });
@@ -103,6 +104,7 @@ export class ConversationAccounting {
   }
   async loadPolicy(): Promise<void> {
     this.enabled ??= this.api.policy().then(p => {
+      this.options.diagnostics?.configure(p.diagnostics);
       if (p.creationPaused) throw new Error("New sessions are temporarily paused");
       if (typeof p.usageLedgerEnabled !== "boolean") throw new Error("Invalid accounting policy");
       if (p.backgroundSessionCloseEnabled && !p.usageLedgerEnabled) throw new Error("Background close requires the usage ledger");
@@ -520,6 +522,7 @@ export class ConversationAccounting {
   }
 }
 export class ProviderAccounting {
+  diagnostics: DiagnosticStream | undefined;
   readonly localId: string;
   managed = false;
   dispatched = false;
@@ -553,9 +556,14 @@ export class ProviderAccounting {
       this.assertCurrent(); await this.scope.budget.markDispatchStarted(this.localId); this.assertCurrent();
       if (this.scope.usageOutbox) this.reporter = new UsageReporter(this.localId, c.conversationId, this.scope.usageOutbox, { initial: this.lastProduct });
       this.controller = new AbortController(); this.dispatched = true;
-      return await this.scope.api.createSession({ sdp, liveSessionId: this.localId, conversationId: c.conversationId,
+      const created = await this.scope.api.createSession({ sdp, liveSessionId: this.localId, conversationId: c.conversationId,
         conversationVersion: c.version, initialMode: this.scope.resumeMode(this), startReason: this.scope.noteDispatch(this) }, this.controller.signal);
+      this.diagnostics?.bind(c.conversationId, this.localId);
+      return created;
     } catch (error) {
+      if (this.diagnostics) void this.scope.api.readAttempt(this.localId).then(
+        () => this.diagnostics?.bind(c.conversationId, this.localId), () => this.diagnostics?.bind(c.conversationId),
+      ).catch(() => undefined);
       if (isDefinitiveNoProviderError(error)) {
         this.cancelled = true;
         await this.reporter?.noProvider();

@@ -3,6 +3,7 @@ import type { CreateLiveSessionResponse } from "./BackendClient";
 import type { CleanupReason, CloseMetadata } from "../session/MetadataDeliveryBudget";
 import { MANAGED_SESSION_CREATE_TIMEOUT_MS, type AttemptProof, type CleanupTransport } from "../session/CleanupIntentOutbox";
 import { CLIENT_BUILD_ID } from "../config/BuildInfo";
+import type { DiagnosticPolicy } from "../../../../types/diagnostics.js";
 export interface ConversationMetadata {
   conversationId: string; version: number; status: "active" | "paused" | "resuming" | "ended";
   productDeadlineAt: number | null; resumeExpiresAt: number | null; resumeAttemptId: string | null;
@@ -30,7 +31,7 @@ export type ResumeAbortReason = "media_not_ready" | "provider_creation_failed" |
   "restore_ack_failed" | "hidden" | "claim_timeout" | "interrupted_by_restart" | "user_end";
 export interface LedgerApi extends CleanupTransport {
   usage?(id: string, conversationId: string, report: UsageReport, keepalive?: boolean): Promise<UsageReceipt>;
-  policy(): Promise<{ usageLedgerEnabled: boolean; backgroundSessionCloseEnabled: boolean; creationPaused?: boolean }>;
+  policy(): Promise<{ usageLedgerEnabled: boolean; backgroundSessionCloseEnabled: boolean; creationPaused?: boolean; diagnostics?: DiagnosticPolicy }>;
   createConversation(requestId: string): Promise<ConversationMetadata>;
   createSession(body: ProviderCreateBody, signal: AbortSignal): Promise<CreateLiveSessionResponse>;
   handoff(id: string): Promise<AttemptMetadata>;
@@ -68,7 +69,7 @@ export class AccountingBackend implements LedgerApi {
       clientMetadata ? { "X-Live-Translator-Build": clientMetadata.clientBuildId,
         ...(clientMetadata.interpreterPromptId ? { "X-Live-Translator-Prompt": clientMetadata.interpreterPromptId } : {}) } : {});
   }
-  async policy(): Promise<{ usageLedgerEnabled: boolean; backgroundSessionCloseEnabled: boolean; creationPaused?: boolean }> {
+  async policy(): Promise<{ usageLedgerEnabled: boolean; backgroundSessionCloseEnabled: boolean; creationPaused?: boolean; diagnostics?: DiagnosticPolicy }> {
     try { return await this.json("/api/policy"); }
     catch (error) {
       // Only an explicitly older deployment may use the legacy protocol; 5xx/network is fail-closed.

@@ -1,4 +1,6 @@
 import { LiveDiagnostics } from "./LiveDiagnostics";
+import type { DiagnosticStream } from "../diagnostics/DiagnosticOutbox";
+import type { DiagnosticData } from "../../../../types/diagnostics.js";
 import { INTERPRETER_PROMPT_ID } from "../config/BuildInfo";
 import type { ProductObservation } from "../metrics/UsageReporter";
 import type { UsageObservation } from "../metrics/UsageTypes";
@@ -46,6 +48,7 @@ const DATA_CHANNEL_LABEL = "oai-events";
 const DISCONNECTED_CLOSE_REASON = "Live session is no longer connected";
 
 export interface LiveClientDeps {
+  journal?: DiagnosticStream;
   backend: BackendClient;
   accounting?: Pick<ProviderAccounting, "managed" | "create" | "handoff" | "finish" | "abandon"> & Partial<Pick<ProviderAccounting, "observeUsage" | "observeProduct" | "providerStarted" | "closeTimeoutMs">>;
   peerFactory: () => RTCPeerConnection;
@@ -138,6 +141,10 @@ function raceAgainstAbort<T>(
  * this class never talks to OpenAI directly.
  */
 export class LiveClient {
+  get journal(): DiagnosticStream | undefined { return this.deps.journal; }
+  onDiagnosticTick: (() => void) | null = null;
+  private diagnosticTimer: ReturnType<typeof setInterval> | undefined;
+  private statsBusy = false;
   readonly diagnostics = new LiveDiagnostics();
   interpreterPromptId: string | undefined;
   onSessionStarted: ((event: SessionStartedEvent) => void) | null = null;
@@ -207,6 +214,7 @@ export class LiveClient {
   private readonly ackRegistry = new AckRegistry();
 
   constructor(private readonly deps: LiveClientDeps) {
+    this.ackRegistry.diagnostics = deps.journal;
     if (deps.closeTimeoutMs !== undefined && (!Number.isSafeInteger(deps.closeTimeoutMs) || deps.closeTimeoutMs <= 0 || deps.closeTimeoutMs > 2147483647)) {
       throw new Error("closeTimeoutMs must be a positive timer-safe integer");
     }
@@ -238,6 +246,7 @@ export class LiveClient {
     // First steering follows the acknowledged interpreter contract, also on retained resume.
     if (policy.kind === "first_steering" && !result.degraded) {
       this.interpreterPromptId = INTERPRETER_PROMPT_ID;
+      this.journal?.emit("transport.command", { type: "session.instructions.append", phase: "ack", commandId: result.eventId, promptId: INTERPRETER_PROMPT_ID });
       // Close can arrive before the controller's next notification (including on resume).
       if (this.lastProductObservation) this.observeProductMetrics({ ...this.lastProductObservation,
         atMs: performance.now(), interpreterPromptId: this.interpreterPromptId, sample: undefined, completedTurnId: undefined, resetSpeech: undefined });
@@ -314,10 +323,21 @@ export class LiveClient {
     try {
       const peer = this.deps.peerFactory();
       this.peer = peer;
+      if (this.journal) {
+        this.diagnosticTimer = setInterval(() => {
+          if (!this.journal?.enabled) return;
+          try { this.onDiagnosticTick?.(); } catch { /* Observer only. */ }
+          void this.observeStats();
+        }, 5000);
+        for (const [name, kind] of [["connectionstatechange", "peer"], ["iceconnectionstatechange", "ice"], ["icegatheringstatechange", "gathering"]] as const)
+          peer.addEventListener(name, () => this.journal?.emit("transport.state", { kind, state: kind === "peer" ? peer.connectionState : kind === "ice" ? peer.iceConnectionState : peer.iceGatheringState }));
+      }
 
       // Data channel must exist before offer creation so the SDP advertises it.
       const channel = peer.createDataChannel(DATA_CHANNEL_LABEL);
       this.channel = channel;
+      if (this.journal) for (const name of ["open", "closing", "close"] as const)
+        channel.addEventListener(name, () => this.journal?.emit("transport.state", { kind: "channel", state: channel.readyState }));
       this.sessionClosedDeferred = createDeferred<SessionClosedEvent>();
 
       channel.addEventListener("message", (event) => {
@@ -430,7 +450,15 @@ export class LiveClient {
     if (this.closing) {
       throw new Error("Cannot send a Live event while the session is closing");
     }
-    this.channel.send(JSON.stringify(event));
+    try {
+      if ("event_id" in event) this.ackRegistry.setCommandType(event.event_id, event.type);
+      this.channel.send(JSON.stringify(event));
+      this.journal?.emit("transport.command", { type: event.type, phase: "sent", ...("event_id" in event ? { commandId: event.event_id } : {}),
+        ...(event.type === "session.instructions.append" && this.interpreterPromptId ? { promptId: this.interpreterPromptId } : {}) });
+    } catch (error) {
+      this.journal?.emit("transport.command", { type: event.type, phase: "send_failed", ...("event_id" in event ? { commandId: event.event_id } : {}) });
+      throw error;
+    }
   }
 
   /**
@@ -516,6 +544,7 @@ export class LiveClient {
     try {
       const sessionClosedPromise = this.getSessionClosedPromise();
       channel.send(JSON.stringify({ type: "session.close" }));
+      this.journal?.emit("transport.command", { type: "session.close", phase: "sent" });
 
       const result = await this.waitForSessionClosedOrTimeout(
         sessionClosedPromise,
@@ -540,6 +569,7 @@ export class LiveClient {
   private teardownTransport(): void {
     if (this.torndown) return;
     this.torndown = true;
+    if (this.diagnosticTimer) clearInterval(this.diagnosticTimer); this.diagnosticTimer = undefined;
     document.removeEventListener("visibilitychange", this.onEarlyHidden);
     this.pendingProductStarted = null;
     this.pendingRemoteStream = null;
@@ -738,6 +768,7 @@ export class LiveClient {
     }
     const serverEvent = parseLiveServerEvent(parsed);
     if (serverEvent.kind === "unknown") {
+      this.journal?.emit("transport.event", { type: "unknown", phase: "received" });
       this.diagnostics.observe("unknown_event", (parsed as { type: string }).type, Date.now());
       return;
     }
@@ -745,8 +776,13 @@ export class LiveClient {
       this.handleMalformedServerEvent(serverEvent.message);
       return;
     }
-    if (serverEvent.event.type === "error") this.diagnostics.observe("provider_error", "error", Date.now());
-    this.dispatchServerEvent(serverEvent.event, parsed);
+    const received = serverEvent.event;
+    if (this.journal && (received.type === "session.input_transcript.delta" || received.type === "session.output_transcript.delta")) received.diagnosticId = crypto.randomUUID();
+    this.journal?.emit("transport.event", { type: received.type, phase: "received",
+      ...("diagnosticId" in received ? { fragmentId: received.diagnosticId, charCount: received.delta.length } : {}),
+      ...("client_event_id" in received && received.client_event_id ? { commandId: received.client_event_id } : {}) });
+    if (received.type === "error") this.diagnostics.observe("provider_error", "error", Date.now());
+    this.dispatchServerEvent(received, parsed);
   }
 
   private dispatchServerEvent(
@@ -766,6 +802,7 @@ export class LiveClient {
       case "session.input_transcript.delta":
       case "session.output_transcript.delta":
         if (!this.deps.accounting?.managed || this.accountingReady) this.onTranscriptDelta?.(serverEvent);
+        else this.journal?.emit("transport.event", { type: serverEvent.type, phase: "dropped", reason: "awaiting_handoff", fragmentId: serverEvent.diagnosticId });
         return;
       case "session.instructions.appended":
       case "session.thinking.appended":
@@ -866,6 +903,7 @@ export class LiveClient {
   }
 
   private handleMalformedServerEvent(message: string): void {
+    this.journal?.emit("transport.event", { type: "invalid", phase: "received" });
     const error = new Error(message);
     if (!this.closing) {
       this.closing = true;
@@ -878,6 +916,26 @@ export class LiveClient {
       error: { message },
       transportFailure: true,
     });
+  }
+
+  private async observeStats(): Promise<void> {
+    const peer = this.peer;
+    if (this.statsBusy || !peer || this.torndown) return;
+    this.statsBusy = true;
+    const data: DiagnosticData["transport.stats"] = { available: false, packetsSent: null, packetsReceived: null, packetsLost: null, bytesSent: null, bytesReceived: null, totalSamplesReceived: null, jitterBufferEmittedCount: null };
+    try {
+      const stats = await peer.getStats();
+      stats.forEach(report => {
+        if (report.kind !== "audio" || !["inbound-rtp", "outbound-rtp"].includes(report.type)) return;
+        data.available = true;
+        for (const key of ["packetsSent", "packetsReceived", "packetsLost", "bytesSent", "bytesReceived", "totalSamplesReceived", "jitterBufferEmittedCount"] as const) {
+          const value: unknown = report[key];
+          if (typeof value === "number" && Number.isFinite(value)) data[key] = (data[key] ?? 0) + value;
+        }
+      });
+    } catch { /* Absent fields remain unknown, never synthetic zeroes. */ }
+    finally { this.statsBusy = false; }
+    this.journal?.emit("transport.stats", data);
   }
 
   private assertSteeringAllowed(policy: AppendPolicy): void {

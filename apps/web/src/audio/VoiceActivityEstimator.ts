@@ -16,6 +16,12 @@ export const VAM_PLAYBACK_THRESHOLD_MULTIPLIER = 1.35;
 export const VAM_WARMUP_RMS_MAX = 0.0001;
 
 export class VoiceActivityEstimator {
+  private lastEnterThreshold = VAM_ACTIVE_FLOOR;
+  private quietThreshold(): number { return Math.max(VAM_QUIET_FLOOR, (this.noiseFloor ?? 0) * VAM_QUIET_NOISE_MULTIPLIER); }
+  get diagnosticSnapshot() {
+    return { noiseFloor: this.noiseFloor, enterThreshold: this.lastEnterThreshold,
+      quietThreshold: this.quietThreshold(), quietStartedAtMs: this.quietStartedAtMs };
+  }
   private isActive = false;
   private noiseFloor: number | null = null;
   private consecutiveEnterFrames = 0;
@@ -27,10 +33,11 @@ export class VoiceActivityEstimator {
 
   isQuiet(rms: number): boolean {
     return Number.isFinite(rms) && rms >= 0 &&
-      rms < Math.max(VAM_QUIET_FLOOR, (this.noiseFloor ?? 0) * VAM_QUIET_NOISE_MULTIPLIER);
+      rms < this.quietThreshold();
   }
 
   resetBaseline(): void {
+    this.lastEnterThreshold = VAM_ACTIVE_FLOOR;
     this.isActive = false;
     this.noiseFloor = null;
     this.consecutiveEnterFrames = 0;
@@ -65,6 +72,7 @@ export class VoiceActivityEstimator {
     const enterThreshold = playbackActive
       ? activeThreshold * VAM_PLAYBACK_THRESHOLD_MULTIPLIER
       : activeThreshold;
+    this.lastEnterThreshold = enterThreshold;
 
     if (this.isActive) {
       if (this.isQuiet(rms)) {

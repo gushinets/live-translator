@@ -27,6 +27,7 @@ import type { OrientationController } from "../platform/OrientationController";
 import type { VisibilityController } from "../platform/VisibilityController";
 import type { WakeLockController } from "../platform/WakeLockController";
 import { SessionController } from "./SessionController";
+import type { DiagnosticType } from "../../../../types/diagnostics.js";
 import {
   CONNECTION_ERROR_MESSAGE,
   INCOMPLETE_FINALIZATION_MESSAGE,
@@ -334,6 +335,56 @@ function createController<
   controllerHarnesses.set(controller, { live, audio });
   return { controller, live, audio, orientation, visibility, wakeLock };
 }
+
+describe("conversation diagnostic observations", () => {
+  it("links raw fragments, routing, caption side and committed render, then records the no-output deadline", async () => {
+    vi.useFakeTimers();
+    const emit = vi.fn<(type: DiagnosticType, data: unknown, text?: string) => void>();
+    const live = Object.assign(new FakeLive(), { journal: { emit } });
+    const { controller, audio } = createController({ live });
+    await controller.startWithLanguages({ A: "ru", B: "es" });
+    emitVoice(audio, true);
+    live.emit({ type: "session.input_transcript.delta", delta: "Подскажите, где находится вокзал?", start_ms: 0, end_ms: 1000 });
+    live.emit({ type: "session.output_transcript.delta", delta: "¿Dónde está la estación?", start_ms: 500, end_ms: 1500 });
+    render(createElement(ConversationScreen, { controller }));
+    expect(emit).toHaveBeenCalledWith("transcript.fragment", expect.objectContaining({ kind: "input", startMs: 0, endMs: 1000 }), "Подскажите, где находится вокзал?");
+    expect(emit).toHaveBeenCalledWith("transcript.route", expect.objectContaining({ kind: "output", side: "B", language: "es" }), undefined);
+    expect(emit).toHaveBeenCalledWith("caption.block", expect.objectContaining({ kind: "output", side: "B", revision: controller.captionRevision }), "¿Dónde está la estación?");
+    expect(emit).toHaveBeenCalledWith("caption.render", expect.objectContaining({ revision: controller.captionRevision }), undefined);
+    await act(async () => { emitVoice(audio, false); await vi.advanceTimersByTimeAsync(runtime.noOutputTimeoutMs + 1); });
+    await act(async () => {
+      emitVoice(audio, true);
+      live.emit({ type: "session.input_transcript.delta", delta: "Спасибо за помощь.", start_ms: 10000, end_ms: 11000 });
+      emitVoice(audio, false);
+      await vi.advanceTimersByTimeAsync(runtime.noOutputTimeoutMs + runtime.captionIdleMs + 1);
+    });
+    expect(emit).toHaveBeenCalledWith("turn.timer", expect.objectContaining({ timer: "no_output", phase: "fired" }), undefined);
+    expect(emit).toHaveBeenCalledWith("attribution.decision", expect.objectContaining({ kind: "deadline" }), undefined);
+  });
+  it("keeps a stale callback on the original stream after a new transport is allocated", async () => {
+    const oldEmit = vi.fn(), newEmit = vi.fn();
+    const first = Object.assign(new FakeLive(), { journal: { emit: oldEmit } });
+    const second = Object.assign(new FakeLive(), { journal: { emit: newEmit } });
+    const { controller } = createController({ lives: [first, second] });
+    await controller.startWithLanguages({ A: "ru", B: "es" });
+    const late = first.onTranscriptDelta!;
+    await controller.cancel();
+    late({ type: "session.output_transcript.delta", delta: "late", diagnosticId: crypto.randomUUID() });
+    expect(oldEmit).toHaveBeenCalledWith("transport.event", expect.objectContaining({ phase: "dropped", reason: "stale_generation" }), undefined);
+    expect(newEmit.mock.calls.some(([type]) => type === "transport.event")).toBe(false);
+    expect(controller.captionBlocks).toEqual([]);
+  });
+  it("does not change conversation behavior when the diagnostic observer throws", async () => {
+    const live = Object.assign(new FakeLive(), { journal: { emit: () => { throw new Error("diagnostics unavailable"); } } });
+    const { controller, audio } = createController({ live });
+    await controller.startWithLanguages({ A: "ru", B: "es" });
+    emitVoice(audio, true);
+    live.emit({ type: "session.input_transcript.delta", delta: "Где находится вокзал?" });
+    live.emit({ type: "session.output_transcript.delta", delta: "¿Dónde está la estación?" });
+    expect(controller.captionBlocks.some(block => block.side === "B" && block.text.includes("estación"))).toBe(true);
+    await controller.cancel();
+  });
+});
 
 describe("SessionController", () => {
   it("does not disable buffered playback when ending and starting another conversation", async () => {

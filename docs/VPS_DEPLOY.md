@@ -441,6 +441,14 @@ initial directory. The API uses `/data/live-translator.sqlite`, WAL, foreign key
 and synchronous FULL. Do not delete the volume during an image update.
 For `pnpm dev`, `.env.example` uses the local `./.data` directory instead.
 
+Optional conversation diagnostics use a separate `diagnostics-data` volume at
+`/diagnostics`, outside ledger backups. Enable metadata first with
+`CONVERSATION_DIAGNOSTICS_ENABLED=true` (requires the ledger); leave
+`CONVERSATION_DIAGNOSTICS_TEXT_ENABLED=false` for ordinary users. Technical events
+expire after 30 days, developer test text after 7 days. Operator search/export,
+text opt-in and failure/retention checks are documented in
+[conversation diagnostics](testing/conversation-diagnostics.md).
+
 The anonymous production cookie is `__Host-live-translator`, HttpOnly, Secure,
 SameSite=Lax, Path=/, without Domain, with a sliding 90-day lifetime. A cleared
 cookie starts a new identity. Provider attempts are recorded before dispatch,

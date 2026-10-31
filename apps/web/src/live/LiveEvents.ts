@@ -66,6 +66,8 @@ export type TranscriptDeltaType =
   | "session.output_transcript.delta";
 
 export interface TranscriptDeltaEvent {
+  /** Local receipt correlation; always replaced at the transport boundary. */
+  diagnosticId?: string;
   type: TranscriptDeltaType;
   delta: string;
   start_ms?: number;

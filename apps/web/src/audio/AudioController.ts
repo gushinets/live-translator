@@ -1,4 +1,5 @@
 import playbackWorkletUrl from "./BufferedPlaybackProcessor.ts?worker&url";
+import { observe, type DiagnosticSink } from "../diagnostics/observe";
 import { PlaybackActivityDetector } from "./PlaybackActivityDetector";
 import { VoiceActivityEstimator, VAM_EXIT_QUIET_MS, VAM_SAMPLE_INTERVAL_MS } from "./VoiceActivityEstimator";
 import { runtime } from "../config/runtime";
@@ -73,6 +74,9 @@ function readMicrophoneSettings(track: MediaStreamTrack): MicrophoneSettingsDiag
  * Does not mute Live model input (Gate B).
  */
 export class AudioController {
+  diagnostics: DiagnosticSink | undefined;
+  get diagnosticContextState(): string | null { return this.audioContext?.state ?? null; }
+  private levelSummary: { fromMs: number; toMs: number; samples: number; sum: number; minRms: number; maxRms: number } | undefined;
   onSourceSample: ((event: AudioActivityEvent & { reset?: boolean }) => void) | null = null;
   onVoiceActivity: ((event: AudioActivityEvent) => void) | null = null;
   onPlaybackActivity: ((event: PlaybackActivityEvent) => void) | null = null;
@@ -170,6 +174,7 @@ export class AudioController {
       this.onSourceSample?.({ active: event.active, atMs: performance.now() });
     };
     this.playbackDetector.onActivity = (event) => {
+      observe(this.diagnostics, "audio.state", { phase: "playback_activity", active: event.active });
       // The worklet reports played activity and FIFO ownership, including phrases shorter than a sampler tick.
       if (this.playbackNode && !this.audioElement.muted) return;
       this.onPlaybackActivity?.(event);
@@ -221,6 +226,7 @@ export class AudioController {
   }
 
   resetVoiceActivityBaseline(): void {
+    observe(this.diagnostics, "audio.state", { phase: "baseline_reset" });
     this.voiceActivityMonitor.resetBaseline();
     this.sourceSpeaking = false;
     this.lastSourceSpeaking = null;
@@ -235,6 +241,7 @@ export class AudioController {
     }
 
     const context = this.ensureAudioContext();
+    observe(this.diagnostics, "audio.state", { phase: "capture_requested" });
     const resumeStarted = context.resume();
 
     let stream: MediaStream;
@@ -246,6 +253,7 @@ export class AudioController {
         },
       });
     } catch (error) {
+      observe(this.diagnostics, "audio.state", { phase: "capture_failed" });
       console.error("getUserMedia failed", {
         error,
         constraints: { echoCancellation: true, noiseSuppression: false },
@@ -263,6 +271,8 @@ export class AudioController {
       throw new Error("Microphone stream has no audio track");
     }
     track.addEventListener("ended", this.handleCaptureEnded);
+    track.addEventListener("mute", this.handleCaptureMute);
+    track.addEventListener("unmute", this.handleCaptureUnmute);
     if (track.readyState !== "live") {
       track.removeEventListener("ended", this.handleCaptureEnded);
       for (const existing of stream.getTracks()) {
@@ -282,6 +292,7 @@ export class AudioController {
     this.micSource = micSource;
     this.micAnalyser = micAnalyser;
     this.microphoneSettings = readMicrophoneSettings(track);
+    observe(this.diagnostics, "audio.state", { phase: "capture_ready", ...this.microphoneSettings });
     this.captureEnabled = true;
     this.applyCaptureGate();
     console.info("Microphone track settings", this.microphoneSettings);
@@ -296,6 +307,10 @@ export class AudioController {
     this.inputRepeatNeeded = false;
     this.inputReopenEstimator.resetBaseline();
     this.captureTrack.removeEventListener("ended", this.handleCaptureEnded);
+    this.captureTrack.removeEventListener("mute", this.handleCaptureMute);
+    this.captureTrack.removeEventListener("unmute", this.handleCaptureUnmute);
+    observe(this.diagnostics, "audio.state", { phase: "capture_stopped" });
+    this.flushLevelSummary();
     for (const track of this.captureStream.getTracks()) {
       track.stop();
     }
@@ -315,6 +330,7 @@ export class AudioController {
       throw new Error("Microphone capture has not started");
     }
     this.captureEnabled = enabled;
+    observe(this.diagnostics, "audio.state", { phase: "capture_gate", enabled, reason: "controller" });
     if (!enabled) {
       this.inputRepeatNeeded = false;
       this.inputReopenEstimator.resetBaseline();
@@ -337,6 +353,7 @@ export class AudioController {
     // Deliver the pending idle edge before consumers start ignoring gated microphone events.
     if (blocked && this.voiceActivityMonitor.active) this.onVoiceActivity?.({ active: false, atMs: this.nowMs() });
     this.inputBlocked = blocked;
+    observe(this.diagnostics, "audio.state", { phase: "playback_input", enabled: !blocked, reason: blocked ? "playback" : "echo_tail" });
     this.applyCaptureGate();
     this.resetVoiceActivityBaseline();
     this.onPlaybackInputBlocked?.();
@@ -385,6 +402,7 @@ export class AudioController {
 
   /** Gate C: mute local GPT playback. Never uses Live input mute. */
   setOutputAudible(audible: boolean): void {
+    observe(this.diagnostics, "audio.state", { phase: "output_gate", enabled: audible, reason: "controller" });
     this.outputAudible = audible;
     if (!audible) {
       this.playbackGeneration++;
@@ -471,6 +489,7 @@ export class AudioController {
     this.playbackDestination = context.createMediaStreamDestination();
     const fail = () => {
       if (this.playbackNode !== node) return;
+      observe(this.diagnostics, "audio.state", { phase: "buffer_error" });
       this.setOutputAudible(false);
       this.onPlaybackBufferError?.();
     };
@@ -478,11 +497,13 @@ export class AudioController {
     node.port.onmessage = ({ data }: MessageEvent<{ type: string; value?: boolean; turnId?: string; requestId?: number; generation?: number }>) => {
       if (this.playbackNode !== node) return;
       if (data.type === "reset" && this.playbackResetPending && data.generation === this.playbackGeneration) {
+        observe(this.diagnostics, "audio.state", { phase: "playback_reset", generation: data.generation });
         this.playbackResetPending = false;
         this.audioElement.muted = !this.outputAudible;
         this.releasePlaybackInput();
       }
       if (data.type === "playback" && !this.audioElement.muted && this.nonInterrupting) {
+        observe(this.diagnostics, "audio.state", { phase: "playback_request", active: data.value === true, requestId: data.requestId, generation: data.generation });
         if (data.generation !== this.playbackGeneration || !Number.isSafeInteger(data.requestId) || data.requestId! <= 0) return;
         const requestId = data.requestId!;
         const generation = data.generation;
@@ -494,6 +515,8 @@ export class AudioController {
             if (!this.inputBlocked && (this.sourceSpeaking || (this.captureEnabled && this.micAnalyser !== null &&
                 (this.audioContext?.state !== "running" || !this.inputReopenEstimator.isQuiet(rmsFromAnalyser(this.micAnalyser)))))) {
               node.port.postMessage({ type: "playback", value: false, requestId, generation });
+              observe(this.diagnostics, "audio.state", { phase: "playback_permission", enabled: false, requestId, generation,
+                reason: this.audioContext?.state !== "running" ? "not_running" : "speech" });
               return;
             }
             const wasTail = this.playbackReleaseTimer !== null;
@@ -503,6 +526,7 @@ export class AudioController {
             if (this.playbackNode === node && !this.audioElement.muted && this.playbackGeneration === generation) {
               this.playbackRequestId = requestId;
               node.port.postMessage({ type: "playback", value: true, requestId, generation });
+              observe(this.diagnostics, "audio.state", { phase: "playback_permission", enabled: true, requestId, generation, reason: "playback" });
             }
           } catch { fail(); }
         } else if (requestId === this.playbackRequestId) {
@@ -511,12 +535,14 @@ export class AudioController {
         }
       }
       if (data.type === "pending" && data.generation === this.playbackGeneration) {
+        observe(this.diagnostics, "audio.state", { phase: "pcm_pending", active: data.value === true, generation: data.generation });
         // A reset barrier mutes output temporarily; fresh held PCM still prevents logical completion.
         const received = this.outputAudible && data.value === true && !this.queuedPlayback;
         this.queuedPlayback = this.outputAudible && data.value === true;
         if (received) this.onPcmReceived?.(this.nowMs());
       }
       if (data.type === "turn" && !this.audioElement.muted) {
+        observe(this.diagnostics, "audio.state", { phase: "playback_activity", active: data.value === true, turnId: data.turnId });
         this.onPlaybackActivity?.({ active: data.value === true, atMs: this.nowMs(), owned: true,
           turnId: typeof data.turnId === "string" ? data.turnId : undefined });
       }
@@ -535,6 +561,7 @@ export class AudioController {
     this.remoteDecoder = decoder;
     decoder.onerror = () => {
       const error = decoder.error;
+      observe(this.diagnostics, "audio.state", { phase: "decoder_error", code: error?.code });
       if (this.remoteDecoder === decoder && error) this.onPlaybackDecoderError?.(error);
     };
     decoder.muted = decoder.defaultMuted = true;
@@ -593,17 +620,21 @@ export class AudioController {
   }
 
   async playOutput(): Promise<void> {
-    const decoder = this.remoteDecoder;
-    const stream = this.audioElement.srcObject;
-    if (decoder) {
-      if (decoder.error !== null) decoder.load();
-      await decoder.play();
-      if (decoder !== this.remoteDecoder || stream !== this.audioElement.srcObject) return;
-    }
-    if (stream !== null) {
-      if (this.audioElement.error !== null) this.audioElement.load();
-      await this.audioElement.play();
-    }
+    observe(this.diagnostics, "audio.state", { phase: "play_requested" });
+    try {
+      const decoder = this.remoteDecoder;
+      const stream = this.audioElement.srcObject;
+      if (decoder) {
+        if (decoder.error !== null) decoder.load();
+        await decoder.play();
+        if (decoder !== this.remoteDecoder || stream !== this.audioElement.srcObject) return;
+      }
+      if (stream !== null) {
+        if (this.audioElement.error !== null) this.audioElement.load();
+        await this.audioElement.play();
+      }
+      observe(this.diagnostics, "audio.state", { phase: "play_started" });
+    } catch (error) { observe(this.diagnostics, "audio.state", { phase: "play_failed" }); throw error; }
   }
 
   dispose(): void {
@@ -628,6 +659,7 @@ export class AudioController {
   private contextWasInterrupted = false;
 
   private readonly handleCaptureEnded = (): void => {
+    observe(this.diagnostics, "audio.state", { phase: "capture_ended" });
     if (this.captureTrack?.readyState !== "ended") {
       return;
     }
@@ -639,6 +671,7 @@ export class AudioController {
     if (this.audioContext === null) {
       return;
     }
+    observe(this.diagnostics, "audio.state", { phase: "context", contextState: this.audioContext.state });
     this.notifyMeteringBoundary();
     if ((this.audioContext.state as string) === "interrupted") {
       this.contextWasInterrupted = true;
@@ -697,17 +730,33 @@ export class AudioController {
     }
     if (this.micAnalyser !== null && this.captureEnabled && this.audioContext?.state === "running") {
       const rms = rmsFromAnalyser(this.micAnalyser);
+      this.summarizeLevel(rms, atMs);
       if (this.playbackReleaseTimer !== null) {
         this.inputReopenEstimator.pushRms(rms, false, atMs);
         this.observeBlockedSpeech(rms);
       }
       if (!this.captureTrack?.enabled) return;
       this.inputReopenEstimator.pushRms(rms, !this.audioElement.muted && this.playbackDetector.active, atMs);
+      this.voiceActivityMonitor.diagnostics = this.diagnostics;
       this.voiceActivityMonitor.pushRms(
         rms,
         !this.audioElement.muted && this.playbackDetector.active,
         atMs,
       );
     }
+  }
+  private readonly handleCaptureMute = () => observe(this.diagnostics, "audio.state", { phase: "track_muted" });
+  private readonly handleCaptureUnmute = () => observe(this.diagnostics, "audio.state", { phase: "track_unmuted" });
+  private summarizeLevel(rms: number, atMs: number): void {
+    if (!this.diagnostics) return;
+    if (this.levelSummary && atMs - this.levelSummary.fromMs >= 1000) this.flushLevelSummary();
+    const summary = this.levelSummary ??= { fromMs: atMs, toMs: atMs, samples: 0, sum: 0, minRms: rms, maxRms: rms };
+    summary.toMs = atMs; summary.samples++; summary.sum += rms;
+    summary.minRms = Math.min(summary.minRms, rms); summary.maxRms = Math.max(summary.maxRms, rms);
+  }
+  private flushLevelSummary(): void {
+    const summary = this.levelSummary; this.levelSummary = undefined;
+    if (summary) observe(this.diagnostics, "audio.level", { fromMs: summary.fromMs, toMs: summary.toMs, samples: summary.samples,
+      minRms: summary.minRms, maxRms: summary.maxRms, meanRms: summary.sum / summary.samples, blocked: this.inputBlocked });
   }
 }

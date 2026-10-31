@@ -10,6 +10,7 @@ import {
 } from "./LiveEvents";
 import { STARTUP_TRACE_STORAGE_KEY } from "./StartupTrace";
 import type { CleanupReason } from "../session/MetadataDeliveryBudget";
+import type { DiagnosticStream } from "../diagnostics/DiagnosticOutbox";
 
 class FakeDataChannel extends EventTarget {
   readyState: RTCDataChannelState = "open";
@@ -177,6 +178,29 @@ describe("LiveClient.connect", () => {
       onRemoteStream,
     });
   }
+
+  it("samples packet and decode counters separately, records unknown fields as unavailable, and stops polling on teardown", async () => {
+    vi.useFakeTimers();
+    try {
+      const { backend } = makeFakeBackend(), emit = vi.fn();
+      const getStats = vi.fn(async () => new Map([
+        ["out", { type: "outbound-rtp", kind: "audio", packetsSent: 10, bytesSent: 1000 }],
+        ["in", { type: "inbound-rtp", kind: "audio", packetsReceived: 20, bytesReceived: 2000, totalSamplesReceived: 0, jitterBufferEmittedCount: 0 }],
+      ]));
+      Object.assign(peer, { getStats });
+      const client = new LiveClient({ backend, peerFactory: () => peer as unknown as RTCPeerConnection,
+        onRemoteStream, journal: { enabled: true, emit } as unknown as DiagnosticStream });
+      const connecting = client.connect(makeFakeStream());
+      await vi.waitFor(() => expect(peer.calls).toContain("setRemoteDescription"));
+      peer.dataChannel!.emitMessage({ type: "session.started", session: { id: "test" } }); await connecting;
+      await vi.advanceTimersByTimeAsync(5000);
+      expect(emit).toHaveBeenCalledWith("transport.stats", expect.objectContaining({ packetsSent: 10, packetsReceived: 20, totalSamplesReceived: 0, jitterBufferEmittedCount: 0, packetsLost: null }));
+      await client.disconnectImmediately();
+      const count = getStats.mock.calls.length;
+      await vi.advanceTimersByTimeAsync(10000);
+      expect(getStats).toHaveBeenCalledTimes(count);
+    } finally { vi.useRealTimers(); }
+  });
 
   it("follows the official connect sequence and resolves only after session.started", async () => {
     const { backend, calls: backendCalls } = makeFakeBackend();

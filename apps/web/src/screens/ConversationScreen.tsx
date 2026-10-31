@@ -13,6 +13,8 @@ import type { DialogueBlock } from "../conversation/DialogueTranscript";
 import type { PlaybackInputState } from "../audio/AudioController";
 
 export interface ConversationScreenController {
+  readonly captionRevision?: number;
+  recordCaptionRender?(revision: number): void;
   readonly session: TranslationSession;
   readonly captionBlocks: readonly DialogueBlock[];
   readonly inputReady: boolean;
@@ -47,6 +49,7 @@ export function ConversationScreen({
   const renderedSnapshot = useRef<unknown[]>([]);
   const snapshot = uiSnapshot(controller);
   useLayoutEffect(() => { renderedSnapshot.current = snapshot; });
+  useLayoutEffect(() => { if (controller.captionRevision !== undefined) controller.recordCaptionRender?.(controller.captionRevision); });
   const previousRecovery = useRef<RetainedRecoveryState | undefined>(undefined);
   useEffect(() => {
     const unsubscribe = controller.subscribe(rerender);

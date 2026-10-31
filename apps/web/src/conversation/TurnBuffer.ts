@@ -17,13 +17,14 @@ const TERMINAL_STATUSES: ReadonlySet<Turn["status"]> = new Set([
 
 /** Pure constructor for a stored transcript fragment, keeping optional timing. */
 export function createTranscriptFragment(input: {
+  id?: string;
   text: string;
   nowMs: number;
   startMs?: number;
   endMs?: number;
 }): TranscriptFragment {
   const fragment: TranscriptFragment = {
-    id: crypto.randomUUID(),
+    id: input.id ?? crypto.randomUUID(),
     text: input.text,
     receivedAtMs: input.nowMs,
   };

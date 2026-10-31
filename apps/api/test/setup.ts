@@ -13,6 +13,8 @@ Object.assign(process.env, {
   OPENAI_API_KEY: "test-placeholder-not-a-real-key",
   USAGE_LEDGER_ENABLED: "false",
   BACKGROUND_SESSION_CLOSE_ENABLED: "false",
+  CONVERSATION_DIAGNOSTICS_ENABLED: "false",
+  CONVERSATION_DIAGNOSTICS_TEXT_ENABLED: "false",
   USAGE_DB_PATH: databasePath,
 });
 

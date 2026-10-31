@@ -1,6 +1,7 @@
 import type { Express } from "express";
 import type { Server } from "node:http";
 import type { LedgerRuntime } from "./accounting/LedgerRuntime.js";
+import type { DiagnosticJournal } from "./diagnostics/DiagnosticJournal.js";
 
 export interface ApiServerLifecycle {
   server: Server;
@@ -37,6 +38,8 @@ export function startApiServer(app: Express, options: { port: number; host?: str
       finally { if (timer) clearTimeout(timer); }
     }
     if (runtime?.ledger.db.isOpen) runtime.ledger.db.close();
+    try { (app.locals.diagnostics as DiagnosticJournal | undefined)?.close(); }
+    catch { console.error("Conversation diagnostics shutdown incomplete"); }
     if (failure) throw failure;
     if (tailFailure) throw tailFailure;
   };

@@ -5,14 +5,16 @@
   "files": [
     "dist",
     "scripts/sqlite-maintenance.mjs",
-    "scripts/unit-economics-report.mjs"
+    "scripts/unit-economics-report.mjs",
+    "scripts/diagnostics-report.mjs"
   ],
   "scripts": {
     "dev": "node --env-file-if-exists=../../.env ./node_modules/tsx/dist/cli.mjs watch src/server.ts",
     "build": "tsc -p tsconfig.build.json && node scripts/copy-migrations.mjs",
     "test": "vitest run",
     "lint": "eslint .",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "diagnostics-report": "node scripts/diagnostics-report.mjs"
   },
   "dependencies": {
     "express": "^5.0.0",

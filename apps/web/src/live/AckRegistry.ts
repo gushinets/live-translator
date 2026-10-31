@@ -9,6 +9,8 @@ import {
   traceAckRegistry,
   type StartupTraceContext,
 } from "./StartupTrace";
+import { observe, type DiagnosticSink } from "../diagnostics/observe";
+import type { DiagnosticCommand } from "../../../../types/diagnostics.js";
 
 export class AckTimeoutError extends Error {
   readonly eventId: string;
@@ -21,6 +23,7 @@ export class AckTimeoutError extends Error {
 }
 
 interface PendingAck {
+  commandType?: DiagnosticCommand;
   resolve: (event: { client_event_id: string }) => void;
   reject: (error: Error) => void;
   timer: number;
@@ -28,6 +31,8 @@ interface PendingAck {
 }
 
 export class AckRegistry {
+  diagnostics: DiagnosticSink | undefined;
+  setCommandType(id: string, type: DiagnosticCommand): void { const pending = this.pending.get(id); if (pending) pending.commandType = type; }
   private readonly pending = new Map<string, PendingAck>();
 
   get pendingCount(): number {
@@ -46,6 +51,8 @@ export class AckRegistry {
     }
     return new Promise<{ client_event_id: string }>((resolve, reject) => {
       const timer = window.setTimeout(() => {
+        const commandType = this.pending.get(eventId)?.commandType;
+        if (commandType) observe(this.diagnostics, "transport.command", { type: commandType, phase: "timeout", commandId: eventId });
         this.pending.delete(eventId);
         traceAckRegistry("ack.timeout", {
           clientEventId: eventId,
@@ -74,6 +81,7 @@ export class AckRegistry {
     const waiter = this.pending.get(event.client_event_id);
     if (waiter === undefined) return;
     this.pending.delete(event.client_event_id);
+    if (waiter.commandType) observe(this.diagnostics, "transport.command", { type: waiter.commandType, phase: "ack", commandId: event.client_event_id });
     traceAckRegistry("ack.resolve", {
       clientEventId: event.client_event_id,
       pendingCount: this.pending.size,
@@ -92,6 +100,7 @@ export class AckRegistry {
     const waiter = this.pending.get(event.client_event_id);
     if (waiter === undefined) return;
     this.pending.delete(event.client_event_id);
+    if (waiter.commandType) observe(this.diagnostics, "transport.command", { type: waiter.commandType, phase: "rejected", commandId: event.client_event_id });
     traceAckRegistry("ack.reject", {
       clientEventId: event.client_event_id,
       pendingCount: this.pending.size,
@@ -106,6 +115,7 @@ export class AckRegistry {
     const waiters = [...this.pending.entries()];
     this.pending.clear();
     for (const [clientEventId, waiter] of waiters) {
+      if (waiter.commandType) observe(this.diagnostics, "transport.command", { type: waiter.commandType, phase: "rejected", commandId: clientEventId });
       traceAckRegistry("ack.reject_all", {
         clientEventId,
         pendingCount: this.pending.size,
