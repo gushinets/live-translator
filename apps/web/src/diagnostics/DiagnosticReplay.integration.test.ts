@@ -30,9 +30,9 @@ async function fixture() {
   cleanup.push(() => new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve())));
   await once(server, "listening");
   const address = server.address() as { port: number }, owner = crypto.randomUUID(), nativeFetch = globalThis.fetch;
-  const state = { offline: false, consent: true }, statuses: number[] = [];
+  const state = { offline: false, readbackOffline: true, consent: true }, statuses: number[] = [];
   vi.stubGlobal("fetch", async (url: string, init?: RequestInit) => {
-    if (state.offline && (url.startsWith("/api/live/session") || url.endsWith("/diagnostics"))) throw new TypeError("offline");
+    if (state.offline && (url.startsWith("/api/live/session") && (init?.method === "POST" || state.readbackOffline) || url.endsWith("/diagnostics"))) throw new TypeError("offline");
     const headers = new Headers(init?.headers);
     headers.set("Origin", apiConfig.webOrigin); headers.set("Cookie", `live-translator-dev=${owner}`);
     const response = await nativeFetch(`http://127.0.0.1:${address.port}${url}`, { ...init, headers });
@@ -50,11 +50,11 @@ async function fixture() {
   return { db, ledger, journal, creator, owner, state, statuses, api, queue, options, outbox, scope };
 }
 
-it("replays ambiguous startup after an unsent create and transient read-back, then reconciles late registration", async () => {
+it.each([true, false])("replays unsent startup and reconciles late registration, read-back offline=%s", async readbackOffline => {
   const f = await fixture(), stream = f.outbox.stream(), attempt = f.scope.newAttempt();
   attempt.diagnostics = stream;
   stream.emit("app.lifecycle", { phase: "start", generation: 0 });
-  f.state.offline = true;
+  f.state.offline = true; f.state.readbackOffline = readbackOffline;
   await expect(attempt.create("not-sent-offer")).rejects.toThrow("offline");
   await vi.waitFor(() => expect(stream.conversationId).toBeTruthy());
   await f.outbox.flush();
@@ -76,6 +76,26 @@ it("replays ambiguous startup after an unsent create and transient read-back, th
   expect(reconciled.events).toContainEqual(expect.objectContaining({ liveSessionId: attempt.localId, attemptStatus: "registered", type: "app.lifecycle" }));
   expect(reconciled.warnings).not.toContain(`${attempt.localId}: attempt_unconfirmed`);
   expect(f.creator).not.toHaveBeenCalled();
+});
+
+it.each([0, 1])("reports a collection-disabled interval with %s observed/discarded events", async discardedCount => {
+  const f = await fixture(), c = await f.api.createConversation(crypto.randomUUID()), stream = f.outbox.stream();
+  stream.bind(c.conversationId);
+  const policy = (await f.api.policy()).diagnostics!;
+  f.outbox.configure({ ...policy, enabled: false });
+  if (discardedCount) stream.emit("transcript.fragment", { kind: "input", fragmentId: "disabled", charCount: 14 }, "PRIVATE_CANARY");
+  f.outbox.configure(policy);
+  await f.outbox.flush();
+  expect(f.statuses).toEqual([200]);
+  const report = buildDiagnosticReport(f.db, f.journal.db, { conversationId: c.conversationId });
+  expect(report.events).toContainEqual(expect.objectContaining({ type: "diagnostic.collection", data: {
+    disabledAtMs: expect.any(Number), resumedAtMs: expect.any(Number), discardedCount,
+  } }));
+  expect(report.warnings).toContain(`${stream.id}:1: collection_disabled`);
+  for (const format of ["text", "jsonl"] as const) {
+    const output = formatDiagnosticReport(report, format);
+    expect(output).toContain("collection_disabled"); expect(output).not.toContain("PRIVATE_CANARY");
+  }
 });
 
 it.each(["tab", "server"])("reports text removed by %s revocation after offline queue and replay", async revoke => {

@@ -78,6 +78,7 @@ export function buildDiagnosticReport(ledger: DatabaseSync, diagnostics: Databas
         if (attemptStatus === "unconfirmed") warnings.push(`${row.live_session_id}: attempt_unconfirmed`);
         if (row.text_truncated) warnings.push(`${streamId}:${row.seq}: text_truncated`);
         if (row.type === "diagnostic.loss") warnings.push(`${streamId}:${row.seq}: events_lost`);
+        if (row.type === "diagnostic.collection") warnings.push(`${streamId}:${row.seq}: collection_disabled`);
         const estimatedAt = anchor.wall_ms + (row.mono_ms - anchor.mono_ms) + (clockData?.offsetMs ?? 0);
         events.push({ schemaVersion: 1, source: row.source, conversationId: row.conversation_id,
           ...(row.live_session_id ? { liveSessionId: row.live_session_id, attemptStatus } : {}), streamId, seq: row.seq,

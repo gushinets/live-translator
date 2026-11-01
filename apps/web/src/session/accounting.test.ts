@@ -1199,7 +1199,7 @@ describe("cleanup and End delivery", () => {
   });
 });
 describe("controller-owned conversation accounting", () => {
-  it.each(["offline", "forbidden", "not_found"])("keeps the attempt diagnostic identity after ambiguous creation unless read-back proves absence: %s", async failure => {
+  it.each(["offline", "forbidden", "not_found"])("keeps the provisional diagnostic identity regardless of immediate read-back: %s", async failure => {
     const f = fixture(), attempt = f.scope.newAttempt(), bind = vi.fn();
     attempt.diagnostics = { bind } as unknown as DiagnosticStream;
     f.api.createSession.mockRejectedValue(new Error("response lost"));
@@ -1207,7 +1207,8 @@ describe("controller-owned conversation accounting", () => {
       new AccountingRequestError(failure === "not_found" ? 404 : 403, failure));
     try {
       await expect(attempt.create("offer")).rejects.toThrow("response lost");
-      await vi.waitFor(() => expect(bind).toHaveBeenCalledWith("conversation", failure === "not_found" ? undefined : attempt.localId));
+      expect(bind).toHaveBeenCalledWith("conversation", attempt.localId);
+      expect(f.api.readAttempt).not.toHaveBeenCalled();
     } finally { await f.budget.close(); }
   });
   it("creates only after committed reserve and dispatch marker", async () => {

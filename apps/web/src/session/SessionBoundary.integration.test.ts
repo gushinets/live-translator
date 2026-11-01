@@ -1,6 +1,6 @@
 import { IDBFactory } from "fake-indexeddb";
 import { setImmediate as settle } from "node:timers/promises";
-import { cleanup, render, screen } from "@testing-library/react";
+import { act, cleanup, render, screen } from "@testing-library/react";
 import { jsx } from "react/jsx-runtime";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { BackendClient } from "../api/BackendClient";
@@ -2789,6 +2789,36 @@ describe("stage 5 hidden boundary", () => {
     expect(f.c.status).toBe("ended");
     expect(sessionStorage.getItem("live-translator-retained-conversation-v1")).toBeNull();
     await reloaded.controller.dispose(); await f.budget.close();
+  });
+  it("publishes caption removals and commits an empty revision after an unpaused background reset", async () => {
+    const diagnostics = new DiagnosticOutbox({ automatic: false }), enqueue = vi.spyOn(diagnostics, "enqueue");
+    const f = fixture(40, true, false, undefined, true, false, undefined, true, diagnostics);
+    try {
+      await f.controller.startWithLanguages({ A: "ru", B: "es" });
+      const peer = f.clients[0]!.peer;
+      peer.channel.emit({ type: "session.input_transcript.delta", delta: "Где вокзал?", start_ms: 0, end_ms: 1000 });
+      render(jsx(ConversationScreen, { controller: f.controller }));
+      const revision = f.controller.captionRevision, blocks = [...f.controller.captionBlocks];
+      expect(blocks.length).toBeGreaterThan(0);
+      const rendered = vi.spyOn(f.controller, "recordCaptionRender");
+      await act(async () => {
+        f.setVisible(false);
+        f.c.policy.backgroundSessionCloseEnabled = false;
+        await vi.waitFor(() => expect(peer.channel.sent).toContain("session.close"));
+        peer.channel.emit({ type: "session.closed" });
+        await vi.waitFor(() => expect(f.controller.session.state).toBe("idle"));
+      });
+      expect(f.controller.captionRevision).toBe(revision + 1);
+      expect(f.controller.captionBlocks).toEqual([]);
+      expect(rendered).toHaveBeenCalledWith(revision + 1, 0);
+      expect(enqueue).toHaveBeenCalledWith(expect.objectContaining({ type: "caption.render",
+        liveSessionId: f.clients[0]!.id, data: { revision: revision + 1, blockCount: 0 } }));
+      for (const block of blocks) expect(enqueue).toHaveBeenCalledWith(expect.objectContaining({ type: "caption.block",
+        liveSessionId: f.clients[0]!.id, data: expect.objectContaining({ blockId: block.id, revision: revision + 1, removed: true }) }));
+    } finally {
+      cleanup(); f.api.end.mockImplementation(async () => { f.c.status = "ended"; return { ...f.c }; });
+      await f.controller.dispose(); diagnostics.stop(); await f.budget.close();
+    }
   });
   it("ends accounting ownership on disposal after legacy hidden resets the UI to idle", async () => {
     const f = fixture(40, true);

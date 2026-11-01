@@ -12,6 +12,12 @@ Build/deploy matching API and web artifacts. Set `USAGE_LEDGER_ENABLED=true` and
 an older policy without this field disables diagnostics. A diagnostic database
 startup failure disables collection, logs a bounded error and leaves calls available.
 
+When collection resumes within a document, `diagnostic.collection` marks the disabled
+interval and the report warns `collection_disabled`. `discardedCount` counts calls
+observed by the journal and discarded startup events; observers gated off during the
+interval can leave it at zero, which does not mean the timeline is complete. The
+boundary contains timestamps and a count only, even when text mode is enabled.
+
 The database is `/diagnostics/events.sqlite` in the separate `diagnostics-data`
 Compose volume. Local runs use `DIAGNOSTICS_DB_PATH=./.data/diagnostics/events.sqlite`
 from `.env.example` (relative to the API working directory, like `USAGE_DB_PATH`).

@@ -373,9 +373,13 @@ export class DiagnosticStream implements DiagnosticSink {
   private readonly pending: Array<Omit<DiagnosticEvent, "conversationId">> = [];
   private pendingBytes = 0;
   private lost = 0;
+  private disabledAtMs: number | undefined;
+  private discardedCount = 0;
   private clockRecorded = false;
   get enabled(): boolean { return !this.disabled && this.outbox.policy?.enabled === true; }
-  constructor(private readonly outbox: DiagnosticOutbox) {}
+  constructor(private readonly outbox: DiagnosticOutbox) {
+    if (outbox.policy?.enabled === false) this.disabledAtMs = outbox.now();
+  }
   bind(conversationId: string, liveSessionId?: string): void {
     if (this.conversationId && (this.conversationId !== conversationId || this.liveSessionId !== liveSessionId)) { this.disable(); return; }
     this.conversationId = conversationId; this.liveSessionId = liveSessionId; this.drain();
@@ -383,7 +387,8 @@ export class DiagnosticStream implements DiagnosticSink {
   disable(): void { this.disabled = true; this.pending.length = 0; this.pendingBytes = 0; }
   emit<K extends DiagnosticType>(type: K, data: DiagnosticData[K], text?: string): void {
     try {
-      if (this.disabled || this.outbox.policy?.enabled === false || type.startsWith("server.")) return;
+      if (this.disabled || type.startsWith("server.")) return;
+      if (this.outbox.policy?.enabled === false) { this.drain(); this.discardedCount++; return; }
       const includeText = this.outbox.policy?.textEnabled && ["transcript.fragment", "caption.block"].includes(type) && text !== undefined && this.outbox.textOptedIn();
       const event = { schemaVersion: 1 as const, source: "browser" as const, streamId: this.id, seq: ++this.seq,
         wallMs: this.outbox.now(), monoMs: performance.now(), type, data: JSON.parse(JSON.stringify(data)), clientBuildId: CLIENT_BUILD_ID,
@@ -398,7 +403,17 @@ export class DiagnosticStream implements DiagnosticSink {
     } catch { /* Observability must never throw into audio, rendering or transport callbacks. */ }
   }
   drain(): void {
-    if (this.outbox.policy?.enabled === false) { this.pending.length = 0; this.pendingBytes = 0; this.lost = 0; return; }
+    if (this.disabled) return;
+    if (this.outbox.policy?.enabled === false) {
+      this.disabledAtMs ??= this.outbox.now();
+      this.discardedCount += this.pending.length + this.lost;
+      this.pending.length = 0; this.pendingBytes = 0; this.lost = 0; return;
+    }
+    if (this.outbox.policy?.enabled && this.disabledAtMs !== undefined) {
+      const data = { disabledAtMs: this.disabledAtMs, resumedAtMs: this.outbox.now(), discardedCount: this.discardedCount };
+      this.disabledAtMs = undefined; this.discardedCount = 0;
+      this.emit("diagnostic.collection", data);
+    }
     if (!this.conversationId || !this.outbox.policy?.enabled || this.disabled) return;
     for (const event of this.pending.splice(0)) this.outbox.enqueue({ ...event, conversationId: this.conversationId, ...(this.liveSessionId ? { liveSessionId: this.liveSessionId } : {}) } as DiagnosticEvent);
     this.pendingBytes = 0;

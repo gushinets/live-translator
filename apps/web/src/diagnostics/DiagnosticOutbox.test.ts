@@ -69,14 +69,18 @@ describe("diagnostic delivery", () => {
     expect((await queue.read())[0]!.event).not.toHaveProperty("text");
   });
   it("resumes the same bound stream after collection is disabled and enabled again", async () => {
-    const f = fixture(), stream = f.outbox.stream();
+    let now = Date.now();
+    const f = fixture({ now: () => now }), stream = f.outbox.stream();
     const conversationId = crypto.randomUUID(), liveSessionId = crypto.randomUUID();
     stream.bind(conversationId, liveSessionId);
     stream.emit("app.lifecycle", { phase: "start", generation: 0 });
     await f.outbox.flush();
+    const disabledAtMs = now;
     f.outbox.configure({ ...active, enabled: false });
     stream.emit("app.lifecycle", { phase: "hidden", generation: 1 });
     await f.outbox.flush();
+    now += 60000;
+    f.outbox.configure({ ...active, enabled: false });
     f.outbox.configure(active);
     expect(stream.enabled).toBe(true);
     stream.emit("app.lifecycle", { phase: "resume", generation: 2 });
@@ -85,9 +89,30 @@ describe("diagnostic delivery", () => {
     expect(events.map(event => event.data.phase)).toEqual(["start", "resume"]);
     expect(events.every(event => event.streamId === stream.id && event.conversationId === conversationId && event.liveSessionId === liveSessionId)).toBe(true);
     expect(events[1]!.seq).toBeGreaterThan(events[0]!.seq);
+    expect(f.requests.flat().filter(event => event.type === "diagnostic.collection")).toEqual([
+      expect.objectContaining({ streamId: stream.id, liveSessionId, data: { disabledAtMs, resumedAtMs: now, discardedCount: 1 } }),
+    ]);
     stream.bind(crypto.randomUUID(), liveSessionId);
     f.outbox.configure({ ...active, enabled: false }); f.outbox.configure(active);
     expect(stream.enabled).toBe(false);
+  });
+  it("marks pre-policy losses and a disabled interval before identity is bound without retaining content", async () => {
+    let now = Date.now();
+    const queue = new IndexedDiagnosticQueue(), outbox = new DiagnosticOutbox({ queue, automatic: false, now: () => now });
+    const stream = outbox.stream();
+    for (let index = 0; index < 201; index++) stream.emit("app.lifecycle", { phase: "start", generation: index });
+    const disabledAtMs = now;
+    outbox.configure({ ...active, enabled: false });
+    stream.emit("transcript.fragment", { kind: "input", fragmentId: "private", charCount: 14 }, "PRIVATE_CANARY");
+    expect(await queue.read()).toEqual([]);
+    now += 5000; outbox.configure(active);
+    now += 5000; stream.bind(crypto.randomUUID());
+    await vi.waitFor(async () => expect(await queue.read()).toHaveLength(1));
+    expect((await queue.read())[0]!.event).toMatchObject({ type: "diagnostic.collection", seq: 202,
+      data: { disabledAtMs, resumedAtMs: now - 5000, discardedCount: 202 } });
+    expect(JSON.stringify(await queue.read())).not.toContain("PRIVATE_CANARY");
+    outbox.configure(active);
+    expect(await queue.read()).toHaveLength(1);
   });
   it("gates disabled maintenance before taking a lock, still purges later expiry/peer rows and resets on policy changes", async () => {
     vi.useFakeTimers(); const now = Date.now();

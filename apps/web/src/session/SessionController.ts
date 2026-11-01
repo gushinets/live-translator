@@ -115,7 +115,7 @@ export class SessionController {
   recordCaptionRender(revision: number, blockCount: number): void {
     if (revision === this.renderedCaptionRevision) return;
     this.renderedCaptionRevision = revision;
-    observe(this.live.journal, "caption.render", { revision, blockCount });
+    observe(this.dialogueTranscript.revisionDiagnostics, "caption.render", { revision, blockCount });
   }
   private currentSession: TranslationSession;
   private live: LiveClient;

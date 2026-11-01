@@ -567,10 +567,8 @@ export class ProviderAccounting {
       this.diagnostics?.bind(c.conversationId, this.localId);
       return created;
     } catch (error) {
-      if (this.diagnostics) void this.scope.api.readAttempt(this.localId).then(
-        () => this.diagnostics?.bind(c.conversationId, this.localId), readError => this.diagnostics?.bind(c.conversationId,
-          readError instanceof AccountingRequestError && readError.status === 404 ? undefined : this.localId),
-      ).catch(() => undefined);
+      // Registration can arrive later; the report labels this provisional ID until then.
+      this.diagnostics?.bind(c.conversationId, this.localId);
       if (isDefinitiveNoProviderError(error)) {
         this.cancelled = true;
         await this.reporter?.noProvider();

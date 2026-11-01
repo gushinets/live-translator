@@ -28,6 +28,8 @@ interface Stream {
 /** Display-only transcript. Neither idle timers nor service Turn IDs define paragraphs. */
 export class DialogueTranscript {
   diagnostics: DiagnosticSink | undefined;
+  // Reset may replace the transport before React commits the cleared revision.
+  revisionDiagnostics: DiagnosticSink | undefined;
   revision = 0;
   blocks: readonly DialogueBlock[] = [];
   private history: DialogueBlock[] = [];
@@ -135,9 +137,9 @@ export class DialogueTranscript {
   clear(): void {
     this.history = [];
     this.streams = {};
-    this.blocks = [];
     this.outputs.clear();
     this.outputRuns.clear();
+    this.publish();
   }
 
   private publish(): void {
@@ -208,6 +210,7 @@ export class DialogueTranscript {
     const removed = this.blocks.filter(block => !after.has(block.id));
     if (changed.length || removed.length) {
       this.revision++;
+      this.revisionDiagnostics = this.diagnostics;
       for (const [removedBlock, values] of [[false, changed], [true, removed]] as const) for (const block of values)
         observe(this.diagnostics, "caption.block", { revision: this.revision, blockId: block.id, kind: block.kind,
           side: block.side, language: block.language, outputId: block.outputId, attribution: block.attribution,
