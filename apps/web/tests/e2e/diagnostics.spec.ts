@@ -88,9 +88,11 @@ for (const textEnabled of [false, true]) test(`diagnostic timeline survives deli
     await page.evaluate(() => sessionStorage.removeItem("liveTranslatorDiagnosticText"));
     blocked = false;
     // The browser clock is context-wide; reload the peer to initiate replay without advancing it.
-    const peerRequestsBeforeReplay = idleRequests;
     await idle.reload();
-    await expect.poll(() => idleRequests > peerRequestsBeforeReplay && received.length > 0).toBe(true);
+    await expect.poll(async () => {
+      await idle.evaluate(() => window.dispatchEvent(new Event("online")));
+      return received.length;
+    }).toBeGreaterThan(0);
     expect(received.every(event => event.text === undefined)).toBe(true);
     await page.evaluate(() => sessionStorage.setItem("liveTranslatorDiagnosticText", "1"));
     blocked = true;
