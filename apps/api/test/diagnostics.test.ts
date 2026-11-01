@@ -2,8 +2,9 @@ import { randomUUID } from "node:crypto";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
+import { DatabaseSync } from "node:sqlite";
 import request from "supertest";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { createApp } from "../src/app.js";
 import { UsageLedger } from "../src/accounting/UsageLedger.js";
 import { openUsageDatabase } from "../src/persistence/database.js";
@@ -12,13 +13,13 @@ import { buildDiagnosticReport, formatDiagnosticReport } from "../src/reports/di
 import type { DiagnosticEvent } from "../../../types/diagnostics.js";
 import { apiConfig } from "../src/config.js";
 
-const origin = "http://localhost:5173", resources: Array<() => void> = [];
-afterEach(() => { for (const close of resources.splice(0).reverse()) close(); });
+const origin = "http://localhost:5173", resources: Array<() => void | Promise<void>> = [];
+afterEach(async () => { for (const close of resources.splice(0).reverse()) await close(); });
 function fixture(options: ConstructorParameters<typeof DiagnosticJournal>[1] = {}) {
   const clock = { now: Date.now() };
   const db = openUsageDatabase(":memory:"); resources.push(() => db.close());
   const ledger = new UsageLedger(db, { now: () => clock.now });
-  const journal = new DiagnosticJournal(":memory:", { automatic: false, now: () => clock.now, ...options }); resources.push(() => journal.close());
+  const journal = new DiagnosticJournal(":memory:", { automatic: false, now: () => clock.now, ...options }); resources.push(async () => { await journal.flushServerEvents(); journal.close(); });
   const app = createApp({ ledger, diagnostics: journal, startWorker: false });
   const owner = randomUUID(), c = ledger.createConversation(owner, randomUUID(), "diagnostic-test");
   const id = randomUUID();
@@ -30,6 +31,47 @@ function fixture(options: ConstructorParameters<typeof DiagnosticJournal>[1] = {
   return { clock, db, ledger, journal, app, owner, c, id, event, post };
 }
 describe("conversation diagnostic ingestion", () => {
+  it("returns committed ledger results before diagnostic SQLite writes and preserves transition snapshots", async () => {
+    const f = fixture(); await f.journal.flushServerEvents();
+    const append = vi.spyOn(f.journal, "append"), before = f.clock.now;
+    const paused = f.ledger.pauseConversation(f.owner, f.c.id, f.c.version);
+    f.clock.now += 100; f.ledger.endConversation(f.owner, f.c.id, paused.version, "user_end");
+    expect(append).not.toHaveBeenCalled();
+    expect(f.ledger.getConversation(f.owner, f.c.id).status).toBe("ended");
+    await f.journal.flushServerEvents();
+    const records = f.journal.db.prepare("SELECT wall_ms,data_json FROM diagnostic_events WHERE type='server.conversation' ORDER BY seq").all();
+    expect(records.slice(-2).map(row => JSON.parse(String(row.data_json)))).toMatchObject([{ status: "paused" }, { status: "ended" }]);
+    expect(records.at(-2)!.wall_ms).toBe(before); expect(records.at(-1)!.wall_ms).toBe(before + 100);
+  });
+  it("bounds server observations and persists overflow counts on the affected stream", async () => {
+    const error = vi.fn(), f = fixture({ logger: { error } }); await f.journal.flushServerEvents();
+    for (let version = 1; version <= 1002; version++) f.journal.record(f.c, "server.conversation", { status: "active", version });
+    await f.journal.flushServerEvents();
+    const loss = f.journal.db.prepare("SELECT stream_id,data_json FROM diagnostic_events WHERE type='diagnostic.loss'").get()!;
+    expect(JSON.parse(String(loss.data_json))).toEqual({ reason: "queue_overflow", count: 2, affectedStreamId: loss.stream_id });
+    expect(error).toHaveBeenCalled();
+  });
+  it("does not wait for diagnostic locks and reports failed server observations after storage recovers", async () => {
+    const directory = mkdtempSync(join(tmpdir(), "diagnostic-lock-")); resources.push(() => rmSync(directory, { recursive: true, force: true }));
+    const path = join(directory, "events.sqlite"), journal = new DiagnosticJournal(path, { automatic: false, logger: { error() {} } }); resources.push(() => journal.close());
+    const locked = new DatabaseSync(path); resources.push(() => locked.close());
+    expect(journal.db.prepare("PRAGMA busy_timeout").get()!.timeout).toBe(0);
+    const conversation = { id: randomUUID(), anonymous_user_id: randomUUID(), created_at: Date.now() };
+    locked.exec("BEGIN IMMEDIATE"); journal.record(conversation, "server.conversation", { status: "active", version: 1 });
+    await journal.flushServerEvents(); locked.exec("COMMIT");
+    journal.record(conversation, "server.conversation", { status: "ended", version: 2 }); await journal.flushServerEvents();
+    const loss = journal.db.prepare("SELECT data_json FROM diagnostic_events WHERE type='diagnostic.loss'").get()!;
+    expect(JSON.parse(String(loss.data_json))).toMatchObject({ reason: "storage_unavailable", count: 1 });
+  });
+  it("marks missing and limited readable journals when listing text-mode candidates", async () => {
+    const f = fixture();
+    const missing = buildDiagnosticReport(f.db, f.journal.db, { from: f.c.created_at - 1, to: f.c.created_at + 1 });
+    expect(formatDiagnosticReport(missing, "text")).toContain(`INCOMPLETE: ${f.c.id}: journal_missing`);
+    await f.journal.flushServerEvents();
+    f.journal.db.prepare("UPDATE diagnostic_conversations SET limited=1 WHERE id=?").run(f.c.id);
+    const limited = buildDiagnosticReport(f.db, f.journal.db, { from: f.c.created_at - 1, to: f.c.created_at + 1 });
+    expect(formatDiagnosticReport(limited, "text")).toContain(`INCOMPLETE: ${f.c.id}: storage_limit_reached`);
+  });
   it("continues retention maintenance of an existing database while collection is disabled", async () => {
     const directory = mkdtempSync(join(tmpdir(), "diagnostics-disabled-")); resources.push(() => rmSync(directory, { recursive: true, force: true }));
     const f = fixture(), path = join(directory, "events.sqlite"), now = Date.now(); let clock = now - 31 * 86400000;
@@ -49,17 +91,18 @@ describe("conversation diagnostic ingestion", () => {
     expect(f.ledger.diagnosticJournal).toBeUndefined();
     await request(app).post(`/api/conversations/${f.c.id}/diagnostics`).set("Origin", origin).send({}).expect(404);
   });
-  it("observes committed cleanup rearming including its cause", () => {
+  it("observes committed cleanup rearming including its cause", async () => {
     const f = fixture();
     f.ledger.dispatchProviderAttempt(f.owner, f.id, f.c.version, randomUUID(), f.clock.now + 900000);
     f.ledger.recordProviderCreated(f.id, randomUUID()); f.ledger.requestCleanup(f.id, "abandoned_connect");
     f.ledger.recordCleanupFailure(f.id, "blocked_auth_config", "auth");
     f.ledger.rearmBlockedCleanup("credential_refresh");
+    await f.journal.flushServerEvents();
     const records = f.journal.db.prepare("SELECT data_json FROM diagnostic_events WHERE live_session_id=? ORDER BY seq").all(f.id).map(row => JSON.parse(String(row.data_json)));
     expect(records.at(-1)).toMatchObject({ phase: "rearmed", rearmCause: "credential_refresh" });
     expect(records.at(-1)).not.toHaveProperty("cleanupResult");
   });
-  it("limits an owner's aggregate browser traffic and a rotating-cookie network source, preserving server capacity", () => {
+  it("limits an owner's aggregate browser traffic and a rotating-cookie network source, preserving server capacity", async () => {
     const f = fixture({ maxBytes: 15000, conversationMaxBytes: 4000, logger: { error() {} } });
     const make = (owner: string) => f.ledger.createConversation(owner, randomUUID(), "quota-test");
     const send = (c: typeof f.c, seq: number, sourceKey?: string) => f.journal.append(c, [f.event(seq, { conversationId: c.id,
@@ -73,6 +116,7 @@ describe("conversation diagnostic ingestion", () => {
     for (let i = 1; i <= 3; i++) send(distinct[1]!, i, network);
     expect(() => send(distinct[1]!, 4, network)).toThrow("diagnostics_limit");
     f.journal.record(distinct[1]!, "server.conversation", { status: "ended", version: 2, reason: "user_end" });
+    await f.journal.flushServerEvents();
     expect(f.journal.db.prepare("SELECT 1 FROM diagnostic_events WHERE conversation_id=? AND source='server' AND json_extract(data_json,'$.status')='ended'").get(distinct[1]!.id)).toBeTruthy();
   });
   it("publishes capability, acknowledges only committed events, deduplicates and accepts out-of-order delivery", async () => {
@@ -85,7 +129,7 @@ describe("conversation diagnostic ingestion", () => {
     expect(f.ledger.getAttemptInternal(f.id).state).toBe("creating");
     expect(f.journal.db.prepare("SELECT owner FROM diagnostic_conversations WHERE id=?").get(f.c.id)!.owner).toBe(diagnosticOwnerId(f.owner));
   });
-  it.each([{ maxBytes: 10000, conversationMaxBytes: 20000 }, { maxBytes: 20000, conversationMaxBytes: 10000 }])("reserves lifecycle capacity when browser traffic reaches a journal or conversation limit: %j", limits => {
+  it.each([{ maxBytes: 10000, conversationMaxBytes: 20000 }, { maxBytes: 20000, conversationMaxBytes: 10000 }])("reserves lifecycle capacity when browser traffic reaches a journal or conversation limit: %j", async limits => {
     const journal = new DiagnosticJournal(":memory:", { ...limits, automatic: false, logger: { error() {} } }); resources.push(() => journal.close());
     const conversation = { id: randomUUID(), anonymous_user_id: randomUUID(), created_at: Date.now() }, streamId = randomUUID();
     let limited = false;
@@ -96,12 +140,14 @@ describe("conversation diagnostic ingestion", () => {
     }
     expect(limited).toBe(true);
     journal.record(conversation, "server.conversation", { status: "ended", version: 2, reason: "user_end" });
+    await journal.flushServerEvents();
     expect(journal.db.prepare("SELECT COUNT(*) AS n FROM diagnostic_events WHERE source='server'").get()!.n).toBe(1);
   });
-  it("keeps the final global reserve free after server events already occupy more than ten percent", () => {
+  it("keeps the final global reserve free after server events already occupy more than ten percent", async () => {
     const journal = new DiagnosticJournal(":memory:", { maxBytes: 10000, conversationMaxBytes: 20000, automatic: false, logger: { error() {} } }); resources.push(() => journal.close());
     const conversation = { id: randomUUID(), anonymous_user_id: randomUUID(), created_at: Date.now() }, streamId = randomUUID();
     for (let i = 0; i < 5; i++) journal.record(conversation, "server.conversation", { status: "active", version: 1 });
+    await journal.flushServerEvents();
     for (let seq = 1; seq < 100; seq++) {
       try { journal.append(conversation, [{ schemaVersion: 1, source: "browser", conversationId: conversation.id, streamId, seq,
         wallMs: Date.now(), monoMs: seq, type: "app.lifecycle", data: { phase: "start", generation: 1 } }]); }
@@ -109,6 +155,7 @@ describe("conversation diagnostic ingestion", () => {
     }
     expect(Number(journal.db.prepare("SELECT SUM(bytes) AS n FROM diagnostic_conversations").get()!.n)).toBeLessThanOrEqual(9000);
     journal.record(conversation, "server.conversation", { status: "ended", version: 2 });
+    await journal.flushServerEvents();
     expect(journal.db.prepare("SELECT COUNT(*) AS n FROM diagnostic_events WHERE source='server'").get()!.n).toBe(6);
   });
   it("rejects wrong owner/origin/attempt, server provenance and unknown fields without persisting a batch", async () => {
@@ -145,8 +192,9 @@ describe("conversation diagnostic ingestion", () => {
     await f.post(Array.from({ length: 101 }, () => event)).expect(413);
     await f.post(Array.from({ length: 100 }, () => ({ ...event, text: "x".repeat(500) }))).expect(413);
   });
-  it("emits committed watchdog expiry, never rolled-back transitions or observer failures into product results", () => {
+  it("emits committed watchdog expiry, never rolled-back transitions or observer failures into product results", async () => {
     const f = fixture();
+    await f.journal.flushServerEvents();
     const count = () => Number(f.journal.db.prepare("SELECT COUNT(*) AS n FROM diagnostic_events").get()!.n);
     const before = count();
     f.db.exec("CREATE TRIGGER reject_cleanup BEFORE UPDATE ON live_sessions BEGIN SELECT RAISE(ABORT,'test'); END;");
@@ -157,6 +205,7 @@ describe("conversation diagnostic ingestion", () => {
     f.ledger.pauseConversation(f.owner, f.c.id, f.c.version);
     f.clock.now += 300001;
     f.ledger.watchdog();
+    await f.journal.flushServerEvents();
     const phases = f.journal.db.prepare("SELECT data_json FROM diagnostic_events WHERE type='server.conversation' ORDER BY seq").all().map(r => JSON.parse(String(r.data_json)));
     expect(phases.at(-1)).toMatchObject({ status: "ended", reason: "background_timeout" });
     f.journal.db.close();

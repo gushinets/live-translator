@@ -24,7 +24,7 @@ export interface DiagnosticData {
   "audio.vad": { stage: "raw" | "reported"; active: boolean; atMs: number; rms: number; noiseFloor: number | null; enterThreshold: number; quietThreshold: number; quietStartedAtMs: number | null; tailStartedAtMs: number | null };
   "audio.level": { fromMs: number; toMs: number; samples: number; minRms: number; maxRms: number; meanRms: number; blocked: boolean };
   "transport.state": { kind: "peer" | "ice" | "gathering" | "channel"; state: DiagnosticTransportState };
-  "transport.command": { type: DiagnosticCommand; phase: "sent" | "send_failed" | "ack" | "timeout" | "rejected"; commandId?: string; promptId?: string };
+  "transport.command": { type: DiagnosticCommand; phase: "sent" | "send_failed" | "ack" | "timeout" | "rejected" | "cancelled"; commandId?: string; promptId?: string };
   "transport.event": { type: DiagnosticServerEvent; phase: "received" | "dropped"; reason?: "stale_generation" | "closing" | "awaiting_handoff" | "inactive" | "leftover_output" | "empty" | "setup_content"; fragmentId?: string; commandId?: string; charCount?: number };
   "transport.stats": { available: boolean; packetsSent: number | null; packetsReceived: number | null; packetsLost: number | null; bytesSent: number | null; bytesReceived: number | null; totalSamplesReceived: number | null; jitterBufferEmittedCount: number | null };
   "diagnostic.loss": { reason: "storage_unavailable" | "queue_overflow" | "expired" | "identity_lost" | "oversize" | "server_limit" | "invalid_event"; count: number; affectedStreamId?: string };

@@ -542,13 +542,15 @@ export class LiveClient {
 
     try {
       const sessionClosedPromise = this.getSessionClosedPromise();
-      channel.send(JSON.stringify({ type: "session.close" }));
+      try { channel.send(JSON.stringify({ type: "session.close" })); }
+      catch (error) { this.journal?.emit("transport.command", { type: "session.close", phase: "send_failed" }); throw error; }
       this.journal?.emit("transport.command", { type: "session.close", phase: "sent" });
 
       const result = await this.waitForSessionClosedOrTimeout(
         sessionClosedPromise,
         this.deps.closeTimeoutMs ?? this.deps.accounting?.closeTimeoutMs ?? SESSION_CLOSE_TIMEOUT_MS,
       );
+      if (!result.finalized) this.journal?.emit("transport.command", { type: "session.close", phase: "timeout" });
 
       this.closeResult = result;
       this.teardownTransportAndRelease();
@@ -1010,6 +1012,6 @@ export class LiveClient {
       client_event_id: eventId,
       message: error instanceof Error ? error.message : String(error),
       errorType: traceAckErrorType(error),
-    });
+    }, "local");
   }
 }

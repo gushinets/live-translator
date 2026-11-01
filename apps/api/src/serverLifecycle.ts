@@ -30,7 +30,8 @@ export function startApiServer(app: Express, options: { port: number; host?: str
     } else {
       let timer: ReturnType<typeof setTimeout> | undefined;
       try {
-        const tail = Promise.all([httpClosed, runtime?.waitForCreates() ?? Promise.resolve()]);
+        const tail = Promise.all([httpClosed, runtime?.waitForCreates() ?? Promise.resolve()])
+          .then(() => (app.locals.diagnostics as DiagnosticJournal | undefined)?.flushServerEvents());
         await Promise.race([tail, new Promise<never>((_resolve, reject) => {
           timer = setTimeout(() => reject(new Error("API shutdown deadline reached")), remaining);
         })]);

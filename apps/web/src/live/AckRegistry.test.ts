@@ -5,6 +5,15 @@ describe("AckRegistry", () => {
   afterEach(() => {
     vi.useRealTimers();
   });
+  it.each(["send", "teardown", "provider"])("distinguishes provider rejection from local %s", async cause => {
+    vi.useFakeTimers();
+    const registry = new AckRegistry(), emit = vi.fn(); registry.diagnostics = { emit };
+    const wait = registry.waitFor("event", 100); registry.setCommandType("event", "session.instructions.append");
+    if (cause === "teardown") registry.rejectAll(new Error("transport gone"));
+    else registry.fail({ client_event_id: "event", message: cause }, cause === "provider" ? "provider" : "local");
+    await expect(wait).rejects.toThrow(); await vi.advanceTimersByTimeAsync(200);
+    expect(emit).toHaveBeenCalledExactlyOnceWith("transport.command", { type: "session.instructions.append", commandId: "event", phase: cause === "provider" ? "rejected" : "cancelled" }, undefined);
+  });
 
   it("resolves only the matching client_event_id", async () => {
     const registry = new AckRegistry();

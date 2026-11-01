@@ -110,6 +110,17 @@ Snapshots and WebRTC counters are sampled every five seconds while connected;
 microphone levels are summarized once a second using the existing analyser.
 Server transitions are emitted only after ledger commit, including recovery and
 watchdog paths. Diagnostic writes never participate in financial transactions.
+Server observations are frozen at commit and queued separately (1000 events / 1 MiB).
+The writer yields between events and uses zero SQLite lock wait; ledger calls do not
+perform diagnostic SQLite writes inline. Overflow and failed writes produce scoped
+loss markers and a rate-limited dropped-event count. If too many distinct streams
+overflow simultaneously, sequence gaps and missing-journal warnings remain the
+evidence for losses whose marker could not be retained. Graceful shutdown drains
+this queue after provider results settle, within the existing shutdown deadline.
+Command `cancelled` means a local send/transport waiter was abandoned; `rejected`
+requires a correlated provider error. Close send failures and acknowledgement timeouts
+are separate events. Any microphone startup failure ends with `capture_failed` and
+releases acquired capture/analysis tracks, including a late permission result.
 
 ## Delivery, retention and failure checks
 

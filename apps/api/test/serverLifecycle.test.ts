@@ -10,9 +10,11 @@ import { boundOrphanCloser } from "../src/accounting/BoundedOrphanCloser.js";
 import type { CleanupOutcome, OrphanCloser } from "../src/accounting/CleanupWorker.js";
 import type { CleanupReason } from "../src/accounting/types.js";
 import { startApiServer } from "../src/serverLifecycle.js";
+import { DiagnosticJournal } from "../src/diagnostics/DiagnosticJournal.js";
 
 const databases: ReturnType<typeof openUsageDatabase>[] = [];
-afterEach(() => { for (const db of databases.splice(0)) if (db.isOpen) db.close(); });
+const journals: DiagnosticJournal[] = [];
+afterEach(() => { for (const db of databases.splice(0)) if (db.isOpen) db.close(); for (const journal of journals.splice(0)) journal.close(); });
 function fixture(now?: () => number) {
   const db = openUsageDatabase(":memory:"); databases.push(db);
   const ledger = new UsageLedger(db, { now }), owner = randomUUID(), c = ledger.createConversation(owner, randomUUID(), "test");
@@ -48,9 +50,16 @@ describe("bounded API shutdown ownership", () => {
   });
   it("keeps SQLite open until a late create result is durably classified", async () => {
     const f = fixture(); let finish!: (value: { session: { id: string }; transport: { type: "webrtc"; sdp: string } }) => void;
+    const journal = new DiagnosticJournal(":memory:", { automatic: false }); journals.push(journal); f.ledger.diagnosticJournal = journal;
+    let lateProviderObserved = false;
+    const closeJournal = journal.close.bind(journal);
+    vi.spyOn(journal, "close").mockImplementation(() => {
+      if (journal.db.isOpen) lateProviderObserved = Boolean(journal.db.prepare("SELECT 1 FROM diagnostic_events WHERE json_extract(data_json,'$.providerSessionId')='late-provider'").get());
+      closeJournal();
+    });
     const runtime = new LedgerRuntime(f.ledger, { startWorker: false,
       creator: () => new Promise(resolve => { finish = resolve; }) });
-    const app = express(); app.locals.ledgerRuntime = runtime;
+    const app = express(); app.locals.ledgerRuntime = runtime; app.locals.diagnostics = journal;
     const lifecycle = startApiServer(app, { port: 0, host: "127.0.0.1", drainMs: 0, timeoutMs: 1000 });
     await once(lifecycle.server, "listening");
 
@@ -76,6 +85,7 @@ describe("bounded API shutdown ownership", () => {
     await creation; await stopping;
     expect(persistedProviderId).toBe("late-provider");
     expect(f.ledger.db.isOpen).toBe(false);
+    expect(lateProviderObserved).toBe(true);
   });
 
   it("retries emergency provider-result persistence during the shutdown tail", async () => {

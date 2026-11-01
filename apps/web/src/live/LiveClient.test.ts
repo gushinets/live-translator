@@ -1486,11 +1486,11 @@ describe("LiveClient.close", () => {
     vi.restoreAllMocks();
   });
 
-  async function connectedClient() {
+  async function connectedClient(journal?: DiagnosticStream) {
     const peer = new FakePeerConnection();
     const { backend, releaseCalls } = makeFakeBackend();
     const client = new LiveClient({
-      backend,
+      backend, journal,
       peerFactory: () => peer as unknown as RTCPeerConnection,
       onRemoteStream: vi.fn(),
     });
@@ -1611,7 +1611,8 @@ describe("LiveClient.close", () => {
 
   it("finalizes as false after waiting 15 seconds without session.closed", async () => {
     vi.useFakeTimers();
-    const { client, peer, channel } = await connectedClient();
+    const emit = vi.fn();
+    const { client, peer, channel } = await connectedClient({ emit } as unknown as DiagnosticStream);
 
     const closePromise = client.close();
     const assertion = expect(closePromise).resolves.toMatchObject({
@@ -1621,6 +1622,7 @@ describe("LiveClient.close", () => {
     await assertion;
     expect(channel.closeCalls).toBe(1);
     expect(peer.closeCalls).toBe(1);
+    expect(emit).toHaveBeenCalledWith("transport.command", { type: "session.close", phase: "timeout" });
   });
 
   it("stops accepting new commands once close() has been called", async () => {
@@ -1728,7 +1730,8 @@ describe("LiveClient.close", () => {
   });
 
   it("still tears down the transport if sending session.close throws, and does not leave close() stuck on a rejected promise", async () => {
-    const { client, peer, channel } = await connectedClient();
+    const emit = vi.fn();
+    const { client, peer, channel } = await connectedClient({ emit } as unknown as DiagnosticStream);
     channel.send = () => {
       throw new Error("channel is not open");
     };
@@ -1739,6 +1742,7 @@ describe("LiveClient.close", () => {
     });
     expect(channel.closeCalls).toBe(1);
     expect(peer.closeCalls).toBe(1);
+    expect(emit).toHaveBeenCalledWith("transport.command", { type: "session.close", phase: "send_failed" });
 
     // A second call must return the cached result immediately, not the
     // same broken send attempt again.

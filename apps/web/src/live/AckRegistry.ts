@@ -97,12 +97,12 @@ export class AckRegistry {
     client_event_id?: string;
     message: string;
     errorType?: string;
-  }): void {
+  }, origin: "provider" | "local" = "provider"): void {
     if (event.client_event_id === undefined) return;
     const waiter = this.pending.get(event.client_event_id);
     if (waiter === undefined) return;
     this.pending.delete(event.client_event_id);
-    if (waiter.commandType) observe(this.diagnostics, "transport.command", { type: waiter.commandType, phase: "rejected", commandId: event.client_event_id });
+    if (waiter.commandType) observe(this.diagnostics, "transport.command", { type: waiter.commandType, phase: origin === "local" ? "cancelled" : "rejected", commandId: event.client_event_id });
     traceAckRegistry("ack.reject", {
       clientEventId: event.client_event_id,
       pendingCount: this.pending.size,
@@ -117,7 +117,7 @@ export class AckRegistry {
     const waiters = [...this.pending.entries()];
     this.pending.clear();
     for (const [clientEventId, waiter] of waiters) {
-      if (waiter.commandType) observe(this.diagnostics, "transport.command", { type: waiter.commandType, phase: "rejected", commandId: clientEventId });
+      if (waiter.commandType) observe(this.diagnostics, "transport.command", { type: waiter.commandType, phase: "cancelled", commandId: clientEventId });
       traceAckRegistry("ack.reject_all", {
         clientEventId,
         pendingCount: this.pending.size,

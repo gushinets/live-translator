@@ -8,6 +8,9 @@ import { transaction } from "../persistence/database.js";
 export const DIAGNOSTIC_RETENTION_MS = 30 * 86400000;
 export const DIAGNOSTIC_TEXT_RETENTION_MS = 7 * 86400000;
 export interface DiagnosticConversation { id: string; anonymous_user_id: string; created_at: number }
+type ServerLossReason = DiagnosticData["diagnostic.loss"]["reason"];
+interface ServerStream { id: string; seq: number; conversation: DiagnosticConversation; liveSessionId?: string; losses: Partial<Record<ServerLossReason, number>> }
+interface PendingServerEvent { stream: ServerStream; event: DiagnosticEvent; bytes: number }
 /** The current anonymous ID is also a bearer cookie: never copy it into logs or exports. */
 export function diagnosticOwnerId(owner: string): string { return `sha256:${createHash("sha256").update(owner).digest("hex")}`; }
 export class DiagnosticError extends Error {
@@ -17,14 +20,21 @@ export class DiagnosticError extends Error {
 /** Best effort, isolated from the financial ledger. A receipt is returned only after COMMIT. */
 export class DiagnosticJournal {
   readonly db: DatabaseSync;
-  private readonly serverStreams = new Map<string, { id: string; seq: number }>();
+  private readonly serverStreams = new Map<string, ServerStream>();
+  private readonly serverPending: PendingServerEvent[] = [];
+  private readonly serverLosses = new Set<ServerStream>();
+  private serverQueueBytes = 0;
+  private serverDropped = 0;
+  private serverWrite: ReturnType<typeof setImmediate> | undefined;
+  private serverDrain: Promise<void> | undefined;
+  private serverDrainDone: (() => void) | undefined;
   private timer: ReturnType<typeof setTimeout> | undefined;
   private lastWarningAt = -Infinity;
   constructor(path: string, readonly options: { textEnabled?: boolean; maxBytes?: number; conversationMaxBytes?: number; now?: () => number; automatic?: boolean; logger?: Pick<Console, "error"> } = {}) {
     if (path !== ":memory:") mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
     this.db = new DatabaseSync(path);
     try {
-      this.db.exec("PRAGMA busy_timeout=50; PRAGMA secure_delete=ON; PRAGMA auto_vacuum=INCREMENTAL; PRAGMA journal_mode=WAL; PRAGMA journal_size_limit=1048576; PRAGMA synchronous=NORMAL;");
+      this.db.exec("PRAGMA busy_timeout=0; PRAGMA secure_delete=ON; PRAGMA auto_vacuum=INCREMENTAL; PRAGMA journal_mode=WAL; PRAGMA journal_size_limit=1048576; PRAGMA synchronous=NORMAL;");
       const pageSize = Number(this.db.prepare("PRAGMA page_size").get()!.page_size);
       this.db.exec(`PRAGMA max_page_count=${Math.max(32, Math.floor((options.maxBytes ?? 1073741824) / pageSize))};`);
       this.db.exec(`
@@ -77,7 +87,8 @@ export class DiagnosticJournal {
   warn(): void {
     if (this.now() - this.lastWarningAt < 60000) return;
     this.lastWarningAt = this.now();
-    (this.options.logger ?? console).error("Conversation diagnostics incomplete: storage unavailable or limit reached");
+    if (this.serverDropped) (this.options.logger ?? console).error("Conversation diagnostics incomplete: storage unavailable or limit reached", { droppedServerEvents: this.serverDropped });
+    else (this.options.logger ?? console).error("Conversation diagnostics incomplete: storage unavailable or limit reached");
   }
   append(conversation: DiagnosticConversation, events: readonly DiagnosticEvent[], sourceKey?: string) {
     const now = this.now();
@@ -138,13 +149,68 @@ export class DiagnosticJournal {
   }
   record<K extends DiagnosticType>(conversation: DiagnosticConversation, type: K, data: DiagnosticData[K], liveSessionId?: string): void {
     try {
+      if (!this.db.isOpen) { this.warn(); return; }
       const key = `${conversation.id}:${liveSessionId ?? "conversation"}`;
       let stream = this.serverStreams.get(key);
-      if (!stream) { stream = { id: randomUUID(), seq: 0 }; this.serverStreams.set(key, stream); }
-      this.append(conversation, [{ schemaVersion: 1, source: "server", conversationId: conversation.id,
-        ...(liveSessionId ? { liveSessionId } : {}), streamId: stream.id, seq: ++stream.seq,
-        wallMs: this.now(), monoMs: performance.now(), type, data } as DiagnosticEvent]);
+      if (!stream) {
+        if (this.serverStreams.size >= 10000) this.serverStreams.delete(this.serverStreams.keys().next().value!);
+        stream = { id: randomUUID(), seq: 0, conversation: { id: conversation.id, anonymous_user_id: conversation.anonymous_user_id, created_at: conversation.created_at }, liveSessionId, losses: {} };
+        this.serverStreams.set(key, stream);
+      }
+      const event = this.serverEvent(stream, type, data), bytes = Buffer.byteLength(JSON.stringify(event), "utf8") + 256;
+      if (Object.keys(stream.losses).length && this.serverLosses.size < 1000) this.serverLosses.add(stream);
+      if (this.serverPending.length >= 1000 || this.serverQueueBytes + bytes > 1048576) this.noteServerLoss(stream, "queue_overflow");
+      else { this.serverPending.push({ stream, event, bytes }); this.serverQueueBytes += bytes; }
+      this.scheduleServerWrite();
     } catch { this.warn(); }
+  }
+  private serverEvent<K extends DiagnosticType>(stream: ServerStream, type: K, data: DiagnosticData[K]): DiagnosticEvent {
+    return { schemaVersion: 1, source: "server", conversationId: stream.conversation.id,
+      ...(stream.liveSessionId ? { liveSessionId: stream.liveSessionId } : {}), streamId: stream.id, seq: ++stream.seq,
+      wallMs: this.now(), monoMs: performance.now(), type, data: JSON.parse(JSON.stringify(data)) } as DiagnosticEvent;
+  }
+  private noteServerLoss(stream: ServerStream, reason: ServerLossReason): void {
+    this.serverDropped++;
+    if (this.serverLosses.has(stream) || this.serverLosses.size < 1000) {
+      stream.losses[reason] = (stream.losses[reason] ?? 0) + 1; this.serverLosses.add(stream);
+    }
+    this.warn();
+  }
+  private scheduleServerWrite(): void {
+    if (this.serverWrite || !this.db.isOpen) return;
+    // Ledger callbacks only enqueue immutable post-COMMIT snapshots; yield after each write.
+    this.serverWrite = setImmediate(() => {
+      this.serverWrite = undefined;
+      let next = this.serverPending.shift();
+      if (next) this.serverQueueBytes -= next.bytes;
+      else if (this.serverLosses.size) {
+        const stream = this.serverLosses.values().next().value!;
+        const [reason, count] = Object.entries(stream.losses)[0]! as [ServerLossReason, number];
+        delete stream.losses[reason]; if (!Object.keys(stream.losses).length) this.serverLosses.delete(stream);
+        next = { stream, bytes: 0, event: this.serverEvent(stream, "diagnostic.loss", { reason, count, affectedStreamId: stream.id }) };
+      }
+      if (next) {
+        try { this.append(next.stream.conversation, [next.event]); }
+        catch (error) {
+          if (next.event.type !== "diagnostic.loss") this.noteServerLoss(next.stream, error instanceof DiagnosticError && error.code === "diagnostics_limit" ? "server_limit" :
+            error instanceof DiagnosticError && error.code === "diagnostics_expired" ? "expired" : "storage_unavailable");
+          else {
+            const { reason, count } = next.event.data;
+            next.stream.losses[reason] = (next.stream.losses[reason] ?? 0) + count;
+            this.serverLosses.delete(next.stream);
+            this.warn(); // Retry a failed loss marker only when another observation arrives.
+          }
+        }
+      }
+      if (this.serverPending.length || this.serverLosses.size) this.scheduleServerWrite();
+      else { this.serverDrainDone?.(); this.serverDrain = undefined; this.serverDrainDone = undefined; }
+    });
+  }
+  flushServerEvents(): Promise<void> {
+    if (!this.serverPending.length && !this.serverLosses.size) return Promise.resolve();
+    this.serverDrain ??= new Promise(resolve => { this.serverDrainDone = resolve; });
+    this.scheduleServerWrite();
+    return this.serverDrain;
   }
   prune(): boolean {
     const now = this.now();
@@ -162,5 +228,13 @@ export class DiagnosticJournal {
     }
     return Boolean(this.db.prepare("SELECT 1 FROM diagnostic_conversations c WHERE (c.created_at<=? AND EXISTS(SELECT 1 FROM diagnostic_text t WHERE t.conversation_id=c.id)) OR c.created_at<=? LIMIT 1").get(now - DIAGNOSTIC_TEXT_RETENTION_MS, now - DIAGNOSTIC_RETENTION_MS));
   }
-  close(): void { if (this.timer) clearTimeout(this.timer); if (this.db.isOpen) { try { this.prune(); } finally { this.db.close(); } } }
+  close(): void {
+    if (this.timer) clearTimeout(this.timer);
+    if (this.serverWrite) clearImmediate(this.serverWrite); this.serverWrite = undefined;
+    this.serverDropped += this.serverPending.length;
+    if (this.serverPending.length || this.serverLosses.size) this.warn();
+    this.serverPending.length = 0; this.serverQueueBytes = 0; this.serverLosses.clear(); this.serverStreams.clear();
+    this.serverDrainDone?.(); this.serverDrain = undefined; this.serverDrainDone = undefined;
+    if (this.db.isOpen) { try { this.prune(); } finally { this.db.close(); } }
+  }
 }

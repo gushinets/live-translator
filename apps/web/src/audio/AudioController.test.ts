@@ -160,6 +160,25 @@ describe("AudioController with explicit direct playback", () => {
     const constraints = getUserMedia.mock.calls[0]?.[0] as MediaStreamConstraints;
     expect(constraints.audio).not.toHaveProperty("autoGainControl");
   });
+  it.each(["resume", "audio_less", "ended", "source"])("records a terminal microphone startup failure and releases tracks: %s", async failure => {
+    const emit = vi.fn(); controller.diagnostics = { emit };
+    if (failure === "resume") audioContext.resume.mockRejectedValueOnce(new Error("resume failed"));
+    if (failure === "ended") track.readyState = "ended";
+    if (failure === "audio_less") getUserMedia.mockResolvedValueOnce({ getAudioTracks: () => [], getTracks: () => [track] } as unknown as MediaStream);
+    if (failure === "source") vi.spyOn(audioContext, "createMediaStreamSource").mockImplementationOnce(() => { throw new Error("source failed"); });
+    await expect(controller.startCapture()).rejects.toThrow();
+    expect(emit).toHaveBeenCalledWith("audio.state", { phase: "capture_failed" }, undefined);
+    expect(emit.mock.calls.some(([, data]) => data.phase === "capture_ready")).toBe(false);
+    expect(track.stop).toHaveBeenCalledOnce(); expect(controller.getCaptureStream()).toBeNull();
+  });
+  it("releases a permission result arriving after AudioContext resume already failed", async () => {
+    let resolve!: (stream: MediaStream) => void;
+    getUserMedia.mockImplementationOnce(() => new Promise<MediaStream>(ok => { resolve = ok; }));
+    audioContext.resume.mockRejectedValueOnce(new Error("resume failed"));
+    await expect(controller.startCapture()).rejects.toThrow("resume failed");
+    resolve(fakeStream(track)); await Promise.resolve();
+    expect(track.stop).toHaveBeenCalledOnce(); expect(controller.getCaptureStream()).toBeNull();
+  });
 
   it("records only non-content microphone settings diagnostics", async () => {
     await controller.startCapture();

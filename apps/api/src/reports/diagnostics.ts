@@ -35,6 +35,10 @@ export function buildDiagnosticReport(ledger: DatabaseSync, diagnostics: Databas
       journalAvailable: Boolean(summary), limited: summary?.limited === 1 };
   });
   const warnings: string[] = diagnostics ? [] : ["journal_unavailable"];
+  for (const candidate of candidates) {
+    if (!candidate.journalAvailable) warnings.push(`${candidate.conversationId}: journal_missing`);
+    if (candidate.limited) warnings.push(`${candidate.conversationId}: storage_limit_reached`);
+  }
   if (!selected) return { schemaVersion: 1, from, to, candidates, candidatesTruncated: rows.length > 1000, warnings };
   const events: Array<DiagnosticEvent & { receivedAt: number; estimatedAt: number; uncertaintyMs: number | null; relativeMs: number; textStatus: "available" | "expired_or_missing" | "not_recorded" }> = [];
   for (const candidate of candidates) {

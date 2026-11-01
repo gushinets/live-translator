@@ -240,63 +240,64 @@ export class AudioController {
       throw new Error("Microphone capture has already started");
     }
 
-    const diagnostics = this.diagnostics, context = this.ensureAudioContext();
+    const diagnostics = this.diagnostics;
     observe(diagnostics, "audio.state", { phase: "capture_requested" });
-    const resumeStarted = context.resume();
-
-    let stream: MediaStream;
+    let stream: MediaStream | null = null, analysisStream: MediaStream | null = null, micSource: MediaStreamAudioSourceNode | null = null;
+    let failed = false;
     try {
-      stream = await this.getUserMedia({
+      const context = this.ensureAudioContext(), resumeStarted = context.resume();
+      void resumeStarted.catch(() => undefined);
+      const mediaStarted = this.getUserMedia({
         audio: {
           echoCancellation: true,
           noiseSuppression: false,
         },
       });
+      void mediaStarted.then(value => { stream = value; if (failed) stopTracks(value); }, () => undefined)
+        .catch(() => console.error("Microphone startup cleanup incomplete"));
+      const [, captured] = await Promise.all([resumeStarted, mediaStarted]);
+      stream = captured;
+
+      const track = stream.getAudioTracks()[0];
+      if (track === undefined) throw new Error("Microphone stream has no audio track");
+      if (track.readyState !== "live") throw new Error(`Microphone track is not live (readyState "${track.readyState}")`);
+
+      analysisStream = cloneStream(stream);
+      micSource = context.createMediaStreamSource(analysisStream);
+      const micAnalyser = context.createAnalyser();
+      micSource.connect(micAnalyser);
+
+      track.addEventListener("ended", this.handleCaptureEnded);
+      track.addEventListener("mute", this.handleCaptureMute);
+      track.addEventListener("unmute", this.handleCaptureUnmute);
+      this.captureStream = stream;
+      this.captureTrack = track;
+      this.micAnalysisStream = analysisStream;
+      this.micSource = micSource;
+      this.micAnalyser = micAnalyser;
+      this.microphoneSettings = readMicrophoneSettings(track);
+      this.captureEnabled = true;
+      this.applyCaptureGate();
+      console.info("Microphone track settings", this.microphoneSettings);
+      this.syncSampler();
+      observe(diagnostics, "audio.state", { phase: "capture_ready", ...this.microphoneSettings });
     } catch (error) {
+      failed = true;
       observe(diagnostics, "audio.state", { phase: "capture_failed" });
-      console.error("getUserMedia failed", {
-        error,
-        constraints: { echoCancellation: true, noiseSuppression: false },
-      });
+      try {
+        if (stream && this.captureStream === stream && this.captureTrack && this.micSource) this.stopCapture();
+        else {
+          for (const track of stream?.getAudioTracks() ?? []) {
+            track.removeEventListener("ended", this.handleCaptureEnded);
+            track.removeEventListener("mute", this.handleCaptureMute);
+            track.removeEventListener("unmute", this.handleCaptureUnmute);
+          }
+          micSource?.disconnect(); stopTracks(analysisStream); stopTracks(stream);
+        }
+      } catch { console.error("Microphone startup cleanup incomplete"); }
+      console.error("Microphone capture failed", { error });
       throw error;
     }
-
-    await resumeStarted;
-
-    const track = stream.getAudioTracks()[0];
-    if (track === undefined) {
-      for (const existing of stream.getTracks()) {
-        existing.stop();
-      }
-      throw new Error("Microphone stream has no audio track");
-    }
-    track.addEventListener("ended", this.handleCaptureEnded);
-    track.addEventListener("mute", this.handleCaptureMute);
-    track.addEventListener("unmute", this.handleCaptureUnmute);
-    if (track.readyState !== "live") {
-      track.removeEventListener("ended", this.handleCaptureEnded);
-      for (const existing of stream.getTracks()) {
-        existing.stop();
-      }
-      throw new Error(`Microphone track is not live (readyState "${track.readyState}")`);
-    }
-
-    const analysisStream = cloneStream(stream);
-    const micSource = context.createMediaStreamSource(analysisStream);
-    const micAnalyser = context.createAnalyser();
-    micSource.connect(micAnalyser);
-
-    this.captureStream = stream;
-    this.captureTrack = track;
-    this.micAnalysisStream = analysisStream;
-    this.micSource = micSource;
-    this.micAnalyser = micAnalyser;
-    this.microphoneSettings = readMicrophoneSettings(track);
-    observe(diagnostics, "audio.state", { phase: "capture_ready", ...this.microphoneSettings });
-    this.captureEnabled = true;
-    this.applyCaptureGate();
-    console.info("Microphone track settings", this.microphoneSettings);
-    this.syncSampler();
   }
 
   stopCapture(): void {
