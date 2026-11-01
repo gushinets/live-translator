@@ -105,6 +105,7 @@ export interface SessionControllerDeps {
  */
 export class SessionController {
   private diagnosticWaits = new Map<string, string>();
+  private diagnosticPendingRoutes = { input: new Set<string>(), output: new Set<string>() };
   private lastInputAt: number | null = null;
   private lastOutputAt: number | null = null;
   private lastPcmAt: number | null = null;
@@ -1340,6 +1341,8 @@ export class SessionController {
     this.audio.diagnostics = live.journal;
     this.attribution.diagnostics = live.journal;
     this.dialogueTranscript.diagnostics = live.journal;
+    this.sourceRouter.diagnostics = this.outputRouter.diagnostics = live.journal;
+    this.diagnosticPendingRoutes = { input: new Set<string>(), output: new Set<string>() };
     live.onDiagnosticTick = () => {
       if (this.live !== live || this.sessionGeneration !== generation) return;
       const track = this.audio.getCaptureStream()?.getAudioTracks()[0];
@@ -1475,6 +1478,12 @@ export class SessionController {
   }
 
   private observeTranscriptRoute(kind: "input" | "output", fragments: readonly TranscriptFragment[], pending: boolean, side?: Side): void {
+    if (!this.live.journal || this.live.journal.enabled === false) return;
+    if (pending) {
+      const previous = this.diagnosticPendingRoutes[kind];
+      this.diagnosticPendingRoutes[kind] = new Set(fragments.map(part => part.id));
+      fragments = fragments.filter(part => !previous.has(part.id));
+    }
     for (let offset = 0; offset < fragments.length; offset += 128) observe(this.live.journal, "transcript.route", {
       kind, fragmentIds: fragments.slice(offset, offset + 128).map(part => part.id), pending, side,
       language: side ? this.languages[side] : undefined,
@@ -1483,7 +1492,7 @@ export class SessionController {
 
   private routeSource(groups: RoutedTranscript[], considerCompletion = true): void {
     for (const group of groups) this.observeTranscriptRoute("input", group.fragments, false, group.side);
-    if (this.sourceRouter.hasPending) this.observeTranscriptRoute("input", this.sourceRouter.pendingFragments, true);
+    this.observeTranscriptRoute("input", this.sourceRouter.pendingFragments, true);
     const updatingSource = groups.length > 0 || this.sourceRouter.hasPending;
     this.sourceUpdateInProgress = updatingSource;
     try {
@@ -1646,7 +1655,7 @@ export class SessionController {
 
   private routeOutput(groups: RoutedTranscript[], considerCompletion = true): void {
     for (const group of groups) this.observeTranscriptRoute("output", group.fragments, false, group.side);
-    if (this.outputRouter.hasPending) this.observeTranscriptRoute("output", this.outputRouter.pendingFragments, true);
+    this.observeTranscriptRoute("output", this.outputRouter.pendingFragments, true);
     // Includes timer and lifecycle flushes, not only newly received deltas.
     this.expireOutputDeadlines(Date.now(), false);
     for (const { side, fragments } of groups) {

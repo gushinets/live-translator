@@ -175,7 +175,9 @@ export class UsageLedger {
       const dispatchedAt = this.now();
       this.updateAttempt(id, { provider_request_dispatched_at: dispatchedAt, lease_id: leaseId, lease_expires_at: leaseExpiresAt,
         pricing_policy_version: assignPricingPolicyVersion(s.model, dispatchedAt, this.pricingPolicies) });
-      return this.attempt(id);
+      const dispatched = this.attempt(id);
+      this.observeAttempt(dispatched, "dispatched");
+      return dispatched;
     });
   }
   recordProviderCreated(id: string, providerId: string, expiresAt?: number): SessionRow {

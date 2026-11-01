@@ -16,6 +16,7 @@ export interface DiagnosticData {
   "turn.wait": { turnId: string; decision: "continue" | "complete" | "fail-retry"; blockedBy?: "unattributed_playback" | "queued_audio"; retryAtMs?: number; sourceIdle: boolean; audioStarted: boolean; playbackIdle: boolean; captionIdle: boolean; hasOutputText: boolean; sourceIdleAtMs?: number; playbackIdleAtMs?: number; lastOutputActivityAtMs?: number };
   "turn.timer": { timer: "completion" | "caption" | "max_source" | "no_output"; phase: "armed" | "fired" | "cleared"; deadlineAtMs?: number; turnId?: string };
   "transcript.fragment": { kind: "input" | "output"; fragmentId: string; charCount: number; startMs?: number; endMs?: number };
+  "transcript.split": { parentFragmentId: string; headFragmentId: string; tailFragmentId: string; splitOffset: number; charCount: number };
   "transcript.route": { kind: "input" | "output"; fragmentIds: string[]; side?: DiagnosticSide; language?: string; pending: boolean };
   "attribution.decision": { generation: string; kind: "text" | "pcm" | "decision" | "revoked" | "deadline"; atMs: number; outputId?: string; sourceId?: string; revision?: number; candidateIds?: string[]; candidatesTruncated?: boolean; compatibleOutput?: boolean; firstReceivedAtMs?: number; matchedAtMs?: number; deadlineAtMs?: number; played?: boolean; basis?: "isolated_episode" | "uncertain" };
   "caption.block": { revision: number; blockId: string; kind: "input" | "output"; side?: DiagnosticSide; language?: string; outputId?: string; attribution?: "matched" | "unattributed"; charCount: number; removed: boolean };
@@ -30,7 +31,7 @@ export interface DiagnosticData {
   "diagnostic.loss": { reason: "storage_unavailable" | "queue_overflow" | "expired" | "identity_lost" | "oversize" | "server_limit" | "invalid_event"; count: number; affectedStreamId?: string };
   "diagnostic.clock": { offsetMs: number; uncertaintyMs: number };
   "server.conversation": { status: "active" | "paused" | "resuming" | "ended"; version: number; reason?: DiagnosticEndReason };
-  "server.attempt": { state: "creating" | "active" | "closing" | "closed" | "failed" | "unknown"; generation: number; phase: "registered" | "updated" | "rearmed"; rearmCause?: "startup" | "config_reload" | "credential_refresh" | "operator_retry"; cleanupReason?: DiagnosticCleanupReason; cleanupExhausted?: boolean; cleanupResult?: "closed_observed" | "terminal_not_live" | "retryable_error" | "blocked_auth_config"; resumeOutcome?: "pending" | "committed" | "aborted" | "expired"; providerSessionId?: string; reason?: DiagnosticEndReason };
+  "server.attempt": { state: "creating" | "active" | "closing" | "closed" | "failed" | "unknown"; generation: number; phase: "registered" | "dispatched" | "updated" | "rearmed"; rearmCause?: "startup" | "config_reload" | "credential_refresh" | "operator_retry"; cleanupReason?: DiagnosticCleanupReason; cleanupExhausted?: boolean; cleanupResult?: "closed_observed" | "terminal_not_live" | "retryable_error" | "blocked_auth_config"; resumeOutcome?: "pending" | "committed" | "aborted" | "expired"; providerSessionId?: string; reason?: DiagnosticEndReason };
 }
 export type DiagnosticType = keyof DiagnosticData;
 export type DiagnosticEvent<K extends DiagnosticType = DiagnosticType> = K extends DiagnosticType ? {

@@ -31,6 +31,31 @@ function fixture(options: ConstructorParameters<typeof DiagnosticJournal>[1] = {
   return { clock, db, ledger, journal, app, owner, c, id, event, post };
 }
 describe("conversation diagnostic ingestion", () => {
+  it("records committed provider dispatch without a creation result and discards rolled-back dispatch", async () => {
+    const f = fixture();
+    f.db.exec("CREATE TRIGGER reject_dispatch BEFORE UPDATE OF provider_request_dispatched_at ON live_sessions BEGIN SELECT RAISE(ABORT,'test rollback'); END");
+    expect(() => f.ledger.dispatchProviderAttempt(f.owner, f.id, f.c.version, randomUUID(), f.clock.now + 900000)).toThrow("test rollback");
+    await f.journal.flushServerEvents();
+    expect(f.journal.db.prepare("SELECT 1 FROM diagnostic_events WHERE json_extract(data_json,'$.phase')='dispatched'").get()).toBeUndefined();
+    f.db.exec("DROP TRIGGER reject_dispatch");
+    f.ledger.dispatchProviderAttempt(f.owner, f.id, f.c.version, randomUUID(), f.clock.now + 900000);
+    await f.journal.flushServerEvents();
+    const report = buildDiagnosticReport(f.db, f.journal.db, { conversationId: f.c.id });
+    expect(report.events!.filter(event => event.type === "server.attempt").at(-1)).toMatchObject({ liveSessionId: f.id, data: { state: "creating", phase: "dispatched" } });
+    expect(f.ledger.getAttemptInternal(f.id).openai_session_id).toBeNull();
+  });
+  it("shows recorded losses and no-output timeouts in search-only text and JSONL reports", () => {
+    const f = fixture(), first = f.event();
+    f.journal.append(f.c, [
+      { ...first, type: "diagnostic.loss", data: { reason: "queue_overflow", count: 4 } },
+      { ...first, seq: 2, type: "turn.timer", data: { timer: "no_output", phase: "fired" } },
+    ]);
+    const report = buildDiagnosticReport(f.db, f.journal.db, { from: f.c.created_at, to: f.clock.now });
+    expect(report.candidates[0]).toMatchObject({ errors: 2, lossEvents: 1, noOutputTimeouts: 1 });
+    expect(report.warnings).toContain(`${f.c.id}: events_lost`);
+    expect(formatDiagnosticReport(report, "text")).toContain("loss_events=1 no_output_timeouts=1");
+    expect(JSON.parse(formatDiagnosticReport(report, "jsonl").trim()).warnings).toContain(`${f.c.id}: events_lost`);
+  });
   it("returns committed ledger results before diagnostic SQLite writes and preserves transition snapshots", async () => {
     const f = fixture(); await f.journal.flushServerEvents();
     const append = vi.spyOn(f.journal, "append"), before = f.clock.now;

@@ -93,6 +93,17 @@ with half-roundtrip uncertainty. The report estimates cross-stream ordering and
 uses monotonic deltas within a stream; it labels an uncalibrated browser clock.
 Do not treat provider audio timestamps as wall time or transcript packets as turns.
 
+Pending `transcript.route` events contain newly pending fragment IDs; the resolved
+route lists all of its fragments. `transcript.split` links each head/tail to its
+parent and the split offset in UTF-16 code units. Splitting preserves the parent
+packet's audio timestamps; it does not infer timing inside the packet.
+
+Search candidates include `lossEvents` and `noOutputTimeouts` (`null` when the
+journal is unavailable). Both contribute to the diagnostic error count; losses
+also produce an incompleteness warning. A no-output deadline is an observed
+application timeout, not proof of a provider fault. `server.attempt` with
+`phase: dispatched` confirms committed provider dispatch even without a result.
+
 Look for the last confirmed stage:
 
 1. `audio.level`, raw/reported `audio.vad`, `capture_gate`, `playback_input`.

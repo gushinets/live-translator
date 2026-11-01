@@ -1,4 +1,5 @@
 import { eld } from "eld/extrasmall";
+import { observe, type DiagnosticSink } from "../diagnostics/observe";
 import { isSentenceComplete, splitSentences } from "./sentenceBoundaries";
 import type { ConversationLanguages } from "../side/SideResolver";
 import type { Side } from "./Turn";
@@ -12,6 +13,7 @@ export interface RoutedTranscript {
 
 /** Session-local language evidence. Never concatenates candidates with a previous speaker's text. */
 export class TranscriptRouter {
+  diagnostics: DiagnosticSink | undefined;
   private pending: TranscriptFragment[] = [];
   private readonly detector = eld.newInstance();
   private languages?: ConversationLanguages;
@@ -127,6 +129,8 @@ export class TranscriptRouter {
         // inventing sub-packet timing when a packet contains two speakers' sentences.
         fragments.push({ ...part, id: part.id + ":head", text: part.text.slice(0, length) });
         pending.push({ ...part, id: part.id + ":tail", text: part.text.slice(length) });
+        observe(this.diagnostics, "transcript.split", { parentFragmentId: part.id, headFragmentId: part.id + ":head",
+          tailFragmentId: part.id + ":tail", splitOffset: length, charCount: part.text.length });
         length = 0;
       } else pending.push(part);
     }

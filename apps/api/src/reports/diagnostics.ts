@@ -24,20 +24,28 @@ export function buildDiagnosticReport(ledger: DatabaseSync, diagnostics: Databas
     const summary = diagnostics?.prepare("SELECT * FROM diagnostic_conversations WHERE id=?").get(String(c.id));
     const builds = diagnostics?.prepare("SELECT DISTINCT client_build_id FROM diagnostic_events WHERE conversation_id=? AND client_build_id IS NOT NULL").all(String(c.id)).map(r => r.client_build_id) ?? [];
     const languages = diagnostics?.prepare("SELECT DISTINCT json_extract(data_json,'$.language') AS language FROM diagnostic_events WHERE conversation_id=? AND type='transcript.route' AND json_extract(data_json,'$.language') IS NOT NULL").all(String(c.id)).map(r => r.language) ?? [];
-    const errors = diagnostics ? Number(diagnostics.prepare(`SELECT COUNT(*) AS n FROM diagnostic_events WHERE conversation_id=? AND
-      ((type='transport.event' AND json_extract(data_json,'$.type') IN ('error','invalid')) OR
+    const issues = diagnostics?.prepare(`SELECT COALESCE(SUM(CASE WHEN
+      (type='transport.event' AND json_extract(data_json,'$.type') IN ('error','invalid')) OR
        (type='audio.state' AND json_extract(data_json,'$.phase') IN ('capture_failed','buffer_error','decoder_error','play_failed')) OR
-       (type='app.state' AND json_extract(data_json,'$.to')='error'))`).get(String(c.id))!.n) : null;
+       (type='app.state' AND json_extract(data_json,'$.to')='error') OR type='diagnostic.loss' OR
+       (type='turn.timer' AND json_extract(data_json,'$.timer')='no_output' AND json_extract(data_json,'$.phase')='fired')
+       THEN 1 ELSE 0 END),0) AS errors,
+       COALESCE(SUM(type='diagnostic.loss'),0) AS loss_events,
+       COALESCE(SUM(type='turn.timer' AND json_extract(data_json,'$.timer')='no_output' AND json_extract(data_json,'$.phase')='fired'),0) AS no_output_timeouts
+       FROM diagnostic_events WHERE conversation_id=?`).get(String(c.id));
+    const errors = issues ? Number(issues.errors) : null, lossEvents = issues ? Number(issues.loss_events) : null,
+      noOutputTimeouts = issues ? Number(issues.no_output_timeouts) : null;
     const hasText = now < Number(c.created_at) + DIAGNOSTIC_TEXT_RETENTION_MS && Boolean(diagnostics?.prepare("SELECT 1 FROM diagnostic_text WHERE conversation_id=? LIMIT 1").get(String(c.id)));
     return { conversationId: String(c.id), owner: diagnosticOwnerId(String(c.anonymous_user_id)), startedAt: Number(c.created_at),
       endedAt: c.ended_at === null ? null : Number(c.ended_at), durationMs: c.ended_at === null ? null : Number(c.ended_at) - Number(c.created_at),
-      status: String(c.status), attempts: Number(c.attempts), languages, builds, errors, hasText,
+      status: String(c.status), attempts: Number(c.attempts), languages, builds, errors, lossEvents, noOutputTimeouts, hasText,
       journalAvailable: Boolean(summary), limited: summary?.limited === 1 };
   });
   const warnings: string[] = diagnostics ? [] : ["journal_unavailable"];
   for (const candidate of candidates) {
     if (!candidate.journalAvailable) warnings.push(`${candidate.conversationId}: journal_missing`);
     if (candidate.limited) warnings.push(`${candidate.conversationId}: storage_limit_reached`);
+    if (candidate.lossEvents) warnings.push(`${candidate.conversationId}: events_lost`);
   }
   if (!selected) return { schemaVersion: 1, from, to, candidates, candidatesTruncated: rows.length > 1000, warnings };
   const events: Array<DiagnosticEvent & { receivedAt: number; estimatedAt: number; uncertaintyMs: number | null; relativeMs: number; textStatus: "available" | "expired_or_missing" | "not_recorded" }> = [];
@@ -92,7 +100,7 @@ export function formatDiagnosticReport(report: ReturnType<typeof buildDiagnostic
     const { events, ...summary } = report;
     return [JSON.stringify({ kind: "summary", ...summary }), ...(events ?? []).map(event => JSON.stringify(event))].join("\n") + "\n";
   }
-  const lines = report.candidates.map(c => `${c.conversationId} ${new Date(c.startedAt).toISOString()} duration=${c.durationMs === null ? "unknown" : `${c.durationMs}ms`} status=${c.status} owner=${c.owner} languages=${c.languages.join(",") || "unknown"} builds=${c.builds.join(",") || "unknown"} connections=${c.attempts} errors=${c.errors ?? "unknown"} text=${c.hasText}`);
+  const lines = report.candidates.map(c => `${c.conversationId} ${new Date(c.startedAt).toISOString()} duration=${c.durationMs === null ? "unknown" : `${c.durationMs}ms`} status=${c.status} owner=${c.owner} languages=${c.languages.join(",") || "unknown"} builds=${c.builds.join(",") || "unknown"} connections=${c.attempts} errors=${c.errors ?? "unknown"} loss_events=${c.lossEvents ?? "unknown"} no_output_timeouts=${c.noOutputTimeouts ?? "unknown"} text=${c.hasText}`);
   for (const warning of report.warnings ?? []) lines.push(`INCOMPLETE: ${warning}`);
   if (report.candidatesTruncated) lines.push("INCOMPLETE: candidate_limit_1000; narrow the time window");
   if (report.events?.length) lines.push("Times are estimates across streams; seq is authoritative within each stream. Browser playback does not prove physical audibility.");

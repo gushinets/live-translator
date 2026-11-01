@@ -343,15 +343,33 @@ describe("conversation diagnostic observations", () => {
     const live = Object.assign(new FakeLive(), { journal: { emit } });
     const { controller } = createController({ live });
     await controller.startWithLanguages({ A: "en", B: "es" });
-    for (let index = 0; index < 140; index++) live.emit({ type: kind === "input" ? "session.input_transcript.delta" : "session.output_transcript.delta", delta: "0" });
+    for (let index = 0; index < 512; index++) live.emit({ type: kind === "input" ? "session.input_transcript.delta" : "session.output_transcript.delta", delta: "0" });
     const fragments = emit.mock.calls.filter(([type]) => type === "transcript.fragment").map(([, data]) => (data as { fragmentId: string }).fragmentId);
     const routedIds = (pending: boolean) => emit.mock.calls.filter(([type, data]) => type === "transcript.route" && (data as { pending: boolean }).pending === pending)
       .flatMap(([, data]) => (data as { fragmentIds: string[] }).fragmentIds);
-    expect(fragments).toHaveLength(140);
-    expect(new Set(routedIds(true))).toEqual(new Set(fragments));
+    expect(fragments).toHaveLength(512);
+    expect(new Set(routedIds(true))).toEqual(new Set(fragments.slice(0, -1)));
+    expect(routedIds(true)).toHaveLength(511);
     await vi.advanceTimersByTimeAsync(runtime.captionIdleMs + 1);
     expect(new Set(routedIds(false))).toEqual(new Set(fragments));
     expect(emit.mock.calls.filter(([type]) => type === "transcript.route").every(([, data]) => (data as { fragmentIds: string[] }).fragmentIds.length <= 128)).toBe(true);
+    const envelope = { schemaVersion: 1, source: "browser", conversationId: crypto.randomUUID(), liveSessionId: crypto.randomUUID(), streamId: crypto.randomUUID(),
+      seq: 1000, wallMs: Date.now(), monoMs: performance.now(), clientBuildId: "offline-budget-test" };
+    const queuedBytes = emit.mock.calls.reduce((bytes, [type, data]) => bytes + new TextEncoder().encode(JSON.stringify({ ...envelope, type, data })).byteLength + 128, 0);
+    expect(queuedBytes).toBeLessThan(5 * 1024 * 1024);
+  });
+  it.each(["input", "output"] as const)("maps split %s packet parts to their original fragment and offsets", async kind => {
+    vi.useFakeTimers();
+    const emit = vi.fn<(type: DiagnosticType, data: unknown, text?: string) => void>();
+    const live = Object.assign(new FakeLive(), { journal: { emit } });
+    const { controller } = createController({ live });
+    await controller.startWithLanguages({ A: "en", B: "es" });
+    const parent = crypto.randomUUID();
+    live.emit({ type: kind === "input" ? "session.input_transcript.delta" : "session.output_transcript.delta", delta: "No. Sí.", diagnosticId: parent });
+    await vi.advanceTimersByTimeAsync(runtime.captionIdleMs + 1);
+    expect(emit).toHaveBeenCalledWith("transcript.split", { parentFragmentId: parent, headFragmentId: parent + ":head", tailFragmentId: parent + ":tail", splitOffset: 4, charCount: 7 }, undefined);
+    const routes = emit.mock.calls.filter(([type]) => type === "transcript.route").flatMap(([, data]) => (data as { fragmentIds: string[] }).fragmentIds);
+    expect(routes).toContain(parent + ":head"); expect(routes).toContain(parent + ":tail");
   });
   it("records the committed caption snapshot even after the transcript advances before commit", async () => {
     const emit = vi.fn<(type: DiagnosticType, data: unknown, text?: string) => void>();
