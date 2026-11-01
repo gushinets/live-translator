@@ -211,11 +211,16 @@ describe("conversation diagnostic ingestion", () => {
     const f = fixture();
     await f.post([f.event()], `live-translator-dev=${randomUUID()}`).expect(404);
     await request(f.app).post(`/api/conversations/${f.c.id}/diagnostics`).set("Origin", "https://evil.example").send({}).expect(403);
-    await f.post([f.event(1, { liveSessionId: randomUUID() })]).expect(404);
+    const otherOwner = randomUUID(), other = f.ledger.createConversation(otherOwner, randomUUID(), "other"), otherAttempt = randomUUID();
+    f.ledger.registerAttempt(otherOwner, { conversationId: other.id, conversationVersion: other.version, liveSessionId: otherAttempt,
+      initialMode: "interpreter", startReason: "initial", fingerprint: "other" });
+    await f.post([f.event(1, { liveSessionId: otherAttempt })]).expect(404);
+    await f.post([f.event(1, { conversationId: other.id })]).expect(404);
     await f.post([f.event(1, { source: "server" })]).expect(400);
     await request(f.app).post(`/api/conversations/${f.c.id}/diagnostics`).set("Origin", origin).set("Cookie", `live-translator-dev=${f.owner}`)
       .set("Content-Type", "application/json").send('{"text":"PRIVATE_CANARY"').expect(400);
     await f.post([{ ...f.event(), sdp: "SECRET" }]).expect(400);
+    await f.post([{ ...f.event(), attemptStatus: "registered" }]).expect(400);
     await f.post([{ ...f.event(), data: { kind: "input", fragmentId: randomUUID(), charCount: 1, raw: "SECRET" } }]).expect(400);
     await f.post([f.event(1, { type: "server.conversation", data: { status: "ended", version: 2 } })]).expect(400);
     expect(f.journal.db.prepare("SELECT COUNT(*) AS n FROM diagnostic_events WHERE source='browser'").get()!.n).toBe(0);
@@ -223,6 +228,9 @@ describe("conversation diagnostic ingestion", () => {
   it("keeps technical mode content-free, permits only explicit text event types, and freezes stream identity", async () => {
     const f = fixture();
     await f.post([f.event(1, { text: "PRIVATE_CANARY" })]).expect(400);
+    await f.post([f.event(1, { textRemoved: true, text: "PRIVATE_CANARY" })]).expect(400);
+    await f.post([f.event(1, { textRemoved: true, type: "audio.state", data: { phase: "capture_ready" } })]).expect(400);
+    await f.post([{ ...f.event(), textRemoved: "PRIVATE_CANARY" }]).expect(400);
     const text = fixture({ textEnabled: true }), event = text.event(1, { text: "PRIVATE_CANARY" });
     await text.post([event]).expect(200);
     await text.post([{ ...event, seq: 2, type: "transport.event", data: { type: "error", phase: "received" } }]).expect(400);

@@ -126,6 +126,7 @@ export class IndexedDiagnosticQueue implements DiagnosticQueue {
 
 const bytesOf = (value: unknown) => new TextEncoder().encode(JSON.stringify(value)).byteLength;
 function stripText(row: DiagnosticQueueRow): void {
+  if (row.event.text !== undefined || row.event.textTruncated !== undefined) row.event.textRemoved = true;
   delete row.event.text; delete row.event.textTruncated; delete row.textProducerId;
   row.bytes = bytesOf(row.event) + 128;
 }

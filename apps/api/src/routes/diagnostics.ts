@@ -21,7 +21,8 @@ export function createDiagnosticsRouter(journal: DiagnosticJournal, ledger: Usag
       const batch = diagnosticBatchSchema.parse(req.body);
       const events = batch.events.map(event => parseDiagnosticEvent(event, journal.options.textEnabled ?? false));
       for (const event of events) {
-        if (event.conversationId !== id || event.liveSessionId && !ledger.db.prepare("SELECT 1 FROM live_sessions WHERE id=? AND conversation_id=?").get(event.liveSessionId, id))
+        // An unsent create leaves a client attempt ID without a ledger row; reports mark that link unconfirmed.
+        if (event.conversationId !== id || event.liveSessionId && ledger.db.prepare("SELECT 1 FROM live_sessions WHERE id=? AND conversation_id<>?").get(event.liveSessionId, id))
           throw new DiagnosticError("not_found", 404);
       }
       const receipt = journal.append(conversation, events, diagnosticOwnerId(`network:${ipKeyGenerator(req.ip ?? "unknown", 56)}`));

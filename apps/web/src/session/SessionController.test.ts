@@ -151,7 +151,7 @@ function createFakeAudio() {
       load: vi.fn(),
     } as unknown as HTMLAudioElement,
     onVoiceActivity: null as ((event: { active: boolean; atMs: number }) => void) | null,
-    onPlaybackActivity: null as ((event: { active: boolean; atMs: number }) => void) | null,
+    onPlaybackActivity: null as AudioController["onPlaybackActivity"],
     onPcmReceived: null as ((atMs: number) => void) | null,
     onAudioInterruption: null as (() => void) | null,
     onAudioRestored: null as (() => void) | null,
@@ -402,6 +402,20 @@ describe("conversation diagnostic observations", () => {
     const snapshot = emit.mock.calls.filter(([type]) => type === "app.snapshot").at(-1)![1];
     expect(snapshot).toMatchObject({ lastPcmQueueStartAt: activatedAt, lastPlaybackEdgeAt: null });
     expect(snapshot).not.toHaveProperty("lastPcmAt"); expect(snapshot).not.toHaveProperty("lastPlaybackAt");
+  });
+  it("records accepted playback edges before any turn can own the audio", async () => {
+    vi.useFakeTimers();
+    const emit = vi.fn<(type: DiagnosticType, data: unknown, text?: string) => void>();
+    const live = Object.assign(new FakeLive(), { journal: { emit }, onDiagnosticTick: undefined as (() => void) | undefined });
+    const { controller, audio } = createController({ live });
+    await controller.startWithLanguages({ A: "ru", B: "es" });
+    for (const active of [true, false]) {
+      vi.setSystemTime(Date.now() + 1000);
+      audio.onPlaybackActivity?.({ active, atMs: Date.now(), owned: true });
+      live.onDiagnosticTick?.();
+      expect(emit.mock.calls.filter(([type]) => type === "app.snapshot").at(-1)![1]).toMatchObject({ lastPlaybackEdgeAt: Date.now() });
+      expect(controller.session.activeTurn).toBeUndefined();
+    }
   });
   it("records the committed caption snapshot even after the transcript advances before commit", async () => {
     const emit = vi.fn<(type: DiagnosticType, data: unknown, text?: string) => void>();

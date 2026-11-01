@@ -39,11 +39,12 @@ type Assert<T extends true> = T;
 /** Also reject widening shared payloads beyond what ingestion accepts. */
 export type DiagnosticSchemaCompatibility = Assert<DiagnosticData extends { [K in keyof DiagnosticData]: z.infer<typeof diagnosticDataSchemas[K]> } ? true : false>;
 
-const envelope = z.strictObject({ schemaVersion: z.literal(1), source: z.literal("browser"), conversationId: z.uuid(), liveSessionId: z.uuid().optional(), streamId: z.uuid(), seq: integer.positive(), wallMs: integer, monoMs: n, type: z.enum(Object.keys(diagnosticDataSchemas) as [keyof DiagnosticData, ...Array<keyof DiagnosticData>]), data: z.unknown(), text: z.string().max(4096).optional(), textTruncated: z.boolean().optional(), clientBuildId: z.string().min(1).max(64).regex(/^[A-Za-z0-9:_.-]+$/).optional() });
+const envelope = z.strictObject({ schemaVersion: z.literal(1), source: z.literal("browser"), conversationId: z.uuid(), liveSessionId: z.uuid().optional(), streamId: z.uuid(), seq: integer.positive(), wallMs: integer, monoMs: n, type: z.enum(Object.keys(diagnosticDataSchemas) as [keyof DiagnosticData, ...Array<keyof DiagnosticData>]), data: z.unknown(), text: z.string().max(4096).optional(), textTruncated: z.boolean().optional(), textRemoved: z.literal(true).optional(), clientBuildId: z.string().min(1).max(64).regex(/^[A-Za-z0-9:_.-]+$/).optional() });
 export const diagnosticBatchSchema = z.strictObject({ schemaVersion: z.literal(1), events: z.array(envelope).min(1).max(100) });
 export function parseDiagnosticEvent(value: z.infer<typeof envelope>, textEnabled: boolean): DiagnosticEvent {
   if (value.type.startsWith("server.")) throw new Error("invalid_event");
   const data = diagnosticDataSchemas[value.type].parse(value.data);
+  if (value.textRemoved && (value.text !== undefined || value.textTruncated !== undefined || !["transcript.fragment", "caption.block"].includes(value.type))) throw new Error("invalid_event");
   if ((value.text !== undefined || value.textTruncated !== undefined) &&
       (!textEnabled || !["transcript.fragment", "caption.block"].includes(value.type))) throw new Error("text_not_allowed");
   return { ...value, data } as DiagnosticEvent;

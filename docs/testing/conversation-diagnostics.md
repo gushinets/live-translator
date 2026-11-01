@@ -62,6 +62,8 @@ is checked for each content event, so enabling it after the page becomes idle wo
 and revoking it stops subsequent text capture. Before replay, queued text is removed
 if either the current server policy or tab setting disallows it; event identities and
 technical fields are retained.
+Scrubbed rows retain only `textRemoved: true`; reports show `textStatus: removed`
+and a `text_removed` warning, distinct from text never captured or expired on the server.
 Consent provenance is local queue metadata tied to the existing tab identity, including
 reloads. Only that tab can replay its text after checking current consent. Other tabs
 can send technical-only rows but leave its text-bearing rows queued. If the producing
@@ -88,6 +90,12 @@ provider attempt. `streamId`/`seq` order one producer. New connections get new
 streams, including replacement and resume. Startup events are buffered until their
 server identity is known (200 events / 64 KiB maximum). Startup that never creates
 a conversation cannot be found through a conversation ID.
+`liveSessionId` is a client-generated attempt ID. If a create request never reached
+the server, authenticated diagnostics retain that provisional ID without creating a
+ledger attempt. Reports show `attemptStatus: unconfirmed` and `attempt_unconfirmed`;
+search by that ID still finds the conversation. Registration is checked against the
+ledger when reporting, so late registration resolves the link. An ID already registered
+to another conversation is rejected. A provisional ID does not prove provider contact.
 
 Browser wall time, monotonic time, server receipt time and provider fragment
 `startMs`/`endMs` are distinct. The first successful batch records an offset estimate
@@ -125,7 +133,8 @@ a translation to a source never proves that PCM belonged to that source.
 Snapshots and WebRTC counters are sampled every five seconds while connected;
 microphone levels are summarized once a second using the existing analyser.
 Snapshot `lastPcmQueueStartAt` records a PCM queue activation and `lastPlaybackEdgeAt`
-records a playback start/end edge, not continuous PCM receipt or playback progress.
+records an accepted playback start/end edge, including audio without a known turn;
+neither field measures continuous PCM receipt or playback progress.
 Use successive WebRTC decoded-sample/jitter-buffer counters to assess continued delivery.
 Server transitions are emitted only after ledger commit, including recovery and
 watchdog paths. Diagnostic writes never participate in financial transactions.

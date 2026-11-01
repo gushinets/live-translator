@@ -1771,6 +1771,7 @@ export class SessionController {
     if (!this.acceptRemotePlaybackActivity(event)) {
       return;
     }
+    this.lastPlaybackEdgeAt = Date.now();
     this.playbackActive = event.active;
     if (event.retired) {
       this.playbackTurnId = undefined;

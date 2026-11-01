@@ -1,0 +1,102 @@
+// @vitest-environment node
+import { once } from "node:events";
+import { IDBFactory } from "fake-indexeddb";
+import { afterEach, expect, it, vi } from "vitest";
+import { DiagnosticOutbox, IndexedDiagnosticQueue } from "./DiagnosticOutbox";
+import { AccountingBackend } from "../api/AccountingBackend";
+import { ConversationAccounting } from "../session/ConversationAccounting";
+import { MetadataDeliveryBudget } from "../session/MetadataDeliveryBudget";
+import { createApp } from "../../../api/src/app";
+import { apiConfig } from "../../../api/src/config";
+import { UsageLedger } from "../../../api/src/accounting/UsageLedger";
+import { openUsageDatabase } from "../../../api/src/persistence/database";
+import { DiagnosticJournal } from "../../../api/src/diagnostics/DiagnosticJournal";
+import { buildDiagnosticReport, formatDiagnosticReport } from "../../../api/src/reports/diagnostics";
+
+const cleanup: Array<() => void | Promise<void>> = [];
+afterEach(async () => {
+  for (const close of cleanup.splice(0).reverse()) await close();
+  vi.unstubAllGlobals();
+});
+
+async function fixture() {
+  const indexedDB = new IDBFactory(); vi.stubGlobal("indexedDB", indexedDB);
+  const db = openUsageDatabase(":memory:"); cleanup.push(() => db.close());
+  const ledger = new UsageLedger(db), journal = new DiagnosticJournal(":memory:", { textEnabled: true, automatic: false });
+  cleanup.push(async () => { await journal.flushServerEvents(); journal.close(); });
+  const creator = vi.fn(async () => { throw new Error("Provider must not be called"); });
+  const app = createApp({ ledger, diagnostics: journal, startWorker: false, createLiveSession: creator });
+  const server = app.listen(0, "127.0.0.1");
+  cleanup.push(() => new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve())));
+  await once(server, "listening");
+  const address = server.address() as { port: number }, owner = crypto.randomUUID(), nativeFetch = globalThis.fetch;
+  const state = { offline: false, consent: true }, statuses: number[] = [];
+  vi.stubGlobal("fetch", async (url: string, init?: RequestInit) => {
+    if (state.offline && (url.startsWith("/api/live/session") || url.endsWith("/diagnostics"))) throw new TypeError("offline");
+    const headers = new Headers(init?.headers);
+    headers.set("Origin", apiConfig.webOrigin); headers.set("Cookie", `live-translator-dev=${owner}`);
+    const response = await nativeFetch(`http://127.0.0.1:${address.port}${url}`, { ...init, headers });
+    if (url.endsWith("/diagnostics")) statuses.push(response.status);
+    return response;
+  });
+  const api = new AccountingBackend(), queue = new IndexedDiagnosticQueue();
+  const options = { queue, automatic: false, producerId: Promise.resolve("test-tab"),
+    storage: { getItem: () => state.consent ? "1" : null } as unknown as Storage };
+  const outbox = new DiagnosticOutbox(options); cleanup.push(() => outbox.stop());
+  outbox.start(async () => (await api.policy()).diagnostics);
+  outbox.configure((await api.policy()).diagnostics);
+  const budget = new MetadataDeliveryBudget({ indexedDB, name: crypto.randomUUID() }); cleanup.push(() => budget.close());
+  const scope = new ConversationAccounting({ api, budget, diagnostics: outbox, autoDelivery: false });
+  return { db, ledger, journal, creator, owner, state, statuses, api, queue, options, outbox, scope };
+}
+
+it("replays ambiguous startup after an unsent create and transient read-back, then reconciles late registration", async () => {
+  const f = await fixture(), stream = f.outbox.stream(), attempt = f.scope.newAttempt();
+  attempt.diagnostics = stream;
+  stream.emit("app.lifecycle", { phase: "start", generation: 0 });
+  f.state.offline = true;
+  await expect(attempt.create("not-sent-offer")).rejects.toThrow("offline");
+  await vi.waitFor(() => expect(stream.conversationId).toBeTruthy());
+  await f.outbox.flush();
+  expect(f.db.prepare("SELECT 1 FROM live_sessions WHERE id=?").get(attempt.localId)).toBeUndefined();
+  expect((await f.queue.read())[0]!.event.liveSessionId).toBe(attempt.localId);
+  f.outbox.stop();
+  f.state.offline = false;
+  const replay = new DiagnosticOutbox(f.options); replay.configure((await f.api.policy()).diagnostics);
+  await replay.flush(); replay.stop();
+  expect(f.statuses).toEqual([200]); expect(await f.queue.read()).toEqual([]);
+  const report = buildDiagnosticReport(f.db, f.journal.db, { liveSessionId: attempt.localId });
+  expect(report.candidates).toHaveLength(1);
+  expect(report.events).toContainEqual(expect.objectContaining({ liveSessionId: attempt.localId, attemptStatus: "unconfirmed", type: "app.lifecycle" }));
+  expect(report.warnings).toContain(`${attempt.localId}: attempt_unconfirmed`);
+  const c = f.ledger.getConversation(f.owner, stream.conversationId!);
+  f.ledger.registerAttempt(f.owner, { conversationId: c.id, conversationVersion: c.version, liveSessionId: attempt.localId,
+    initialMode: "interpreter", startReason: "initial", fingerprint: "late-registration" });
+  const reconciled = buildDiagnosticReport(f.db, f.journal.db, { liveSessionId: attempt.localId });
+  expect(reconciled.events).toContainEqual(expect.objectContaining({ liveSessionId: attempt.localId, attemptStatus: "registered", type: "app.lifecycle" }));
+  expect(reconciled.warnings).not.toContain(`${attempt.localId}: attempt_unconfirmed`);
+  expect(f.creator).not.toHaveBeenCalled();
+});
+
+it.each(["tab", "server"])("reports text removed by %s revocation after offline queue and replay", async revoke => {
+  const f = await fixture(), c = await f.api.createConversation(crypto.randomUUID()), stream = f.outbox.stream();
+  stream.bind(c.conversationId); f.state.offline = true;
+  stream.emit("transcript.fragment", { kind: "input", fragmentId: "private", charCount: 14 }, "PRIVATE_CANARY");
+  stream.emit("audio.state", { phase: "capture_ready" });
+  await f.outbox.flush();
+  expect(JSON.stringify(await f.queue.read())).toContain("PRIVATE_CANARY");
+  if (revoke === "tab") f.state.consent = false; else f.journal.options.textEnabled = false;
+  f.state.offline = false;
+  await f.outbox.flush(); await f.outbox.flush();
+  expect(f.statuses.at(-1)).toBe(200);
+  expect(JSON.stringify(await f.queue.read())).not.toContain("PRIVATE_CANARY");
+  expect(f.journal.db.prepare("SELECT COUNT(*) AS n FROM diagnostic_text").get()!.n).toBe(0);
+  const report = buildDiagnosticReport(f.db, f.journal.db, { conversationId: c.conversationId });
+  expect(report.events).toContainEqual(expect.objectContaining({ type: "transcript.fragment", textRemoved: true, textStatus: "removed" }));
+  expect(report.events).toContainEqual(expect.objectContaining({ type: "audio.state", textStatus: "not_recorded" }));
+  expect(report.warnings).toContain(`${stream.id}:1: text_removed`);
+  for (const format of ["text", "jsonl"] as const) {
+    const output = formatDiagnosticReport(report, format);
+    expect(output).toContain("text_removed"); expect(output).not.toContain("PRIVATE_CANARY");
+  }
+});

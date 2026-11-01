@@ -129,7 +129,8 @@ export class DiagnosticJournal {
           this.db.prepare(`INSERT INTO diagnostic_events(stream_id,seq,conversation_id,live_session_id,source,wall_ms,mono_ms,received_at,type,data_json,client_build_id,text_expected,text_truncated)
             VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(event.streamId, event.seq, conversation.id, event.liveSessionId ?? null, event.source,
             event.wallMs, event.monoMs, now, event.type, JSON.stringify(event.data), event.clientBuildId ?? null,
-            event.text === undefined ? 0 : 1, event.textTruncated ? 1 : 0);
+            // 0: never captured; 1: retained/expired; 2: privacy removal before ingestion.
+            event.textRemoved ? 2 : event.text === undefined ? 0 : 1, event.textTruncated ? 1 : 0);
           if (event.text !== undefined && this.options.textEnabled && now < conversation.created_at + DIAGNOSTIC_TEXT_RETENTION_MS)
             this.db.prepare("INSERT INTO diagnostic_text(stream_id,seq,conversation_id,text) VALUES(?,?,?,?)").run(event.streamId, event.seq, conversation.id, event.text);
           accepted.push({ streamId: event.streamId, seq: event.seq });

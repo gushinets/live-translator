@@ -37,7 +37,7 @@ export type DiagnosticType = keyof DiagnosticData;
 export type DiagnosticEvent<K extends DiagnosticType = DiagnosticType> = K extends DiagnosticType ? {
   schemaVersion: 1; source: "browser" | "server"; conversationId: string; liveSessionId?: string;
   streamId: string; seq: number; wallMs: number; monoMs: number; type: K; data: DiagnosticData[K];
-  text?: string; textTruncated?: boolean; clientBuildId?: string;
+  text?: string; textTruncated?: boolean; textRemoved?: true; clientBuildId?: string;
 } : never;
 export interface DiagnosticSink {
   emit<K extends DiagnosticType>(type: K, data: DiagnosticData[K], text?: string): void;
