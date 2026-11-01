@@ -116,20 +116,29 @@ describe("diagnostic delivery", () => {
       expect(request).toHaveBeenCalledTimes(3);
     } finally { outbox.stop(); }
   });
-  it("preserves another tab's opted-in text and scopes revocation to the producing tab across reload", async () => {
+  it.each([false, true])("only the producing tab replays its text and checks revocation across reload, peer opted in: %s", async peerOptedIn => {
     const optedIn = vi.fn<Storage["getItem"]>(() => "1"), optedOut = vi.fn<Storage["getItem"]>(() => null);
     const a = fixture({ textEnabled: true, producerId: "tab-A", storage: { getItem: optedIn } as unknown as Storage });
-    const b = fixture({ textEnabled: true, producerId: "tab-B", storage: { getItem: optedOut } as unknown as Storage });
+    const b = fixture({ textEnabled: true, producerId: "tab-B", storage: { getItem: () => peerOptedIn ? "1" : null } as unknown as Storage });
     await Promise.resolve();
     const stream = a.outbox.stream(); stream.bind(crypto.randomUUID());
     stream.emit("transcript.fragment", { kind: "input", fragmentId: "first", charCount: 7 }, "PRIVATE");
     a.send.mockRejectedValueOnce(new Error("offline")); await a.outbox.flush();
     const persisted = await a.queue.read(); expect(persisted[0]!.textProducerId).toBe("tab-A");
     await b.outbox.flush();
-    expect(b.requests.flat()).toContainEqual(expect.objectContaining({ text: "PRIVATE" }));
+    expect(b.requests.flat()).not.toContainEqual(expect.objectContaining({ text: "PRIVATE" }));
+    expect((await a.queue.read())[0]!.event.text).toBe("PRIVATE");
+    await a.outbox.flush();
+    expect(a.requests.flat()).toContainEqual(expect.objectContaining({ text: "PRIVATE" }));
     expect(JSON.stringify(b.requests)).not.toContain("tab-A");
     stream.emit("transcript.fragment", { kind: "input", fragmentId: "second", charCount: 7 }, "REVOKED");
+    stream.emit("audio.state", { phase: "capture_ready" });
     a.send.mockRejectedValueOnce(new Error("offline")); await a.outbox.flush();
+    optedIn.mockReturnValue(null);
+    await b.outbox.flush();
+    expect(b.requests.flat()).toContainEqual(expect.objectContaining({ type: "audio.state" }));
+    expect(JSON.stringify(b.requests)).not.toMatch(/PRIVATE|REVOKED/);
+    expect((await a.queue.read()).some(row => row.event.text === "REVOKED")).toBe(true);
     const reloaded = fixture({ queue: a.queue, textEnabled: true, producerId: "tab-A", storage: { getItem: optedOut } as unknown as Storage });
     await reloaded.outbox.flush();
     expect(reloaded.requests.flat().find(event => event.type === "transcript.fragment")).not.toHaveProperty("text");
@@ -329,13 +338,14 @@ describe("diagnostic delivery", () => {
   });
   it("requires both switches for text, preserves immutable identities and retries after reload without duplication", async () => {
     sessionStorage.setItem(DIAGNOSTIC_TEXT_KEY, "1");
-    const f = fixture({ textEnabled: true }), stream = f.outbox.stream();
+    const f = fixture({ textEnabled: true, producerId: "reloaded-tab" }), stream = f.outbox.stream();
+    await Promise.resolve();
     const conversationId = crypto.randomUUID(), attemptId = crypto.randomUUID();
     stream.emit("transcript.fragment", { kind: "input", fragmentId: crypto.randomUUID(), charCount: 14 }, "PRIVATE_CANARY");
     stream.bind(conversationId, attemptId);
     f.send.mockRejectedValueOnce(new Error("offline"));
     await f.outbox.flush();
-    const reloaded = new DiagnosticOutbox({ queue: f.queue, fetch: f.send, automatic: false }); reloaded.configure({ ...active, textEnabled: true });
+    const reloaded = new DiagnosticOutbox({ queue: f.queue, fetch: f.send, automatic: false, producerId: Promise.resolve("reloaded-tab") }); reloaded.configure({ ...active, textEnabled: true });
     await reloaded.flush();
     expect(f.requests[0]![0]).toMatchObject({ conversationId, liveSessionId: attemptId, seq: 1, text: "PRIVATE_CANARY" });
     expect(await f.queue.read()).toEqual([]);

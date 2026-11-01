@@ -7,6 +7,7 @@
  */
 export interface TranscriptFragment {
   id: string;
+  diagnosticId?: string;
   text: string;
   startMs?: number;
   endMs?: number;

@@ -127,10 +127,15 @@ export class TranscriptRouter {
       else if (length > 0) {
         // The service timestamps cover the whole packet. Preserve them rather than
         // inventing sub-packet timing when a packet contains two speakers' sentences.
-        fragments.push({ ...part, id: part.id + ":head", text: part.text.slice(0, length) });
-        pending.push({ ...part, id: part.id + ":tail", text: part.text.slice(length) });
-        observe(this.diagnostics, "transcript.split", { parentFragmentId: part.id, headFragmentId: part.id + ":head",
-          tailFragmentId: part.id + ":tail", splitOffset: length, charCount: part.text.length });
+        const head = { ...part, id: part.id + ":head", text: part.text.slice(0, length) };
+        const tail = { ...part, id: part.id + ":tail", text: part.text.slice(length) };
+        if (this.diagnostics) {
+          // Attribution uses hierarchical IDs; diagnostic aliases stay bounded at any split depth.
+          head.diagnosticId = crypto.randomUUID(); tail.diagnosticId = crypto.randomUUID();
+          observe(this.diagnostics, "transcript.split", { parentFragmentId: part.diagnosticId ?? part.id,
+            headFragmentId: head.diagnosticId, tailFragmentId: tail.diagnosticId, splitOffset: length, charCount: part.text.length });
+        }
+        fragments.push(head); pending.push(tail);
         length = 0;
       } else pending.push(part);
     }

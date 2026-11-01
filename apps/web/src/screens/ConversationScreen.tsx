@@ -50,7 +50,7 @@ export function ConversationScreen({
   const snapshot = uiSnapshot(controller);
   const captions = controller.captionBlocks;
   const captionRevision = controller.captionRevision;
-  const captionBlockCount = captions.filter(block => block.text.trim()).length;
+  const captionBlockCount = captions.filter(block => block.text.trim() && (block.side !== undefined || block.kind === "output")).length;
   useLayoutEffect(() => { renderedSnapshot.current = snapshot; });
   useLayoutEffect(() => { if (captionRevision !== undefined) controller.recordCaptionRender?.(captionRevision, captionBlockCount); }, [controller, captionRevision, captionBlockCount]);
   const previousRecovery = useRef<RetainedRecoveryState | undefined>(undefined);

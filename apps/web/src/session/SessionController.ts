@@ -108,8 +108,8 @@ export class SessionController {
   private diagnosticPendingRoutes = { input: new Set<string>(), output: new Set<string>() };
   private lastInputAt: number | null = null;
   private lastOutputAt: number | null = null;
-  private lastPcmAt: number | null = null;
-  private lastPlaybackAt: number | null = null;
+  private lastPcmQueueStartAt: number | null = null;
+  private lastPlaybackEdgeAt: number | null = null;
   private renderedCaptionRevision = -1;
   get captionRevision(): number { return this.dialogueTranscript.revision; }
   recordCaptionRender(revision: number, blockCount: number): void {
@@ -1351,7 +1351,7 @@ export class SessionController {
         trackEnabled: track?.enabled ?? null, contextState: this.audio.diagnosticContextState ?? null,
         muted: this.audio.audioElement.muted, paused: this.audio.audioElement.paused, pendingPlayback: this.audio.hasPendingPlayback ?? false,
         playbackInputState: this.playbackInputState, lastInputAt: this.lastInputAt, lastOutputAt: this.lastOutputAt,
-        lastPcmAt: this.lastPcmAt, lastPlaybackAt: this.lastPlaybackAt });
+        lastPcmQueueStartAt: this.lastPcmQueueStartAt, lastPlaybackEdgeAt: this.lastPlaybackEdgeAt });
     };
     this.liveProductGeneration = generation;
     this.live.onTranscriptDelta = (event) => {
@@ -1400,7 +1400,7 @@ export class SessionController {
       void this.handlePlaybackActivity(event);
     };
     this.audio.onPcmReceived = atMs => {
-      this.lastPcmAt = Date.now();
+      this.lastPcmQueueStartAt = Date.now();
       if (this.backgroundPaused || this.leftoverOutputDraining ||
           !["listening", "outputting"].includes(this.currentSession.state)) return;
       this.attribution.observeReceivedPlayback(atMs);
@@ -1485,7 +1485,7 @@ export class SessionController {
       fragments = fragments.filter(part => !previous.has(part.id));
     }
     for (let offset = 0; offset < fragments.length; offset += 128) observe(this.live.journal, "transcript.route", {
-      kind, fragmentIds: fragments.slice(offset, offset + 128).map(part => part.id), pending, side,
+      kind, fragmentIds: fragments.slice(offset, offset + 128).map(part => part.diagnosticId ?? part.id), pending, side,
       language: side ? this.languages[side] : undefined,
     });
   }
@@ -3166,7 +3166,7 @@ export class SessionController {
 
   private resetSession(options: { preserveOwnerError?: boolean; preserveDialogue?: boolean } = {}): void {
     observe(this.live.journal, "app.lifecycle", { phase: "reset", generation: this.sessionGeneration });
-    this.lastInputAt = this.lastOutputAt = this.lastPcmAt = this.lastPlaybackAt = null;
+    this.lastInputAt = this.lastOutputAt = this.lastPcmQueueStartAt = this.lastPlaybackEdgeAt = null;
     const review = options.preserveDialogue === true && (this.enteredInterpreter || this.currentSession.state === "ended");
     const { participantA, participantB } = this.currentSession;
     this.retainedProductDeadlineAt = null;
@@ -3233,9 +3233,9 @@ export class SessionController {
     const target = "turnId" in action ? action.turnId : this.currentSession.activeTurn?.id;
     observe(this.live.journal, "app.state", { action: action.type, from, to: this.currentSession.state, generation: this.sessionGeneration,
       turnId: target, speaker: "speaker" in action ? action.speaker : target ? findSessionTurn(this.currentSession, target)?.speaker : undefined,
-      fragmentId: "fragment" in action ? action.fragment?.id : undefined, endMs: "endMs" in action ? action.endMs : undefined,
+      fragmentId: "fragment" in action ? action.fragment?.diagnosticId ?? action.fragment?.id : undefined, endMs: "endMs" in action ? action.endMs : undefined,
       inputReady: this.inputReady, gateBMuted: this.gateBMuted });
-    if (["AUDIO_STARTED", "PLAYBACK_ENDED"].includes(action.type)) this.lastPlaybackAt = Date.now();
+    if (["AUDIO_STARTED", "PLAYBACK_ENDED"].includes(action.type)) this.lastPlaybackEdgeAt = Date.now();
     if (action.type === "SESSION_ERROR" && this.currentSession.state === "error") {
       this.audio.setOutputAudible(false);
       this.detachRemotePlayback();

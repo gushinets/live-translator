@@ -75,6 +75,21 @@ class FakeConversationController implements ConversationScreenController {
 describe("default independent captions", () => {
   afterEach(() => { window.history.replaceState({}, "", "/"); });
 
+  it("counts only nonempty captions mounted in a participant pane or the unassigned output surface", () => {
+    const controller = Object.assign(new FakeConversationController(), { captionRevision: 1, recordCaptionRender: vi.fn() });
+    controller.captionBlocks = [
+      { id: "hidden", kind: "input", text: "Unassigned input", receivedAtMs: 0 },
+      { id: "empty", kind: "input", text: "  ", side: "A", receivedAtMs: 0 },
+      { id: "a", kind: "input", text: "Visible input", side: "A", receivedAtMs: 0 },
+      { id: "b", kind: "output", text: "Visible translation", side: "B", receivedAtMs: 0 },
+      { id: "center", kind: "output", text: "Unassigned output", receivedAtMs: 0 },
+    ];
+    render(<ConversationScreen controller={controller} />);
+    expect(screen.queryByText("Unassigned input")).not.toBeInTheDocument();
+    expect(screen.getAllByRole("listitem")).toHaveLength(3);
+    expect(controller.recordCaptionRender).toHaveBeenCalledWith(1, 3);
+  });
+
   it("reports the caption revision from the render pass when the controller advances before commit", () => {
     const controller = Object.assign(new FakeConversationController(), { captionRevision: 1, recordCaptionRender: vi.fn() });
     controller.captionBlocks = [{ id: "block", kind: "input", text: "First revision", side: "A", receivedAtMs: 0 }];

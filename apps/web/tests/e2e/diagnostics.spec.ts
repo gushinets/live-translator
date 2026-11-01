@@ -27,6 +27,7 @@ for (const textEnabled of [false, true]) test(`diagnostic timeline survives deli
   const conversation = { conversationId, version: 1, status: "active", serverTime: now, productDeadlineAt: now + 900000,
     resumeAttemptId: null, resumeExpiresAt: null, policy: { sessionCloseTimeoutMs: 15000, policyVersion: "test", backgroundSessionCloseEnabled: false } };
   const attempts = new Map<string, Record<string, unknown>>(), received: DiagnosticEvent[] = [];
+  const optedInCanary = "ConsentRestoredCanary 8841";
   let blocked = true, policyTextEnabled = textEnabled;
   const handleApi = async (route: Route) => {
     const path = new URL(route.request().url()).pathname, body = route.request().postDataJSON() as Record<string, unknown> | null;
@@ -84,7 +85,17 @@ for (const textEnabled of [false, true]) test(`diagnostic timeline survives deli
     expect(await idle.evaluate(() => sessionStorage.getItem("liveTranslatorDiagnosticText"))).toBeNull();
     await expect.poll(async () => { await idle.clock.fastForward(4000); return idleRequests; }).toBeGreaterThan(0);
     await expect.poll(async () => (await pendingDiagnostics(page)).some(row => row.text === "Please show me the railway station.")).toBe(true);
+    await page.evaluate(() => sessionStorage.removeItem("liveTranslatorDiagnosticText"));
+    blocked = false;
+    // The browser clock is context-wide; reload the peer to initiate replay without advancing it.
+    const peerRequestsBeforeReplay = idleRequests;
+    await idle.reload();
+    await expect.poll(() => idleRequests > peerRequestsBeforeReplay && received.length > 0).toBe(true);
+    expect(received.every(event => event.text === undefined)).toBe(true);
+    await page.evaluate(() => sessionStorage.setItem("liveTranslatorDiagnosticText", "1"));
+    blocked = true;
     expect(attempts.size).toBe(1); await idle.close();
+    await harness.inputDelta(optedInCanary, 1100, 1200);
   }
   blocked = false;
   // Browser time is paused by the harness; advance retries explicitly, preserving IDB/network tasks.
@@ -92,7 +103,10 @@ for (const textEnabled of [false, true]) test(`diagnostic timeline survives deli
     await harness.advance(4000);
     await page.evaluate(() => window.dispatchEvent(new Event("online")));
     return received.some(event => event.type === "caption.render") && received.some(event => event.type === "app.snapshot") &&
-      received.some(event => event.type === "transport.stats");
+      received.some(event => event.type === "transport.stats") &&
+      received.some(event => event.type === "transcript.fragment" && event.data.kind === "input") &&
+      received.some(event => event.type === "caption.block" && event.data.kind === "output" && event.data.side === "B") &&
+      (!textEnabled || received.some(event => event.text === optedInCanary));
   }).toBe(true);
   expect(received.some(event => event.type === "transcript.fragment" && event.data.kind === "input")).toBe(true);
   expect(received.some(event => event.type === "caption.block" && event.data.kind === "output" && event.data.side === "B")).toBe(true);
@@ -100,7 +114,7 @@ for (const textEnabled of [false, true]) test(`diagnostic timeline survives deli
   expect(received.some(event => event.type === "transport.stats" && !event.data.available && event.data.totalSamplesReceived === null)).toBe(true);
   const serialized = JSON.stringify(received);
   expect(serialized).not.toMatch(/fake-answer|fake-offer|OWNER_CONTEXT|I speak English/);
-  if (textEnabled) expect(serialized).toContain("Please show me the railway station.");
+  if (textEnabled) expect(serialized).toContain(optedInCanary);
   else expect(serialized).not.toMatch(/Please show me|Por favor/);
   if (textEnabled) {
     policyTextEnabled = false;

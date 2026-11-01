@@ -280,6 +280,10 @@ export class DiagnosticOutbox {
     }
     rows = rows.filter(row => row.queuedAt + TTL_MS > this.now());
     for (const row of rows) if (scrub !== null && (scrub === undefined || row.textProducerId === scrub)) stripText(row);
+    // Only the producing tab can recheck its current consent; peer text waits for that tab or expiry.
+    const textAllowed = this.policy?.textEnabled && this.textOptedIn();
+    for (const row of rows) if (!this.policy?.textEnabled || row.textProducerId === producerId && !textAllowed) stripText(row);
+    rows = rows.filter(row => (row.event.text === undefined && row.event.textTruncated === undefined) || row.textProducerId === producerId);
     if (!this.policy?.enabled || this.stopped) {
       if (this.policy?.enabled === false) this.disabledMaintenanceAt = this.now() + 60000;
       return;

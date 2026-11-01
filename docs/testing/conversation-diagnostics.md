@@ -63,9 +63,11 @@ and revoking it stops subsequent text capture. Before replay, queued text is rem
 if either the current server policy or tab setting disallows it; event identities and
 technical fields are retained.
 Consent provenance is local queue metadata tied to the existing tab identity, including
-reloads. An idle tab cannot revoke another tab's recorded consent. A duplicated/opener
-tab requires a fresh opt-in when its copied identity is rotated. Legacy queue rows
-retain their capture-time consent until a server-policy revocation or expiry.
+reloads. Only that tab can replay its text after checking current consent. Other tabs
+can send technical-only rows but leave its text-bearing rows queued. If the producing
+tab never returns, those rows expire after 24 hours with a loss marker; legacy text
+without a recoverable producer also waits for expiry or server-policy scrubbing.
+A duplicated/opener tab requires a fresh opt-in when its copied identity is rotated.
 This is a per-tab opt-in, not an administrator authentication mechanism. Both the
 server flag and tab setting are required. Leave the server text flag off on ordinary
 production deployments. This setting is independent of Vite's transport spike:
@@ -95,14 +97,16 @@ Do not treat provider audio timestamps as wall time or transcript packets as tur
 
 Pending `transcript.route` events contain newly pending fragment IDs; the resolved
 route lists all of its fragments. `transcript.split` links each head/tail to its
-parent and the split offset in UTF-16 code units. Splitting preserves the parent
-packet's audio timestamps; it does not infer timing inside the packet.
+parent and the split offset in UTF-16 code units. Split diagnostics use bounded
+opaque IDs, independent of the hierarchical IDs used for attribution. Splitting preserves
+the parent packet's audio timestamps; it does not infer timing inside the packet.
 
 Search candidates include `lossEvents` and `noOutputTimeouts` (`null` when the
 journal is unavailable). Both contribute to the diagnostic error count; losses
 also produce an incompleteness warning. A no-output deadline is an observed
 application timeout, not proof of a provider fault. `server.attempt` with
-`phase: dispatched` confirms committed provider dispatch even without a result.
+`phase: dispatched` confirms that the provider-dispatch gate was committed. It does
+not confirm provider-client construction or network transmission.
 
 Look for the last confirmed stage:
 
@@ -120,6 +124,9 @@ a translation to a source never proves that PCM belonged to that source.
 `turn.wait` stores changed completion predicates/deadlines, rather than every poll.
 Snapshots and WebRTC counters are sampled every five seconds while connected;
 microphone levels are summarized once a second using the existing analyser.
+Snapshot `lastPcmQueueStartAt` records a PCM queue activation and `lastPlaybackEdgeAt`
+records a playback start/end edge, not continuous PCM receipt or playback progress.
+Use successive WebRTC decoded-sample/jitter-buffer counters to assess continued delivery.
 Server transitions are emitted only after ledger commit, including recovery and
 watchdog paths. Diagnostic writes never participate in financial transactions.
 Server observations are frozen at commit and queued separately (1000 events / 1 MiB).

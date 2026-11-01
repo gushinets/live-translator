@@ -365,11 +365,43 @@ describe("conversation diagnostic observations", () => {
     const { controller } = createController({ live });
     await controller.startWithLanguages({ A: "en", B: "es" });
     const parent = crypto.randomUUID();
-    live.emit({ type: kind === "input" ? "session.input_transcript.delta" : "session.output_transcript.delta", delta: "No. Sí.", diagnosticId: parent });
+    const text = "No. Sí. ".repeat(30).trim();
+    live.emit({ type: kind === "input" ? "session.input_transcript.delta" : "session.output_transcript.delta", delta: text, diagnosticId: parent });
     await vi.advanceTimersByTimeAsync(runtime.captionIdleMs + 1);
-    expect(emit).toHaveBeenCalledWith("transcript.split", { parentFragmentId: parent, headFragmentId: parent + ":head", tailFragmentId: parent + ":tail", splitOffset: 4, charCount: 7 }, undefined);
+    const splits = emit.mock.calls.filter(([type]) => type === "transcript.split").map(([, data]) => data as {
+      parentFragmentId: string; headFragmentId: string; tailFragmentId: string; splitOffset: number; charCount: number;
+    });
+    expect(splits.length).toBeGreaterThan(25);
     const routes = emit.mock.calls.filter(([type]) => type === "transcript.route").flatMap(([, data]) => (data as { fragmentIds: string[] }).fragmentIds);
-    expect(routes).toContain(parent + ":head"); expect(routes).toContain(parent + ":tail");
+    const parts = new Map<string, string>([[parent, text]]), ids = new Set<string>([parent]);
+    for (const split of splits) {
+      const parentText = parts.get(split.parentFragmentId)!;
+      expect(split.charCount).toBe(parentText.length);
+      for (const id of [split.headFragmentId, split.tailFragmentId]) {
+        expect(id.length).toBeLessThanOrEqual(160); expect(ids.has(id)).toBe(false); ids.add(id);
+      }
+      parts.set(split.headFragmentId, parentText.slice(0, split.splitOffset));
+      parts.set(split.tailFragmentId, parentText.slice(split.splitOffset)); parts.delete(split.parentFragmentId);
+    }
+    expect(new Set(routes)).toEqual(new Set(parts.keys()));
+    expect(routes.map(id => parts.get(id)).join("")).toBe(text);
+    for (const [, data] of emit.mock.calls) {
+      const fragmentId = (data as { fragmentId?: string }).fragmentId;
+      if (fragmentId !== undefined) { expect(fragmentId.length).toBeLessThanOrEqual(160); expect(ids.has(fragmentId)).toBe(true); }
+    }
+  });
+  it("labels PCM queue activation and playback edges without claiming continuous receipt times", async () => {
+    vi.useFakeTimers();
+    const emit = vi.fn<(type: DiagnosticType, data: unknown, text?: string) => void>();
+    const live = Object.assign(new FakeLive(), { journal: { emit }, onDiagnosticTick: undefined as (() => void) | undefined });
+    const { controller, audio } = createController({ live });
+    await controller.startWithLanguages({ A: "ru", B: "es" });
+    const activatedAt = Date.now(); audio.onPcmReceived?.(activatedAt);
+    await vi.advanceTimersByTimeAsync(10000);
+    live.onDiagnosticTick?.();
+    const snapshot = emit.mock.calls.filter(([type]) => type === "app.snapshot").at(-1)![1];
+    expect(snapshot).toMatchObject({ lastPcmQueueStartAt: activatedAt, lastPlaybackEdgeAt: null });
+    expect(snapshot).not.toHaveProperty("lastPcmAt"); expect(snapshot).not.toHaveProperty("lastPlaybackAt");
   });
   it("records the committed caption snapshot even after the transcript advances before commit", async () => {
     const emit = vi.fn<(type: DiagnosticType, data: unknown, text?: string) => void>();
