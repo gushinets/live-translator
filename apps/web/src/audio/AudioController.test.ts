@@ -160,6 +160,35 @@ describe("AudioController with explicit direct playback", () => {
     const constraints = getUserMedia.mock.calls[0]?.[0] as MediaStreamConstraints;
     expect(constraints.audio).not.toHaveProperty("autoGainControl");
   });
+  it("flushes partial microphone levels to the original stream before transport replacement", async () => {
+    vi.useFakeTimers();
+    const first = vi.fn(), replacement = vi.fn();
+    controller.diagnostics = { emit: first };
+    await controller.startCapture();
+    audioContext.analysers[0]!.fill(.01);
+    nowMs = 50; await vi.advanceTimersByTimeAsync(50);
+    controller.setCaptureEnabled(false);
+    controller.diagnostics = { emit: replacement };
+    controller.setCaptureEnabled(true);
+    audioContext.analysers[0]!.fill(.04);
+    nowMs = 1100; await vi.advanceTimersByTimeAsync(50);
+    controller.diagnostics = undefined;
+    const oldLevels = first.mock.calls.filter(([type]) => type === "audio.level").map(([, data]) => data);
+    const newLevels = replacement.mock.calls.filter(([type]) => type === "audio.level").map(([, data]) => data);
+    expect(oldLevels).toEqual([expect.objectContaining({ fromMs: 50, toMs: 50, samples: 1, meanRms: expect.closeTo(.01) })]);
+    expect(newLevels).toEqual([expect.objectContaining({ fromMs: 1100, toMs: 1100, samples: 1, meanRms: expect.closeTo(.04) })]);
+  });
+  it("does not report playback when priming without remote media", async () => {
+    const emit = vi.fn(); controller.diagnostics = { emit };
+    audioElement.srcObject = null;
+    await controller.primeOutput();
+    expect(audioContext.resume).toHaveBeenCalled();
+    expect(audioElement.play).not.toHaveBeenCalled();
+    expect(emit.mock.calls.some(([, data]) => ["play_requested", "play_started"].includes(data.phase))).toBe(false);
+    controller.attachRemoteStream(fakeStream(new FakeAudioTrack()));
+    await controller.playOutput();
+    expect(emit).toHaveBeenCalledWith("audio.state", { phase: "play_started" }, undefined);
+  });
   it.each(["resume", "audio_less", "ended", "source"])("records a terminal microphone startup failure and releases tracks: %s", async failure => {
     const emit = vi.fn(); controller.diagnostics = { emit };
     if (failure === "resume") audioContext.resume.mockRejectedValueOnce(new Error("resume failed"));
@@ -528,6 +557,27 @@ describe("buffered audio output", () => {
     const generation = node.port.postMessage.mock.calls.filter(([m]) => m.generation !== undefined).at(-1)![0].generation;
     node.port.onmessage!({ data: { type: "playback", value, requestId, generation } } as MessageEvent);
   }
+  it("splits microphone levels at both playback-input gate transitions", async () => {
+    vi.useFakeTimers();
+    const { controller, context, nodes } = setup(), emit = vi.fn();
+    controller.diagnostics = { emit };
+    try {
+      await controller.primeOutput(); await controller.startCapture();
+      controller.attachRemoteStream(fakeStream(new FakeAudioTrack())); controller.setOutputAudible(true);
+      await vi.advanceTimersByTimeAsync(100);
+      sendPlayback(nodes[0]!, true);
+      await vi.advanceTimersByTimeAsync(100);
+      sendPlayback(nodes[0]!, false);
+      await vi.advanceTimersByTimeAsync(runtime.playbackEchoTailMs);
+      await vi.advanceTimersByTimeAsync(100);
+      controller.setCaptureEnabled(false);
+      const levels = emit.mock.calls.filter(([type]) => type === "audio.level").map(([, data]) => data);
+      expect(levels.map(data => data.blocked)).toEqual([false, true, false]);
+      expect(levels[0]!.toMs).toBeLessThanOrEqual(levels[1]!.fromMs);
+      expect(levels[1]!.toMs).toBeLessThanOrEqual(levels[2]!.fromMs);
+      expect(context.state).toBe("running");
+    } finally { controller.dispose(); }
+  });
   it.each([0, 250, 299])("does not transmit the tail of speech starting %s ms into microphone release", async startMs => {
     vi.useFakeTimers();
     const { controller, context, nodes } = setup();

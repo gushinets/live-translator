@@ -18,6 +18,27 @@ function fixture(options: { queue?: DiagnosticQueue; textEnabled?: boolean; prod
   return { outbox, queue, send, requests };
 }
 describe("diagnostic delivery", () => {
+  it("resumes the same bound stream after collection is disabled and enabled again", async () => {
+    const f = fixture(), stream = f.outbox.stream();
+    const conversationId = crypto.randomUUID(), liveSessionId = crypto.randomUUID();
+    stream.bind(conversationId, liveSessionId);
+    stream.emit("app.lifecycle", { phase: "start", generation: 0 });
+    await f.outbox.flush();
+    f.outbox.configure({ ...active, enabled: false });
+    stream.emit("app.lifecycle", { phase: "hidden", generation: 1 });
+    await f.outbox.flush();
+    f.outbox.configure(active);
+    expect(stream.enabled).toBe(true);
+    stream.emit("app.lifecycle", { phase: "resume", generation: 2 });
+    await f.outbox.flush();
+    const events = f.requests.flat().filter(event => event.type === "app.lifecycle");
+    expect(events.map(event => event.data.phase)).toEqual(["start", "resume"]);
+    expect(events.every(event => event.streamId === stream.id && event.conversationId === conversationId && event.liveSessionId === liveSessionId)).toBe(true);
+    expect(events[1]!.seq).toBeGreaterThan(events[0]!.seq);
+    stream.bind(crypto.randomUUID(), liveSessionId);
+    f.outbox.configure({ ...active, enabled: false }); f.outbox.configure(active);
+    expect(stream.enabled).toBe(false);
+  });
   it("gates disabled maintenance before taking a lock, still purges later expiry/peer rows and resets on policy changes", async () => {
     vi.useFakeTimers(); const now = Date.now();
     const event = { schemaVersion: 1, source: "browser", conversationId: crypto.randomUUID(), streamId: crypto.randomUUID(), seq: 1, wallMs: now, monoMs: 0,

@@ -375,7 +375,7 @@ export class DiagnosticStream implements DiagnosticSink {
     } catch { /* Observability must never throw into audio, rendering or transport callbacks. */ }
   }
   drain(): void {
-    if (this.outbox.policy?.enabled === false) { this.disable(); return; }
+    if (this.outbox.policy?.enabled === false) { this.pending.length = 0; this.pendingBytes = 0; this.lost = 0; return; }
     if (!this.conversationId || !this.outbox.policy?.enabled || this.disabled) return;
     for (const event of this.pending.splice(0)) this.outbox.enqueue({ ...event, conversationId: this.conversationId, ...(this.liveSessionId ? { liveSessionId: this.liveSessionId } : {}) } as DiagnosticEvent);
     this.pendingBytes = 0;

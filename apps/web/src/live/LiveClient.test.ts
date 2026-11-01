@@ -1507,6 +1507,20 @@ describe("LiveClient.close", () => {
     return { client, peer, channel: peer.dataChannel, releaseCalls };
   }
 
+  it.each(["mute", "append"])("records a local command cancellation when %s races close", async kind => {
+    const emit = vi.fn();
+    const { client, channel } = await connectedClient({ emit } as unknown as DiagnosticStream);
+    const closing = client.close();
+    const command = kind === "mute" ? client.setInputMuted(true)
+      : client.appendThinking("private context", { kind: "startup_interpreter" });
+    await expect(command).rejects.toThrow("closing");
+    const type = kind === "mute" ? "session.input_audio.mute" : "session.thinking.append";
+    expect(emit).toHaveBeenCalledWith("transport.command", { type, phase: "cancelled", commandId: expect.any(String) }, undefined);
+    expect(channel.sendCalls.some(raw => JSON.parse(raw).type === type)).toBe(false);
+    channel.emitMessage({ type: "session.closed", reason: "user_requested", usage: { seconds: 0 } });
+    await closing;
+  });
+
   it("is idempotent after peer creation fails before any transport exists", async () => {
     const { backend } = makeFakeBackend();
     const client = new LiveClient({

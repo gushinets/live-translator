@@ -111,10 +111,10 @@ export class SessionController {
   private lastPlaybackAt: number | null = null;
   private renderedCaptionRevision = -1;
   get captionRevision(): number { return this.dialogueTranscript.revision; }
-  recordCaptionRender(revision: number): void {
-    if (revision !== this.captionRevision || revision === this.renderedCaptionRevision) return;
+  recordCaptionRender(revision: number, blockCount: number): void {
+    if (revision === this.renderedCaptionRevision) return;
     this.renderedCaptionRevision = revision;
-    observe(this.live.journal, "caption.render", { revision, blockCount: this.captionBlocks.filter(block => block.text.trim()).length });
+    observe(this.live.journal, "caption.render", { revision, blockCount });
   }
   private currentSession: TranslationSession;
   private live: LiveClient;

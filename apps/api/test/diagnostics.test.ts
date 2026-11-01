@@ -51,17 +51,28 @@ describe("conversation diagnostic ingestion", () => {
     expect(JSON.parse(String(loss.data_json))).toEqual({ reason: "queue_overflow", count: 2, affectedStreamId: loss.stream_id });
     expect(error).toHaveBeenCalled();
   });
-  it("does not wait for diagnostic locks and reports failed server observations after storage recovers", async () => {
+  it("retries the final server loss after a transient lock without another observation", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] }); resources.push(() => vi.useRealTimers());
     const directory = mkdtempSync(join(tmpdir(), "diagnostic-lock-")); resources.push(() => rmSync(directory, { recursive: true, force: true }));
     const path = join(directory, "events.sqlite"), journal = new DiagnosticJournal(path, { automatic: false, logger: { error() {} } }); resources.push(() => journal.close());
     const locked = new DatabaseSync(path); resources.push(() => locked.close());
     expect(journal.db.prepare("PRAGMA busy_timeout").get()!.timeout).toBe(0);
     const conversation = { id: randomUUID(), anonymous_user_id: randomUUID(), created_at: Date.now() };
+    const append = vi.spyOn(journal, "append");
     locked.exec("BEGIN IMMEDIATE"); journal.record(conversation, "server.conversation", { status: "active", version: 1 });
-    await journal.flushServerEvents(); locked.exec("COMMIT");
-    journal.record(conversation, "server.conversation", { status: "ended", version: 2 }); await journal.flushServerEvents();
+    const drain = journal.flushServerEvents();
+    let drained = false; void drain.then(() => { drained = true; });
+    await new Promise<void>(resolve => setImmediate(resolve));
+    await new Promise<void>(resolve => setImmediate(resolve));
+    await vi.advanceTimersByTimeAsync(249);
+    expect(drained).toBe(false); expect(append).toHaveBeenCalledTimes(2);
+    locked.exec("COMMIT");
+    await vi.advanceTimersByTimeAsync(1);
+    await drain;
     const loss = journal.db.prepare("SELECT data_json FROM diagnostic_events WHERE type='diagnostic.loss'").get()!;
     expect(JSON.parse(String(loss.data_json))).toMatchObject({ reason: "storage_unavailable", count: 1 });
+    expect(append).toHaveBeenCalledTimes(3);
+    expect(append.mock.calls[2]![1]).toEqual(append.mock.calls[1]![1]);
   });
   it("marks missing and limited readable journals when listing text-mode candidates", async () => {
     const f = fixture();

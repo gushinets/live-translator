@@ -26,6 +26,8 @@ export class DiagnosticJournal {
   private serverQueueBytes = 0;
   private serverDropped = 0;
   private serverWrite: ReturnType<typeof setImmediate> | undefined;
+  private serverRetry: ReturnType<typeof setTimeout> | undefined;
+  private serverRetryMs = 250;
   private serverDrain: Promise<void> | undefined;
   private serverDrainDone: (() => void) | undefined;
   private timer: ReturnType<typeof setTimeout> | undefined;
@@ -177,7 +179,7 @@ export class DiagnosticJournal {
     this.warn();
   }
   private scheduleServerWrite(): void {
-    if (this.serverWrite || !this.db.isOpen) return;
+    if (this.serverWrite || this.serverRetry || !this.db.isOpen) return;
     // Ledger callbacks only enqueue immutable post-COMMIT snapshots; yield after each write.
     this.serverWrite = setImmediate(() => {
       this.serverWrite = undefined;
@@ -190,15 +192,20 @@ export class DiagnosticJournal {
         next = { stream, bytes: 0, event: this.serverEvent(stream, "diagnostic.loss", { reason, count, affectedStreamId: stream.id }) };
       }
       if (next) {
-        try { this.append(next.stream.conversation, [next.event]); }
+        try { this.append(next.stream.conversation, [next.event]); this.serverRetryMs = 250; }
         catch (error) {
           if (next.event.type !== "diagnostic.loss") this.noteServerLoss(next.stream, error instanceof DiagnosticError && error.code === "diagnostics_limit" ? "server_limit" :
             error instanceof DiagnosticError && error.code === "diagnostics_expired" ? "expired" : "storage_unavailable");
-          else {
+          else if (error instanceof DiagnosticError) {
             const { reason, count } = next.event.data;
             next.stream.losses[reason] = (next.stream.losses[reason] ?? 0) + count;
             this.serverLosses.delete(next.stream);
-            this.warn(); // Retry a failed loss marker only when another observation arrives.
+            this.warn(); // Expired/full journals require a state change before this marker can be stored.
+          } else {
+            this.serverPending.unshift(next);
+            this.serverRetry = setTimeout(() => { this.serverRetry = undefined; this.scheduleServerWrite(); }, this.serverRetryMs);
+            this.serverRetryMs = Math.min(30000, this.serverRetryMs * 2);
+            this.warn();
           }
         }
       }
@@ -231,6 +238,7 @@ export class DiagnosticJournal {
   close(): void {
     if (this.timer) clearTimeout(this.timer);
     if (this.serverWrite) clearImmediate(this.serverWrite); this.serverWrite = undefined;
+    if (this.serverRetry) clearTimeout(this.serverRetry); this.serverRetry = undefined;
     this.serverDropped += this.serverPending.length;
     if (this.serverPending.length || this.serverLosses.size) this.warn();
     this.serverPending.length = 0; this.serverQueueBytes = 0; this.serverLosses.clear(); this.serverStreams.clear();

@@ -1,4 +1,4 @@
-import { createElement, Profiler } from "react";
+import { createElement, Fragment, Profiler, useLayoutEffect } from "react";
 import { act, cleanup, render } from "@testing-library/react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { ConversationScreen } from "../screens/ConversationScreen";
@@ -337,6 +337,25 @@ function createController<
 }
 
 describe("conversation diagnostic observations", () => {
+  it("records the committed caption snapshot even after the transcript advances before commit", async () => {
+    const emit = vi.fn<(type: DiagnosticType, data: unknown, text?: string) => void>();
+    const live = Object.assign(new FakeLive(), { journal: { emit } });
+    const { controller } = createController({ live });
+    await controller.startWithLanguages({ A: "ru", B: "es" });
+    live.emit({ type: "session.input_transcript.delta", delta: "Где вокзал?", start_ms: 0, end_ms: 1000 });
+    const committedRevision = controller.captionRevision;
+    let advancedRevision = committedRevision;
+    function AdvanceBeforeCaptionCommit() {
+      useLayoutEffect(() => {
+        live.emit({ type: "session.output_transcript.delta", delta: "¿Dónde está la estación?", start_ms: 500, end_ms: 1500 });
+        advancedRevision = controller.captionRevision;
+      }, []);
+      return null;
+    }
+    render(createElement(Fragment, null, createElement(AdvanceBeforeCaptionCommit), createElement(ConversationScreen, { controller })));
+    expect(advancedRevision).toBeGreaterThan(committedRevision);
+    expect(emit).toHaveBeenCalledWith("caption.render", { revision: committedRevision, blockCount: 1 }, undefined);
+  });
   it("links raw fragments, routing, caption side and committed render, then records the no-output deadline", async () => {
     vi.useFakeTimers();
     const emit = vi.fn<(type: DiagnosticType, data: unknown, text?: string) => void>();

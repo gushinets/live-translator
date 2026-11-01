@@ -86,10 +86,10 @@ describe("default independent captions", () => {
       return null;
     }
     render(<><AdvanceBeforeCaptionCommit /><ConversationScreen controller={controller} /></>);
-    expect(controller.recordCaptionRender).toHaveBeenNthCalledWith(1, 1);
+    expect(controller.recordCaptionRender).toHaveBeenNthCalledWith(1, 1, 1);
     act(() => controller.notify());
     expect(screen.getByText("Second revision")).toBeInTheDocument();
-    expect(controller.recordCaptionRender).toHaveBeenLastCalledWith(2);
+    expect(controller.recordCaptionRender).toHaveBeenLastCalledWith(2, 1);
   });
 
   it("follows fresh unknown captions after language refinement removes a manually scrolled region", () => {

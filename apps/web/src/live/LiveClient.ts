@@ -436,6 +436,7 @@ export class LiveClient {
   }
 
   send(event: LiveClientEvent): void {
+    if ("event_id" in event) this.ackRegistry.setCommandType(event.event_id, event.type);
     if (this.channel === null) {
       throw new Error("Cannot send a Live event before connect() completes");
     }
@@ -450,7 +451,6 @@ export class LiveClient {
       throw new Error("Cannot send a Live event while the session is closing");
     }
     try {
-      if ("event_id" in event) this.ackRegistry.setCommandType(event.event_id, event.type);
       this.channel.send(JSON.stringify(event));
       this.journal?.emit("transport.command", { type: event.type, phase: "sent", ...("event_id" in event ? { commandId: event.event_id } : {}),
         ...(event.type === "session.instructions.append" && this.interpreterPromptId ? { promptId: this.interpreterPromptId } : {}) });

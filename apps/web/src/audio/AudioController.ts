@@ -74,7 +74,13 @@ function readMicrophoneSettings(track: MediaStreamTrack): MicrophoneSettingsDiag
  * Does not mute Live model input (Gate B).
  */
 export class AudioController {
-  diagnostics: DiagnosticSink | undefined;
+  private diagnosticSink: DiagnosticSink | undefined;
+  get diagnostics(): DiagnosticSink | undefined { return this.diagnosticSink; }
+  set diagnostics(sink: DiagnosticSink | undefined) {
+    if (sink === this.diagnosticSink) return;
+    this.flushLevelSummary();
+    this.diagnosticSink = sink;
+  }
   get diagnosticContextState(): AudioContextState | "interrupted" | null { return this.audioContext?.state ?? null; }
   private levelSummary: { fromMs: number; toMs: number; samples: number; sum: number; minRms: number; maxRms: number } | undefined;
   onSourceSample: ((event: AudioActivityEvent & { reset?: boolean }) => void) | null = null;
@@ -330,6 +336,7 @@ export class AudioController {
     if (this.captureTrack === null || this.micAnalysisStream === null) {
       throw new Error("Microphone capture has not started");
     }
+    if (enabled !== this.captureEnabled) this.flushLevelSummary();
     this.captureEnabled = enabled;
     observe(this.diagnostics, "audio.state", { phase: "capture_gate", enabled, reason: "controller" });
     if (!enabled) {
@@ -351,6 +358,7 @@ export class AudioController {
 
   private blockPlaybackInput(blocked: boolean): void {
     if (this.inputBlocked === blocked) return;
+    this.flushLevelSummary();
     // Deliver the pending idle edge before consumers start ignoring gated microphone events.
     if (blocked && this.voiceActivityMonitor.active) this.onVoiceActivity?.({ active: false, atMs: this.nowMs() });
     this.inputBlocked = blocked;
@@ -622,6 +630,7 @@ export class AudioController {
 
   async playOutput(): Promise<void> {
     const diagnostics = this.diagnostics, decoder = this.remoteDecoder, stream = this.audioElement.srcObject;
+    if (decoder === null && stream === null) return;
     const current = () => diagnostics === this.diagnostics && decoder === this.remoteDecoder && stream === this.audioElement.srcObject;
     observe(diagnostics, "audio.state", { phase: "play_requested" });
     try {
