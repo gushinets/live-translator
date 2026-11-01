@@ -28,7 +28,8 @@ export function createDiagnosticsRouter(journal: DiagnosticJournal, ledger: Usag
       identity.renew(res, owner); res.json(receipt);
     } catch (error) {
       if (error instanceof DiagnosticError) res.status(error.status).json({ code: error.code });
-      else if (error instanceof z.ZodError || error instanceof Error && ["invalid_event", "text_not_allowed"].includes(error.message)) res.status(400).json({ code: "invalid_diagnostic_event" });
+      else if (error instanceof Error && error.message === "text_not_allowed") res.status(400).json({ code: "diagnostics_text_not_allowed" });
+      else if (error instanceof z.ZodError || error instanceof Error && error.message === "invalid_event") res.status(400).json({ code: "invalid_diagnostic_event" });
       else { journal.warn(); res.status(503).json({ code: "diagnostics_unavailable" }); }
     }
   });

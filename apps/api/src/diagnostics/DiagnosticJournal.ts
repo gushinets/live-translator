@@ -90,8 +90,7 @@ export class DiagnosticJournal {
           .run(conversation.id, diagnosticOwnerId(conversation.anonymous_user_id), conversation.created_at, conversation.created_at, now);
         const row = this.db.prepare("SELECT bytes,browser_bytes FROM diagnostic_conversations WHERE id=?").get(conversation.id)!;
         let bytes = Number(row.bytes), browserBytes = Number(row.browser_bytes);
-        const totals = this.db.prepare("SELECT COALESCE(SUM(bytes),0) AS total,COALESCE(SUM(browser_bytes),0) AS browser FROM diagnostic_conversations").get()!;
-        let total = Number(totals.total), browserTotal = Number(totals.browser);
+        let total = Number(this.db.prepare("SELECT COALESCE(SUM(bytes),0) AS total FROM diagnostic_conversations").get()!.total);
         let ownerBytes = Number(this.db.prepare("SELECT COALESCE(SUM(browser_bytes),0) AS n FROM diagnostic_conversations WHERE owner=?").get(diagnosticOwnerId(conversation.anonymous_user_id))!.n);
         let ingressBytes = sourceKey ? Number(this.db.prepare("SELECT bytes FROM diagnostic_ingress WHERE source_key=? AND window_start=?").get(sourceKey, windowStart)?.bytes ?? 0) : 0;
         const maxBytes = this.options.maxBytes ?? 1073741824, conversationMax = this.options.conversationMaxBytes ?? 20971520;
@@ -106,10 +105,10 @@ export class DiagnosticJournal {
           }
           const size = Buffer.byteLength(JSON.stringify(event), "utf8") + 256;
           bytes += size; total += size;
-          if (event.source === "browser") { browserBytes += size; browserTotal += size; ownerBytes += size; ingressBytes += size; }
+          if (event.source === "browser") { browserBytes += size; ownerBytes += size; ingressBytes += size; }
           // Browser traffic cannot consume the last 10% needed for server lifecycle observations.
           if (bytes > conversationMax || total > maxBytes || event.source === "browser" &&
-              (bytes > conversationMax * 0.9 || browserTotal > maxBytes * 0.9 || ownerBytes > conversationMax || sourceKey !== undefined && ingressBytes > conversationMax)) {
+              (bytes > conversationMax * 0.9 || total > maxBytes * 0.9 || ownerBytes > conversationMax || sourceKey !== undefined && ingressBytes > conversationMax)) {
             limited = true; throw new DiagnosticError("diagnostics_limit", 507);
           }
           this.db.prepare("INSERT OR IGNORE INTO diagnostic_streams(id,conversation_id,live_session_id,source) VALUES(?,?,?,?)")

@@ -8,7 +8,7 @@ interface EventRow {
   wall_ms: number; mono_ms: number; received_at: number; type: DiagnosticEvent["type"]; data_json: string;
   client_build_id: string | null; text_expected: number; text_truncated: number; text: string | null;
 }
-export function buildDiagnosticReport(ledger: DatabaseSync, diagnostics: DatabaseSync, options: DiagnosticReportOptions = {}) {
+export function buildDiagnosticReport(ledger: DatabaseSync, diagnostics: DatabaseSync | undefined, options: DiagnosticReportOptions = {}) {
   const now = options.now ?? Date.now(), selected = Boolean(options.conversationId || options.liveSessionId);
   const from = options.from ?? (selected || options.owner ? 0 : now - 86400000), to = options.to ?? now;
   if (from > to) throw new Error("invalid_time_window");
@@ -21,24 +21,24 @@ export function buildDiagnosticReport(ledger: DatabaseSync, diagnostics: Databas
     ORDER BY c.created_at DESC LIMIT 1001`).all(to, now, from, options.conversationId ?? null, options.conversationId ?? null,
     options.owner ?? null, options.owner ?? null, options.liveSessionId ?? null, options.liveSessionId ?? null);
   const candidates = rows.slice(0, 1000).map(c => {
-    const summary = diagnostics.prepare("SELECT * FROM diagnostic_conversations WHERE id=?").get(String(c.id));
-    const builds = diagnostics.prepare("SELECT DISTINCT client_build_id FROM diagnostic_events WHERE conversation_id=? AND client_build_id IS NOT NULL").all(String(c.id)).map(r => r.client_build_id);
-    const languages = diagnostics.prepare("SELECT DISTINCT json_extract(data_json,'$.language') AS language FROM diagnostic_events WHERE conversation_id=? AND type='transcript.route' AND json_extract(data_json,'$.language') IS NOT NULL").all(String(c.id)).map(r => r.language);
-    const errors = Number(diagnostics.prepare(`SELECT COUNT(*) AS n FROM diagnostic_events WHERE conversation_id=? AND
+    const summary = diagnostics?.prepare("SELECT * FROM diagnostic_conversations WHERE id=?").get(String(c.id));
+    const builds = diagnostics?.prepare("SELECT DISTINCT client_build_id FROM diagnostic_events WHERE conversation_id=? AND client_build_id IS NOT NULL").all(String(c.id)).map(r => r.client_build_id) ?? [];
+    const languages = diagnostics?.prepare("SELECT DISTINCT json_extract(data_json,'$.language') AS language FROM diagnostic_events WHERE conversation_id=? AND type='transcript.route' AND json_extract(data_json,'$.language') IS NOT NULL").all(String(c.id)).map(r => r.language) ?? [];
+    const errors = diagnostics ? Number(diagnostics.prepare(`SELECT COUNT(*) AS n FROM diagnostic_events WHERE conversation_id=? AND
       ((type='transport.event' AND json_extract(data_json,'$.type') IN ('error','invalid')) OR
        (type='audio.state' AND json_extract(data_json,'$.phase') IN ('capture_failed','buffer_error','decoder_error','play_failed')) OR
-       (type='app.state' AND json_extract(data_json,'$.to')='error'))`).get(String(c.id))!.n);
-    const hasText = now < Number(c.created_at) + DIAGNOSTIC_TEXT_RETENTION_MS && Boolean(diagnostics.prepare("SELECT 1 FROM diagnostic_text WHERE conversation_id=? LIMIT 1").get(String(c.id)));
+       (type='app.state' AND json_extract(data_json,'$.to')='error'))`).get(String(c.id))!.n) : null;
+    const hasText = now < Number(c.created_at) + DIAGNOSTIC_TEXT_RETENTION_MS && Boolean(diagnostics?.prepare("SELECT 1 FROM diagnostic_text WHERE conversation_id=? LIMIT 1").get(String(c.id)));
     return { conversationId: String(c.id), owner: diagnosticOwnerId(String(c.anonymous_user_id)), startedAt: Number(c.created_at),
       endedAt: c.ended_at === null ? null : Number(c.ended_at), durationMs: c.ended_at === null ? null : Number(c.ended_at) - Number(c.created_at),
       status: String(c.status), attempts: Number(c.attempts), languages, builds, errors, hasText,
       journalAvailable: Boolean(summary), limited: summary?.limited === 1 };
   });
-  if (!selected) return { schemaVersion: 1, from, to, candidates, candidatesTruncated: rows.length > 1000 };
+  const warnings: string[] = diagnostics ? [] : ["journal_unavailable"];
+  if (!selected) return { schemaVersion: 1, from, to, candidates, candidatesTruncated: rows.length > 1000, warnings };
   const events: Array<DiagnosticEvent & { receivedAt: number; estimatedAt: number; uncertaintyMs: number | null; relativeMs: number; textStatus: "available" | "expired_or_missing" | "not_recorded" }> = [];
-  const warnings: string[] = [];
   for (const candidate of candidates) {
-    const records = diagnostics.prepare(`SELECT e.*,t.text FROM diagnostic_events e LEFT JOIN diagnostic_text t ON t.stream_id=e.stream_id AND t.seq=e.seq WHERE e.conversation_id=? ORDER BY e.stream_id,e.seq`).all(candidate.conversationId) as unknown as EventRow[];
+    const records = (diagnostics?.prepare(`SELECT e.*,t.text FROM diagnostic_events e LEFT JOIN diagnostic_text t ON t.stream_id=e.stream_id AND t.seq=e.seq WHERE e.conversation_id=? ORDER BY e.stream_id,e.seq`).all(candidate.conversationId) ?? []) as unknown as EventRow[];
     const streams = new Map<string, EventRow[]>();
     for (const row of records) { const stream = streams.get(row.stream_id) ?? []; stream.push(row); streams.set(row.stream_id, stream); }
     if (!candidate.journalAvailable || !records.length) warnings.push(`${candidate.conversationId}: journal_missing`);
@@ -88,7 +88,7 @@ export function formatDiagnosticReport(report: ReturnType<typeof buildDiagnostic
     const { events, ...summary } = report;
     return [JSON.stringify({ kind: "summary", ...summary }), ...(events ?? []).map(event => JSON.stringify(event))].join("\n") + "\n";
   }
-  const lines = report.candidates.map(c => `${c.conversationId} ${new Date(c.startedAt).toISOString()} duration=${c.durationMs === null ? "unknown" : `${c.durationMs}ms`} status=${c.status} owner=${c.owner} languages=${c.languages.join(",") || "unknown"} builds=${c.builds.join(",") || "unknown"} connections=${c.attempts} errors=${c.errors} text=${c.hasText}`);
+  const lines = report.candidates.map(c => `${c.conversationId} ${new Date(c.startedAt).toISOString()} duration=${c.durationMs === null ? "unknown" : `${c.durationMs}ms`} status=${c.status} owner=${c.owner} languages=${c.languages.join(",") || "unknown"} builds=${c.builds.join(",") || "unknown"} connections=${c.attempts} errors=${c.errors ?? "unknown"} text=${c.hasText}`);
   for (const warning of report.warnings ?? []) lines.push(`INCOMPLETE: ${warning}`);
   if (report.candidatesTruncated) lines.push("INCOMPLETE: candidate_limit_1000; narrow the time window");
   if (report.events?.length) lines.push("Times are estimates across streams; seq is authoritative within each stream. Browser playback does not prove physical audibility.");

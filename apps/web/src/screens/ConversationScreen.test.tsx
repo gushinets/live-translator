@@ -1,4 +1,5 @@
 import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react";
+import { useLayoutEffect } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { sessionReducer } from "../session/sessionReducer";
 import type { Side, Turn } from "../conversation/Turn";
@@ -73,6 +74,23 @@ class FakeConversationController implements ConversationScreenController {
 
 describe("default independent captions", () => {
   afterEach(() => { window.history.replaceState({}, "", "/"); });
+
+  it("reports the caption revision from the render pass when the controller advances before commit", () => {
+    const controller = Object.assign(new FakeConversationController(), { captionRevision: 1, recordCaptionRender: vi.fn() });
+    controller.captionBlocks = [{ id: "block", kind: "input", text: "First revision", side: "A", receivedAtMs: 0 }];
+    function AdvanceBeforeCaptionCommit() {
+      useLayoutEffect(() => {
+        controller.captionRevision = 2;
+        controller.captionBlocks = [{ ...controller.captionBlocks[0]!, text: "Second revision" }];
+      }, []);
+      return null;
+    }
+    render(<><AdvanceBeforeCaptionCommit /><ConversationScreen controller={controller} /></>);
+    expect(controller.recordCaptionRender).toHaveBeenNthCalledWith(1, 1);
+    act(() => controller.notify());
+    expect(screen.getByText("Second revision")).toBeInTheDocument();
+    expect(controller.recordCaptionRender).toHaveBeenLastCalledWith(2);
+  });
 
   it("follows fresh unknown captions after language refinement removes a manually scrolled region", () => {
     vi.spyOn(HTMLElement.prototype, "scrollHeight", "get").mockReturnValue(1000);

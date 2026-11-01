@@ -48,8 +48,10 @@ export function ConversationScreen({
   const endRef = useRef<HTMLButtonElement>(null);
   const renderedSnapshot = useRef<unknown[]>([]);
   const snapshot = uiSnapshot(controller);
+  const captions = controller.captionBlocks;
+  const captionRevision = controller.captionRevision;
   useLayoutEffect(() => { renderedSnapshot.current = snapshot; });
-  useLayoutEffect(() => { if (controller.captionRevision !== undefined) controller.recordCaptionRender?.(controller.captionRevision); });
+  useLayoutEffect(() => { if (captionRevision !== undefined) controller.recordCaptionRender?.(captionRevision); }, [controller, captionRevision]);
   const previousRecovery = useRef<RetainedRecoveryState | undefined>(undefined);
   useEffect(() => {
     const unsubscribe = controller.subscribe(rerender);
@@ -62,7 +64,6 @@ export function ConversationScreen({
   }, [controller.retainedRecoveryState]);
 
   const session = controller.session;
-  const captions = controller.captionBlocks;
   const unassigned = useMemo(() => captions.filter(block => block.kind === "output" && block.side === undefined), [captions]);
   const unassignedScroll = useCaptionScroll(unassigned);
   const recoverySide = controller.recoveryPromptSide;

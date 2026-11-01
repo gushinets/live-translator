@@ -62,6 +62,9 @@ is checked for each content event, so enabling it after the page becomes idle wo
 and revoking it stops subsequent text capture. Before replay, queued text is removed
 if either the current server policy or tab setting disallows it; event identities and
 technical fields are retained.
+Consent provenance is local queue metadata tied to the existing tab identity, including
+reloads. An idle tab cannot revoke another tab's recorded consent. Legacy queue rows
+retain their capture-time consent until a server-policy revocation or expiry.
 This is a per-tab opt-in, not an administrator authentication mechanism. Both the
 server flag and tab setting are required. Leave the server text flag off on ordinary
 production deployments. This setting is independent of Vite's transport spike:
@@ -116,11 +119,18 @@ individual `streamId`/`seq` pairs; retries are idempotent and may arrive out of 
 Errors/termination request an earlier flush. Offline retry uses bounded backoff;
 page startup reads the policy and resumes stored identities without starting a new
 conversation. Retry failures produce a rate-limited, content-free console warning.
+Policy is refreshed at most once a minute during delivery. A text-related rejection
+refreshes it immediately and retries retained technical fields without the forbidden
+content. A Web Lock permits only one tab to flush the shared store at a time. On older
+browsers without Web Locks, overlapping uploads remain idempotent at the server.
 Disposing the controller removes diagnostic timers and wake listeners, including
 when conversation cleanup fails. Final pagehide delivery is best effort.
 
 Client backlog is limited to 5 MiB / 24 hours. IndexedDB failure falls back to bounded
 memory. Loss markers identify the affected conversation, attempt and producer stream.
+Schema v2 upgrades the same database in place with a transactional byte counter and
+expiry index; appending does not read the full backlog. Text revocation uses one
+transaction over indexed text rows. These changes do not touch accounting storage.
 The server limits journal payload accounting to 1 GiB total / 20 MiB per conversation
 and also bounds SQLite page growth. Browser events have an aggregate 20 MiB allowance
 per anonymous owner over retained conversations and 20 MiB per network source per
@@ -140,6 +150,9 @@ Snapshots exported/copied outside this store are not automatically purged.
 
 The report flags sequence gaps, loss markers, unavailable journals, exhausted storage,
 missing completion, expired/truncated text and remaining uncertain source attribution.
+If the diagnostics file is missing, unreadable or corrupt, the CLI still searches the
+ledger and lists candidates with `journal_unavailable` / `journal_missing` warnings;
+error counts are unknown. Ledger and argument errors remain fatal.
 A crash can lose the last buffered events. Absence of output is not automatically
 classified as a model failure.
 

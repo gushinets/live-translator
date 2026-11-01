@@ -714,7 +714,8 @@ export class AccountedSessionController extends SessionController {
   }
 }
 export function createAccountedSessionController(): AccountedSessionController {
-  const diagnostics = new DiagnosticOutbox();
+  const snapshotStore = ResumeSnapshotStore.open();
+  const diagnostics = new DiagnosticOutbox({ producerId: snapshotStore.then(store => store.clientInstanceId) });
   const audio = new AudioController(), scope = new ConversationAccounting({ diagnostics });
   const controller = new AccountedSessionController({
     createLive: () => {
@@ -724,6 +725,6 @@ export function createAccountedSessionController(): AccountedSessionController {
         peerFactory: () => new RTCPeerConnection(), onRemoteStream: (stream, source) => controller.handleRemoteStream(stream, source) });
     },
     audio,
-  }, scope);
+  }, scope, snapshotStore);
   return controller;
 }

@@ -98,6 +98,19 @@ describe("conversation diagnostic ingestion", () => {
     journal.record(conversation, "server.conversation", { status: "ended", version: 2, reason: "user_end" });
     expect(journal.db.prepare("SELECT COUNT(*) AS n FROM diagnostic_events WHERE source='server'").get()!.n).toBe(1);
   });
+  it("keeps the final global reserve free after server events already occupy more than ten percent", () => {
+    const journal = new DiagnosticJournal(":memory:", { maxBytes: 10000, conversationMaxBytes: 20000, automatic: false, logger: { error() {} } }); resources.push(() => journal.close());
+    const conversation = { id: randomUUID(), anonymous_user_id: randomUUID(), created_at: Date.now() }, streamId = randomUUID();
+    for (let i = 0; i < 5; i++) journal.record(conversation, "server.conversation", { status: "active", version: 1 });
+    for (let seq = 1; seq < 100; seq++) {
+      try { journal.append(conversation, [{ schemaVersion: 1, source: "browser", conversationId: conversation.id, streamId, seq,
+        wallMs: Date.now(), monoMs: seq, type: "app.lifecycle", data: { phase: "start", generation: 1 } }]); }
+      catch (error) { expect(error).toHaveProperty("code", "diagnostics_limit"); break; }
+    }
+    expect(Number(journal.db.prepare("SELECT SUM(bytes) AS n FROM diagnostic_conversations").get()!.n)).toBeLessThanOrEqual(9000);
+    journal.record(conversation, "server.conversation", { status: "ended", version: 2 });
+    expect(journal.db.prepare("SELECT COUNT(*) AS n FROM diagnostic_events WHERE source='server'").get()!.n).toBe(6);
+  });
   it("rejects wrong owner/origin/attempt, server provenance and unknown fields without persisting a batch", async () => {
     const f = fixture();
     await f.post([f.event()], `live-translator-dev=${randomUUID()}`).expect(404);

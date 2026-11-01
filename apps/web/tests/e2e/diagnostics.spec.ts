@@ -1,7 +1,23 @@
-import { expect, test } from "@playwright/test";
+import { expect, test, type Page, type Route } from "@playwright/test";
 import { MockLiveHarness } from "./mockLiveHarness";
 import type { DiagnosticEvent } from "../../../../types/diagnostics.js";
 import { diagnosticBatchSchema, parseDiagnosticEvent } from "../../../api/src/diagnostics/schema";
+
+async function pendingDiagnostics(page: Page) {
+  return page.evaluate(async () => {
+    const db = await new Promise<IDBDatabase>((resolve, reject) => {
+      const request = indexedDB.open("live-translator-diagnostics-v1");
+      request.onsuccess = () => resolve(request.result); request.onerror = () => reject(request.error);
+    });
+    try {
+      return await new Promise<Array<{ key: string; text?: string }>>((resolve, reject) => {
+        const tx = db.transaction("events"), request = tx.objectStore("events").getAll();
+        tx.oncomplete = () => resolve((request.result as Array<{ key: string; event: { text?: string } }>).map(({ key, event }) => ({ key, text: event.text })));
+        tx.onerror = () => reject(tx.error);
+      });
+    } finally { db.close(); }
+  });
+}
 
 for (const textEnabled of [false, true]) test(`diagnostic timeline survives delivery outage and records rendered sides, text=${textEnabled}`, async ({ page }) => {
   const harness = await MockLiveHarness.attach(page);
@@ -11,15 +27,16 @@ for (const textEnabled of [false, true]) test(`diagnostic timeline survives deli
   const conversation = { conversationId, version: 1, status: "active", serverTime: now, productDeadlineAt: now + 900000,
     resumeAttemptId: null, resumeExpiresAt: null, policy: { sessionCloseTimeoutMs: 15000, policyVersion: "test", backgroundSessionCloseEnabled: false } };
   const attempts = new Map<string, Record<string, unknown>>(), received: DiagnosticEvent[] = [];
-  let blocked = true;
-  await page.route("**/api/**", async route => {
+  let blocked = true, policyTextEnabled = textEnabled;
+  const handleApi = async (route: Route) => {
     const path = new URL(route.request().url()).pathname, body = route.request().postDataJSON() as Record<string, unknown> | null;
     const reply = (value: unknown, status = 200) => route.fulfill({ status, contentType: "application/json", body: JSON.stringify(value) });
-    if (path === "/api/policy") return reply({ usageLedgerEnabled: true, backgroundSessionCloseEnabled: false, diagnostics: { enabled: true, textEnabled, schemaVersion: 1 } });
+    if (path === "/api/policy") return reply({ usageLedgerEnabled: true, backgroundSessionCloseEnabled: false, diagnostics: { enabled: true, textEnabled: policyTextEnabled, schemaVersion: 1 } });
     if (path.endsWith("/diagnostics")) {
       if (blocked) return reply({ code: "simulated_outage" }, 503);
       const events = body!.events as DiagnosticEvent[];
-      for (const event of diagnosticBatchSchema.parse(body).events) parseDiagnosticEvent(event, textEnabled);
+      if (!policyTextEnabled && events.some(event => event.text !== undefined)) return reply({ code: "diagnostics_text_not_allowed" }, 400);
+      for (const event of diagnosticBatchSchema.parse(body).events) parseDiagnosticEvent(event, policyTextEnabled);
       received.push(...events);
       expect(new TextEncoder().encode(JSON.stringify(body)).byteLength).toBeLessThanOrEqual(32768);
       expect(events.every(event => event.conversationId === conversationId && attempts.has(event.liveSessionId!))).toBe(true);
@@ -46,7 +63,8 @@ for (const textEnabled of [false, true]) test(`diagnostic timeline survives deli
       return reply({ schemaVersion: 1, appAccepted: true, activityReportSeq: app?.activityReportSeq ?? null, appMetricsFinalized: app?.appMetricsFinalized ?? false });
     }
     return reply(row);
-  });
+  };
+  await page.route("**/api/**", handleApi);
   await harness.startListeningConversation();
   await harness.sourceActive();
   await harness.inputDelta("Please show me the railway station.", 0, 1000);
@@ -55,6 +73,19 @@ for (const textEnabled of [false, true]) test(`diagnostic timeline survives deli
   await expect(page.getByTestId("participant-pane-B")).toContainText("Por favor, muéstreme la estación.");
   await harness.advance(6000);
   expect(received).toHaveLength(0);
+  if (textEnabled) {
+    const idle = await page.context().newPage(); let idleRequests = 0;
+    await idle.clock.install({ time: new Date(now) }); await idle.clock.pauseAt(new Date(now + 1000));
+    await idle.route("**/api/**", route => {
+      if (new URL(route.request().url()).pathname.endsWith("/diagnostics")) idleRequests++;
+      return handleApi(route);
+    });
+    await idle.goto("/");
+    expect(await idle.evaluate(() => sessionStorage.getItem("liveTranslatorDiagnosticText"))).toBeNull();
+    await expect.poll(async () => { await idle.clock.fastForward(4000); return idleRequests; }).toBeGreaterThan(0);
+    await expect.poll(async () => (await pendingDiagnostics(page)).some(row => row.text === "Please show me the railway station.")).toBe(true);
+    expect(attempts.size).toBe(1); await idle.close();
+  }
   blocked = false;
   // Browser time is paused by the harness; advance retries explicitly, preserving IDB/network tasks.
   await expect.poll(async () => {
@@ -71,22 +102,23 @@ for (const textEnabled of [false, true]) test(`diagnostic timeline survives deli
   expect(serialized).not.toMatch(/fake-answer|fake-offer|OWNER_CONTEXT|I speak English/);
   if (textEnabled) expect(serialized).toContain("Please show me the railway station.");
   else expect(serialized).not.toMatch(/Please show me|Por favor/);
+  if (textEnabled) {
+    policyTextEnabled = false;
+    const canary = "PolicyChangedCanary 4815";
+    await harness.sourceActive(); await harness.inputDelta(canary, 3000, 4000); await harness.sourceQuiet();
+    await expect.poll(async () => {
+      await harness.advance(4000);
+      return received.some(event => event.type === "transcript.fragment" && event.data.charCount === canary.length);
+    }).toBe(true);
+    expect(received.filter(event => event.type === "transcript.fragment" && event.data.charCount === canary.length)).toEqual([
+      expect.not.objectContaining({ text: canary }),
+    ]);
+    expect(JSON.stringify(await pendingDiagnostics(page))).not.toContain(canary);
+  }
   blocked = true;
   await page.getByRole("button", { name: "End", exact: true }).click();
   await expect(page.getByRole("button", { name: "Back to start", exact: true })).toBeVisible();
-  const pending = await page.evaluate(async () => {
-    const db = await new Promise<IDBDatabase>((resolve, reject) => {
-      const request = indexedDB.open("live-translator-diagnostics-v1");
-      request.onsuccess = () => resolve(request.result); request.onerror = () => reject(request.error);
-    });
-    try {
-      return await new Promise<Array<{ key: string }>>((resolve, reject) => {
-        const tx = db.transaction("events"), request = tx.objectStore("events").getAll();
-        tx.oncomplete = () => resolve((request.result as Array<{ key: string }>).map(({ key }) => ({ key })));
-        tx.onerror = () => reject(tx.error);
-      });
-    } finally { db.close(); }
-  });
+  const pending = await pendingDiagnostics(page);
   expect(pending.length).toBeGreaterThan(0);
   const creates = attempts.size;
   blocked = false;

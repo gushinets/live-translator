@@ -240,8 +240,8 @@ export class AudioController {
       throw new Error("Microphone capture has already started");
     }
 
-    const context = this.ensureAudioContext();
-    observe(this.diagnostics, "audio.state", { phase: "capture_requested" });
+    const diagnostics = this.diagnostics, context = this.ensureAudioContext();
+    observe(diagnostics, "audio.state", { phase: "capture_requested" });
     const resumeStarted = context.resume();
 
     let stream: MediaStream;
@@ -253,7 +253,7 @@ export class AudioController {
         },
       });
     } catch (error) {
-      observe(this.diagnostics, "audio.state", { phase: "capture_failed" });
+      observe(diagnostics, "audio.state", { phase: "capture_failed" });
       console.error("getUserMedia failed", {
         error,
         constraints: { echoCancellation: true, noiseSuppression: false },
@@ -292,7 +292,7 @@ export class AudioController {
     this.micSource = micSource;
     this.micAnalyser = micAnalyser;
     this.microphoneSettings = readMicrophoneSettings(track);
-    observe(this.diagnostics, "audio.state", { phase: "capture_ready", ...this.microphoneSettings });
+    observe(diagnostics, "audio.state", { phase: "capture_ready", ...this.microphoneSettings });
     this.captureEnabled = true;
     this.applyCaptureGate();
     console.info("Microphone track settings", this.microphoneSettings);
@@ -481,7 +481,7 @@ export class AudioController {
   }
 
   private connectPlayback(context: AudioContext, remoteStream: MediaStream): void {
-    const node = this.createPlaybackNode(context);
+    const diagnostics = this.diagnostics, node = this.createPlaybackNode(context);
     this.playbackNode = node;
     this.playbackGeneration++;
     this.playbackRequestId = null;
@@ -489,7 +489,7 @@ export class AudioController {
     this.playbackDestination = context.createMediaStreamDestination();
     const fail = () => {
       if (this.playbackNode !== node) return;
-      observe(this.diagnostics, "audio.state", { phase: "buffer_error" });
+      observe(diagnostics, "audio.state", { phase: "buffer_error" });
       this.setOutputAudible(false);
       this.onPlaybackBufferError?.();
     };
@@ -497,13 +497,13 @@ export class AudioController {
     node.port.onmessage = ({ data }: MessageEvent<{ type: string; value?: boolean; turnId?: string; requestId?: number; generation?: number }>) => {
       if (this.playbackNode !== node) return;
       if (data.type === "reset" && this.playbackResetPending && data.generation === this.playbackGeneration) {
-        observe(this.diagnostics, "audio.state", { phase: "playback_reset", generation: data.generation });
+        observe(diagnostics, "audio.state", { phase: "playback_reset", generation: data.generation });
         this.playbackResetPending = false;
         this.audioElement.muted = !this.outputAudible;
         this.releasePlaybackInput();
       }
       if (data.type === "playback" && !this.audioElement.muted && this.nonInterrupting) {
-        observe(this.diagnostics, "audio.state", { phase: "playback_request", active: data.value === true, requestId: data.requestId, generation: data.generation });
+        observe(diagnostics, "audio.state", { phase: "playback_request", active: data.value === true, requestId: data.requestId, generation: data.generation });
         if (data.generation !== this.playbackGeneration || !Number.isSafeInteger(data.requestId) || data.requestId! <= 0) return;
         const requestId = data.requestId!;
         const generation = data.generation;
@@ -515,7 +515,7 @@ export class AudioController {
             if (!this.inputBlocked && (this.sourceSpeaking || (this.captureEnabled && this.micAnalyser !== null &&
                 (this.audioContext?.state !== "running" || !this.inputReopenEstimator.isQuiet(rmsFromAnalyser(this.micAnalyser)))))) {
               node.port.postMessage({ type: "playback", value: false, requestId, generation });
-              observe(this.diagnostics, "audio.state", { phase: "playback_permission", enabled: false, requestId, generation,
+              observe(diagnostics, "audio.state", { phase: "playback_permission", enabled: false, requestId, generation,
                 reason: this.audioContext?.state !== "running" ? "not_running" : "speech" });
               return;
             }
@@ -526,7 +526,7 @@ export class AudioController {
             if (this.playbackNode === node && !this.audioElement.muted && this.playbackGeneration === generation) {
               this.playbackRequestId = requestId;
               node.port.postMessage({ type: "playback", value: true, requestId, generation });
-              observe(this.diagnostics, "audio.state", { phase: "playback_permission", enabled: true, requestId, generation, reason: "playback" });
+              observe(diagnostics, "audio.state", { phase: "playback_permission", enabled: true, requestId, generation, reason: "playback" });
             }
           } catch { fail(); }
         } else if (requestId === this.playbackRequestId) {
@@ -535,14 +535,14 @@ export class AudioController {
         }
       }
       if (data.type === "pending" && data.generation === this.playbackGeneration) {
-        observe(this.diagnostics, "audio.state", { phase: "pcm_pending", active: data.value === true, generation: data.generation });
+        observe(diagnostics, "audio.state", { phase: "pcm_pending", active: data.value === true, generation: data.generation });
         // A reset barrier mutes output temporarily; fresh held PCM still prevents logical completion.
         const received = this.outputAudible && data.value === true && !this.queuedPlayback;
         this.queuedPlayback = this.outputAudible && data.value === true;
         if (received) this.onPcmReceived?.(this.nowMs());
       }
       if (data.type === "turn" && !this.audioElement.muted) {
-        observe(this.diagnostics, "audio.state", { phase: "playback_activity", active: data.value === true, turnId: data.turnId });
+        observe(diagnostics, "audio.state", { phase: "playback_activity", active: data.value === true, turnId: data.turnId });
         this.onPlaybackActivity?.({ active: data.value === true, atMs: this.nowMs(), owned: true,
           turnId: typeof data.turnId === "string" ? data.turnId : undefined });
       }
@@ -561,7 +561,7 @@ export class AudioController {
     this.remoteDecoder = decoder;
     decoder.onerror = () => {
       const error = decoder.error;
-      observe(this.diagnostics, "audio.state", { phase: "decoder_error", code: error?.code });
+      observe(diagnostics, "audio.state", { phase: "decoder_error", code: error?.code });
       if (this.remoteDecoder === decoder && error) this.onPlaybackDecoderError?.(error);
     };
     decoder.muted = decoder.defaultMuted = true;
@@ -620,21 +620,21 @@ export class AudioController {
   }
 
   async playOutput(): Promise<void> {
-    observe(this.diagnostics, "audio.state", { phase: "play_requested" });
+    const diagnostics = this.diagnostics, decoder = this.remoteDecoder, stream = this.audioElement.srcObject;
+    const current = () => diagnostics === this.diagnostics && decoder === this.remoteDecoder && stream === this.audioElement.srcObject;
+    observe(diagnostics, "audio.state", { phase: "play_requested" });
     try {
-      const decoder = this.remoteDecoder;
-      const stream = this.audioElement.srcObject;
       if (decoder) {
         if (decoder.error !== null) decoder.load();
         await decoder.play();
-        if (decoder !== this.remoteDecoder || stream !== this.audioElement.srcObject) return;
+        if (!current()) return;
       }
       if (stream !== null) {
         if (this.audioElement.error !== null) this.audioElement.load();
         await this.audioElement.play();
       }
-      observe(this.diagnostics, "audio.state", { phase: "play_started" });
-    } catch (error) { observe(this.diagnostics, "audio.state", { phase: "play_failed" }); throw error; }
+      if (current()) observe(diagnostics, "audio.state", { phase: "play_started" });
+    } catch (error) { observe(diagnostics, "audio.state", { phase: "play_failed" }); throw error; }
   }
 
   dispose(): void {
