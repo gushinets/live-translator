@@ -138,6 +138,7 @@ export class DiagnosticOutbox {
   private loadPolicy: (() => Promise<DiagnosticPolicy | undefined>) | undefined;
   private policyWork: Promise<void> | undefined;
   private policyRefreshAt = 0;
+  private disabledMaintenanceAt = 0;
   private lastWarningAt = -Infinity;
   constructor(private readonly options: { queue?: DiagnosticQueue; fetch?: typeof fetch; automatic?: boolean; now?: () => number; producerId?: Promise<string>; storage?: Storage } = {}) {
     this.queue = options.queue ?? new IndexedDiagnosticQueue();
@@ -156,10 +157,14 @@ export class DiagnosticOutbox {
   }
   configure(policy?: DiagnosticPolicy): void {
     if (this.stopped) return;
-    this.policy = policy?.schemaVersion === 1 ? policy : { enabled: false, textEnabled: false, schemaVersion: 1 };
+    const next = policy?.schemaVersion === 1 ? policy : { enabled: false, textEnabled: false, schemaVersion: 1 as const };
+    const changed = this.policy?.enabled !== next.enabled || this.policy?.textEnabled !== next.textEnabled;
+    this.policy = next;
+    if (changed) this.disabledMaintenanceAt = 0;
     this.policyRefreshAt = this.now() + 60000;
     for (const stream of this.streams.values()) stream.drain();
     this.activate();
+    if (changed && !next.enabled && this.options.automatic !== false) this.wake();
   }
   private activate(): void {
     if (this.timer || this.options.automatic === false || this.stopped) return;
@@ -170,7 +175,7 @@ export class DiagnosticOutbox {
     this.wake();
   }
   private readonly wake = () => {
-    if (this.stopped || this.now() < this.retryAt) return;
+    if (this.stopped || this.now() < this.retryAt || this.policy?.enabled === false && this.now() < this.disabledMaintenanceAt) return;
     void this.flush();
   };
   private async refreshPolicy(force = false): Promise<void> {
@@ -237,7 +242,7 @@ export class DiagnosticOutbox {
     console.error("Conversation diagnostics retry scheduled", { code });
   }
   flush(keepalive = false): Promise<void> {
-    if (this.stopped) return Promise.resolve();
+    if (this.stopped || this.policy?.enabled === false && this.now() < this.disabledMaintenanceAt) return Promise.resolve();
     const deliver = async () => {
       const locks = globalThis.navigator?.locks;
       if (locks) await locks.request("live-translator-diagnostics-delivery", { ifAvailable: true }, async lock => { if (lock) await this.runFlush(keepalive); });
@@ -266,7 +271,10 @@ export class DiagnosticOutbox {
     }
     rows = rows.filter(row => row.queuedAt + TTL_MS > this.now());
     for (const row of rows) if (scrub !== null && (scrub === undefined || row.textProducerId === scrub)) stripText(row);
-    if (!this.policy?.enabled || this.stopped) return;
+    if (!this.policy?.enabled || this.stopped) {
+      if (this.policy?.enabled === false) this.disabledMaintenanceAt = this.now() + 60000;
+      return;
+    }
     const first = rows[0]; if (!first) return;
     const batch: DiagnosticQueueRow[] = [];
     for (const row of rows) {

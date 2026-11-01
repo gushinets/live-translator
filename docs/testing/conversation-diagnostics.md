@@ -157,6 +157,8 @@ second while an expired backlog remains. Expired text is also hidden by the repo
 before the next purge. Deleted SQLite space may remain allocated for reuse.
 Existing server databases and browser queues continue retention cleanup while
 collection is disabled; disabling collection does not extend retention.
+Disabled browser collection purges immediately, then performs maintenance at most
+once a minute; ordinary two-second wakeups do not acquire a lock or read IndexedDB.
 Snapshots exported/copied outside this store are not automatically purged.
 
 The report flags sequence gaps, loss markers, unavailable journals, exhausted storage,

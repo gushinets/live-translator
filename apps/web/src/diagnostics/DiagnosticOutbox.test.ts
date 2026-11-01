@@ -18,6 +18,33 @@ function fixture(options: { queue?: DiagnosticQueue; textEnabled?: boolean; prod
   return { outbox, queue, send, requests };
 }
 describe("diagnostic delivery", () => {
+  it("gates disabled maintenance before taking a lock, still purges later expiry/peer rows and resets on policy changes", async () => {
+    vi.useFakeTimers(); const now = Date.now();
+    const event = { schemaVersion: 1, source: "browser", conversationId: crypto.randomUUID(), streamId: crypto.randomUUID(), seq: 1, wallMs: now, monoMs: 0,
+      type: "transcript.fragment", data: { kind: "input", fragmentId: "private", charCount: 7 }, text: "PRIVATE" } as DiagnosticEvent;
+    let rows: DiagnosticQueueRow[] = [{ key: "old", event, queuedAt: now - 86400000 + 30000, bytes: 600 }];
+    const queue: DiagnosticQueue = {
+      put: async () => ({ expired: [], overflow: [] }), read: vi.fn(async () => structuredClone(rows)),
+      remove: async keys => { rows = rows.filter(row => !keys.includes(row.key)); },
+      scrubText: vi.fn(async () => { for (const row of rows) { delete row.event.text; delete row.event.textTruncated; } }),
+    };
+    const request = vi.fn(async (_name: string, _options: unknown, callback: (lock: object) => Promise<void>) => callback({}));
+    vi.stubGlobal("navigator", { locks: { request } });
+    const send = vi.fn(async () => new Response(JSON.stringify({ schemaVersion: 1, serverTime: now, accepted: [] })));
+    const outbox = new DiagnosticOutbox({ queue, fetch: send });
+    try {
+      outbox.configure({ ...active, enabled: false }); await outbox.flush();
+      expect(request).toHaveBeenCalledOnce(); expect(queue.read).toHaveBeenCalledOnce(); expect(rows[0]!.event).not.toHaveProperty("text");
+      await vi.advanceTimersByTimeAsync(20000);
+      rows.push({ key: "peer", event: { ...event, seq: 2, text: "PEER_PRIVATE" }, queuedAt: now + 20000, bytes: 600 });
+      await outbox.flush(); expect(request).toHaveBeenCalledOnce();
+      await vi.advanceTimersByTimeAsync(40000); await outbox.flush();
+      expect(request).toHaveBeenCalledTimes(2); expect(rows.map(row => row.key)).toEqual(["peer"]);
+      expect(JSON.stringify(rows)).not.toContain("PEER_PRIVATE"); expect(send).not.toHaveBeenCalled();
+      outbox.configure(active); outbox.configure({ ...active, enabled: false }); await outbox.flush();
+      expect(request).toHaveBeenCalledTimes(3);
+    } finally { outbox.stop(); }
+  });
   it("preserves another tab's opted-in text and scopes revocation to the producing tab across reload", async () => {
     const optedIn = vi.fn<Storage["getItem"]>(() => "1"), optedOut = vi.fn<Storage["getItem"]>(() => null);
     const a = fixture({ textEnabled: true, producerId: "tab-A", storage: { getItem: optedIn } as unknown as Storage });
