@@ -52,7 +52,7 @@ describe("conversation diagnostic ingestion", () => {
     expect(error).toHaveBeenCalled();
   });
   it("retries the final server loss after a transient lock without another observation", async () => {
-    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] }); resources.push(() => vi.useRealTimers());
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] }); resources.push(() => { vi.useRealTimers(); });
     const directory = mkdtempSync(join(tmpdir(), "diagnostic-lock-")); resources.push(() => rmSync(directory, { recursive: true, force: true }));
     const path = join(directory, "events.sqlite"), journal = new DiagnosticJournal(path, { automatic: false, logger: { error() {} } }); resources.push(() => journal.close());
     const locked = new DatabaseSync(path); resources.push(() => locked.close());
