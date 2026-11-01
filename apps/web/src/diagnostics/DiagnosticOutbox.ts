@@ -99,14 +99,20 @@ export class IndexedDiagnosticQueue implements DiagnosticQueue {
   }
   async scrubText(producerId?: string): Promise<void> {
     const db = await this.open();
+    const count = await new Promise<number>((resolve, reject) => {
+      const tx = db.transaction("events"), request = tx.objectStore("events").index("textProducerId").count(producerId);
+      tx.oncomplete = () => resolve(request.result);
+      tx.onabort = tx.onerror = () => reject(new Error("diagnostics_storage_unavailable"));
+    });
+    if (!count) return;
     return new Promise((resolve, reject) => {
       const tx = db.transaction(["events", "meta"], "readwrite"), meta = tx.objectStore("meta"), total = meta.get("bytes");
       total.onsuccess = () => {
-        let bytes = Number(total.result ?? 0);
+        const initialBytes = Number(total.result ?? 0); let bytes = initialBytes;
         const cursor = tx.objectStore("events").index("textProducerId").openCursor(producerId);
         cursor.onsuccess = () => {
           const entry = cursor.result;
-          if (!entry) { meta.put(bytes, "bytes"); return; }
+          if (!entry) { if (bytes !== initialBytes) meta.put(bytes, "bytes"); return; }
           const row = entry.value as DiagnosticQueueRow, before = row.bytes;
           stripText(row); bytes += row.bytes - before; entry.update(row); entry.continue();
         };
@@ -129,6 +135,7 @@ export class DiagnosticOutbox {
   private readonly volatile = new Map<string, DiagnosticQueueRow>();
   private readonly streams = new Map<string, DiagnosticStream>();
   private readonly producer: Promise<string>;
+  private producerReady: boolean;
   private work: Promise<void> = Promise.resolve();
   private flushing: Promise<void> | undefined;
   private timer: ReturnType<typeof setInterval> | undefined;
@@ -142,10 +149,12 @@ export class DiagnosticOutbox {
   private lastWarningAt = -Infinity;
   constructor(private readonly options: { queue?: DiagnosticQueue; fetch?: typeof fetch; automatic?: boolean; now?: () => number; producerId?: Promise<string>; storage?: Storage } = {}) {
     this.queue = options.queue ?? new IndexedDiagnosticQueue();
-    this.producer = Promise.resolve(options.producerId ?? crypto.randomUUID()).catch(() => crypto.randomUUID());
+    this.producerReady = options.producerId === undefined;
+    this.producer = Promise.resolve(options.producerId ?? crypto.randomUUID()).then(id => { this.producerReady = true; return id; }, () => crypto.randomUUID());
   }
   now(): number { return (this.options.now ?? Date.now)(); }
   textOptedIn(): boolean {
+    if (!this.producerReady) return false;
     try { return (this.options.storage ?? sessionStorage).getItem(DIAGNOSTIC_TEXT_KEY) === "1"; } catch { return false; }
   }
   stream(): DiagnosticStream {
@@ -295,6 +304,15 @@ export class DiagnosticOutbox {
       body: JSON.stringify({ schemaVersion: 1, events: batch.map(row => row.event) }), signal: AbortSignal.timeout(10000),
     });
     if (!response.ok) {
+      if (response.status === 404) {
+        // A deployment can unmount diagnostics without changing the conversation's ownership.
+        await this.refreshPolicy(true);
+        if (!this.policy?.enabled) {
+          await this.queue.scrubText();
+          for (const row of this.volatile.values()) stripText(row);
+          return;
+        }
+      }
       if (response.status === 400 && batch.some(row => row.event.text !== undefined || row.event.textTruncated !== undefined)) {
         // A live tab may outlast a deployment that revoked text. Keep metadata and retry it without content.
         let textDenied = false;

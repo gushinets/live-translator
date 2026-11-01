@@ -337,6 +337,22 @@ function createController<
 }
 
 describe("conversation diagnostic observations", () => {
+  it.each(["input", "output"] as const)("correlates every fragment of long pending and routed %s phrases", async kind => {
+    vi.useFakeTimers();
+    const emit = vi.fn<(type: DiagnosticType, data: unknown, text?: string) => void>();
+    const live = Object.assign(new FakeLive(), { journal: { emit } });
+    const { controller } = createController({ live });
+    await controller.startWithLanguages({ A: "en", B: "es" });
+    for (let index = 0; index < 140; index++) live.emit({ type: kind === "input" ? "session.input_transcript.delta" : "session.output_transcript.delta", delta: "0" });
+    const fragments = emit.mock.calls.filter(([type]) => type === "transcript.fragment").map(([, data]) => (data as { fragmentId: string }).fragmentId);
+    const routedIds = (pending: boolean) => emit.mock.calls.filter(([type, data]) => type === "transcript.route" && (data as { pending: boolean }).pending === pending)
+      .flatMap(([, data]) => (data as { fragmentIds: string[] }).fragmentIds);
+    expect(fragments).toHaveLength(140);
+    expect(new Set(routedIds(true))).toEqual(new Set(fragments));
+    await vi.advanceTimersByTimeAsync(runtime.captionIdleMs + 1);
+    expect(new Set(routedIds(false))).toEqual(new Set(fragments));
+    expect(emit.mock.calls.filter(([type]) => type === "transcript.route").every(([, data]) => (data as { fragmentIds: string[] }).fragmentIds.length <= 128)).toBe(true);
+  });
   it("records the committed caption snapshot even after the transcript advances before commit", async () => {
     const emit = vi.fn<(type: DiagnosticType, data: unknown, text?: string) => void>();
     const live = Object.assign(new FakeLive(), { journal: { emit } });

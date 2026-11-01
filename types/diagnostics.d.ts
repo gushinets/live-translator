@@ -30,7 +30,7 @@ export interface DiagnosticData {
   "diagnostic.loss": { reason: "storage_unavailable" | "queue_overflow" | "expired" | "identity_lost" | "oversize" | "server_limit" | "invalid_event"; count: number; affectedStreamId?: string };
   "diagnostic.clock": { offsetMs: number; uncertaintyMs: number };
   "server.conversation": { status: "active" | "paused" | "resuming" | "ended"; version: number; reason?: DiagnosticEndReason };
-  "server.attempt": { state: "creating" | "active" | "closing" | "closed" | "failed" | "unknown"; generation: number; phase: "registered" | "updated" | "rearmed"; rearmCause?: "startup" | "config_reload" | "credential_refresh" | "operator_retry"; cleanupReason?: DiagnosticCleanupReason; cleanupResult?: "closed_observed" | "terminal_not_live" | "retryable_error" | "blocked_auth_config"; resumeOutcome?: "pending" | "committed" | "aborted" | "expired"; providerSessionId?: string; reason?: DiagnosticEndReason };
+  "server.attempt": { state: "creating" | "active" | "closing" | "closed" | "failed" | "unknown"; generation: number; phase: "registered" | "updated" | "rearmed"; rearmCause?: "startup" | "config_reload" | "credential_refresh" | "operator_retry"; cleanupReason?: DiagnosticCleanupReason; cleanupExhausted?: boolean; cleanupResult?: "closed_observed" | "terminal_not_live" | "retryable_error" | "blocked_auth_config"; resumeOutcome?: "pending" | "committed" | "aborted" | "expired"; providerSessionId?: string; reason?: DiagnosticEndReason };
 }
 export type DiagnosticType = keyof DiagnosticData;
 export type DiagnosticEvent<K extends DiagnosticType = DiagnosticType> = K extends DiagnosticType ? {

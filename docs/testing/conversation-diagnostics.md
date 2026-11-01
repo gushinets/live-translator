@@ -63,7 +63,8 @@ and revoking it stops subsequent text capture. Before replay, queued text is rem
 if either the current server policy or tab setting disallows it; event identities and
 technical fields are retained.
 Consent provenance is local queue metadata tied to the existing tab identity, including
-reloads. An idle tab cannot revoke another tab's recorded consent. Legacy queue rows
+reloads. An idle tab cannot revoke another tab's recorded consent. A duplicated/opener
+tab requires a fresh opt-in when its copied identity is rotated. Legacy queue rows
 retain their capture-time consent until a server-policy revocation or expiry.
 This is a per-tab opt-in, not an administrator authentication mechanism. Both the
 server flag and tab setting are required. Leave the server text flag off on ordinary

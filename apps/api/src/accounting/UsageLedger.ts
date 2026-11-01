@@ -86,7 +86,7 @@ export class UsageLedger {
   private observeAttempt(s: SessionRow, phase: DiagnosticData["server.attempt"]["phase"], rearmCause?: DiagnosticData["server.attempt"]["rearmCause"]): void {
     if (this.diagnosticJournal) this.diagnosticChanges.push({ conversationId: s.conversation_id, liveSessionId: s.id, type: "server.attempt",
       data: { state: s.state, generation: s.generation, phase, ...(rearmCause ? { rearmCause } : {}), ...(s.cleanup_reason ? { cleanupReason: s.cleanup_reason } : {}),
-        ...(s.cleanup_last_result ? { cleanupResult: s.cleanup_last_result } : {}), ...(s.resume_outcome ? { resumeOutcome: s.resume_outcome } : {}),
+        cleanupExhausted: s.cleanup_retry_exhausted_at !== null, ...(s.cleanup_last_result ? { cleanupResult: s.cleanup_last_result } : {}), ...(s.resume_outcome ? { resumeOutcome: s.resume_outcome } : {}),
         ...(s.openai_session_id ? { providerSessionId: s.openai_session_id } : {}), ...(s.app_end_reason ? { reason: s.app_end_reason } : {}) } });
   }
   getConversation(owner: string, id: string): ConversationRow {

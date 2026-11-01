@@ -18,6 +18,56 @@ function fixture(options: { queue?: DiagnosticQueue; textEnabled?: boolean; prod
   return { outbox, queue, send, requests };
 }
 describe("diagnostic delivery", () => {
+  it.each([false, true, "unavailable"] as const)("rechecks an ambiguous 404 against collection policy: %s", async enabled => {
+    const f = fixture(), stream = f.outbox.stream(), conversationId = crypto.randomUUID();
+    stream.bind(conversationId);
+    const load = vi.fn(async () => { if (enabled === "unavailable") throw new Error("offline"); return { ...active, enabled }; });
+    f.outbox.start(load);
+    stream.emit("app.lifecycle", { phase: "start", generation: 0 });
+    f.send.mockResolvedValueOnce(new Response(null, { status: 404 }));
+    await f.outbox.flush();
+    expect(load).toHaveBeenCalledOnce();
+    if (enabled === true) {
+      expect(stream.enabled).toBe(false);
+      expect((await f.queue.read()).some(row => row.event.type === "app.lifecycle")).toBe(false);
+      return;
+    }
+    expect((await f.queue.read()).some(row => row.event.type === "app.lifecycle")).toBe(true);
+    f.outbox.configure(active);
+    expect(stream.enabled).toBe(true);
+    stream.emit("app.lifecycle", { phase: "resume", generation: 1 });
+    await f.outbox.flush();
+    expect(f.requests.flat().filter(event => event.type === "app.lifecycle").map(event => event.data.phase)).toEqual(["start", "resume"]);
+  });
+  it("does not capture text before the producing tab's ownership is established", async () => {
+    sessionStorage.setItem(DIAGNOSTIC_TEXT_KEY, "1");
+    let ready!: (id: string) => void;
+    const queue = new IndexedDiagnosticQueue(), outbox = new DiagnosticOutbox({ queue, automatic: false, fetch: async () => new Response(null, { status: 503 }),
+      producerId: new Promise(resolve => { ready = resolve; }) });
+    outbox.configure({ ...active, textEnabled: true });
+    const stream = outbox.stream(); stream.bind(crypto.randomUUID());
+    stream.emit("transcript.fragment", { kind: "input", fragmentId: "before", charCount: 7 }, "PRIVATE");
+    ready("owned-tab"); await Promise.resolve();
+    stream.emit("transcript.fragment", { kind: "input", fragmentId: "after", charCount: 7 }, "ALLOWED");
+    await outbox.flush();
+    const rows = await queue.read();
+    expect(rows.find(row => row.event.type === "transcript.fragment" && row.event.data.fragmentId === "before")!.event).not.toHaveProperty("text");
+    expect(rows.find(row => row.event.type === "transcript.fragment" && row.event.data.fragmentId === "after")!.event.text).toBe("ALLOWED");
+  });
+  it("avoids writer transactions for text scrubs with no matching rows, including another tab's text", async () => {
+    const queue = new IndexedDiagnosticQueue(); await queue.read();
+    const transactions = vi.spyOn(IDBDatabase.prototype, "transaction");
+    await queue.scrubText(); await queue.scrubText("tab-A");
+    expect(transactions.mock.calls.every(([, mode]) => mode !== "readwrite")).toBe(true);
+    const event = { schemaVersion: 1, source: "browser", conversationId: crypto.randomUUID(), streamId: crypto.randomUUID(), seq: 1,
+      wallMs: Date.now(), monoMs: 0, type: "transcript.fragment", data: { kind: "input", fragmentId: "text", charCount: 7 }, text: "PRIVATE" } as DiagnosticEvent;
+    await queue.put({ key: "peer", event, queuedAt: Date.now(), bytes: 700, textProducerId: "tab-B" });
+    transactions.mockClear(); await queue.scrubText("tab-A");
+    expect(transactions.mock.calls.every(([, mode]) => mode !== "readwrite")).toBe(true);
+    expect((await queue.read())[0]!.event.text).toBe("PRIVATE");
+    await queue.scrubText();
+    expect((await queue.read())[0]!.event).not.toHaveProperty("text");
+  });
   it("resumes the same bound stream after collection is disabled and enabled again", async () => {
     const f = fixture(), stream = f.outbox.stream();
     const conversationId = crypto.randomUUID(), liveSessionId = crypto.randomUUID();
@@ -70,6 +120,7 @@ describe("diagnostic delivery", () => {
     const optedIn = vi.fn<Storage["getItem"]>(() => "1"), optedOut = vi.fn<Storage["getItem"]>(() => null);
     const a = fixture({ textEnabled: true, producerId: "tab-A", storage: { getItem: optedIn } as unknown as Storage });
     const b = fixture({ textEnabled: true, producerId: "tab-B", storage: { getItem: optedOut } as unknown as Storage });
+    await Promise.resolve();
     const stream = a.outbox.stream(); stream.bind(crypto.randomUUID());
     stream.emit("transcript.fragment", { kind: "input", fragmentId: "first", charCount: 7 }, "PRIVATE");
     a.send.mockRejectedValueOnce(new Error("offline")); await a.outbox.flush();
@@ -162,7 +213,7 @@ describe("diagnostic delivery", () => {
     expect((await queue.read())[0]).toMatchObject({ key: "legacy", textProducerId: "legacy", event: { text: "x".repeat(200) } });
     const write = vi.spyOn(IDBDatabase.prototype, "transaction");
     await queue.scrubText();
-    expect(write).toHaveBeenCalledOnce();
+    expect(write.mock.calls.filter(([, mode]) => mode === "readwrite")).toHaveLength(1);
     await queue.put({ key: "new", event: { ...event, seq: 2, text: undefined }, queuedAt: 1, bytes: 400 });
     const rows = await queue.read(); expect(rows.map(row => row.key)).toEqual(["legacy", "new"]);
     expect(rows[0]!.event).not.toHaveProperty("text");

@@ -1474,9 +1474,16 @@ export class SessionController {
     }, runtime.captionIdleMs);
   }
 
+  private observeTranscriptRoute(kind: "input" | "output", fragments: readonly TranscriptFragment[], pending: boolean, side?: Side): void {
+    for (let offset = 0; offset < fragments.length; offset += 128) observe(this.live.journal, "transcript.route", {
+      kind, fragmentIds: fragments.slice(offset, offset + 128).map(part => part.id), pending, side,
+      language: side ? this.languages[side] : undefined,
+    });
+  }
+
   private routeSource(groups: RoutedTranscript[], considerCompletion = true): void {
-    for (const group of groups) observe(this.live.journal, "transcript.route", { kind: "input", fragmentIds: group.fragments.map(part => part.id).slice(0, 128), side: group.side, language: group.side ? this.languages[group.side] : undefined, pending: false });
-    if (this.sourceRouter.hasPending) observe(this.live.journal, "transcript.route", { kind: "input", fragmentIds: this.sourceRouter.pendingFragments.map(part => part.id).slice(0, 128), pending: true });
+    for (const group of groups) this.observeTranscriptRoute("input", group.fragments, false, group.side);
+    if (this.sourceRouter.hasPending) this.observeTranscriptRoute("input", this.sourceRouter.pendingFragments, true);
     const updatingSource = groups.length > 0 || this.sourceRouter.hasPending;
     this.sourceUpdateInProgress = updatingSource;
     try {
@@ -1638,8 +1645,8 @@ export class SessionController {
   }
 
   private routeOutput(groups: RoutedTranscript[], considerCompletion = true): void {
-    for (const group of groups) observe(this.live.journal, "transcript.route", { kind: "output", fragmentIds: group.fragments.map(part => part.id).slice(0, 128), side: group.side, language: group.side ? this.languages[group.side] : undefined, pending: false });
-    if (this.outputRouter.hasPending) observe(this.live.journal, "transcript.route", { kind: "output", fragmentIds: this.outputRouter.pendingFragments.map(part => part.id).slice(0, 128), pending: true });
+    for (const group of groups) this.observeTranscriptRoute("output", group.fragments, false, group.side);
+    if (this.outputRouter.hasPending) this.observeTranscriptRoute("output", this.outputRouter.pendingFragments, true);
     // Includes timer and lifecycle flushes, not only newly received deltas.
     this.expireOutputDeadlines(Date.now(), false);
     for (const { side, fragments } of groups) {

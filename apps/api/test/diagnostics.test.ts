@@ -113,6 +113,19 @@ describe("conversation diagnostic ingestion", () => {
     expect(records.at(-1)).toMatchObject({ phase: "rearmed", rearmCause: "credential_refresh" });
     expect(records.at(-1)).not.toHaveProperty("cleanupResult");
   });
+  it("distinguishes retryable cleanup from the committed exhaustion transition", async () => {
+    const f = fixture();
+    f.ledger.dispatchProviderAttempt(f.owner, f.id, f.c.version, randomUUID(), f.clock.now + 900000);
+    f.ledger.recordProviderCreated(f.id, randomUUID()); f.ledger.requestCleanup(f.id, "abandoned_connect");
+    f.ledger.recordCleanupFailure(f.id, "retryable_error", "temporary");
+    f.clock.now = f.ledger.getAttemptInternal(f.id).cleanup_retry_expires_at! + 1;
+    f.ledger.exhaustCleanup(f.id); await f.journal.flushServerEvents();
+    const report = buildDiagnosticReport(f.db, f.journal.db, { conversationId: f.c.id, now: f.clock.now });
+    const records = report.events!.filter(event => event.type === "server.attempt" && event.liveSessionId === f.id);
+    expect(records.at(-2)!.data).toMatchObject({ state: "unknown", cleanupResult: "retryable_error", cleanupExhausted: false });
+    expect(records.at(-1)!.data).toMatchObject({ state: "unknown", cleanupResult: "retryable_error", cleanupExhausted: true });
+    expect(formatDiagnosticReport(report, "text")).toContain('"cleanupExhausted":true');
+  });
   it("limits an owner's aggregate browser traffic and a rotating-cookie network source, preserving server capacity", async () => {
     const f = fixture({ maxBytes: 15000, conversationMaxBytes: 4000, logger: { error() {} } });
     const make = (owner: string) => f.ledger.createConversation(owner, randomUUID(), "quota-test");
