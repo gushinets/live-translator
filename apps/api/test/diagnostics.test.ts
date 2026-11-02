@@ -242,6 +242,40 @@ describe("conversation diagnostic ingestion", () => {
     expect(f.ledger.getAttemptInternal(f.id).state).toBe("creating");
     expect(f.journal.db.prepare("SELECT owner FROM diagnostic_conversations WHERE id=?").get(f.c.id)!.owner).toBe(diagnosticOwnerId(f.owner));
   });
+  it.each(["data", "wall", "mono", "build"])("rejects duplicate %s changes before applying a text removal", async field => {
+    const f = fixture({ textEnabled: true }), first = f.event(1, { text: "PRIVATE_CANARY" });
+    await f.post([first]).expect(200);
+    const scrubbed = { ...first, textRemoved: true }; delete scrubbed.text;
+    const changed = field === "data" ? { data: { ...first.data, charCount: 8 } } : field === "wall" ? { wallMs: first.wallMs + 1 }
+      : field === "mono" ? { monoMs: first.monoMs + 1 } : { clientBuildId: "different-build" };
+    await f.post([{ ...scrubbed, ...changed }]).expect(409);
+    expect(f.journal.db.prepare("SELECT text FROM diagnostic_text WHERE stream_id=? AND seq=1").get(first.streamId)!.text).toBe("PRIVATE_CANARY");
+    expect(f.journal.db.prepare("SELECT text_expected FROM diagnostic_events WHERE stream_id=? AND seq=1").get(first.streamId)!.text_expected).toBe(1);
+  });
+  it("atomically removes duplicate text and releases its quota once without changing technical evidence", async () => {
+    const f = fixture({ textEnabled: true }); await f.journal.flushServerEvents();
+    const first = f.event(1, { text: "PRIVATE_CANARY".repeat(100), textTruncated: true });
+    await f.post([first]).expect(200);
+    const stored = f.journal.db.prepare("SELECT * FROM diagnostic_events WHERE stream_id=? AND seq=1").get(first.streamId)!;
+    const charge = Number(f.journal.db.prepare("SELECT bytes FROM diagnostic_text WHERE stream_id=? AND seq=1").get(first.streamId)!.bytes);
+    const counters = () => f.journal.db.prepare("SELECT bytes,browser_bytes FROM diagnostic_conversations WHERE id=?").get(f.c.id)!;
+    const before = counters(), scrubbed = { ...first, textRemoved: true }; delete scrubbed.text; delete scrubbed.textTruncated;
+    f.journal.options.maxBytes = Number(before.bytes) / 0.9 + 1;
+    await f.post([scrubbed, { ...scrubbed, monoMs: first.monoMs + 1 }]).expect(409);
+    expect(counters()).toEqual(before);
+    expect(f.journal.db.prepare("SELECT * FROM diagnostic_events WHERE stream_id=? AND seq=1").get(first.streamId)).toEqual(stored);
+    expect(f.journal.db.prepare("SELECT 1 FROM diagnostic_text WHERE stream_id=? AND seq=1").get(first.streamId)).toBeTruthy();
+    const next = { ...f.event(2), streamId: first.streamId, type: "audio.state", data: { phase: "capture_ready" } };
+    await f.post([scrubbed, next]).expect(200);
+    const added = Buffer.byteLength(JSON.stringify(next)) + 256, after = counters();
+    expect(after).toEqual({ bytes: Number(before.bytes) - charge + added, browser_bytes: Number(before.browser_bytes) - charge + added });
+    expect(f.journal.db.prepare("SELECT * FROM diagnostic_events WHERE stream_id=? AND seq=1").get(first.streamId)).toEqual({ ...stored, text_expected: 2, text_truncated: 0 });
+    await f.post([scrubbed, first]).expect(200);
+    expect(counters()).toEqual(after);
+    expect(f.journal.db.prepare("SELECT 1 FROM diagnostic_text WHERE stream_id=? AND seq=1").get(first.streamId)).toBeUndefined();
+    const report = buildDiagnosticReport(f.db, f.journal.db, { conversationId: f.c.id });
+    expect(report.events).toContainEqual(expect.objectContaining({ streamId: first.streamId, seq: 1, textStatus: "removed", textRemoved: true }));
+  });
   it.each([{ maxBytes: 10000, conversationMaxBytes: 20000 }, { maxBytes: 20000, conversationMaxBytes: 10000 }])("reserves lifecycle capacity when browser traffic reaches a journal or conversation limit: %j", async limits => {
     const journal = new DiagnosticJournal(":memory:", { ...limits, automatic: false, logger: { error() {} } }); resources.push(() => journal.close());
     const conversation = { id: randomUUID(), anonymous_user_id: randomUUID(), created_at: Date.now() }, streamId = randomUUID();

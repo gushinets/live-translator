@@ -76,6 +76,11 @@ if either the current server policy or tab setting disallows it; event identitie
 technical fields are retained.
 Scrubbed rows retain only `textRemoved: true`; reports show `textStatus: removed`
 and a `text_removed` warning, distinct from text never captured or expired on the server.
+If the original upload committed but its receipt or local queue removal was lost,
+a scrubbed replay with the same event identity also removes the server's retained
+text and releases its quota before ACK. Technical fields must match the committed
+event; conflicts reject the entire batch. Repeated removal or an older text-bearing
+retry cannot restore the text, change original timestamps or release quota twice.
 Consent provenance is local queue metadata tied to the existing tab identity, including
 reloads. Only that tab can replay its text after checking current consent. Other tabs
 can send technical-only rows but leave its text-bearing rows queued. If the producing

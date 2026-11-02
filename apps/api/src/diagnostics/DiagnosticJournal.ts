@@ -1,6 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
+import { isDeepStrictEqual } from "node:util";
 import { DatabaseSync } from "node:sqlite";
 import type { DiagnosticData, DiagnosticEvent, DiagnosticType } from "../../../../types/diagnostics.js";
 import { transaction } from "../persistence/database.js";
@@ -136,7 +137,19 @@ export class DiagnosticJournal {
           const stream = this.db.prepare("SELECT * FROM diagnostic_streams WHERE id=?").get(event.streamId);
           if (stream && (stream.conversation_id !== conversation.id || stream.live_session_id !== (event.liveSessionId ?? null) || stream.source !== event.source))
             throw new DiagnosticError("diagnostics_identity_conflict", 409);
-          if (this.db.prepare("SELECT 1 FROM diagnostic_events WHERE stream_id=? AND seq=?").get(event.streamId, event.seq)) {
+          const existing = this.db.prepare("SELECT * FROM diagnostic_events WHERE stream_id=? AND seq=?").get(event.streamId, event.seq);
+          if (existing) {
+            if (existing.wall_ms !== event.wallMs || existing.mono_ms !== event.monoMs || existing.type !== event.type ||
+                existing.client_build_id !== (event.clientBuildId ?? null) ||
+                !isDeepStrictEqual(JSON.parse(String(existing.data_json)), JSON.parse(JSON.stringify(event.data))))
+              throw new DiagnosticError("diagnostics_identity_conflict", 409);
+            if (event.textRemoved && existing.text_expected !== 2) {
+              const released = Number(this.db.prepare("SELECT bytes FROM diagnostic_text WHERE stream_id=? AND seq=?").get(event.streamId, event.seq)?.bytes ?? 0);
+              this.db.prepare("DELETE FROM diagnostic_text WHERE stream_id=? AND seq=?").run(event.streamId, event.seq);
+              this.db.prepare("UPDATE diagnostic_events SET text_expected=2,text_truncated=0 WHERE stream_id=? AND seq=?").run(event.streamId, event.seq);
+              bytes -= released; total -= released;
+              if (event.source === "browser") { browserBytes -= released; ownerBytes -= released; }
+            }
             accepted.push({ streamId: event.streamId, seq: event.seq }); continue;
           }
           const { text, ...technical } = event;
@@ -155,7 +168,7 @@ export class DiagnosticJournal {
           this.db.prepare(`INSERT INTO diagnostic_events(stream_id,seq,conversation_id,live_session_id,source,wall_ms,mono_ms,received_at,type,data_json,client_build_id,text_expected,text_truncated)
             VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(event.streamId, event.seq, conversation.id, event.liveSessionId ?? null, event.source,
             event.wallMs, event.monoMs, now, event.type, JSON.stringify(event.data), event.clientBuildId ?? null,
-            // 0: never captured; 1: retained/expired; 2: privacy removal before ingestion.
+            // 0: never captured; 1: retained/expired; 2: privacy removal.
             event.textRemoved ? 2 : event.text === undefined ? 0 : 1, event.textTruncated ? 1 : 0);
           if (keepText) this.db.prepare("INSERT INTO diagnostic_text(stream_id,seq,conversation_id,text,bytes) VALUES(?,?,?,?,?)").run(event.streamId, event.seq, conversation.id, text!, textBytes);
           accepted.push({ streamId: event.streamId, seq: event.seq });

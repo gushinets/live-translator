@@ -30,13 +30,16 @@ async function fixture() {
   cleanup.push(() => new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve())));
   await once(server, "listening");
   const address = server.address() as { port: number }, owner = crypto.randomUUID(), nativeFetch = globalThis.fetch;
-  const state = { offline: false, readbackOffline: true, consent: true }, statuses: number[] = [];
+  const state = { offline: false, readbackOffline: true, consent: true, loseReceipt: false }, statuses: number[] = [];
   vi.stubGlobal("fetch", async (url: string, init?: RequestInit) => {
     if (state.offline && (url.startsWith("/api/live/session") && (init?.method === "POST" || state.readbackOffline) || url.endsWith("/diagnostics"))) throw new TypeError("offline");
     const headers = new Headers(init?.headers);
     headers.set("Origin", apiConfig.webOrigin); headers.set("Cookie", `live-translator-dev=${owner}`);
     const response = await nativeFetch(`http://127.0.0.1:${address.port}${url}`, { ...init, headers });
-    if (url.endsWith("/diagnostics")) statuses.push(response.status);
+    if (url.endsWith("/diagnostics")) {
+      statuses.push(response.status);
+      if (response.ok && state.loseReceipt) { state.loseReceipt = false; throw new TypeError("receipt lost"); }
+    }
     return response;
   });
   const api = new AccountingBackend(), queue = new IndexedDiagnosticQueue();
@@ -124,6 +127,33 @@ it.each([0, 1])("reports a collection-disabled interval with %s observed/discard
     expect(output).toContain("collection_disabled"); expect(output).not.toContain("PRIVATE_CANARY");
   }
 });
+
+it.each(["tab", "server"].flatMap(revoke => ["receipt", "queue_remove"].map(lost => ({ revoke, lost }))))(
+  "scrubs committed text after losing $lost and revoking $revoke consent", async ({ revoke, lost }) => {
+    const f = await fixture(), c = await f.api.createConversation(crypto.randomUUID()), stream = f.outbox.stream();
+    stream.bind(c.conversationId);
+    stream.emit("transcript.fragment", { kind: "input", fragmentId: "private", charCount: 14 }, "PRIVATE_CANARY");
+    stream.emit("audio.state", { phase: "capture_ready" });
+    const remove = vi.spyOn(f.queue, "remove");
+    if (lost === "receipt") f.state.loseReceipt = true; else remove.mockRejectedValueOnce(new Error("IDB removal failed"));
+    await f.outbox.flush(); remove.mockRestore();
+    expect(f.journal.db.prepare("SELECT text FROM diagnostic_text WHERE stream_id=? AND seq=1").get(stream.id)!.text).toBe("PRIVATE_CANARY");
+    expect(JSON.stringify(await f.queue.read())).toContain("PRIVATE_CANARY");
+    if (revoke === "tab") f.state.consent = false; else f.journal.options.textEnabled = false;
+    f.outbox.stop();
+    const replay = new DiagnosticOutbox(f.options); replay.configure((await f.api.policy()).diagnostics);
+    await replay.flush(); replay.stop();
+    expect(f.statuses).toEqual([200, 200]); expect(await f.queue.read()).toEqual([]);
+    expect(f.journal.db.prepare("SELECT COUNT(*) AS n FROM diagnostic_text WHERE stream_id=?").get(stream.id)!.n).toBe(0);
+    expect(f.journal.db.prepare("SELECT COUNT(*) AS n FROM diagnostic_events WHERE stream_id=?").get(stream.id)!.n).toBe(2);
+    const report = buildDiagnosticReport(f.db, f.journal.db, { conversationId: c.conversationId });
+    expect(report.events).toContainEqual(expect.objectContaining({ streamId: stream.id, seq: 1, textRemoved: true, textStatus: "removed" }));
+    for (const format of ["text", "jsonl"] as const) {
+      const output = formatDiagnosticReport(report, format);
+      expect(output).toContain("text_removed"); expect(output).not.toContain("PRIVATE_CANARY");
+    }
+  },
+);
 
 it.each(["tab", "server"])("reports text removed by %s revocation after offline queue and replay", async revoke => {
   const f = await fixture(), c = await f.api.createConversation(crypto.randomUUID()), stream = f.outbox.stream();
