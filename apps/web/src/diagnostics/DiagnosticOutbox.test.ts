@@ -18,6 +18,52 @@ function fixture(options: { queue?: DiagnosticQueue; textEnabled?: boolean; prod
   return { outbox, queue, send, requests };
 }
 describe("diagnostic delivery", () => {
+  it.each(["tab", "server"].flatMap(revoke => [false, true].map(reload => ({ revoke, reload }))))(
+    "keeps failed $revoke revocation sticky across re-opt-in, reload=$reload", async ({ revoke, reload }) => {
+      sessionStorage.setItem(DIAGNOSTIC_TEXT_KEY, "1");
+      const f = fixture({ textEnabled: true, producerId: "same-tab" }), stream = f.outbox.stream();
+      stream.bind(crypto.randomUUID()); await Promise.resolve();
+      stream.emit("transcript.fragment", { kind: "input", fragmentId: "old", charCount: 7 }, "PRIVATE");
+      f.send.mockRejectedValue(new Error("offline")); await f.outbox.flush();
+      const scrub = vi.spyOn(f.queue, "scrubText").mockRejectedValueOnce(new Error("write denied"));
+      if (revoke === "tab") sessionStorage.removeItem(DIAGNOSTIC_TEXT_KEY);
+      else f.outbox.configure(active);
+      await f.outbox.flush();
+      expect((await f.queue.read())[0]!.event.text).toBe("PRIVATE");
+      sessionStorage.setItem(DIAGNOSTIC_TEXT_KEY, "1");
+      const next = reload ? fixture({ queue: f.queue, textEnabled: true, producerId: "same-tab" }) : f;
+      next.outbox.configure({ ...active, textEnabled: true });
+      if (!reload) f.send.mockImplementation(async (_url, init) => {
+        const events = (JSON.parse(String(init?.body)) as { events: DiagnosticEvent[] }).events; f.requests.push(events);
+        return new Response(JSON.stringify({ schemaVersion: 1, serverTime: Date.now(), accepted: events.map(({ streamId, seq }) => ({ streamId, seq })) }));
+      });
+      await next.outbox.flush(); await next.outbox.flush();
+      expect(next.requests.flat()).toContainEqual(expect.objectContaining({ streamId: stream.id, seq: 1, textRemoved: true }));
+      expect(JSON.stringify(next.requests)).not.toContain("PRIVATE"); expect(await f.queue.read()).toEqual([]);
+      expect(scrub).toHaveBeenCalledTimes(2);
+      const current = next.outbox.stream(); current.bind(crypto.randomUUID());
+      current.emit("transcript.fragment", { kind: "input", fragmentId: "new", charCount: 7 }, "CURRENT");
+      await next.outbox.flush();
+      expect(next.requests.flat()).toContainEqual(expect.objectContaining({ text: "CURRENT" }));
+    },
+  );
+  it("preserves disabled-maintenance expiry without inventing a historical collection interval", async () => {
+    const queue = new IndexedDiagnosticQueue(), event = { schemaVersion: 1, source: "browser", conversationId: crypto.randomUUID(),
+      liveSessionId: crypto.randomUUID(), streamId: crypto.randomUUID(), seq: 1, wallMs: 0, monoMs: 0,
+      type: "app.lifecycle", data: { phase: "end", generation: 0 } } as DiagnosticEvent;
+    await queue.put({ key: `${event.streamId}:1`, event, queuedAt: 0, bytes: 400 });
+    const f = fixture({ queue }); f.outbox.configure({ ...active, enabled: false });
+    await f.outbox.flush();
+    await vi.waitFor(async () => expect((await queue.read()).some(row => row.event.type === "diagnostic.loss")).toBe(true));
+    expect(f.send).not.toHaveBeenCalled();
+    const reloaded = fixture({ queue });
+    f.outbox.configure(active);
+    for (let i = 0; i < 3; i++) { await f.outbox.flush(); await reloaded.outbox.flush(); }
+    const events = [...f.requests, ...reloaded.requests].flat();
+    expect(events).toContainEqual(expect.objectContaining({ conversationId: event.conversationId, liveSessionId: event.liveSessionId,
+      type: "diagnostic.loss", data: { reason: "expired", count: 1, affectedStreamId: event.streamId } }));
+    expect(events.some(row => row.type === "diagnostic.collection" && row.conversationId === event.conversationId)).toBe(false);
+  });
   it("sanitizes unrecoverable producer text before replay even after the new document opts in", async () => {
     sessionStorage.setItem(DIAGNOSTIC_TEXT_KEY, "1");
     const f = fixture({ textEnabled: true, producerId: "old-document" }), stream = f.outbox.stream();
@@ -491,7 +537,11 @@ describe("diagnostic delivery", () => {
       type: "transcript.fragment", data: { kind: "input", fragmentId: "old", charCount: 14 }, text: "PRIVATE_CANARY" } as DiagnosticEvent;
     await f.queue.put({ key: "old", queuedAt: 0, bytes: 500, event });
     f.outbox.configure({ ...active, enabled: false }); await f.outbox.flush();
-    expect(await f.queue.read()).toEqual([]); expect(f.send).not.toHaveBeenCalled();
+    const rows = await f.queue.read();
+    expect(rows.map(row => row.event)).toEqual([expect.objectContaining({ type: "diagnostic.loss", data: {
+      reason: "expired", count: 1, affectedStreamId: event.streamId,
+    } })]);
+    expect(JSON.stringify(rows)).not.toContain("PRIVATE_CANARY"); expect(f.send).not.toHaveBeenCalled();
   });
   it("logs a bounded safe reason when delivery retries instead of exposing the error or content", async () => {
     const error = vi.spyOn(console, "error").mockImplementation(() => {}), f = fixture(), stream = f.outbox.stream(); stream.bind(crypto.randomUUID());

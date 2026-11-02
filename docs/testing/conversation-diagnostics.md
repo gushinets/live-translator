@@ -21,8 +21,8 @@ Retired transports do not observe later policy transitions; genuinely late data
 still keeps its original stream and attempt identity.
 If late data was discarded while collection was disabled, re-enabling collection
 flushes that pending gap even when no further event arrives on the retired stream.
-Temporary streams used to report losses from an older document are also retired;
-later policy changes in a different conversation do not create gaps for them.
+Historical loss records are written directly to the bounded outbox without a
+current-document policy observer; later policy changes do not create gaps for them.
 
 The database is `/diagnostics/events.sqlite` in the separate `diagnostics-data`
 Compose volume. Local runs use `DIAGNOSTICS_DB_PATH=./.data/diagnostics/events.sqlite`
@@ -74,6 +74,13 @@ is checked for each content event, so enabling it after the page becomes idle wo
 and revoking it stops subsequent text capture. Before replay, queued text is removed
 if either the current server policy or tab setting disallows it; event identities and
 technical fields are retained.
+If a durable scrub fails, its scope remains pending and is retried even after
+text is enabled again. Content-free revocation intents are also saved in the
+tab's session storage for reload recovery when that storage is available; otherwise
+the current document keeps its pending intent in memory. Text capture stays off while an
+intent is pending. In-memory rows are scrubbed immediately, and queued read
+copies stay scrubbed for delivery until the durable scrub succeeds. New consent
+permits new test text after cleanup; it does not restore pre-revocation text.
 Scrubbed rows retain only `textRemoved: true`; reports show `textStatus: removed`
 and a `text_removed` warning, distinct from text never captured or expired on the server.
 If the original upload committed but its receipt or local queue removal was lost,
@@ -86,7 +93,9 @@ A 507 preserves text/removal rows for retry; after a removal batch hits quota,
 individual retries rotate past blocked rows so one unsaved event cannot hold up
 deletion of other committed text. After an ordinary text addition hits quota,
 technical-only batches bypass pending text additions; the text remains queued
-for retry without suppressing smaller technical observations.
+for retry without suppressing smaller technical observations. Successful technical
+delivery ends this priority, allowing the oldest retained text another attempt even
+while new telemetry keeps arriving. Another 507 reinstates the bypass.
 Pending removals keep the same 5 MiB / 24-hour
 local queue limits and retry backoff.
 With Web Locks ownership, consent provenance is local queue metadata tied to the tab
@@ -216,6 +225,10 @@ when conversation cleanup fails. Final pagehide delivery is best effort.
 
 Client backlog is limited to 5 MiB / 24 hours. IndexedDB failure falls back to bounded
 memory. Loss markers identify the affected conversation, attempt and producer stream.
+Expiry maintenance also persists content-free loss records while collection is
+disabled and delivers them after re-enabling, including after reload. These
+historical records do not observe the current document's collection-policy interval
+or create a `diagnostic.collection` boundary for an already finished attempt.
 If inserting a loss marker evicts another observation, that victim also gets its
 own scoped marker. Unexpired loss markers are protected from capacity eviction in
 both IndexedDB and memory, so this process ends rather than cycling through markers.

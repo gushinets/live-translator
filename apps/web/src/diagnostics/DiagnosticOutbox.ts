@@ -3,6 +3,7 @@ import type { DiagnosticData, DiagnosticEvent, DiagnosticPolicy, DiagnosticRecei
 export type { DiagnosticSink, DiagnosticData } from "../../../../types/diagnostics.js";
 
 export const DIAGNOSTIC_TEXT_KEY = "liveTranslatorDiagnosticText";
+const SCRUB_INTENT_KEY = "liveTranslatorDiagnosticScrubs";
 const MAX_BYTES = 5 * 1024 * 1024, TTL_MS = 86400000;
 export interface DiagnosticQueueRow { key: string; event: DiagnosticEvent; queuedAt: number; bytes: number; textProducerId?: string }
 export interface DiagnosticQueue {
@@ -142,6 +143,7 @@ export class DiagnosticOutbox {
   private readonly volatile = new Map<string, DiagnosticQueueRow>();
   private readonly streams = new Map<string, DiagnosticStream>();
   private readonly deferredRemovals = new Set<string>();
+  private readonly pendingScrubs = new Set<string | undefined>();
   private singleRemoval = false;
   private prioritizeTechnical = false;
   private readonly producer: Promise<string>;
@@ -165,10 +167,14 @@ export class DiagnosticOutbox {
     this.producer = Promise.resolve(options.producerId ?? crypto.randomUUID()).then(id => {
       this.producerReady = true; this.recoverableProducer = id !== null; return id ?? crypto.randomUUID();
     }, () => { this.recoverableProducer = false; return crypto.randomUUID(); });
+    try {
+      const saved: unknown = JSON.parse((options.storage ?? sessionStorage).getItem(SCRUB_INTENT_KEY) ?? "[]");
+      if (Array.isArray(saved)) for (const scope of saved) if (scope === null || typeof scope === "string") this.pendingScrubs.add(scope ?? undefined);
+    } catch { this.pendingScrubs.add(undefined); }
   }
   now(): number { return (this.options.now ?? Date.now)(); }
   textOptedIn(): boolean {
-    if (!this.producerReady) return false;
+    if (!this.producerReady || this.pendingScrubs.size) return false;
     try { return (this.options.storage ?? sessionStorage).getItem(DIAGNOSTIC_TEXT_KEY) === "1"; } catch { return false; }
   }
   stream(): DiagnosticStream {
@@ -213,7 +219,7 @@ export class DiagnosticOutbox {
     globalThis.document?.removeEventListener("visibilitychange", this.wake);
   }
   enqueue(event: DiagnosticEvent): void {
-    if (!this.policy?.enabled) return;
+    if (!this.policy?.enabled && event.type !== "diagnostic.loss") return;
     const urgent = event.type === "app.state" && ["ending", "ended", "error"].includes(event.data.to) ||
       event.type === "transport.event" && ["error", "invalid"].includes(event.data.type) ||
       event.type === "audio.state" && ["buffer_error", "decoder_error", "capture_failed"].includes(event.data.phase);
@@ -244,9 +250,13 @@ export class DiagnosticOutbox {
     if (urgent) void this.work.then(() => this.flush());
   }
   private loss(event: DiagnosticEvent, reason: DiagnosticData["diagnostic.loss"]["reason"], count: number): void {
-    let stream = this.streams.get(event.streamId);
-    if (!stream) { stream = this.stream(); stream.bind(event.conversationId, event.liveSessionId); stream.retire(); }
-    stream.emit("diagnostic.loss", { reason, count, affectedStreamId: event.streamId });
+    const stream = this.policy?.enabled ? this.streams.get(event.streamId) : undefined;
+    const data = { reason, count, affectedStreamId: event.streamId };
+    if (stream) stream.emit("diagnostic.loss", data);
+    // Historical maintenance reports an existing loss; it does not observe this document's policy interval.
+    else this.enqueue({ schemaVersion: 1, source: "browser", conversationId: event.conversationId,
+      ...(event.liveSessionId ? { liveSessionId: event.liveSessionId } : {}), streamId: crypto.randomUUID(), seq: 1,
+      wallMs: this.now(), monoMs: performance.now(), clientBuildId: CLIENT_BUILD_ID, type: "diagnostic.loss", data });
   }
   private lossRows(rows: DiagnosticQueueRow[], reason: DiagnosticData["diagnostic.loss"]["reason"]): void {
     const groups = new Map<string, { event: DiagnosticEvent; count: number }>();
@@ -269,6 +279,19 @@ export class DiagnosticOutbox {
     const code = error instanceof Error && ["diagnostics_ack_storage_failed", "diagnostics_storage_unavailable", "policy_unavailable"].includes(error.message) ? error.message : "delivery_failed";
     console.error("Conversation diagnostics retry scheduled", { code });
   }
+  private persistScrubs(): void {
+    try {
+      const storage = this.options.storage ?? sessionStorage;
+      if (this.pendingScrubs.size) storage.setItem(SCRUB_INTENT_KEY, JSON.stringify([...this.pendingScrubs].map(scope => scope ?? null)));
+      else storage.removeItem(SCRUB_INTENT_KEY);
+    } catch { this.failed(new Error("diagnostics_storage_unavailable")); }
+  }
+  private async scrubText(scope?: string): Promise<void> {
+    this.pendingScrubs.add(scope); this.persistScrubs();
+    for (const row of this.volatile.values()) if (scope === undefined || row.textProducerId === scope) stripText(row);
+    await this.queue.scrubText(scope);
+    this.pendingScrubs.delete(scope); this.persistScrubs();
+  }
   flush(keepalive = false): Promise<void> {
     if (this.stopped || this.policy?.enabled === false && this.now() < this.disabledMaintenanceAt) return Promise.resolve();
     const deliver = async () => {
@@ -284,8 +307,10 @@ export class DiagnosticOutbox {
     await this.work;
     const producerId = await this.producer;
     const scrub = !this.policy ? null : !this.policy.enabled || !this.policy.textEnabled ? undefined : !this.textOptedIn() ? producerId : null;
-    if (scrub !== null) {
-      try { await this.queue.scrubText(scrub); } catch { this.failed(new Error("diagnostics_storage_unavailable")); }
+    if (scrub !== null && !this.pendingScrubs.has(undefined)) this.pendingScrubs.add(scrub);
+    const scrubs = [...this.pendingScrubs];
+    for (const scope of scrubs) {
+      try { await this.scrubText(scope); } catch { this.failed(new Error("diagnostics_storage_unavailable")); }
     }
     let rows: DiagnosticQueueRow[];
     try { rows = await this.queue.read(); } catch { rows = []; this.failed(new Error("diagnostics_storage_unavailable")); }
@@ -301,10 +326,10 @@ export class DiagnosticOutbox {
     rows = rows.filter(row => row.queuedAt + TTL_MS > this.now());
     // Without document ownership, a previous producer's consent cannot be recovered safely.
     if (!this.recoverableProducer) for (const peer of new Set(rows.flatMap(row => row.textProducerId && row.textProducerId !== producerId ? [row.textProducerId] : []))) {
-      try { await this.queue.scrubText(peer); } catch { this.failed(new Error("diagnostics_storage_unavailable")); }
+      try { await this.scrubText(peer); } catch { this.failed(new Error("diagnostics_storage_unavailable")); }
       for (const row of rows) if (row.textProducerId === peer) stripText(row);
     }
-    for (const row of rows) if (scrub !== null && (scrub === undefined || row.textProducerId === scrub)) stripText(row);
+    for (const row of rows) if (scrubs.some(scope => scope === undefined || row.textProducerId === scope)) stripText(row);
     // Only the producing tab can recheck its current consent; peer text waits for that tab or expiry.
     const textAllowed = this.policy?.textEnabled && this.textOptedIn();
     for (const row of rows) if (!this.policy?.textEnabled || row.textProducerId === producerId && !textAllowed) stripText(row);
@@ -350,8 +375,7 @@ export class DiagnosticOutbox {
         // A deployment can unmount diagnostics without changing the conversation's ownership.
         await this.refreshPolicy(true);
         if (!this.policy?.enabled) {
-          await this.queue.scrubText();
-          for (const row of this.volatile.values()) stripText(row);
+          await this.scrubText();
           return;
         }
       }
@@ -363,8 +387,7 @@ export class DiagnosticOutbox {
         await this.refreshPolicy(true);
         if (textDenied) this.configure({ enabled: this.policy?.enabled ?? true, textEnabled: false, schemaVersion: 1 });
         if (!this.policy?.textEnabled) {
-          await this.queue.scrubText();
-          for (const row of this.volatile.values()) stripText(row);
+          await this.scrubText();
           return;
         }
       }
@@ -387,6 +410,7 @@ export class DiagnosticOutbox {
     const accepted = new Set(receipt.accepted.map(row => `${row.streamId}:${row.seq}`));
     const committed = batch.filter(row => accepted.has(row.key));
     await this.remove(committed);
+    if (committed.length && !removingText && !hasText(first.event)) this.prioritizeTechnical = false;
     const receivedAt = this.now(); this.retryAt = 0; this.failures = 0;
     const roundtrip = Math.max(0, performance.now() - sentMono);
     const wallAdjustment = Math.abs(receivedAt - sentAt - roundtrip);

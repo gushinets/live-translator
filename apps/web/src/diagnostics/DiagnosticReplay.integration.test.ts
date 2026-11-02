@@ -2,7 +2,7 @@
 import { once } from "node:events";
 import { IDBFactory } from "fake-indexeddb";
 import { afterEach, expect, it, vi } from "vitest";
-import { DiagnosticOutbox, IndexedDiagnosticQueue } from "./DiagnosticOutbox";
+import { DiagnosticOutbox, IndexedDiagnosticQueue, DIAGNOSTIC_TEXT_KEY } from "./DiagnosticOutbox";
 import { AccountingBackend } from "../api/AccountingBackend";
 import { ConversationAccounting } from "../session/ConversationAccounting";
 import { MetadataDeliveryBudget } from "../session/MetadataDeliveryBudget";
@@ -46,8 +46,10 @@ async function fixture() {
     return response;
   });
   const api = new AccountingBackend(), queue = new IndexedDiagnosticQueue();
+  const settings = new Map<string, string>();
   const options = { queue, automatic: false, producerId: Promise.resolve("test-tab"),
-    storage: { getItem: () => state.consent ? "1" : null } as unknown as Storage };
+    storage: { getItem: (key: string) => key === DIAGNOSTIC_TEXT_KEY ? state.consent ? "1" : null : settings.get(key) ?? null,
+      setItem: (key: string, value: string) => { settings.set(key, value); }, removeItem: (key: string) => { settings.delete(key); } } as unknown as Storage };
   const outbox = new DiagnosticOutbox(options); cleanup.push(() => outbox.stop());
   outbox.start(async () => (await api.policy()).diagnostics);
   outbox.configure((await api.policy()).diagnostics);
@@ -64,6 +66,37 @@ async function committedTextWithoutReceipt() {
   expect(f.journal.db.prepare("SELECT text FROM diagnostic_text WHERE stream_id=? AND seq=1").get(stream.id)!.text).toBe("PRIVATE_CANARY");
   return { ...f, c, stream };
 }
+
+it.each(["tab", "server"])("finishes failed %s text revocation after reload and renewed consent", async revoke => {
+  const f = await committedTextWithoutReceipt();
+  vi.spyOn(f.queue, "scrubText").mockRejectedValueOnce(new Error("write denied"));
+  if (revoke === "tab") f.state.consent = false; else f.journal.options.textEnabled = false;
+  f.outbox.configure((await f.api.policy()).diagnostics); f.state.offline = true;
+  await f.outbox.flush();
+  expect(JSON.stringify(await f.queue.read())).toContain("PRIVATE_CANARY");
+  f.outbox.stop(); f.state.consent = true; f.journal.options.textEnabled = true; f.state.offline = false;
+  const reload = new DiagnosticOutbox(f.options); cleanup.push(() => reload.stop()); reload.configure((await f.api.policy()).diagnostics);
+  await reload.flush(); await reload.flush();
+  expect(f.batches.at(-1)).toContainEqual(expect.objectContaining({ streamId: f.stream.id, seq: 1, textRemoved: true }));
+  expect(JSON.stringify(f.batches.at(-1))).not.toContain("PRIVATE_CANARY"); expect(await f.queue.read()).toEqual([]);
+  expect(f.journal.db.prepare("SELECT 1 FROM diagnostic_text WHERE stream_id=?").get(f.stream.id)).toBeUndefined();
+  expect(buildDiagnosticReport(f.db, f.journal.db, { conversationId: f.c.conversationId }).events)
+    .toContainEqual(expect.objectContaining({ streamId: f.stream.id, seq: 1, textStatus: "removed" }));
+});
+
+it("retries retained text after capacity recovers while technical telemetry keeps arriving", async () => {
+  const f = await fixture(), c = await f.api.createConversation(crypto.randomUUID()), stream = f.outbox.stream();
+  stream.bind(c.conversationId); await f.journal.flushServerEvents();
+  f.journal.options.maxBytes = Number(f.journal.db.prepare("SELECT SUM(bytes) AS n FROM diagnostic_conversations").get()!.n) / 0.9 + 1000;
+  stream.emit("transcript.fragment", { kind: "input", fragmentId: "large", charCount: 4096 }, "x".repeat(4096));
+  stream.emit("audio.state", { phase: "capture_ready" });
+  await f.outbox.flush(); await f.outbox.flush();
+  expect(f.statuses).toEqual([507, 200]);
+  f.journal.options.maxBytes = 1073741824;
+  for (let i = 0; i < 3; i++) { stream.emit("audio.state", { phase: "capture_ready" }); await f.outbox.flush(); }
+  expect(f.journal.db.prepare("SELECT text FROM diagnostic_text WHERE stream_id=? AND seq=1").get(stream.id)?.text).toBe("x".repeat(4096));
+  expect(stream.enabled).toBe(true);
+});
 
 it("delivers technical telemetry past a retained text addition rejected by storage quota", async () => {
   const f = await fixture(), c = await f.api.createConversation(crypto.randomUUID()), stream = f.outbox.stream();
@@ -83,7 +116,7 @@ it("delivers technical telemetry past a retained text addition rejected by stora
     .toContainEqual(expect.objectContaining({ type: "audio.state", streamId: stream.id, seq: 2 }));
   f.journal.options.maxBytes = Number(f.journal.db.prepare("SELECT SUM(bytes) AS n FROM diagnostic_conversations").get()!.n) / 0.9 + 1;
   stream.emit("audio.state", { phase: "capture_stopped" });
-  await f.outbox.flush();
+  await f.outbox.flush(); await f.outbox.flush();
   expect(f.statuses.at(-1)).toBe(507); expect(stream.enabled).toBe(false);
   expect((await f.queue.read()).find(row => row.event.seq === 1 && row.event.streamId === stream.id)!.event.text).toBe("x".repeat(4096));
   f.journal.options.maxBytes = 1073741824;
