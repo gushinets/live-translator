@@ -18,9 +18,76 @@ function fixture(options: { queue?: DiagnosticQueue; textEnabled?: boolean; prod
   return { outbox, queue, send, requests };
 }
 describe("diagnostic delivery", () => {
+  it.each([false, true])("does not renew consent for queued text between flushes, reload=%s", async reload => {
+    sessionStorage.setItem(DIAGNOSTIC_TEXT_KEY, crypto.randomUUID());
+    const f = fixture({ textEnabled: true, producerId: "same-tab" }), old = f.outbox.stream();
+    old.bind(crypto.randomUUID()); await Promise.resolve();
+    old.emit("transcript.fragment", { kind: "input", fragmentId: "old", charCount: 7 }, "PRIVATE");
+    f.send.mockRejectedValueOnce(new Error("offline")); await f.outbox.flush();
+    expect(JSON.stringify(await f.queue.read())).toContain("PRIVATE");
+    sessionStorage.removeItem(DIAGNOSTIC_TEXT_KEY);
+    sessionStorage.setItem(DIAGNOSTIC_TEXT_KEY, crypto.randomUUID());
+    const next = reload ? fixture({ queue: f.queue, textEnabled: true, producerId: "same-tab" }) : f;
+    if (reload) f.outbox.stop();
+    await Promise.resolve();
+    const current = next.outbox.stream(); current.bind(old.conversationId!);
+    current.emit("transcript.fragment", { kind: "input", fragmentId: "new", charCount: 7 }, "CURRENT");
+    await next.outbox.flush(); await next.outbox.flush(); await next.outbox.flush();
+    expect(JSON.stringify(next.requests)).not.toContain("PRIVATE");
+    expect(next.requests.flat()).toContainEqual(expect.objectContaining({ streamId: old.id, seq: 1, textRemoved: true }));
+    expect(next.requests.flat()).toContainEqual(expect.objectContaining({ text: "CURRENT" }));
+    expect(await f.queue.read()).toEqual([]);
+  });
+  it.each([false, true])("keeps capture-time consent before queued work runs, startup=%s", async startup => {
+    sessionStorage.setItem(DIAGNOSTIC_TEXT_KEY, crypto.randomUUID());
+    const f = fixture({ textEnabled: true }), stream = f.outbox.stream(), conversationId = crypto.randomUUID();
+    if (!startup) stream.bind(conversationId);
+    stream.emit("transcript.fragment", { kind: "input", fragmentId: "old", charCount: 7 }, "PRIVATE");
+    sessionStorage.removeItem(DIAGNOSTIC_TEXT_KEY);
+    sessionStorage.setItem(DIAGNOSTIC_TEXT_KEY, crypto.randomUUID());
+    stream.emit("transcript.fragment", { kind: "input", fragmentId: "new", charCount: 7 }, "CURRENT");
+    if (startup) stream.bind(conversationId);
+    f.send.mockRejectedValueOnce(new Error("offline")); await f.outbox.flush();
+    expect(JSON.stringify(await f.queue.read())).not.toContain("PRIVATE");
+    await f.outbox.flush(); await f.outbox.flush();
+    expect(f.requests.flat()).toContainEqual(expect.objectContaining({ seq: 1, textRemoved: true }));
+    expect(f.requests.flat()).toContainEqual(expect.objectContaining({ seq: 2, text: "CURRENT" }));
+  });
+  it("requires fresh consent for legacy settings and scrubs rows without a consent identity", async () => {
+    sessionStorage.setItem(DIAGNOSTIC_TEXT_KEY, "1");
+    const f = fixture({ textEnabled: true, producerId: "same-tab" }), stream = f.outbox.stream();
+    stream.bind(crypto.randomUUID()); await Promise.resolve();
+    stream.emit("transcript.fragment", { kind: "input", fragmentId: "legacy", charCount: 7 }, "PRIVATE");
+    f.send.mockRejectedValueOnce(new Error("offline")); await f.outbox.flush();
+    expect(JSON.stringify(await f.queue.read())).not.toContain("PRIVATE");
+    const row = (await f.queue.read())[0]!;
+    row.event.text = "OLD_QUEUE"; row.textProducerId = "same-tab"; row.bytes += 50;
+    await f.queue.put(row);
+    sessionStorage.setItem(DIAGNOSTIC_TEXT_KEY, crypto.randomUUID());
+    await f.outbox.flush();
+    expect(JSON.stringify(f.requests)).not.toMatch(/PRIVATE|OLD_QUEUE/);
+    expect(f.requests.flat()).toContainEqual(expect.objectContaining({ seq: 1, textRemoved: true }));
+  });
+  it("retains a failed consent-identity scrub across reload and delivery failure", async () => {
+    sessionStorage.setItem(DIAGNOSTIC_TEXT_KEY, crypto.randomUUID());
+    const f = fixture({ textEnabled: true, producerId: "same-tab" }), stream = f.outbox.stream();
+    stream.bind(crypto.randomUUID()); await Promise.resolve();
+    stream.emit("transcript.fragment", { kind: "input", fragmentId: "old", charCount: 7 }, "PRIVATE");
+    f.send.mockRejectedValue(new Error("offline")); await f.outbox.flush();
+    sessionStorage.removeItem(DIAGNOSTIC_TEXT_KEY);
+    sessionStorage.setItem(DIAGNOSTIC_TEXT_KEY, crypto.randomUUID());
+    vi.spyOn(f.queue, "scrubText").mockRejectedValueOnce(new Error("write denied"));
+    await f.outbox.flush();
+    expect(JSON.stringify(await f.queue.read())).toContain("PRIVATE");
+    const next = fixture({ queue: f.queue, textEnabled: true, producerId: "same-tab" }); f.outbox.stop();
+    await next.outbox.flush(); await next.outbox.flush();
+    expect(JSON.stringify(next.requests)).not.toContain("PRIVATE");
+    expect(next.requests.flat()).toContainEqual(expect.objectContaining({ seq: 1, textRemoved: true }));
+    expect(await f.queue.read()).toEqual([]);
+  });
   it.each(["tab", "server"].flatMap(revoke => [false, true].map(reload => ({ revoke, reload }))))(
     "keeps failed $revoke revocation sticky across re-opt-in, reload=$reload", async ({ revoke, reload }) => {
-      sessionStorage.setItem(DIAGNOSTIC_TEXT_KEY, "1");
+      sessionStorage.setItem(DIAGNOSTIC_TEXT_KEY, crypto.randomUUID());
       const f = fixture({ textEnabled: true, producerId: "same-tab" }), stream = f.outbox.stream();
       stream.bind(crypto.randomUUID()); await Promise.resolve();
       stream.emit("transcript.fragment", { kind: "input", fragmentId: "old", charCount: 7 }, "PRIVATE");
@@ -30,7 +97,7 @@ describe("diagnostic delivery", () => {
       else f.outbox.configure(active);
       await f.outbox.flush();
       expect((await f.queue.read())[0]!.event.text).toBe("PRIVATE");
-      sessionStorage.setItem(DIAGNOSTIC_TEXT_KEY, "1");
+      sessionStorage.setItem(DIAGNOSTIC_TEXT_KEY, crypto.randomUUID());
       const next = reload ? fixture({ queue: f.queue, textEnabled: true, producerId: "same-tab" }) : f;
       next.outbox.configure({ ...active, textEnabled: true });
       if (!reload) f.send.mockImplementation(async (_url, init) => {
@@ -65,7 +132,7 @@ describe("diagnostic delivery", () => {
     expect(events.some(row => row.type === "diagnostic.collection" && row.conversationId === event.conversationId)).toBe(false);
   });
   it("sanitizes unrecoverable producer text before replay even after the new document opts in", async () => {
-    sessionStorage.setItem(DIAGNOSTIC_TEXT_KEY, "1");
+    sessionStorage.setItem(DIAGNOSTIC_TEXT_KEY, crypto.randomUUID());
     const f = fixture({ textEnabled: true, producerId: "old-document" }), stream = f.outbox.stream();
     stream.bind(crypto.randomUUID()); await Promise.resolve();
     stream.emit("transcript.fragment", { kind: "input", fragmentId: "old", charCount: 7 }, "PRIVATE");
@@ -81,7 +148,7 @@ describe("diagnostic delivery", () => {
     expect(reload.requests.flat()).toContainEqual(expect.objectContaining({ text: "CURRENT" }));
   });
   it("retains text-bearing rows on 507 so a later revocation can still remove committed text", async () => {
-    sessionStorage.setItem(DIAGNOSTIC_TEXT_KEY, "1");
+    sessionStorage.setItem(DIAGNOSTIC_TEXT_KEY, crypto.randomUUID());
     const f = fixture({ textEnabled: true }), stream = f.outbox.stream(); stream.bind(crypto.randomUUID());
     stream.emit("transcript.fragment", { kind: "input", fragmentId: "private", charCount: 7 }, "PRIVATE");
     f.send.mockResolvedValueOnce(new Response(null, { status: 507 }));
@@ -114,7 +181,7 @@ describe("diagnostic delivery", () => {
     expect(f.requests.flat().filter(event => event.type === "app.lifecycle").map(event => event.data.phase)).toEqual(["start", "resume"]);
   });
   it("does not capture text before the producing tab's ownership is established", async () => {
-    sessionStorage.setItem(DIAGNOSTIC_TEXT_KEY, "1");
+    sessionStorage.setItem(DIAGNOSTIC_TEXT_KEY, crypto.randomUUID());
     let ready!: (id: string) => void;
     const queue = new IndexedDiagnosticQueue(), outbox = new DiagnosticOutbox({ queue, automatic: false, fetch: async () => new Response(null, { status: 503 }),
       producerId: new Promise(resolve => { ready = resolve; }) });
@@ -240,9 +307,10 @@ describe("diagnostic delivery", () => {
     } finally { outbox.stop(); }
   });
   it.each([false, true])("only the producing tab replays its text and checks revocation across reload, peer opted in: %s", async peerOptedIn => {
-    const optedIn = vi.fn<Storage["getItem"]>(() => "1"), optedOut = vi.fn<Storage["getItem"]>(() => null);
+    const consentId = crypto.randomUUID();
+    const optedIn = vi.fn<Storage["getItem"]>(key => key === DIAGNOSTIC_TEXT_KEY ? consentId : null), optedOut = vi.fn<Storage["getItem"]>(() => null);
     const a = fixture({ textEnabled: true, producerId: "tab-A", storage: { getItem: optedIn } as unknown as Storage });
-    const b = fixture({ textEnabled: true, producerId: "tab-B", storage: { getItem: () => peerOptedIn ? "1" : null } as unknown as Storage });
+    const b = fixture({ textEnabled: true, producerId: "tab-B", storage: { getItem: (key: string) => key === DIAGNOSTIC_TEXT_KEY && peerOptedIn ? consentId : null } as unknown as Storage });
     await Promise.resolve();
     const stream = a.outbox.stream(); stream.bind(crypto.randomUUID());
     stream.emit("transcript.fragment", { kind: "input", fragmentId: "first", charCount: 7 }, "PRIVATE");
@@ -288,7 +356,7 @@ describe("diagnostic delivery", () => {
     expect(held).toBe(false);
   });
   it.each(["invalid_diagnostic_event", "diagnostics_text_not_allowed"])("refreshes a live tab after %s and retries technical rows without discarding them", async code => {
-    sessionStorage.setItem(DIAGNOSTIC_TEXT_KEY, "1");
+    sessionStorage.setItem(DIAGNOSTIC_TEXT_KEY, crypto.randomUUID());
     const f = fixture({ textEnabled: true }), load = vi.fn(async () => active);
     f.outbox.start(load);
     const stream = f.outbox.stream(); stream.bind(crypto.randomUUID());
@@ -305,7 +373,7 @@ describe("diagnostic delivery", () => {
     expect(JSON.stringify(f.requests)).not.toContain("PRIVATE");
   });
   it("refreshes server policy before replay once a live tab's cached policy expires", async () => {
-    sessionStorage.setItem(DIAGNOSTIC_TEXT_KEY, "1"); let now = Date.now();
+    sessionStorage.setItem(DIAGNOSTIC_TEXT_KEY, crypto.randomUUID()); let now = Date.now();
     const f = fixture({ textEnabled: true, now: () => now }), load = vi.fn(async () => active);
     f.outbox.start(load);
     const stream = f.outbox.stream(); stream.bind(crypto.randomUUID());
@@ -411,7 +479,7 @@ describe("diagnostic delivery", () => {
       liveSessionId: row.event.liveSessionId, type: "diagnostic.loss", data: { reason: "queue_overflow", count: 1, affectedStreamId: row.event.streamId } }));
   });
   it("reports a volatile observation displaced by a loss marker without recursive marker churn", async () => {
-    sessionStorage.setItem(DIAGNOSTIC_TEXT_KEY, "1");
+    sessionStorage.setItem(DIAGNOSTIC_TEXT_KEY, crypto.randomUUID());
     const limit = 5 * 1024 * 1024, queue = new IndexedDiagnosticQueue();
     const put = vi.spyOn(queue, "put").mockRejectedValue(new Error("storage denied"));
     vi.spyOn(queue, "read").mockRejectedValue(new Error("storage denied"));
@@ -510,7 +578,7 @@ describe("diagnostic delivery", () => {
   it("honors text enablement after idle events and revocation during a conversation", async () => {
     const f = fixture({ textEnabled: true }), stream = f.outbox.stream(); stream.bind(crypto.randomUUID());
     stream.emit("app.lifecycle", { phase: "visible", generation: 0 });
-    sessionStorage.setItem(DIAGNOSTIC_TEXT_KEY, "1");
+    sessionStorage.setItem(DIAGNOSTIC_TEXT_KEY, crypto.randomUUID());
     stream.emit("transcript.fragment", { kind: "input", fragmentId: "first", charCount: 5 }, "first");
     await f.outbox.flush();
     expect(f.requests.flat()).toContainEqual(expect.objectContaining({ type: "transcript.fragment", text: "first" }));
@@ -520,7 +588,7 @@ describe("diagnostic delivery", () => {
     expect(f.requests.flat().find(event => event.type === "transcript.fragment" && event.data.fragmentId === "second")).not.toHaveProperty("text");
   });
   it("strips persisted text under the current policy without losing technical metadata", async () => {
-    sessionStorage.setItem(DIAGNOSTIC_TEXT_KEY, "1");
+    sessionStorage.setItem(DIAGNOSTIC_TEXT_KEY, crypto.randomUUID());
     const f = fixture({ textEnabled: true }), stream = f.outbox.stream(); stream.bind(crypto.randomUUID(), crypto.randomUUID());
     stream.emit("transcript.fragment", { kind: "input", fragmentId: "private", charCount: 14 }, "PRIVATE_CANARY");
     stream.emit("audio.state", { phase: "capture_ready" });
@@ -550,7 +618,7 @@ describe("diagnostic delivery", () => {
     expect(error).toHaveBeenCalledTimes(1); expect(JSON.stringify(error.mock.calls)).not.toContain("PRIVATE_CANARY");
   });
   it("removes content before any queue/request in technical mode, including startup buffers", async () => {
-    sessionStorage.setItem(DIAGNOSTIC_TEXT_KEY, "1");
+    sessionStorage.setItem(DIAGNOSTIC_TEXT_KEY, crypto.randomUUID());
     const f = fixture(), stream = f.outbox.stream();
     stream.emit("transcript.fragment", { kind: "input", fragmentId: crypto.randomUUID(), charCount: 14 }, "PRIVATE_CANARY");
     stream.bind(crypto.randomUUID(), crypto.randomUUID());
@@ -559,7 +627,7 @@ describe("diagnostic delivery", () => {
     expect(JSON.stringify(await f.queue.read())).not.toContain("PRIVATE_CANARY");
   });
   it("requires both switches for text, preserves immutable identities and retries after reload without duplication", async () => {
-    sessionStorage.setItem(DIAGNOSTIC_TEXT_KEY, "1");
+    sessionStorage.setItem(DIAGNOSTIC_TEXT_KEY, crypto.randomUUID());
     const f = fixture({ textEnabled: true, producerId: "reloaded-tab" }), stream = f.outbox.stream();
     await Promise.resolve();
     const conversationId = crypto.randomUUID(), attemptId = crypto.randomUUID();
@@ -621,7 +689,7 @@ describe("diagnostic delivery", () => {
   });
   it("disables delivery against an old policy and reads developer opt-in at the start of a preallocated stream", async () => {
     const f = fixture({ textEnabled: true }), stream = f.outbox.stream();
-    sessionStorage.setItem(DIAGNOSTIC_TEXT_KEY, "1");
+    sessionStorage.setItem(DIAGNOSTIC_TEXT_KEY, crypto.randomUUID());
     stream.bind(crypto.randomUUID());
     stream.emit("transcript.fragment", { kind: "input", fragmentId: crypto.randomUUID(), charCount: 5 }, "hello");
     await f.outbox.flush();

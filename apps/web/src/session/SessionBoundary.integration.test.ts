@@ -656,7 +656,7 @@ describe("stage 5 hidden boundary", () => {
       old.client.onDiagnosticTick?.();
       expect(enqueue).toHaveBeenCalledWith(expect.objectContaining({ type: "app.snapshot", liveSessionId: old.id,
         data: expect.objectContaining({ lastInputAt: expect.any(Number), lastOutputAt: expect.any(Number),
-          lastPcmQueueStartAt: expect.any(Number), lastPlaybackEdgeAt: expect.any(Number) }) }));
+          lastPcmQueueStartAt: expect.any(Number), lastPlaybackEdgeAt: expect.any(Number) }) }), undefined);
       f.setVisible(false);
       await vi.waitFor(() => expect(old.peer.channel.sent).toContain("session.close"));
       old.peer.channel.emit({ type: "session.closed" });
@@ -667,7 +667,7 @@ describe("stage 5 hidden boundary", () => {
       expect(resumed.id).not.toBe(old.id);
       resumed.client.onDiagnosticTick?.();
       expect(enqueue).toHaveBeenCalledWith(expect.objectContaining({ type: "app.snapshot", liveSessionId: resumed.id,
-        data: expect.objectContaining({ lastInputAt: null, lastOutputAt: null, lastPcmQueueStartAt: null, lastPlaybackEdgeAt: null }) }));
+        data: expect.objectContaining({ lastInputAt: null, lastOutputAt: null, lastPcmQueueStartAt: null, lastPlaybackEdgeAt: null }) }), undefined);
     } finally { await f.controller.dispose(); diagnostics.stop(); await f.budget.close(); }
   });
   it("A5.13 aborts media failure before dispatch and retries explicitly with a new attempt under the original deadline", async () => {
@@ -2838,9 +2838,9 @@ describe("stage 5 hidden boundary", () => {
       expect(f.controller.captionRevision).toBe(revision + 1);
       expect(f.controller.captionBlocks).toEqual([]);
       expect(enqueue).toHaveBeenCalledWith(expect.objectContaining({ type: "caption.render",
-        liveSessionId: f.clients[0]!.id, data: { revision: revision + 1, blockCount: 0 } }));
+        liveSessionId: f.clients[0]!.id, data: { revision: revision + 1, blockCount: 0 } }), undefined);
       for (const block of blocks) expect(enqueue).toHaveBeenCalledWith(expect.objectContaining({ type: "caption.block",
-        liveSessionId: f.clients[0]!.id, data: expect.objectContaining({ blockId: block.id, revision: revision + 1, removed: true }) }));
+        liveSessionId: f.clients[0]!.id, data: expect.objectContaining({ blockId: block.id, revision: revision + 1, removed: true }) }), undefined);
     } finally {
       cleanup(); f.api.end.mockImplementation(async () => { f.c.status = "ended"; return { ...f.c }; });
       await f.controller.dispose(); diagnostics.stop(); await f.budget.close();

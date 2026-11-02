@@ -32,7 +32,7 @@ async function fixture() {
   cleanup.push(() => new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve())));
   await once(server, "listening");
   const address = server.address() as { port: number }, owner = crypto.randomUUID(), nativeFetch = globalThis.fetch;
-  const state = { offline: false, readbackOffline: true, consent: true, loseReceipt: false }, statuses: number[] = [], batches: DiagnosticEvent[][] = [];
+  const state = { offline: false, readbackOffline: true, consent: true, consentId: crypto.randomUUID(), loseReceipt: false }, statuses: number[] = [], batches: DiagnosticEvent[][] = [];
   vi.stubGlobal("fetch", async (url: string, init?: RequestInit) => {
     if (state.offline && (url.startsWith("/api/live/session") && (init?.method === "POST" || state.readbackOffline) || url.endsWith("/diagnostics"))) throw new TypeError("offline");
     const headers = new Headers(init?.headers);
@@ -48,7 +48,7 @@ async function fixture() {
   const api = new AccountingBackend(), queue = new IndexedDiagnosticQueue();
   const settings = new Map<string, string>();
   const options = { queue, automatic: false, producerId: Promise.resolve("test-tab"),
-    storage: { getItem: (key: string) => key === DIAGNOSTIC_TEXT_KEY ? state.consent ? "1" : null : settings.get(key) ?? null,
+    storage: { getItem: (key: string) => key === DIAGNOSTIC_TEXT_KEY ? state.consent ? state.consentId : null : settings.get(key) ?? null,
       setItem: (key: string, value: string) => { settings.set(key, value); }, removeItem: (key: string) => { settings.delete(key); } } as unknown as Storage };
   const outbox = new DiagnosticOutbox(options); cleanup.push(() => outbox.stop());
   outbox.start(async () => (await api.policy()).diagnostics);
@@ -66,6 +66,20 @@ async function committedTextWithoutReceipt() {
   expect(f.journal.db.prepare("SELECT text FROM diagnostic_text WHERE stream_id=? AND seq=1").get(stream.id)!.text).toBe("PRIVATE_CANARY");
   return { ...f, c, stream };
 }
+
+it("removes committed text after renewed consent between flushes, including reload", async () => {
+  const f = await committedTextWithoutReceipt(), sent = f.batches.length;
+  f.state.consent = false;
+  f.state.consentId = crypto.randomUUID(); f.state.consent = true;
+  f.outbox.stop();
+  const reload = new DiagnosticOutbox(f.options); cleanup.push(() => reload.stop()); reload.configure((await f.api.policy()).diagnostics);
+  await reload.flush(); await reload.flush();
+  expect(JSON.stringify(f.batches.slice(sent))).not.toContain("PRIVATE_CANARY");
+  expect(f.batches.at(-1)).toContainEqual(expect.objectContaining({ streamId: f.stream.id, seq: 1, textRemoved: true }));
+  expect(f.journal.db.prepare("SELECT 1 FROM diagnostic_text WHERE stream_id=?").get(f.stream.id)).toBeUndefined();
+  expect(buildDiagnosticReport(f.db, f.journal.db, { conversationId: f.c.conversationId }).events)
+    .toContainEqual(expect.objectContaining({ streamId: f.stream.id, seq: 1, textStatus: "removed" }));
+});
 
 it.each(["tab", "server"])("finishes failed %s text revocation after reload and renewed consent", async revoke => {
   const f = await committedTextWithoutReceipt();

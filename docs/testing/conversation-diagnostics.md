@@ -66,12 +66,20 @@ Enable `CONVERSATION_DIAGNOSTICS_TEXT_ENABLED=true` on the test API. In the loca
 app tab's developer console, **before starting a new conversation**:
 
 ```js
-sessionStorage.setItem("liveTranslatorDiagnosticText", "1");
+sessionStorage.setItem("liveTranslatorDiagnosticText", crypto.randomUUID());
 ```
 
 Disable with `sessionStorage.removeItem("liveTranslatorDiagnosticText")`. The setting
-is checked for each content event, so enabling it after the page becomes idle works
-and revoking it stops subsequent text capture. Before replay, queued text is removed
+must be a **fresh UUID for every enable**, including re-enabling after a revoke;
+do not restore an earlier value. The former value `"1"` no longer enables text:
+run the command above again after upgrading. The UUID is local consent metadata,
+never part of uploaded events. Each content event and queued row retains the UUID
+under which it was captured, including events buffered before conversation creation.
+Changing it invalidates earlier text even if off/on happens entirely between two
+flushes, without a content event or with a reload in between. A producing tab also
+scrubs its legacy queued text without a consent UUID. New text under the current UUID is retained.
+The setting is checked for each content event, so enabling it after the page becomes
+idle works and revoking it stops subsequent text capture. Before replay, queued text is removed
 if either the current server policy or tab setting disallows it; event identities and
 technical fields are retained.
 If a durable scrub fails, its scope remains pending and is retried even after
