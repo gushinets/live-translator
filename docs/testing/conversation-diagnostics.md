@@ -102,6 +102,9 @@ provider attempt. `streamId`/`seq` order one producer. New connections get new
 streams, including replacement and resume. Startup events are buffered until their
 server identity is known (200 events / 64 KiB maximum). Startup that never creates
 a conversation cannot be found through a conversation ID.
+Once conversation preparation succeeds, the stream binds before cancellation checks
+and accounting metadata reservation. A failed reservation still leaves its startup
+evidence available for independent diagnostic delivery without provider dispatch.
 `liveSessionId` is a client-generated attempt ID. If a create request never reached
 the server, authenticated diagnostics retain that provisional ID without creating a
 ledger attempt. Reports show `attemptStatus: unconfirmed` and `attempt_unconfirmed`;

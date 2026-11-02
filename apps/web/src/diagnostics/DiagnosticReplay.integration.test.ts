@@ -47,8 +47,35 @@ async function fixture() {
   outbox.configure((await api.policy()).diagnostics);
   const budget = new MetadataDeliveryBudget({ indexedDB, name: crypto.randomUUID() }); cleanup.push(() => budget.close());
   const scope = new ConversationAccounting({ api, budget, diagnostics: outbox, autoDelivery: false });
-  return { db, ledger, journal, creator, owner, state, statuses, api, queue, options, outbox, scope };
+  return { db, ledger, journal, creator, owner, state, statuses, api, queue, options, outbox, scope, budget };
 }
+
+it("replays startup under the known conversation after accounting reservation fails", async () => {
+  const f = await fixture(), stream = f.outbox.stream(), attempt = f.scope.newAttempt();
+  attempt.diagnostics = stream;
+  stream.emit("app.lifecycle", { phase: "start", generation: 0 });
+  stream.emit("audio.state", { phase: "capture_ready" });
+  vi.spyOn(f.budget, "reserve").mockRejectedValueOnce(new Error("Metadata storage unavailable"));
+  const create = vi.spyOn(f.api, "createSession");
+  f.state.offline = true;
+  await expect(attempt.create("never-sent-offer")).rejects.toThrow("Metadata storage unavailable");
+  const conversationId = f.scope.conversationId!;
+  expect(f.ledger.getConversation(f.owner, conversationId).id).toBe(conversationId);
+  stream.retire(); await f.outbox.flush();
+  expect((await f.queue.read()).map(row => row.event)).toEqual([
+    expect.objectContaining({ conversationId, liveSessionId: attempt.localId, type: "app.lifecycle" }),
+    expect.objectContaining({ conversationId, liveSessionId: attempt.localId, type: "audio.state" }),
+  ]);
+  f.outbox.stop(); f.state.offline = false;
+  const replay = new DiagnosticOutbox(f.options); replay.configure((await f.api.policy()).diagnostics);
+  await replay.flush(); replay.stop();
+  expect(f.statuses).toEqual([200]); expect(await f.queue.read()).toEqual([]);
+  const report = buildDiagnosticReport(f.db, f.journal.db, { conversationId });
+  expect(report.events).toContainEqual(expect.objectContaining({ streamId: stream.id, liveSessionId: attempt.localId,
+    attemptStatus: "unconfirmed", type: "audio.state", data: { phase: "capture_ready" } }));
+  expect(f.db.prepare("SELECT 1 FROM live_sessions WHERE id=?").get(attempt.localId)).toBeUndefined();
+  expect(attempt.dispatched).toBe(false); expect(create).not.toHaveBeenCalled(); expect(f.creator).not.toHaveBeenCalled();
+});
 
 it.each([true, false])("replays unsent startup and reconciles late registration, read-back offline=%s", async readbackOffline => {
   const f = await fixture(), stream = f.outbox.stream(), attempt = f.scope.newAttempt();

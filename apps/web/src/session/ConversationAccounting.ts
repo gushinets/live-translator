@@ -553,7 +553,10 @@ export class ProviderAccounting {
     if (this.cancelled || this.scope.isPausing || !this.scope.isCurrent(this.epoch) || (typeof document !== "undefined" && document.visibilityState === "hidden" && this.managed)) throw new Error("Provider attempt cancelled");
   }
   async create(sdp: string, beforeManagedCreate?: () => void): Promise<CreateLiveSessionResponse> {
-    const c = await this.scope.prepare(this); this.assertCurrent();
+    const c = await this.scope.prepare(this);
+    // Preserve startup evidence even if a local reservation or cancellation fails.
+    if (c) this.diagnostics?.bind(c.conversationId, this.localId);
+    this.assertCurrent();
     if (!c) return new BackendClient().createLiveSession(sdp);
     this.conversation = c; this.attemptConversationId = c.conversationId; beforeManagedCreate?.();
     this.reservation = this.scope.budget.reserve(this.localId, c.conversationId, this.scope.usageOutbox !== undefined);
@@ -562,13 +565,9 @@ export class ProviderAccounting {
       this.assertCurrent(); await this.scope.budget.markDispatchStarted(this.localId); this.assertCurrent();
       if (this.scope.usageOutbox) this.reporter = new UsageReporter(this.localId, c.conversationId, this.scope.usageOutbox, { initial: this.lastProduct });
       this.controller = new AbortController(); this.dispatched = true;
-      const created = await this.scope.api.createSession({ sdp, liveSessionId: this.localId, conversationId: c.conversationId,
+      return await this.scope.api.createSession({ sdp, liveSessionId: this.localId, conversationId: c.conversationId,
         conversationVersion: c.version, initialMode: this.scope.resumeMode(this), startReason: this.scope.noteDispatch(this) }, this.controller.signal);
-      this.diagnostics?.bind(c.conversationId, this.localId);
-      return created;
     } catch (error) {
-      // Registration can arrive later; the report labels this provisional ID until then.
-      this.diagnostics?.bind(c.conversationId, this.localId);
       if (isDefinitiveNoProviderError(error)) {
         this.cancelled = true;
         await this.reporter?.noProvider();
