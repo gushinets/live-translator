@@ -1339,6 +1339,7 @@ export class SessionController {
   }
 
   private bindLive(): void {
+    this.lastInputAt = this.lastOutputAt = this.lastPcmQueueStartAt = this.lastPlaybackEdgeAt = null;
     const live = this.live;
     const generation = this.sessionGeneration;
     this.audio.diagnostics = live.journal;
@@ -3170,7 +3171,6 @@ export class SessionController {
 
   private resetSession(options: { preserveOwnerError?: boolean; preserveDialogue?: boolean } = {}): void {
     observe(this.live.journal, "app.lifecycle", { phase: "reset", generation: this.sessionGeneration });
-    this.lastInputAt = this.lastOutputAt = this.lastPcmQueueStartAt = this.lastPlaybackEdgeAt = null;
     const review = options.preserveDialogue === true && (this.enteredInterpreter || this.currentSession.state === "ended");
     const { participantA, participantB } = this.currentSession;
     this.retainedProductDeadlineAt = null;

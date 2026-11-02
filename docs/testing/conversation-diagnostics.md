@@ -113,6 +113,9 @@ Browser wall time, monotonic time, server receipt time and provider fragment
 `startMs`/`endMs` are distinct. The first successful batch records an offset estimate
 with half-roundtrip uncertainty. The report estimates cross-stream ordering and
 uses monotonic deltas within a stream; it labels an uncalibrated browser clock.
+If collection is disabled before an upload receipt arrives, that discarded clock
+sample does not latch calibration; the next successful upload after re-enabling
+collection records a fresh sample.
 An estimate outside the JavaScript Date range stays `null` in JSONL and
 `time=unknown` in text, with `time_estimate_invalid`; raw timestamps and event
 sequence numbers remain available and the rest of the report is still exported.
@@ -158,6 +161,9 @@ Snapshot `lastPcmQueueStartAt` records a PCM queue activation and `lastPlaybackE
 records an accepted playback start/end edge, including audio without a known turn;
 neither field measures continuous PCM receipt or playback progress.
 Use successive WebRTC decoded-sample/jitter-buffer counters to assess continued delivery.
+The four last-input/output/PCM/playback edge timestamps reset to `null` when a new
+Live client is bound, including transport replacement and same-document resume.
+They describe only that provider attempt, even when captions/history are retained.
 Server transitions are emitted only after ledger commit, including recovery and
 watchdog paths. Diagnostic writes never participate in financial transactions.
 Server observations are frozen at commit and queued separately (1000 events / 1 MiB).

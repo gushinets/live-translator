@@ -337,6 +337,33 @@ function createController<
 }
 
 describe("conversation diagnostic observations", () => {
+  it("starts replacement snapshots without the previous attempt's transcript, PCM or playback edges", async () => {
+    vi.useFakeTimers();
+    const oldEmit = vi.fn(), newEmit = vi.fn();
+    const first = Object.assign(new FakeLive(), { journal: { emit: oldEmit }, onDiagnosticTick: undefined as (() => void) | undefined });
+    const second = Object.assign(new FakeLive(), { journal: { emit: newEmit }, onDiagnosticTick: undefined as (() => void) | undefined });
+    const { controller, audio } = createController({ lives: [first, second] });
+    await controller.startBootstrap();
+    first.emit({ type: "session.input_transcript.delta", delta: "Где вокзал?", start_ms: 0, end_ms: 1000 });
+    first.emit({ type: "session.output_transcript.delta", delta: "¿Dónde está la estación?", start_ms: 0, end_ms: 1000 });
+    audio.onPcmReceived?.(Date.now());
+    audio.onPlaybackActivity?.({ active: true, atMs: Date.now(), owned: true });
+    first.onDiagnosticTick?.();
+    expect(oldEmit).toHaveBeenCalledWith("app.snapshot", expect.objectContaining({ lastInputAt: Date.now(), lastOutputAt: Date.now(),
+      lastPcmQueueStartAt: Date.now(), lastPlaybackEdgeAt: Date.now() }), undefined);
+    await controller.startBootstrap();
+    expect(first.close).toHaveBeenCalledWith("replacement"); expect(second.connect).toHaveBeenCalledOnce();
+    second.onDiagnosticTick?.();
+    expect(newEmit).toHaveBeenCalledWith("app.snapshot", expect.objectContaining({ lastInputAt: null, lastOutputAt: null,
+      lastPcmQueueStartAt: null, lastPlaybackEdgeAt: null }), undefined);
+    first.emit({ type: "session.input_transcript.delta", delta: "late" });
+    vi.setSystemTime(Date.now() + 1000);
+    second.emit({ type: "session.input_transcript.delta", delta: "Nueva entrada" });
+    second.onDiagnosticTick?.();
+    expect(newEmit.mock.calls.filter(([type]) => type === "app.snapshot").at(-1)![1]).toMatchObject({
+      lastInputAt: Date.now(), lastOutputAt: null, lastPcmQueueStartAt: null, lastPlaybackEdgeAt: null,
+    });
+  });
   it.each(["input", "output"] as const)("correlates every fragment of long pending and routed %s phrases", async kind => {
     vi.useFakeTimers();
     const emit = vi.fn<(type: DiagnosticType, data: unknown, text?: string) => void>();

@@ -642,6 +642,34 @@ describe("stage 5 hidden boundary", () => {
     expect(f.api.claimResume.mock.calls[1]![2]).not.toBe(id);
     await f.controller.dispose(); await f.budget.close();
   });
+  it("resets attempt-local snapshot edges before media on a same-document retained resume", async () => {
+    vi.stubGlobal("indexedDB", new IDBFactory());
+    const diagnostics = new DiagnosticOutbox({ automatic: false }), enqueue = vi.spyOn(diagnostics, "enqueue");
+    const f = fixture(40, true, false, undefined, true, false, undefined, true, diagnostics); configureResume(f);
+    try {
+      await f.controller.startWithLanguages({ A: "ru", B: "es" });
+      const old = f.clients[0]!;
+      old.peer.channel.emit({ type: "session.input_transcript.delta", delta: "Где вокзал?", start_ms: 0, end_ms: 1000 });
+      old.peer.channel.emit({ type: "session.output_transcript.delta", delta: "¿Dónde está la estación?", start_ms: 0, end_ms: 1000 });
+      f.audio.onPcmReceived?.(Date.now());
+      f.audio.onPlaybackActivity?.({ active: true, atMs: Date.now(), owned: true });
+      old.client.onDiagnosticTick?.();
+      expect(enqueue).toHaveBeenCalledWith(expect.objectContaining({ type: "app.snapshot", liveSessionId: old.id,
+        data: expect.objectContaining({ lastInputAt: expect.any(Number), lastOutputAt: expect.any(Number),
+          lastPcmQueueStartAt: expect.any(Number), lastPlaybackEdgeAt: expect.any(Number) }) }));
+      f.setVisible(false);
+      await vi.waitFor(() => expect(old.peer.channel.sent).toContain("session.close"));
+      old.peer.channel.emit({ type: "session.closed" });
+      await vi.waitFor(() => expect(f.c.status).toBe("paused"));
+      f.setVisible(true);
+      await vi.waitFor(() => expect(f.api.completeResume).toHaveBeenCalledOnce());
+      const resumed = f.clients.at(-1)!;
+      expect(resumed.id).not.toBe(old.id);
+      resumed.client.onDiagnosticTick?.();
+      expect(enqueue).toHaveBeenCalledWith(expect.objectContaining({ type: "app.snapshot", liveSessionId: resumed.id,
+        data: expect.objectContaining({ lastInputAt: null, lastOutputAt: null, lastPcmQueueStartAt: null, lastPlaybackEdgeAt: null }) }));
+    } finally { await f.controller.dispose(); diagnostics.stop(); await f.budget.close(); }
+  });
   it("A5.13 aborts media failure before dispatch and retries explicitly with a new attempt under the original deadline", async () => {
     vi.stubGlobal("indexedDB", new IDBFactory());
     const diagnostics = new DiagnosticOutbox({ automatic: false, fetch: async () => new Response(JSON.stringify({ schemaVersion: 1, serverTime: Date.now(), accepted: [] })) });

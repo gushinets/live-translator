@@ -423,7 +423,7 @@ export class DiagnosticStream implements DiagnosticSink {
     if (this.lost) { const count = this.lost; this.lost = 0; this.emit("diagnostic.loss", { reason: "queue_overflow", count }); }
   }
   clock(offsetMs: number, uncertaintyMs: number): void {
-    if (this.clockRecorded) return; this.clockRecorded = true;
+    if (this.clockRecorded || !this.enabled) return; this.clockRecorded = true;
     this.emit("diagnostic.clock", { offsetMs, uncertaintyMs });
   }
 }

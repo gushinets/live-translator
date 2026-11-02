@@ -343,6 +343,24 @@ describe("diagnostic delivery", () => {
     await f.outbox.flush(); await f.outbox.flush();
     expect(new Set(f.requests.flat().filter(event => event.type === "diagnostic.clock").map(event => event.streamId))).toEqual(new Set(streams.map(stream => stream.id)));
   });
+  it("calibrates after re-enabling collection when an earlier in-flight receipt arrived while disabled", async () => {
+    const f = fixture(), stream = f.outbox.stream(); stream.bind(crypto.randomUUID(), crypto.randomUUID());
+    let release!: () => void;
+    const pending = new Promise<void>(resolve => { release = resolve; }), send = f.send.getMockImplementation()!;
+    f.send.mockImplementationOnce(async (url, init) => { const response = await send(url, init); await pending; return response; });
+    stream.emit("app.lifecycle", { phase: "start", generation: 0 });
+    const inFlight = f.outbox.flush();
+    await vi.waitFor(() => expect(f.requests).toHaveLength(1));
+    f.outbox.configure({ ...active, enabled: false });
+    release(); await inFlight;
+    expect((await f.queue.read()).some(row => row.event.type === "diagnostic.clock")).toBe(false);
+    f.outbox.configure(active);
+    stream.emit("app.lifecycle", { phase: "resume", generation: 1 });
+    await f.outbox.flush(); await f.outbox.flush(); await f.outbox.flush();
+    const clocks = f.requests.flat().filter(event => event.type === "diagnostic.clock");
+    expect(clocks).toEqual([expect.objectContaining({ streamId: stream.id, data: { offsetMs: expect.any(Number), uncertaintyMs: expect.any(Number) } })]);
+    expect(await f.queue.read()).toEqual([]);
+  });
   it("honors text enablement after idle events and revocation during a conversation", async () => {
     const f = fixture({ textEnabled: true }), stream = f.outbox.stream(); stream.bind(crypto.randomUUID());
     stream.emit("app.lifecycle", { phase: "visible", generation: 0 });
