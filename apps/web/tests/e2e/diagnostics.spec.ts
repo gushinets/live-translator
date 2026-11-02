@@ -19,8 +19,11 @@ async function pendingDiagnostics(page: Page) {
   });
 }
 
-for (const textEnabled of [false, true]) test(`diagnostic timeline survives delivery outage and records rendered sides, text=${textEnabled}`, async ({ page }) => {
+for (const { textEnabled, locksAvailable } of [
+  { textEnabled: false, locksAvailable: true }, { textEnabled: true, locksAvailable: true }, { textEnabled: true, locksAvailable: false },
+]) test(`diagnostic timeline survives delivery outage and records rendered sides, text=${textEnabled}, locks=${locksAvailable}`, async ({ page }) => {
   const harness = await MockLiveHarness.attach(page);
+  if (!locksAvailable) await page.addInitScript(() => Object.defineProperty(navigator, "locks", { value: undefined }));
   if (textEnabled) await page.addInitScript(() => sessionStorage.setItem("liveTranslatorDiagnosticText", "1"));
   const now = new Date("2026-09-14T00:00:00.000Z").getTime();
   const conversationId = "c3d6cfbf-3977-4ba1-8458-bfa1f7af878c";
@@ -67,6 +70,7 @@ for (const textEnabled of [false, true]) test(`diagnostic timeline survives deli
   };
   await page.route("**/api/**", handleApi);
   await harness.startListeningConversation();
+  if (!locksAvailable) await page.evaluate(() => sessionStorage.setItem("liveTranslatorDiagnosticText", "1"));
   await harness.sourceActive();
   await harness.inputDelta("Please show me the railway station.", 0, 1000);
   await harness.outputDelta("Por favor, muéstreme la estación.", 500, 1500);
@@ -74,6 +78,27 @@ for (const textEnabled of [false, true]) test(`diagnostic timeline survives deli
   await expect(page.getByTestId("participant-pane-B")).toContainText("Por favor, muéstreme la estación.");
   await harness.advance(6000);
   expect(received).toHaveLength(0);
+  if (!locksAvailable) {
+    await expect.poll(async () => (await pendingDiagnostics(page)).some(row => row.text === "Please show me the railway station.")).toBe(true);
+    const pending = await pendingDiagnostics(page), textKeys = pending.filter(row => row.text !== undefined).map(row => row.key);
+    const producer = await page.evaluate(() => sessionStorage.getItem("live-translator-client-instance-v1"));
+    await page.reload();
+    await expect.poll(() => page.evaluate(() => sessionStorage.getItem("live-translator-client-instance-v1"))).not.toBe(producer);
+    expect(await page.evaluate(() => sessionStorage.getItem("liveTranslatorDiagnosticText"))).toBeNull();
+    await page.evaluate(() => sessionStorage.setItem("liveTranslatorDiagnosticText", "1"));
+    blocked = false;
+    await expect.poll(async () => {
+      await harness.advance(4000);
+      await page.evaluate(() => window.dispatchEvent(new Event("online")));
+      const delivered = new Set(received.map(event => `${event.streamId}:${event.seq}`));
+      return pending.every(({ key }) => delivered.has(key));
+    }).toBe(true);
+    expect(received.every(event => event.text === undefined)).toBe(true);
+    expect(textKeys.every(key => received.some(event => `${event.streamId}:${event.seq}` === key && event.textRemoved))).toBe(true);
+    expect(JSON.stringify(await pendingDiagnostics(page))).not.toMatch(/Please show me|Por favor/);
+    expect(attempts.size).toBe(1);
+    return;
+  }
   if (textEnabled) {
     const idle = await page.context().newPage(); let idleRequests = 0;
     await idle.clock.install({ time: new Date(now) }); await idle.clock.pauseAt(new Date(now + 1000));

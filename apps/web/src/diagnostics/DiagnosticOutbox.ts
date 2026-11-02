@@ -125,6 +125,7 @@ export class IndexedDiagnosticQueue implements DiagnosticQueue {
 }
 
 const bytesOf = (value: unknown) => new TextEncoder().encode(JSON.stringify(value)).byteLength;
+const hasText = (event: DiagnosticEvent) => event.text !== undefined || event.textTruncated !== undefined;
 function stripText(row: DiagnosticQueueRow): void {
   if (row.event.text !== undefined || row.event.textTruncated !== undefined) row.event.textRemoved = true;
   delete row.event.text; delete row.event.textTruncated; delete row.textProducerId;
@@ -137,8 +138,10 @@ export class DiagnosticOutbox {
   private readonly streams = new Map<string, DiagnosticStream>();
   private readonly deferredRemovals = new Set<string>();
   private singleRemoval = false;
+  private prioritizeTechnical = false;
   private readonly producer: Promise<string>;
   private producerReady: boolean;
+  private recoverableProducer = true;
   private work: Promise<void> = Promise.resolve();
   private flushing: Promise<void> | undefined;
   private timer: ReturnType<typeof setInterval> | undefined;
@@ -150,10 +153,12 @@ export class DiagnosticOutbox {
   private policyRefreshAt = 0;
   private disabledMaintenanceAt = 0;
   private lastWarningAt = -Infinity;
-  constructor(private readonly options: { queue?: DiagnosticQueue; fetch?: typeof fetch; automatic?: boolean; now?: () => number; producerId?: Promise<string>; storage?: Storage } = {}) {
+  constructor(private readonly options: { queue?: DiagnosticQueue; fetch?: typeof fetch; automatic?: boolean; now?: () => number; producerId?: Promise<string | null>; storage?: Storage } = {}) {
     this.queue = options.queue ?? new IndexedDiagnosticQueue();
     this.producerReady = options.producerId === undefined;
-    this.producer = Promise.resolve(options.producerId ?? crypto.randomUUID()).then(id => { this.producerReady = true; return id; }, () => crypto.randomUUID());
+    this.producer = Promise.resolve(options.producerId ?? crypto.randomUUID()).then(id => {
+      this.producerReady = true; this.recoverableProducer = id !== null; return id ?? crypto.randomUUID();
+    }, () => { this.recoverableProducer = false; return crypto.randomUUID(); });
   }
   now(): number { return (this.options.now ?? Date.now)(); }
   textOptedIn(): boolean {
@@ -283,6 +288,11 @@ export class DiagnosticOutbox {
       this.lossRows(expired, "expired");
     }
     rows = rows.filter(row => row.queuedAt + TTL_MS > this.now());
+    // Without document ownership, a previous producer's consent cannot be recovered safely.
+    if (!this.recoverableProducer) for (const peer of new Set(rows.flatMap(row => row.textProducerId && row.textProducerId !== producerId ? [row.textProducerId] : []))) {
+      try { await this.queue.scrubText(peer); } catch { this.failed(new Error("diagnostics_storage_unavailable")); }
+      for (const row of rows) if (row.textProducerId === peer) stripText(row);
+    }
     for (const row of rows) if (scrub !== null && (scrub === undefined || row.textProducerId === scrub)) stripText(row);
     // Only the producing tab can recheck its current consent; peer text waits for that tab or expiry.
     const textAllowed = this.policy?.textEnabled && this.textOptedIn();
@@ -296,11 +306,12 @@ export class DiagnosticOutbox {
     if (!removals.length) this.singleRemoval = false;
     let first = removals.find(row => !this.deferredRemovals.has(row.key));
     if (!first && removals.length) { this.deferredRemovals.clear(); first = removals[0]; }
-    first ??= rows[0]; if (!first) return;
+    first ??= (this.prioritizeTechnical ? rows.find(row => !hasText(row.event)) : undefined) ?? rows[0]; if (!first) return;
     const removingText = first.event.textRemoved === true;
     const batch: DiagnosticQueueRow[] = [];
     for (const row of rows) {
       if (row.event.conversationId !== first.event.conversationId || (row.event.textRemoved === true) !== removingText) continue;
+      if (this.prioritizeTechnical && hasText(row.event) !== hasText(first.event)) continue;
       // After quota rejection, isolate removals so an uncommitted row cannot block other scrubs.
       if (removingText && this.singleRemoval && row.key !== first.key) continue;
       if (batch.length === 100) break;
@@ -321,6 +332,7 @@ export class DiagnosticOutbox {
     if (!response.ok) {
       if (response.status === 507 && batch.some(row => row.event.textRemoved || row.event.text !== undefined || row.event.textTruncated !== undefined)) {
         if (removingText) { this.singleRemoval = true; if (batch.length === 1) this.deferredRemovals.add(first.key); }
+        else this.prioritizeTechnical = true;
         throw new Error("diagnostics_delivery_failed");
       }
       if (response.status === 404) {
@@ -353,7 +365,8 @@ export class DiagnosticOutbox {
         if ([401, 403, 404, 507].includes(response.status)) {
           // Never relabel an old owner's queue with a new cookie/conversation.
           for (const stream of this.streams.values()) if (stream.conversationId === first.event.conversationId) stream.disable();
-          await this.remove(rows.filter(row => row.event.conversationId === first.event.conversationId));
+          await this.remove(rows.filter(row => row.event.conversationId === first.event.conversationId &&
+            (response.status !== 507 || !hasText(row.event) && !row.event.textRemoved)));
         }
       }
       throw new Error("diagnostics_delivery_failed");

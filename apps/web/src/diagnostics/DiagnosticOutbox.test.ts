@@ -6,18 +6,34 @@ import type { DiagnosticEvent } from "../../../../types/diagnostics.js";
 const active = { enabled: true, textEnabled: false, schemaVersion: 1 as const };
 beforeEach(() => { vi.stubGlobal("indexedDB", new IDBFactory()); sessionStorage.clear(); });
 afterEach(() => { vi.unstubAllGlobals(); vi.restoreAllMocks(); vi.useRealTimers(); });
-function fixture(options: { queue?: DiagnosticQueue; textEnabled?: boolean; producerId?: string; storage?: Storage; now?: () => number } = {}) {
+function fixture(options: { queue?: DiagnosticQueue; textEnabled?: boolean; producerId?: string | null; storage?: Storage; now?: () => number } = {}) {
   const requests: DiagnosticEvent[][] = [];
   const send = vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
     const events = (JSON.parse(String(init?.body)) as { events: DiagnosticEvent[] }).events; requests.push(events);
     return new Response(JSON.stringify({ schemaVersion: 1, serverTime: Date.now(), accepted: events.map(({ streamId, seq }) => ({ streamId, seq })) }));
   });
   const queue = options.queue ?? new IndexedDiagnosticQueue(), outbox = new DiagnosticOutbox({ queue, fetch: send, automatic: false,
-    producerId: options.producerId ? Promise.resolve(options.producerId) : undefined, storage: options.storage, now: options.now });
+    producerId: options.producerId !== undefined ? Promise.resolve(options.producerId) : undefined, storage: options.storage, now: options.now });
   outbox.configure({ ...active, textEnabled: options.textEnabled ?? false });
   return { outbox, queue, send, requests };
 }
 describe("diagnostic delivery", () => {
+  it("sanitizes unrecoverable producer text before replay even after the new document opts in", async () => {
+    sessionStorage.setItem(DIAGNOSTIC_TEXT_KEY, "1");
+    const f = fixture({ textEnabled: true, producerId: "old-document" }), stream = f.outbox.stream();
+    stream.bind(crypto.randomUUID()); await Promise.resolve();
+    stream.emit("transcript.fragment", { kind: "input", fragmentId: "old", charCount: 7 }, "PRIVATE");
+    f.send.mockRejectedValueOnce(new Error("offline")); await f.outbox.flush();
+    expect((await f.queue.read())[0]!.event.text).toBe("PRIVATE");
+    const reload = fixture({ queue: f.queue, textEnabled: true, producerId: null });
+    await reload.outbox.flush();
+    expect(reload.requests.flat()).toEqual([expect.objectContaining({ streamId: stream.id, seq: 1, textRemoved: true })]);
+    expect(JSON.stringify(reload.requests)).not.toContain("PRIVATE"); expect(await f.queue.read()).toEqual([]);
+    const current = reload.outbox.stream(); current.bind(crypto.randomUUID());
+    current.emit("transcript.fragment", { kind: "input", fragmentId: "current", charCount: 7 }, "CURRENT");
+    await reload.outbox.flush();
+    expect(reload.requests.flat()).toContainEqual(expect.objectContaining({ text: "CURRENT" }));
+  });
   it("retains text-bearing rows on 507 so a later revocation can still remove committed text", async () => {
     sessionStorage.setItem(DIAGNOSTIC_TEXT_KEY, "1");
     const f = fixture({ textEnabled: true }), stream = f.outbox.stream(); stream.bind(crypto.randomUUID());

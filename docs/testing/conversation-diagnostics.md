@@ -84,14 +84,22 @@ retry cannot restore the text, change original timestamps or release quota twice
 Removal rows are sent in prioritized batches separate from ordinary additions.
 A 507 preserves text/removal rows for retry; after a removal batch hits quota,
 individual retries rotate past blocked rows so one unsaved event cannot hold up
-deletion of other committed text. Pending removals keep the same 5 MiB / 24-hour
+deletion of other committed text. After an ordinary text addition hits quota,
+technical-only batches bypass pending text additions; the text remains queued
+for retry without suppressing smaller technical observations.
+Pending removals keep the same 5 MiB / 24-hour
 local queue limits and retry backoff.
-Consent provenance is local queue metadata tied to the existing tab identity, including
-reloads. Only that tab can replay its text after checking current consent. Other tabs
+With Web Locks ownership, consent provenance is local queue metadata tied to the tab
+identity, including reloads. Only that tab can replay its text after checking current consent. Other tabs
 can send technical-only rows but leave its text-bearing rows queued. If the producing
 tab never returns, those rows expire after 24 hours with a loss marker; legacy text
 without a recoverable producer also waits for expiry or server-policy scrubbing.
 A duplicated/opener tab requires a fresh opt-in when its copied identity is rotated.
+Without Web Locks (or when document ownership cannot be established), each document
+gets a fresh diagnostic producer. Replay scrubs other producers' queued text into
+technical-only removal records, even if this document opts in again. This retains
+the original identities and timeline without reusing unverified consent; the
+current document can still capture opted-in text until it closes or reloads.
 This is a per-tab opt-in, not an administrator authentication mechanism. Both the
 server flag and tab setting are required. Leave the server text flag off on ordinary
 production deployments. This setting is independent of Vite's transport spike:

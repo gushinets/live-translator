@@ -715,7 +715,7 @@ export class AccountedSessionController extends SessionController {
 }
 export function createAccountedSessionController(): AccountedSessionController {
   const snapshotStore = ResumeSnapshotStore.open();
-  const diagnostics = new DiagnosticOutbox({ producerId: snapshotStore.then(store => store.clientInstanceId) });
+  const diagnostics = new DiagnosticOutbox({ producerId: snapshotStore.then(store => store.ownsDocument ? store.clientInstanceId : null) });
   const audio = new AudioController(), scope = new ConversationAccounting({ diagnostics });
   const controller = new AccountedSessionController({
     createLive: () => {

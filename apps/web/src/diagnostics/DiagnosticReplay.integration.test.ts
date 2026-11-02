@@ -65,6 +65,33 @@ async function committedTextWithoutReceipt() {
   return { ...f, c, stream };
 }
 
+it("delivers technical telemetry past a retained text addition rejected by storage quota", async () => {
+  const f = await fixture(), c = await f.api.createConversation(crypto.randomUUID()), stream = f.outbox.stream();
+  stream.bind(c.conversationId);
+  await f.journal.flushServerEvents();
+  f.journal.options.maxBytes = Number(f.journal.db.prepare("SELECT SUM(bytes) AS n FROM diagnostic_conversations").get()!.n) / 0.9 + 1000;
+  stream.emit("transcript.fragment", { kind: "input", fragmentId: "large", charCount: 4096 }, "x".repeat(4096));
+  stream.emit("audio.state", { phase: "capture_ready" });
+  await f.outbox.flush();
+  expect(f.statuses).toEqual([507]);
+  await f.outbox.flush();
+  expect(f.statuses).toEqual([507, 200]);
+  expect(f.batches[1]).toEqual([expect.objectContaining({ type: "audio.state", streamId: stream.id, seq: 2 })]);
+  expect((await f.queue.read()).find(row => row.event.seq === 1 && row.event.streamId === stream.id)!.event.text).toBe("x".repeat(4096));
+  expect(stream.enabled).toBe(true);
+  expect(buildDiagnosticReport(f.db, f.journal.db, { conversationId: c.conversationId }).events)
+    .toContainEqual(expect.objectContaining({ type: "audio.state", streamId: stream.id, seq: 2 }));
+  f.journal.options.maxBytes = Number(f.journal.db.prepare("SELECT SUM(bytes) AS n FROM diagnostic_conversations").get()!.n) / 0.9 + 1;
+  stream.emit("audio.state", { phase: "capture_stopped" });
+  await f.outbox.flush();
+  expect(f.statuses.at(-1)).toBe(507); expect(stream.enabled).toBe(false);
+  expect((await f.queue.read()).find(row => row.event.seq === 1 && row.event.streamId === stream.id)!.event.text).toBe("x".repeat(4096));
+  f.journal.options.maxBytes = 1073741824;
+  await f.outbox.flush(); await f.outbox.flush(); await f.outbox.flush();
+  expect(await f.queue.read()).toEqual([]);
+  expect(f.journal.db.prepare("SELECT text FROM diagnostic_text WHERE stream_id=? AND seq=1").get(stream.id)!.text).toBe("x".repeat(4096));
+});
+
 it.each(["tab", "server"])("delivers %s revocation before a new ordinary row hits storage quota", async revoke => {
   const f = await committedTextWithoutReceipt();
   f.journal.options.maxBytes = Number(f.journal.db.prepare("SELECT SUM(bytes) AS n FROM diagnostic_conversations").get()!.n) / 0.9 + 1;
