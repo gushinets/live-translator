@@ -12,11 +12,13 @@ import { UsageLedger } from "../../../api/src/accounting/UsageLedger";
 import { openUsageDatabase } from "../../../api/src/persistence/database";
 import { DiagnosticJournal } from "../../../api/src/diagnostics/DiagnosticJournal";
 import { buildDiagnosticReport, formatDiagnosticReport } from "../../../api/src/reports/diagnostics";
+import type { DiagnosticEvent } from "../../../../types/diagnostics.js";
 
 const cleanup: Array<() => void | Promise<void>> = [];
 afterEach(async () => {
   for (const close of cleanup.splice(0).reverse()) await close();
   vi.unstubAllGlobals();
+  vi.useRealTimers();
 });
 
 async function fixture() {
@@ -30,13 +32,14 @@ async function fixture() {
   cleanup.push(() => new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve())));
   await once(server, "listening");
   const address = server.address() as { port: number }, owner = crypto.randomUUID(), nativeFetch = globalThis.fetch;
-  const state = { offline: false, readbackOffline: true, consent: true, loseReceipt: false }, statuses: number[] = [];
+  const state = { offline: false, readbackOffline: true, consent: true, loseReceipt: false }, statuses: number[] = [], batches: DiagnosticEvent[][] = [];
   vi.stubGlobal("fetch", async (url: string, init?: RequestInit) => {
     if (state.offline && (url.startsWith("/api/live/session") && (init?.method === "POST" || state.readbackOffline) || url.endsWith("/diagnostics"))) throw new TypeError("offline");
     const headers = new Headers(init?.headers);
     headers.set("Origin", apiConfig.webOrigin); headers.set("Cookie", `live-translator-dev=${owner}`);
     const response = await nativeFetch(`http://127.0.0.1:${address.port}${url}`, { ...init, headers });
     if (url.endsWith("/diagnostics")) {
+      batches.push((JSON.parse(String(init?.body)) as { events: DiagnosticEvent[] }).events);
       statuses.push(response.status);
       if (response.ok && state.loseReceipt) { state.loseReceipt = false; throw new TypeError("receipt lost"); }
     }
@@ -50,8 +53,61 @@ async function fixture() {
   outbox.configure((await api.policy()).diagnostics);
   const budget = new MetadataDeliveryBudget({ indexedDB, name: crypto.randomUUID() }); cleanup.push(() => budget.close());
   const scope = new ConversationAccounting({ api, budget, diagnostics: outbox, autoDelivery: false });
-  return { db, ledger, journal, creator, owner, state, statuses, api, queue, options, outbox, scope, budget };
+  return { db, ledger, journal, creator, owner, state, statuses, batches, api, queue, options, outbox, scope, budget };
 }
+
+async function committedTextWithoutReceipt() {
+  const f = await fixture(), c = await f.api.createConversation(crypto.randomUUID()), stream = f.outbox.stream();
+  stream.bind(c.conversationId);
+  stream.emit("transcript.fragment", { kind: "input", fragmentId: "private", charCount: 14 }, "PRIVATE_CANARY");
+  f.state.loseReceipt = true; await f.outbox.flush(); await f.journal.flushServerEvents();
+  expect(f.journal.db.prepare("SELECT text FROM diagnostic_text WHERE stream_id=? AND seq=1").get(stream.id)!.text).toBe("PRIVATE_CANARY");
+  return { ...f, c, stream };
+}
+
+it.each(["tab", "server"])("delivers %s revocation before a new ordinary row hits storage quota", async revoke => {
+  const f = await committedTextWithoutReceipt();
+  f.journal.options.maxBytes = Number(f.journal.db.prepare("SELECT SUM(bytes) AS n FROM diagnostic_conversations").get()!.n) / 0.9 + 1;
+  f.stream.emit("audio.state", { phase: "capture_ready" });
+  if (revoke === "tab") f.state.consent = false; else f.journal.options.textEnabled = false;
+  f.outbox.configure((await f.api.policy()).diagnostics);
+  await f.outbox.flush(); await f.outbox.flush(); await f.outbox.flush();
+  expect(f.batches[1]).toEqual([expect.objectContaining({ streamId: f.stream.id, seq: 1, textRemoved: true })]);
+  expect(f.statuses[1]).toBe(200); expect(f.statuses).toContain(507);
+  expect(f.journal.db.prepare("SELECT 1 FROM diagnostic_text WHERE stream_id=?").get(f.stream.id)).toBeUndefined();
+  const report = buildDiagnosticReport(f.db, f.journal.db, { conversationId: f.c.conversationId });
+  expect(report.events).toContainEqual(expect.objectContaining({ streamId: f.stream.id, seq: 1, textStatus: "removed" }));
+});
+
+it("keeps an ingress-blocked removal until the network quota resets without losing or duplicating its intent", async () => {
+  vi.useFakeTimers({ toFake: ["Date"] }); vi.setSystemTime(Date.UTC(2026, 10, 2, 23, 59));
+  const f = await committedTextWithoutReceipt();
+  f.state.consent = false;
+  f.journal.db.prepare("UPDATE diagnostic_ingress SET bytes=?").run(20971520);
+  await f.outbox.flush(); await f.outbox.flush();
+  expect(f.statuses.slice(-2)).toEqual([507, 507]); expect(f.stream.enabled).toBe(true);
+  expect((await f.queue.read()).map(row => row.event)).toEqual([expect.objectContaining({ seq: 1, textRemoved: true })]);
+  vi.setSystemTime(Date.UTC(2026, 10, 3, 0, 0, 1));
+  await f.outbox.flush(); await f.outbox.flush();
+  expect(f.statuses.at(-1)).toBe(200); expect(await f.queue.read()).toEqual([]);
+  expect(f.journal.db.prepare("SELECT 1 FROM diagnostic_text WHERE stream_id=?").get(f.stream.id)).toBeUndefined();
+});
+
+it("does not let an uncommitted removal at capacity block removal of already committed text", async () => {
+  const f = await committedTextWithoutReceipt();
+  f.stream.emit("transcript.fragment", { kind: "input", fragmentId: "unsent", charCount: 14 }, "UNSENT_CANARY");
+  await vi.waitFor(async () => expect(await f.queue.read()).toHaveLength(2));
+  const rows = await f.queue.read(), committed = rows.find(row => row.event.seq === 1)!;
+  await f.queue.put({ ...committed, queuedAt: Math.max(...rows.map(row => row.queuedAt)) + 1 });
+  f.journal.options.maxBytes = Number(f.journal.db.prepare("SELECT SUM(bytes) AS n FROM diagnostic_conversations").get()!.n) / 0.9 + 1;
+  f.state.consent = false;
+  await f.outbox.flush(); await f.outbox.flush(); await f.outbox.flush();
+  expect(f.statuses.slice(-2)).toEqual([507, 200]);
+  expect(f.journal.db.prepare("SELECT 1 FROM diagnostic_text WHERE stream_id=?").get(f.stream.id)).toBeUndefined();
+  f.journal.options.maxBytes = 1073741824;
+  await f.outbox.flush(); await f.outbox.flush();
+  expect(await f.queue.read()).toEqual([]);
+});
 
 it("replays startup under the known conversation after accounting reservation fails", async () => {
   const f = await fixture(), stream = f.outbox.stream(), attempt = f.scope.newAttempt();
@@ -142,8 +198,8 @@ it.each(["tab", "server"].flatMap(revoke => ["receipt", "queue_remove"].map(lost
     if (revoke === "tab") f.state.consent = false; else f.journal.options.textEnabled = false;
     f.outbox.stop();
     const replay = new DiagnosticOutbox(f.options); replay.configure((await f.api.policy()).diagnostics);
-    await replay.flush(); replay.stop();
-    expect(f.statuses).toEqual([200, 200]); expect(await f.queue.read()).toEqual([]);
+    await replay.flush(); await replay.flush(); replay.stop();
+    expect(f.statuses).toEqual([200, 200, 200]); expect(await f.queue.read()).toEqual([]);
     expect(f.journal.db.prepare("SELECT COUNT(*) AS n FROM diagnostic_text WHERE stream_id=?").get(stream.id)!.n).toBe(0);
     expect(f.journal.db.prepare("SELECT COUNT(*) AS n FROM diagnostic_events WHERE stream_id=?").get(stream.id)!.n).toBe(2);
     const report = buildDiagnosticReport(f.db, f.journal.db, { conversationId: c.conversationId });
@@ -164,7 +220,7 @@ it.each(["tab", "server"])("reports text removed by %s revocation after offline 
   expect(JSON.stringify(await f.queue.read())).toContain("PRIVATE_CANARY");
   if (revoke === "tab") f.state.consent = false; else f.journal.options.textEnabled = false;
   f.state.offline = false;
-  await f.outbox.flush(); await f.outbox.flush();
+  await f.outbox.flush(); await f.outbox.flush(); await f.outbox.flush();
   expect(f.statuses.at(-1)).toBe(200);
   expect(JSON.stringify(await f.queue.read())).not.toContain("PRIVATE_CANARY");
   expect(f.journal.db.prepare("SELECT COUNT(*) AS n FROM diagnostic_text").get()!.n).toBe(0);

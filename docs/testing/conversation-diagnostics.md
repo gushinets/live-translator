@@ -81,6 +81,11 @@ a scrubbed replay with the same event identity also removes the server's retaine
 text and releases its quota before ACK. Technical fields must match the committed
 event; conflicts reject the entire batch. Repeated removal or an older text-bearing
 retry cannot restore the text, change original timestamps or release quota twice.
+Removal rows are sent in prioritized batches separate from ordinary additions.
+A 507 preserves text/removal rows for retry; after a removal batch hits quota,
+individual retries rotate past blocked rows so one unsaved event cannot hold up
+deletion of other committed text. Pending removals keep the same 5 MiB / 24-hour
+local queue limits and retry backoff.
 Consent provenance is local queue metadata tied to the existing tab identity, including
 reloads. Only that tab can replay its text after checking current consent. Other tabs
 can send technical-only rows but leave its text-bearing rows queued. If the producing
@@ -210,7 +215,10 @@ The server limits journal payload accounting to 1 GiB total / 20 MiB per convers
 and also bounds SQLite page growth. Browser events have an aggregate 20 MiB allowance
 per anonymous owner over retained conversations and 20 MiB per network source per
 UTC day, independent of cookie rotation. Only a SHA-256 digest of the normalized
-network prefix is stored, never the raw IP. Browser events cannot consume the final
+network prefix is stored. Validated received batches, including exact retries and
+storage-rejected additions, are charged in an independent transaction before
+storage deduplication; the source budget resets at UTC midnight. The raw IP is
+never stored. Browser events cannot consume the final
 10% of total or per-conversation capacity reserved for server observations. A rejected
 batch is not ACKed; limits leave an incompleteness marker and do not block the conversation.
 

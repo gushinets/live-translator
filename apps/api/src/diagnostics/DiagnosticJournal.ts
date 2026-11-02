@@ -119,9 +119,21 @@ export class DiagnosticJournal {
   append(conversation: DiagnosticConversation, events: readonly DiagnosticEvent[], sourceKey?: string) {
     const now = this.now();
     const windowStart = Math.floor(now / 86400000) * 86400000;
+    const conversationMax = this.options.conversationMaxBytes ?? 20971520;
     if (now >= conversation.created_at + DIAGNOSTIC_RETENTION_MS) throw new DiagnosticError("diagnostics_expired", 410);
     let limited = false;
     try {
+      if (sourceKey !== undefined) {
+        // Received traffic remains charged even when retained storage rejects the batch.
+        const exhausted = transaction(this.db, () => {
+          const previous = Number(this.db.prepare("SELECT bytes FROM diagnostic_ingress WHERE source_key=? AND window_start=?").get(sourceKey, windowStart)?.bytes ?? 0);
+          const received = events.reduce((sum, event) => sum + (event.source === "browser" ? Buffer.byteLength(JSON.stringify(event), "utf8") + 256 : 0), 0);
+          const ingressBytes = previous + received;
+          this.db.prepare("INSERT INTO diagnostic_ingress(source_key,window_start,bytes) VALUES(?,?,?) ON CONFLICT(source_key,window_start) DO UPDATE SET bytes=excluded.bytes").run(sourceKey, windowStart, ingressBytes);
+          return ingressBytes > conversationMax;
+        });
+        if (exhausted) { limited = true; throw new DiagnosticError("diagnostics_limit", 507); }
+      }
       return transaction(this.db, () => {
         this.db.prepare("INSERT OR IGNORE INTO diagnostic_conversations(id,owner,created_at,first_at,last_at) VALUES(?,?,?,?,?)")
           .run(conversation.id, diagnosticOwnerId(conversation.anonymous_user_id), conversation.created_at, conversation.created_at, now);
@@ -129,8 +141,7 @@ export class DiagnosticJournal {
         let bytes = Number(row.bytes), browserBytes = Number(row.browser_bytes);
         let total = Number(this.db.prepare("SELECT COALESCE(SUM(bytes),0) AS total FROM diagnostic_conversations").get()!.total);
         let ownerBytes = Number(this.db.prepare("SELECT COALESCE(SUM(browser_bytes),0) AS n FROM diagnostic_conversations WHERE owner=?").get(diagnosticOwnerId(conversation.anonymous_user_id))!.n);
-        let ingressBytes = sourceKey ? Number(this.db.prepare("SELECT bytes FROM diagnostic_ingress WHERE source_key=? AND window_start=?").get(sourceKey, windowStart)?.bytes ?? 0) : 0;
-        const maxBytes = this.options.maxBytes ?? 1073741824, conversationMax = this.options.conversationMaxBytes ?? 20971520;
+        const maxBytes = this.options.maxBytes ?? 1073741824;
         const accepted: Array<{ streamId: string; seq: number }> = [];
         for (const event of events) {
           if (event.conversationId !== conversation.id) throw new DiagnosticError("diagnostics_identity_conflict", 409);
@@ -157,10 +168,10 @@ export class DiagnosticJournal {
           const textBytes = keepText ? Buffer.byteLength(JSON.stringify(text), "utf8") + 8 : 0;
           const size = Buffer.byteLength(JSON.stringify(technical), "utf8") + 256 + textBytes;
           bytes += size; total += size;
-          if (event.source === "browser") { browserBytes += size; ownerBytes += size; ingressBytes += Buffer.byteLength(JSON.stringify(event), "utf8") + 256; }
+          if (event.source === "browser") { browserBytes += size; ownerBytes += size; }
           // Browser traffic cannot consume the last 10% needed for server lifecycle observations.
           if (bytes > conversationMax || total > maxBytes || event.source === "browser" &&
-              (bytes > conversationMax * 0.9 || total > maxBytes * 0.9 || ownerBytes > conversationMax || sourceKey !== undefined && ingressBytes > conversationMax)) {
+              (bytes > conversationMax * 0.9 || total > maxBytes * 0.9 || ownerBytes > conversationMax)) {
             limited = true; throw new DiagnosticError("diagnostics_limit", 507);
           }
           this.db.prepare("INSERT OR IGNORE INTO diagnostic_streams(id,conversation_id,live_session_id,source) VALUES(?,?,?,?)")
@@ -174,7 +185,6 @@ export class DiagnosticJournal {
           accepted.push({ streamId: event.streamId, seq: event.seq });
         }
         this.db.prepare("UPDATE diagnostic_conversations SET last_at=?,bytes=?,browser_bytes=? WHERE id=?").run(now, bytes, browserBytes, conversation.id);
-        if (sourceKey) this.db.prepare("INSERT INTO diagnostic_ingress(source_key,window_start,bytes) VALUES(?,?,?) ON CONFLICT(source_key,window_start) DO UPDATE SET bytes=excluded.bytes").run(sourceKey, windowStart, ingressBytes);
         return { schemaVersion: 1 as const, accepted, serverTime: now };
       });
     } catch (error) {

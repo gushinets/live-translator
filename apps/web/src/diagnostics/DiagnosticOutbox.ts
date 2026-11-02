@@ -135,6 +135,8 @@ export class DiagnosticOutbox {
   private readonly queue: DiagnosticQueue;
   private readonly volatile = new Map<string, DiagnosticQueueRow>();
   private readonly streams = new Map<string, DiagnosticStream>();
+  private readonly deferredRemovals = new Set<string>();
+  private singleRemoval = false;
   private readonly producer: Promise<string>;
   private producerReady: boolean;
   private work: Promise<void> = Promise.resolve();
@@ -273,6 +275,7 @@ export class DiagnosticOutbox {
     try { rows = await this.queue.read(); } catch { rows = []; this.failed(new Error("diagnostics_storage_unavailable")); }
     const merged = new Map(rows.map(row => [row.key, row]));
     for (const [key, row] of this.volatile) merged.set(key, row);
+    for (const key of this.deferredRemovals) if (!merged.has(key)) this.deferredRemovals.delete(key);
     rows = [...merged.values()];
     const expired = rows.filter(row => row.queuedAt + TTL_MS <= this.now());
     if (expired.length) {
@@ -289,10 +292,17 @@ export class DiagnosticOutbox {
       if (this.policy?.enabled === false) this.disabledMaintenanceAt = this.now() + 60000;
       return;
     }
-    const first = rows[0]; if (!first) return;
+    const removals = rows.filter(row => row.event.textRemoved);
+    if (!removals.length) this.singleRemoval = false;
+    let first = removals.find(row => !this.deferredRemovals.has(row.key));
+    if (!first && removals.length) { this.deferredRemovals.clear(); first = removals[0]; }
+    first ??= rows[0]; if (!first) return;
+    const removingText = first.event.textRemoved === true;
     const batch: DiagnosticQueueRow[] = [];
     for (const row of rows) {
-      if (row.event.conversationId !== first.event.conversationId) continue;
+      if (row.event.conversationId !== first.event.conversationId || (row.event.textRemoved === true) !== removingText) continue;
+      // After quota rejection, isolate removals so an uncommitted row cannot block other scrubs.
+      if (removingText && this.singleRemoval && row.key !== first.key) continue;
       if (batch.length === 100) break;
       const candidate = { schemaVersion: 1, events: [...batch.map(value => value.event), row.event] };
       if (bytesOf(candidate) > 32768) {
@@ -309,6 +319,10 @@ export class DiagnosticOutbox {
       body: JSON.stringify({ schemaVersion: 1, events: batch.map(row => row.event) }), signal: AbortSignal.timeout(10000),
     });
     if (!response.ok) {
+      if (response.status === 507 && batch.some(row => row.event.textRemoved || row.event.text !== undefined || row.event.textTruncated !== undefined)) {
+        if (removingText) { this.singleRemoval = true; if (batch.length === 1) this.deferredRemovals.add(first.key); }
+        throw new Error("diagnostics_delivery_failed");
+      }
       if (response.status === 404) {
         // A deployment can unmount diagnostics without changing the conversation's ownership.
         await this.refreshPolicy(true);
@@ -357,7 +371,7 @@ export class DiagnosticOutbox {
   }
   private async remove(rows: DiagnosticQueueRow[]): Promise<void> {
     const volatileOnly = rows.every(row => this.volatile.has(row.key));
-    for (const row of rows) this.volatile.delete(row.key);
+    for (const row of rows) { this.volatile.delete(row.key); this.deferredRemovals.delete(row.key); }
     try { await this.queue.remove(rows.map(row => row.key)); }
     catch { if (!volatileOnly) throw new Error("diagnostics_ack_storage_failed"); }
   }

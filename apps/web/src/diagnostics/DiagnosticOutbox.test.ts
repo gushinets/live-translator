@@ -18,6 +18,18 @@ function fixture(options: { queue?: DiagnosticQueue; textEnabled?: boolean; prod
   return { outbox, queue, send, requests };
 }
 describe("diagnostic delivery", () => {
+  it("retains text-bearing rows on 507 so a later revocation can still remove committed text", async () => {
+    sessionStorage.setItem(DIAGNOSTIC_TEXT_KEY, "1");
+    const f = fixture({ textEnabled: true }), stream = f.outbox.stream(); stream.bind(crypto.randomUUID());
+    stream.emit("transcript.fragment", { kind: "input", fragmentId: "private", charCount: 7 }, "PRIVATE");
+    f.send.mockResolvedValueOnce(new Response(null, { status: 507 }));
+    await f.outbox.flush();
+    expect((await f.queue.read())[0]!.event.text).toBe("PRIVATE"); expect(stream.enabled).toBe(true);
+    sessionStorage.removeItem(DIAGNOSTIC_TEXT_KEY);
+    await f.outbox.flush(); await f.outbox.flush();
+    expect(f.requests.flat()).toContainEqual(expect.objectContaining({ textRemoved: true }));
+    expect(await f.queue.read()).toEqual([]);
+  });
   it.each([false, true, "unavailable"] as const)("rechecks an ambiguous 404 against collection policy: %s", async enabled => {
     const f = fixture(), stream = f.outbox.stream(), conversationId = crypto.randomUUID();
     stream.bind(conversationId);
@@ -226,7 +238,7 @@ describe("diagnostic delivery", () => {
     const rows = await f.queue.read();
     expect(rows.map(row => row.event.type)).toEqual(["transcript.fragment", "audio.state"]);
     expect(JSON.stringify(rows)).not.toContain("PRIVATE");
-    await f.outbox.flush();
+    await f.outbox.flush(); await f.outbox.flush();
     expect(f.requests.flat().filter(event => ["transcript.fragment", "audio.state"].includes(event.type))).toHaveLength(2);
     expect(JSON.stringify(f.requests)).not.toContain("PRIVATE");
   });
@@ -380,7 +392,7 @@ describe("diagnostic delivery", () => {
     stream.emit("audio.state", { phase: "capture_ready" });
     f.send.mockRejectedValueOnce(new Error("offline")); await f.outbox.flush();
     const replay = new DiagnosticOutbox({ queue: f.queue, fetch: f.send, automatic: false }); replay.configure(active);
-    await replay.flush();
+    await replay.flush(); await replay.flush();
     expect(JSON.stringify(f.requests)).not.toContain("PRIVATE_CANARY");
     expect(f.requests.flat().filter(event => ["transcript.fragment", "audio.state"].includes(event.type))).toHaveLength(2);
     expect(await f.queue.read()).toEqual([]);

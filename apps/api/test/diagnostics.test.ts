@@ -242,6 +242,33 @@ describe("conversation diagnostic ingestion", () => {
     expect(f.ledger.getAttemptInternal(f.id).state).toBe("creating");
     expect(f.journal.db.prepare("SELECT owner FROM diagnostic_conversations WHERE id=?").get(f.c.id)!.owner).toBe(diagnosticOwnerId(f.owner));
   });
+  it("charges duplicate traffic until the network budget is exhausted without duplicating storage, then resets at UTC midnight", async () => {
+    const f = fixture({ maxBytes: 15000, conversationMaxBytes: 4000, logger: { error() {} } }); await f.journal.flushServerEvents();
+    const first = f.event(), source = "same-network", size = Buffer.byteLength(JSON.stringify(first)) + 256;
+    f.journal.append(f.c, [first], source);
+    const storage = f.journal.db.prepare("SELECT bytes,browser_bytes FROM diagnostic_conversations WHERE id=?").get(f.c.id);
+    let accepted = 1;
+    for (; accepted < 20; accepted++) {
+      try { f.journal.append(f.c, [first], source); }
+      catch (error) { expect(error).toHaveProperty("code", "diagnostics_limit"); break; }
+    }
+    expect(accepted).toBe(Math.floor(4000 / size));
+    expect(f.journal.db.prepare("SELECT bytes FROM diagnostic_ingress WHERE source_key=?").get(source)!.bytes).toBe((accepted + 1) * size);
+    expect(f.journal.db.prepare("SELECT bytes,browser_bytes FROM diagnostic_conversations WHERE id=?").get(f.c.id)).toEqual(storage);
+    expect(f.journal.db.prepare("SELECT COUNT(*) AS n FROM diagnostic_events WHERE stream_id=?").get(first.streamId)!.n).toBe(1);
+    f.clock.now += 86400000;
+    expect(f.journal.append(f.c, [first], source).accepted).toEqual([{ streamId: first.streamId, seq: first.seq }]);
+    expect(f.journal.db.prepare("SELECT bytes FROM diagnostic_ingress WHERE source_key=? AND window_start=?")
+      .get(source, Math.floor(f.clock.now / 86400000) * 86400000)!.bytes).toBe(size);
+  });
+  it("keeps received-traffic charges when a new stored event is rolled back by capacity", async () => {
+    const f = fixture({ logger: { error() {} } }); await f.journal.flushServerEvents();
+    f.journal.options.maxBytes = 1;
+    const event = f.event(), source = "received-but-not-stored";
+    expect(() => f.journal.append(f.c, [event], source)).toThrow("diagnostics_limit");
+    expect(f.journal.db.prepare("SELECT bytes FROM diagnostic_ingress WHERE source_key=?").get(source)!.bytes).toBe(Buffer.byteLength(JSON.stringify(event)) + 256);
+    expect(f.journal.db.prepare("SELECT 1 FROM diagnostic_events WHERE stream_id=?").get(event.streamId)).toBeUndefined();
+  });
   it.each(["data", "wall", "mono", "build"])("rejects duplicate %s changes before applying a text removal", async field => {
     const f = fixture({ textEnabled: true }), first = f.event(1, { text: "PRIVATE_CANARY" });
     await f.post([first]).expect(200);
