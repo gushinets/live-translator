@@ -9,6 +9,7 @@ import { UsageLedger } from "../src/accounting/UsageLedger.js";
 import { openUsageDatabase } from "../src/persistence/database.js";
 import { parseCliArguments, parseCliInstant } from "../src/cli/arguments.js";
 import { buildDiagnosticReport, formatDiagnosticReport } from "../src/reports/diagnostics.js";
+import { DiagnosticJournal } from "../src/diagnostics/DiagnosticJournal.js";
 
 const directories: string[] = [];
 afterEach(() => { for (const path of directories.splice(0)) rmSync(path, { recursive: true, force: true }); });
@@ -22,6 +23,19 @@ function report(argv: string[]) {
   return { stdout, stderr, exitCode: process.exitCode };
 }
 describe("diagnostics-report journal failures", () => {
+  it.each(["text", "jsonl"])("exports the remaining timeline with a bad clock in %s format", format => {
+    const directory = mkdtempSync(join(tmpdir(), "diagnostics-cli-clock-")); directories.push(directory);
+    const path = join(directory, "ledger.sqlite"), db = openUsageDatabase(path), ledger = new UsageLedger(db);
+    const conversation = ledger.createConversation(randomUUID(), randomUUID(), "cli-test"); db.close();
+    const diagnostics = join(directory, "events.sqlite"), journal = new DiagnosticJournal(diagnostics, { automatic: false });
+    const event = { schemaVersion: 1 as const, source: "browser" as const, conversationId: conversation.id, streamId: randomUUID(), seq: 1,
+      wallMs: Date.now(), monoMs: 1 };
+    journal.append(conversation, [{ ...event, type: "diagnostic.clock", data: { offsetMs: 1e308, uncertaintyMs: 0 } },
+      { ...event, seq: 2, type: "app.lifecycle", data: { phase: "end", generation: 1 } }]); journal.close();
+    const result = report(["--ledger-db", path, "--db", diagnostics, "--conversation-id", conversation.id, "--format", format]);
+    expect(result.exitCode).toBe(0); expect(result.stderr).toBe("");
+    expect(result.stdout).toContain("time_estimate_invalid"); expect(result.stdout).toContain("app.lifecycle");
+  });
   it.each(["missing", "corrupt"])("lists ledger candidates and exports explicit missing evidence with a %s journal", mode => {
     const directory = mkdtempSync(join(tmpdir(), "diagnostics-cli-")); directories.push(directory);
     const path = join(directory, "ledger.sqlite"), db = openUsageDatabase(path), ledger = new UsageLedger(db);

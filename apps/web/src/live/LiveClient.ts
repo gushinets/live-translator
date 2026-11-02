@@ -580,6 +580,7 @@ export class LiveClient {
     if (!this.closeResult?.finalized) {
       this.observeAccounting({ kind: "local_close_unconfirmed" });
     }
+    this.journal?.retire?.();
   }
 
   private teardownTransportAndRelease(): void {

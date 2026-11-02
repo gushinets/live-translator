@@ -17,6 +17,8 @@ interval and the report warns `collection_disabled`. `discardedCount` counts cal
 observed by the journal and discarded startup events; observers gated off during the
 interval can leave it at zero, which does not mean the timeline is complete. The
 boundary contains timestamps and a count only, even when text mode is enabled.
+Retired transports do not observe later policy transitions; genuinely late data
+still keeps its original stream and attempt identity.
 
 The database is `/diagnostics/events.sqlite` in the separate `diagnostics-data`
 Compose volume. Local runs use `DIAGNOSTICS_DB_PATH=./.data/diagnostics/events.sqlite`
@@ -107,6 +109,9 @@ Browser wall time, monotonic time, server receipt time and provider fragment
 `startMs`/`endMs` are distinct. The first successful batch records an offset estimate
 with half-roundtrip uncertainty. The report estimates cross-stream ordering and
 uses monotonic deltas within a stream; it labels an uncalibrated browser clock.
+An estimate outside the JavaScript Date range stays `null` in JSONL and
+`time=unknown` in text, with `time_estimate_invalid`; raw timestamps and event
+sequence numbers remain available and the rest of the report is still exported.
 Do not treat provider audio timestamps as wall time or transcript packets as turns.
 
 Pending `transcript.route` events contain newly pending fragment IDs; the resolved
@@ -118,7 +123,10 @@ the parent packet's audio timestamps; it does not infer timing inside the packet
 Search candidates include `lossEvents` and `noOutputTimeouts` (`null` when the
 journal is unavailable). Both contribute to the diagnostic error count; losses
 also produce an incompleteness warning. A no-output deadline is an observed
-application timeout, not proof of a provider fault. `server.attempt` with
+application timeout. Candidates also include `collectionGaps` (`collection_gaps`
+in text), with `collection_disabled` warnings even in owner/time-window searches.
+A collection gap alone is not counted as an application error. A timeout is
+not proof of a provider fault. `server.attempt` with
 `phase: dispatched` confirms that the provider-dispatch gate was committed. It does
 not confirm provider-client construction or network transmission.
 
@@ -185,8 +193,13 @@ network prefix is stored, never the raw IP. Browser events cannot consume the fi
 batch is not ACKed; limits leave an incompleteness marker and do not block the conversation.
 
 Retention is anchored to the server conversation creation time, never retry time:
-text 7 days, technical records 30 days. Startup/hourly/shutdown pruning uses secure
-delete and WAL checkpoint/truncation. Purge batches are bounded and continue every
+text 7 days, technical records 30 days. Retained text charges are released from conversation, owner and global
+storage quotas in the same transaction as deletion; daily ingress limits still
+count received traffic. Startup migrates older journals and reconciles retained
+payload counters, including text already purged by earlier versions. Text arriving
+after expiry consumes ingress budget but is neither stored nor charged as retained
+payload. Startup/hourly/shutdown maintenance uses secure delete and WAL
+checkpoint/truncation. Purge batches are bounded and continue every
 second while an expired backlog remains. Expired text is also hidden by the report even
 before the next purge. Deleted SQLite space may remain allocated for reuse.
 Existing server databases and browser queues continue retention cleanup while

@@ -96,6 +96,27 @@ describe("diagnostic delivery", () => {
     f.outbox.configure({ ...active, enabled: false }); f.outbox.configure(active);
     expect(stream.enabled).toBe(false);
   });
+  it("does not add policy boundaries to retired attempts while keeping their late observations", async () => {
+    const f = fixture(), old = f.outbox.stream(), current = f.outbox.stream();
+    const conversationId = crypto.randomUUID(), oldId = crypto.randomUUID();
+    old.bind(conversationId, oldId); current.bind(conversationId, crypto.randomUUID());
+    old.emit("app.lifecycle", { phase: "end", generation: 0 });
+    await f.outbox.flush();
+    old.retire();
+    f.outbox.configure({ ...active, enabled: false }); f.outbox.configure(active);
+    await f.outbox.flush();
+    expect(f.requests.flat().filter(e => e.type === "diagnostic.collection").map(e => e.streamId)).toEqual([current.id]);
+    old.emit("transport.event", { type: "session.output_transcript.delta", phase: "dropped", reason: "stale_generation" });
+    await f.outbox.flush();
+    expect(f.requests.flat()).toContainEqual(expect.objectContaining({ type: "transport.event", streamId: old.id, liveSessionId: oldId }));
+    f.outbox.configure({ ...active, enabled: false });
+    old.emit("transport.event", { type: "session.closed", phase: "received" });
+    f.outbox.configure(active);
+    old.emit("transport.event", { type: "session.closed", phase: "dropped", reason: "closing" });
+    await f.outbox.flush();
+    expect(f.requests.flat()).toContainEqual(expect.objectContaining({ type: "diagnostic.collection", streamId: old.id,
+      data: expect.objectContaining({ discardedCount: 1 }) }));
+  });
   it("marks pre-policy losses and a disabled interval before identity is bound without retaining content", async () => {
     let now = Date.now();
     const queue = new IndexedDiagnosticQueue(), outbox = new DiagnosticOutbox({ queue, automatic: false, now: () => now });

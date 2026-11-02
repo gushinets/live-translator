@@ -33,14 +33,15 @@ export function buildDiagnosticReport(ledger: DatabaseSync, diagnostics: Databas
        (type='turn.timer' AND json_extract(data_json,'$.timer')='no_output' AND json_extract(data_json,'$.phase')='fired')
        THEN 1 ELSE 0 END),0) AS errors,
        COALESCE(SUM(type='diagnostic.loss'),0) AS loss_events,
+       COALESCE(SUM(type='diagnostic.collection'),0) AS collection_gaps,
        COALESCE(SUM(type='turn.timer' AND json_extract(data_json,'$.timer')='no_output' AND json_extract(data_json,'$.phase')='fired'),0) AS no_output_timeouts
        FROM diagnostic_events WHERE conversation_id=?`).get(String(c.id));
     const errors = issues ? Number(issues.errors) : null, lossEvents = issues ? Number(issues.loss_events) : null,
-      noOutputTimeouts = issues ? Number(issues.no_output_timeouts) : null;
+      noOutputTimeouts = issues ? Number(issues.no_output_timeouts) : null, collectionGaps = issues ? Number(issues.collection_gaps) : null;
     const hasText = now < Number(c.created_at) + DIAGNOSTIC_TEXT_RETENTION_MS && Boolean(diagnostics?.prepare("SELECT 1 FROM diagnostic_text WHERE conversation_id=? LIMIT 1").get(String(c.id)));
     return { conversationId: String(c.id), owner: diagnosticOwnerId(String(c.anonymous_user_id)), startedAt: Number(c.created_at),
       endedAt: c.ended_at === null ? null : Number(c.ended_at), durationMs: c.ended_at === null ? null : Number(c.ended_at) - Number(c.created_at),
-      status: String(c.status), attempts: Number(c.attempts), languages, builds, errors, lossEvents, noOutputTimeouts, hasText,
+      status: String(c.status), attempts: Number(c.attempts), languages, builds, errors, lossEvents, noOutputTimeouts, collectionGaps, hasText,
       journalAvailable: Boolean(summary), limited: summary?.limited === 1 };
   });
   const warnings: string[] = diagnostics ? [] : ["journal_unavailable"];
@@ -48,9 +49,10 @@ export function buildDiagnosticReport(ledger: DatabaseSync, diagnostics: Databas
     if (!candidate.journalAvailable) warnings.push(`${candidate.conversationId}: journal_missing`);
     if (candidate.limited) warnings.push(`${candidate.conversationId}: storage_limit_reached`);
     if (candidate.lossEvents) warnings.push(`${candidate.conversationId}: events_lost`);
+    if (candidate.collectionGaps) warnings.push(`${candidate.conversationId}: collection_disabled`);
   }
   if (!selected) return { schemaVersion: 1, from, to, candidates, candidatesTruncated: rows.length > 1000, warnings };
-  const events: Array<DiagnosticEvent & { receivedAt: number; estimatedAt: number; uncertaintyMs: number | null; relativeMs: number; attemptStatus?: "registered" | "unconfirmed"; textStatus: "available" | "expired_or_missing" | "not_recorded" | "removed" }> = [];
+  const events: Array<DiagnosticEvent & { receivedAt: number; estimatedAt: number | null; uncertaintyMs: number | null; relativeMs: number | null; attemptStatus?: "registered" | "unconfirmed"; textStatus: "available" | "expired_or_missing" | "not_recorded" | "removed" }> = [];
   for (const candidate of candidates) {
     const registeredAttempts = new Set(ledger.prepare("SELECT id FROM live_sessions WHERE conversation_id=?").all(candidate.conversationId).map(row => row.id));
     const records = (diagnostics?.prepare(`SELECT e.*,t.text FROM diagnostic_events e LEFT JOIN diagnostic_text t ON t.stream_id=e.stream_id AND t.seq=e.seq WHERE e.conversation_id=? ORDER BY e.stream_id,e.seq`).all(candidate.conversationId) ?? []) as unknown as EventRow[];
@@ -79,13 +81,15 @@ export function buildDiagnosticReport(ledger: DatabaseSync, diagnostics: Databas
         if (row.text_truncated) warnings.push(`${streamId}:${row.seq}: text_truncated`);
         if (row.type === "diagnostic.loss") warnings.push(`${streamId}:${row.seq}: events_lost`);
         if (row.type === "diagnostic.collection") warnings.push(`${streamId}:${row.seq}: collection_disabled`);
-        const estimatedAt = anchor.wall_ms + (row.mono_ms - anchor.mono_ms) + (clockData?.offsetMs ?? 0);
+        const estimate = anchor.wall_ms + (row.mono_ms - anchor.mono_ms) + (clockData?.offsetMs ?? 0);
+        const estimatedAt = Number.isFinite(estimate) && Math.abs(estimate) <= 8640000000000000 ? estimate : null;
+        if (estimatedAt === null) warnings.push(`${streamId}:${row.seq}: time_estimate_invalid`);
         events.push({ schemaVersion: 1, source: row.source, conversationId: row.conversation_id,
           ...(row.live_session_id ? { liveSessionId: row.live_session_id, attemptStatus } : {}), streamId, seq: row.seq,
           wallMs: row.wall_ms, monoMs: row.mono_ms, type: row.type, data,
           ...(row.client_build_id ? { clientBuildId: row.client_build_id } : {}), ...(text !== null ? { text } : {}),
           ...(row.text_truncated ? { textTruncated: true } : {}), ...(removed ? { textRemoved: true } : {}), receivedAt: row.received_at, estimatedAt,
-          uncertaintyMs: row.source === "server" ? 0 : clockData?.uncertaintyMs ?? null, relativeMs: estimatedAt - candidate.startedAt,
+          uncertaintyMs: estimatedAt === null ? null : row.source === "server" ? 0 : clockData?.uncertaintyMs ?? null, relativeMs: estimatedAt === null ? null : estimatedAt - candidate.startedAt,
           textStatus: removed ? "removed" : !row.text_expected ? "not_recorded" : text === null ? "expired_or_missing" : "available",
         } as typeof events[number]);
       }
@@ -98,7 +102,7 @@ export function buildDiagnosticReport(ledger: DatabaseSync, diagnostics: Databas
     for (const [id, decision] of decisions) if (decision.basis === "uncertain") warnings.push(`${id}: source_attribution_uncertain`);
     if (!records.some(row => row.source === "server" && row.type === "server.conversation" && JSON.parse(row.data_json).status === "ended")) warnings.push(`${candidate.conversationId}: journal_end_missing`);
   }
-  events.sort((a, b) => a.estimatedAt - b.estimatedAt || a.streamId.localeCompare(b.streamId) || a.seq - b.seq);
+  events.sort((a, b) => (a.estimatedAt ?? Infinity) - (b.estimatedAt ?? Infinity) || a.streamId.localeCompare(b.streamId) || a.seq - b.seq);
   // Keep the full selected conversation: filtering away an earlier gate/decision hides incident context.
   return { schemaVersion: 1, from, to, candidates, candidatesTruncated: rows.length > 1000, warnings: [...new Set(warnings)], events };
 }
@@ -108,10 +112,10 @@ export function formatDiagnosticReport(report: ReturnType<typeof buildDiagnostic
     const { events, ...summary } = report;
     return [JSON.stringify({ kind: "summary", ...summary }), ...(events ?? []).map(event => JSON.stringify(event))].join("\n") + "\n";
   }
-  const lines = report.candidates.map(c => `${c.conversationId} ${new Date(c.startedAt).toISOString()} duration=${c.durationMs === null ? "unknown" : `${c.durationMs}ms`} status=${c.status} owner=${c.owner} languages=${c.languages.join(",") || "unknown"} builds=${c.builds.join(",") || "unknown"} connections=${c.attempts} errors=${c.errors ?? "unknown"} loss_events=${c.lossEvents ?? "unknown"} no_output_timeouts=${c.noOutputTimeouts ?? "unknown"} text=${c.hasText}`);
+  const lines = report.candidates.map(c => `${c.conversationId} ${new Date(c.startedAt).toISOString()} duration=${c.durationMs === null ? "unknown" : `${c.durationMs}ms`} status=${c.status} owner=${c.owner} languages=${c.languages.join(",") || "unknown"} builds=${c.builds.join(",") || "unknown"} connections=${c.attempts} errors=${c.errors ?? "unknown"} loss_events=${c.lossEvents ?? "unknown"} no_output_timeouts=${c.noOutputTimeouts ?? "unknown"} collection_gaps=${c.collectionGaps ?? "unknown"} text=${c.hasText}`);
   for (const warning of report.warnings ?? []) lines.push(`INCOMPLETE: ${warning}`);
   if (report.candidatesTruncated) lines.push("INCOMPLETE: candidate_limit_1000; narrow the time window");
   if (report.events?.length) lines.push("Times are estimates across streams; seq is authoritative within each stream. Browser playback does not prove physical audibility.");
-  for (const event of report.events ?? []) lines.push(`${new Date(event.estimatedAt).toISOString()} +${(event.relativeMs / 1000).toFixed(3)}s ±${event.uncertaintyMs ?? "unknown"}ms ${event.source} ${event.streamId}:${event.seq} attempt=${event.liveSessionId ?? "none"}${event.attemptStatus ? ` (${event.attemptStatus})` : ""} ${event.type} ${JSON.stringify(event.data)}${event.text !== undefined ? ` text=${JSON.stringify(event.text)}` : ""}${event.textStatus === "removed" ? " [text removed]" : event.textStatus === "expired_or_missing" ? " [text expired or missing]" : ""}`);
+  for (const event of report.events ?? []) lines.push(`${event.estimatedAt === null ? "time=unknown" : new Date(event.estimatedAt).toISOString()} +${event.relativeMs === null ? "unknown" : (event.relativeMs / 1000).toFixed(3)}s ±${event.uncertaintyMs ?? "unknown"}ms ${event.source} ${event.streamId}:${event.seq} attempt=${event.liveSessionId ?? "none"}${event.attemptStatus ? ` (${event.attemptStatus})` : ""} ${event.type} ${JSON.stringify(event.data)}${event.text !== undefined ? ` text=${JSON.stringify(event.text)}` : ""}${event.textStatus === "removed" ? " [text removed]" : event.textStatus === "expired_or_missing" ? " [text expired or missing]" : ""}`);
   return lines.join("\n") + "\n";
 }

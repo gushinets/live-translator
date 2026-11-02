@@ -66,12 +66,35 @@ export class DiagnosticJournal {
         CREATE INDEX IF NOT EXISTS diagnostic_conversation_streams ON diagnostic_streams(conversation_id);
         CREATE TABLE IF NOT EXISTS diagnostic_text (
           stream_id TEXT NOT NULL, seq INTEGER NOT NULL, conversation_id TEXT NOT NULL, text TEXT NOT NULL,
+          bytes INTEGER NOT NULL DEFAULT 0,
           PRIMARY KEY(stream_id,seq)
         ) STRICT;
         CREATE INDEX IF NOT EXISTS diagnostic_conversation_text ON diagnostic_text(conversation_id);
       `);
       if (!this.db.prepare("SELECT 1 FROM pragma_table_info('diagnostic_conversations') WHERE name='browser_bytes'").get()) {
         this.db.exec("ALTER TABLE diagnostic_conversations ADD COLUMN browser_bytes INTEGER NOT NULL DEFAULT 0; UPDATE diagnostic_conversations SET browser_bytes=bytes;");
+      }
+      if (!this.db.prepare("SELECT 1 FROM pragma_table_info('diagnostic_text') WHERE name='bytes'").get()) {
+        transaction(this.db, () => {
+          this.db.exec("ALTER TABLE diagnostic_text ADD COLUMN bytes INTEGER NOT NULL DEFAULT 0");
+          // Rebuild retained payload charges, including text deleted before this migration existed.
+          const totals = new Map<string, { bytes: number; browser: number }>();
+          const updateTextBytes = this.db.prepare("UPDATE diagnostic_text SET bytes=? WHERE stream_id=? AND seq=?");
+          for (const row of this.db.prepare("SELECT e.*,t.text FROM diagnostic_events e LEFT JOIN diagnostic_text t ON t.stream_id=e.stream_id AND t.seq=e.seq").iterate()) {
+            const event = { schemaVersion: 1, source: row.source, conversationId: row.conversation_id,
+              ...(row.live_session_id !== null ? { liveSessionId: row.live_session_id } : {}), streamId: row.stream_id, seq: row.seq,
+              wallMs: row.wall_ms, monoMs: row.mono_ms, type: row.type, data: JSON.parse(String(row.data_json)),
+              ...(row.client_build_id !== null ? { clientBuildId: row.client_build_id } : {}),
+              ...(row.text_truncated ? { textTruncated: true } : {}), ...(row.text_expected === 2 ? { textRemoved: true } : {}) };
+            const textBytes = row.text === null ? 0 : Buffer.byteLength(JSON.stringify(row.text), "utf8") + 8;
+            const size = Buffer.byteLength(JSON.stringify(event), "utf8") + 256 + textBytes;
+            const id = String(row.conversation_id), total = totals.get(id) ?? { bytes: 0, browser: 0 };
+            total.bytes += size; if (row.source === "browser") total.browser += size; totals.set(id, total);
+            if (row.text !== null) updateTextBytes.run(textBytes, row.stream_id!, row.seq!);
+          }
+          this.db.exec("UPDATE diagnostic_conversations SET bytes=0,browser_bytes=0");
+          for (const [id, total] of totals) this.db.prepare("UPDATE diagnostic_conversations SET bytes=?,browser_bytes=? WHERE id=?").run(total.bytes, total.browser, id);
+        });
       }
       const pending = this.prune();
       if (options.automatic !== false) this.schedulePrune(pending ? 1000 : 3600000);
@@ -116,9 +139,12 @@ export class DiagnosticJournal {
           if (this.db.prepare("SELECT 1 FROM diagnostic_events WHERE stream_id=? AND seq=?").get(event.streamId, event.seq)) {
             accepted.push({ streamId: event.streamId, seq: event.seq }); continue;
           }
-          const size = Buffer.byteLength(JSON.stringify(event), "utf8") + 256;
+          const { text, ...technical } = event;
+          const keepText = text !== undefined && this.options.textEnabled && now < conversation.created_at + DIAGNOSTIC_TEXT_RETENTION_MS;
+          const textBytes = keepText ? Buffer.byteLength(JSON.stringify(text), "utf8") + 8 : 0;
+          const size = Buffer.byteLength(JSON.stringify(technical), "utf8") + 256 + textBytes;
           bytes += size; total += size;
-          if (event.source === "browser") { browserBytes += size; ownerBytes += size; ingressBytes += size; }
+          if (event.source === "browser") { browserBytes += size; ownerBytes += size; ingressBytes += Buffer.byteLength(JSON.stringify(event), "utf8") + 256; }
           // Browser traffic cannot consume the last 10% needed for server lifecycle observations.
           if (bytes > conversationMax || total > maxBytes || event.source === "browser" &&
               (bytes > conversationMax * 0.9 || total > maxBytes * 0.9 || ownerBytes > conversationMax || sourceKey !== undefined && ingressBytes > conversationMax)) {
@@ -131,8 +157,7 @@ export class DiagnosticJournal {
             event.wallMs, event.monoMs, now, event.type, JSON.stringify(event.data), event.clientBuildId ?? null,
             // 0: never captured; 1: retained/expired; 2: privacy removal before ingestion.
             event.textRemoved ? 2 : event.text === undefined ? 0 : 1, event.textTruncated ? 1 : 0);
-          if (event.text !== undefined && this.options.textEnabled && now < conversation.created_at + DIAGNOSTIC_TEXT_RETENTION_MS)
-            this.db.prepare("INSERT INTO diagnostic_text(stream_id,seq,conversation_id,text) VALUES(?,?,?,?)").run(event.streamId, event.seq, conversation.id, event.text);
+          if (keepText) this.db.prepare("INSERT INTO diagnostic_text(stream_id,seq,conversation_id,text,bytes) VALUES(?,?,?,?,?)").run(event.streamId, event.seq, conversation.id, text!, textBytes);
           accepted.push({ streamId: event.streamId, seq: event.seq });
         }
         this.db.prepare("UPDATE diagnostic_conversations SET last_at=?,bytes=?,browser_bytes=? WHERE id=?").run(now, bytes, browserBytes, conversation.id);
@@ -224,7 +249,11 @@ export class DiagnosticJournal {
     const now = this.now();
     transaction(this.db, () => {
       // Bounded batches prevent an accumulated 30-day backlog from monopolizing the API event loop.
-      this.db.prepare("DELETE FROM diagnostic_text WHERE rowid IN (SELECT t.rowid FROM diagnostic_text t JOIN diagnostic_conversations c ON c.id=t.conversation_id WHERE c.created_at<=? LIMIT 1000)").run(now - DIAGNOSTIC_TEXT_RETENTION_MS);
+      const texts = this.db.prepare("SELECT t.rowid,t.conversation_id,t.bytes,e.source FROM diagnostic_text t JOIN diagnostic_conversations c ON c.id=t.conversation_id LEFT JOIN diagnostic_events e ON e.stream_id=t.stream_id AND e.seq=t.seq WHERE c.created_at<=? LIMIT 1000").all(now - DIAGNOSTIC_TEXT_RETENTION_MS);
+      for (const text of texts) {
+        this.db.prepare("UPDATE diagnostic_conversations SET bytes=bytes-?,browser_bytes=browser_bytes-? WHERE id=?").run(text.bytes!, text.source === "browser" ? text.bytes! : 0, text.conversation_id!);
+        this.db.prepare("DELETE FROM diagnostic_text WHERE rowid=?").run(text.rowid!);
+      }
       this.db.prepare("DELETE FROM diagnostic_events WHERE rowid IN (SELECT e.rowid FROM diagnostic_events e JOIN diagnostic_conversations c ON c.id=e.conversation_id WHERE c.created_at<=? LIMIT 1000)").run(now - DIAGNOSTIC_RETENTION_MS);
       this.db.prepare("DELETE FROM diagnostic_streams WHERE rowid IN (SELECT s.rowid FROM diagnostic_streams s JOIN diagnostic_conversations c ON c.id=s.conversation_id WHERE c.created_at<=? AND NOT EXISTS(SELECT 1 FROM diagnostic_events e WHERE e.stream_id=s.id) LIMIT 1000)").run(now - DIAGNOSTIC_RETENTION_MS);
       this.db.prepare("DELETE FROM diagnostic_conversations WHERE created_at<=? AND NOT EXISTS(SELECT 1 FROM diagnostic_events e WHERE e.conversation_id=diagnostic_conversations.id) AND NOT EXISTS(SELECT 1 FROM diagnostic_text t WHERE t.conversation_id=diagnostic_conversations.id) AND NOT EXISTS(SELECT 1 FROM diagnostic_streams s WHERE s.conversation_id=diagnostic_conversations.id)").run(now - DIAGNOSTIC_RETENTION_MS);

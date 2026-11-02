@@ -1578,6 +1578,22 @@ describe("LiveClient.close", () => {
     );
   });
 
+  it.each(["replacement", "remote", "local"])("retires the diagnostic observer after %s teardown while observing late data", async mode => {
+    const emit = vi.fn(), retire = vi.fn();
+    const { client, channel } = await connectedClient({ emit, retire } as unknown as DiagnosticStream);
+    if (mode === "replacement") await client.disconnectImmediately();
+    else {
+      const closing = mode === "local" ? client.close() : undefined;
+      channel.emitMessage({ type: "session.closed", reason: "user_requested", usage_seconds: 1 });
+      await closing;
+    }
+    expect(retire).toHaveBeenCalledOnce();
+    emit.mockClear();
+    channel.emitMessage({ type: "session.output_transcript.delta", delta: "late" });
+    expect(emit).toHaveBeenCalledWith("transport.event", expect.objectContaining({ type: "session.output_transcript.delta", phase: "received" }));
+    await client.close();
+    expect(retire).toHaveBeenCalledOnce();
+  });
   it("disconnectImmediately tears down without waiting for session.closed and releases the lease", async () => {
     const { client, peer, channel, releaseCalls } = await connectedClient();
 

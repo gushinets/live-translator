@@ -172,7 +172,7 @@ export class DiagnosticOutbox {
     this.policy = next;
     if (changed) this.disabledMaintenanceAt = 0;
     this.policyRefreshAt = this.now() + 60000;
-    for (const stream of this.streams.values()) stream.drain();
+    for (const stream of this.streams.values()) stream.drain(true);
     this.activate();
     if (changed && !next.enabled && this.options.automatic !== false) this.wake();
   }
@@ -370,6 +370,7 @@ export class DiagnosticStream implements DiagnosticSink {
   private liveSessionId: string | undefined;
   private seq = 0;
   private disabled = false;
+  private retired = false;
   private readonly pending: Array<Omit<DiagnosticEvent, "conversationId">> = [];
   private pendingBytes = 0;
   private lost = 0;
@@ -385,10 +386,12 @@ export class DiagnosticStream implements DiagnosticSink {
     this.conversationId = conversationId; this.liveSessionId = liveSessionId; this.drain();
   }
   disable(): void { this.disabled = true; this.pending.length = 0; this.pendingBytes = 0; }
+  retire(): void { this.retired = true; }
   emit<K extends DiagnosticType>(type: K, data: DiagnosticData[K], text?: string): void {
     try {
       if (this.disabled || type.startsWith("server.")) return;
       if (this.outbox.policy?.enabled === false) { this.drain(); this.discardedCount++; return; }
+      if (this.disabledAtMs !== undefined) this.drain();
       const includeText = this.outbox.policy?.textEnabled && ["transcript.fragment", "caption.block"].includes(type) && text !== undefined && this.outbox.textOptedIn();
       const event = { schemaVersion: 1 as const, source: "browser" as const, streamId: this.id, seq: ++this.seq,
         wallMs: this.outbox.now(), monoMs: performance.now(), type, data: JSON.parse(JSON.stringify(data)), clientBuildId: CLIENT_BUILD_ID,
@@ -402,8 +405,8 @@ export class DiagnosticStream implements DiagnosticSink {
       }
     } catch { /* Observability must never throw into audio, rendering or transport callbacks. */ }
   }
-  drain(): void {
-    if (this.disabled) return;
+  drain(policyChange = false): void {
+    if (this.disabled || policyChange && this.retired) return;
     if (this.outbox.policy?.enabled === false) {
       this.disabledAtMs ??= this.outbox.now();
       this.discardedCount += this.pending.length + this.lost;

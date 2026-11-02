@@ -31,6 +31,70 @@ function fixture(options: ConstructorParameters<typeof DiagnosticJournal>[1] = {
   return { clock, db, ledger, journal, app, owner, c, id, event, post };
 }
 describe("conversation diagnostic ingestion", () => {
+  it.each(["window", "owner"])("shows collection gaps in %s candidate-only text and JSONL reports", mode => {
+    const f = fixture(), first = f.event();
+    f.journal.append(f.c, [{ ...first, type: "diagnostic.collection", data: { disabledAtMs: f.clock.now - 1000, resumedAtMs: f.clock.now, discardedCount: 0 } }]);
+    const report = buildDiagnosticReport(f.db, f.journal.db, mode === "window" ? { from: f.c.created_at, to: f.clock.now } : { owner: diagnosticOwnerId(f.owner) });
+    expect(report.candidates[0]).toMatchObject({ collectionGaps: 1, errors: 0, lossEvents: 0 });
+    expect(report.warnings).toContain(`${f.c.id}: collection_disabled`);
+    expect(formatDiagnosticReport(report, "text")).toContain("collection_gaps=1");
+    expect(formatDiagnosticReport(report, "text")).toContain(`INCOMPLETE: ${f.c.id}: collection_disabled`);
+    expect(JSON.parse(formatDiagnosticReport(report, "jsonl").trim()).warnings).toContain(`${f.c.id}: collection_disabled`);
+  });
+  it.each(["clock", "wall", "monotonic"])("keeps schema-valid unrenderable %s times from breaking reports", async mode => {
+    const f = fixture(), first = f.event(1, mode === "wall" ? { wallMs: Number.MAX_SAFE_INTEGER } :
+      mode === "clock" ? { type: "diagnostic.clock", data: { offsetMs: 1e308, uncertaintyMs: 0 } } : {});
+    const second = { ...f.event(2), streamId: first.streamId, ...(mode === "monotonic" ? { monoMs: Number.MAX_SAFE_INTEGER } : {}) };
+    await f.post([first, second]).expect(200);
+    const report = buildDiagnosticReport(f.db, f.journal.db, { conversationId: f.c.id });
+    expect(report.events!.filter(e => e.streamId === first.streamId)).toHaveLength(2);
+    expect(report.warnings.some(w => w.endsWith(": time_estimate_invalid"))).toBe(true);
+    const text = formatDiagnosticReport(report, "text");
+    expect(text).toContain("time=unknown"); expect(text).toContain("transcript.fragment");
+    const events = formatDiagnosticReport(report, "jsonl").trim().split("\n").slice(1).map(line => JSON.parse(line));
+    expect(events.some(e => e.estimatedAt === null && e.relativeMs === null)).toBe(true);
+  });
+  it("reclaims retained text quota after seven days and does not charge text arriving after expiry", () => {
+    const f = fixture({ textEnabled: true, maxBytes: 17000, conversationMaxBytes: 16000, logger: { error() {} } });
+    const events = Array.from({ length: 3 }, (_, i) => f.event(i + 1, { text: "Ж".repeat(1800) }));
+    f.journal.append(f.c, events);
+    expect(() => f.journal.append(f.c, [f.event(4, { text: "Ж".repeat(1800) })])).toThrow("diagnostics_limit");
+    const before = f.journal.db.prepare("SELECT bytes,browser_bytes FROM diagnostic_conversations WHERE id=?").get(f.c.id)!;
+    f.clock.now += DIAGNOSTIC_TEXT_RETENTION_MS + 1;
+    f.journal.db.exec("CREATE TRIGGER reject_text_purge BEFORE DELETE ON diagnostic_text BEGIN SELECT RAISE(ABORT,'purge rollback'); END");
+    expect(() => f.journal.prune()).toThrow("purge rollback");
+    expect(f.journal.db.prepare("SELECT bytes,browser_bytes FROM diagnostic_conversations WHERE id=?").get(f.c.id)).toEqual(before);
+    expect(f.journal.db.prepare("SELECT COUNT(*) AS n FROM diagnostic_text").get()!.n).toBe(3);
+    f.journal.db.exec("DROP TRIGGER reject_text_purge"); f.journal.prune();
+    const after = f.journal.db.prepare("SELECT bytes,browser_bytes FROM diagnostic_conversations WHERE id=?").get(f.c.id)!;
+    expect(Number(before.bytes) - Number(after.bytes)).toBe(3 * (Buffer.byteLength(JSON.stringify(events[0]!.text)) + 8));
+    expect(after.bytes).toBe(after.browser_bytes);
+    f.journal.prune();
+    expect(f.journal.db.prepare("SELECT bytes FROM diagnostic_conversations WHERE id=?").get(f.c.id)!.bytes).toBe(after.bytes);
+    expect(() => f.journal.append(f.c, [f.event(5, { text: "Ж".repeat(5000) })])).not.toThrow();
+    expect(f.journal.db.prepare("SELECT COUNT(*) AS n FROM diagnostic_text").get()!.n).toBe(0);
+    expect(() => f.journal.append(f.c, [f.event(6, { source: "server", type: "server.conversation", data: { status: "ended", version: 2 } })])).not.toThrow();
+  });
+  it.each([false, true])("reconciles legacy quota with text already removed=%s on migration and reopen", removed => {
+    const directory = mkdtempSync(join(tmpdir(), "diagnostics-quota-migration-")); resources.push(() => rmSync(directory, { recursive: true, force: true }));
+    const f = fixture(), path = join(directory, "events.sqlite"), event = f.event(1, { text: "MIGRATION_CANARY".repeat(100) });
+    const old = new DiagnosticJournal(path, { textEnabled: true, automatic: false, now: () => f.clock.now });
+    old.append(f.c, [event]); old.close();
+    const legacy = new DatabaseSync(path);
+    if (legacy.prepare("SELECT 1 FROM pragma_table_info('diagnostic_text') WHERE name='bytes'").get()) legacy.exec("ALTER TABLE diagnostic_text DROP COLUMN bytes");
+    if (removed) legacy.exec("DELETE FROM diagnostic_text");
+    legacy.close();
+    f.clock.now += DIAGNOSTIC_TEXT_RETENTION_MS + 1;
+    const technical = { ...event }; delete technical.text;
+    const expected = Buffer.byteLength(JSON.stringify(technical)) + 256;
+    for (let reopen = 0; reopen < 2; reopen++) {
+      const disk = new DiagnosticJournal(path, { textEnabled: true, automatic: false, now: () => f.clock.now });
+      try {
+        expect(disk.db.prepare("SELECT bytes,browser_bytes FROM diagnostic_conversations WHERE id=?").get(f.c.id)).toEqual({ bytes: expected, browser_bytes: expected });
+        expect(disk.db.prepare("SELECT COUNT(*) AS n FROM diagnostic_text").get()!.n).toBe(0);
+      } finally { disk.close(); }
+    }
+  });
   it("records committed provider dispatch without a creation result and discards rolled-back dispatch", async () => {
     const f = fixture();
     f.db.exec("CREATE TRIGGER reject_dispatch BEFORE UPDATE OF provider_request_dispatched_at ON live_sessions BEGIN SELECT RAISE(ABORT,'test rollback'); END");
