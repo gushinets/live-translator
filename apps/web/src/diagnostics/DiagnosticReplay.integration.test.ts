@@ -81,6 +81,26 @@ it("removes committed text after renewed consent between flushes, including relo
     .toContainEqual(expect.objectContaining({ streamId: f.stream.id, seq: 1, textStatus: "removed" }));
 });
 
+it("replays a failed selective scrub after reload without deleting current-consent text", async () => {
+  const f = await committedTextWithoutReceipt(), sent = f.batches.length;
+  f.state.consentId = crypto.randomUUID();
+  f.stream.emit("transcript.fragment", { kind: "input", fragmentId: "new", charCount: 7 }, "CURRENT");
+  vi.spyOn(f.queue, "scrubText").mockRejectedValueOnce(new Error("write denied"));
+  f.state.offline = true; await f.outbox.flush();
+  expect((await f.queue.read()).filter(row => row.event.text !== undefined).map(row => row.event.text))
+    .toEqual(["PRIVATE_CANARY", "CURRENT"]);
+  f.outbox.stop(); f.state.offline = false;
+  const reload = new DiagnosticOutbox(f.options); cleanup.push(() => reload.stop()); reload.configure((await f.api.policy()).diagnostics);
+  await reload.flush(); await reload.flush();
+  expect(JSON.stringify(f.batches.slice(sent))).not.toContain("PRIVATE_CANARY");
+  expect(f.journal.db.prepare("SELECT seq, text FROM diagnostic_text WHERE stream_id=?").all(f.stream.id))
+    .toEqual([{ seq: 2, text: "CURRENT" }]);
+  const events = buildDiagnosticReport(f.db, f.journal.db, { conversationId: f.c.conversationId }).events;
+  expect(events).toContainEqual(expect.objectContaining({ streamId: f.stream.id, seq: 1, textStatus: "removed" }));
+  expect(events).toContainEqual(expect.objectContaining({ streamId: f.stream.id, seq: 2, text: "CURRENT" }));
+  expect(await f.queue.read()).toEqual([]);
+});
+
 it.each(["tab", "server"])("finishes failed %s text revocation after reload and renewed consent", async revoke => {
   const f = await committedTextWithoutReceipt();
   vi.spyOn(f.queue, "scrubText").mockRejectedValueOnce(new Error("write denied"));

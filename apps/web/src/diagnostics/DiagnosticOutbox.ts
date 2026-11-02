@@ -144,7 +144,7 @@ export class DiagnosticOutbox {
   private readonly volatile = new Map<string, DiagnosticQueueRow>();
   private readonly streams = new Map<string, DiagnosticStream>();
   private readonly deferredRemovals = new Set<string>();
-  private readonly pendingScrubs = new Set<string | undefined>();
+  private readonly pendingScrubs = new Map<string | undefined, string | undefined>();
   private singleRemoval = false;
   private prioritizeTechnical = false;
   private readonly producer: Promise<string>;
@@ -170,12 +170,23 @@ export class DiagnosticOutbox {
     }, () => { this.recoverableProducer = false; return crypto.randomUUID(); });
     try {
       const saved: unknown = JSON.parse((options.storage ?? sessionStorage).getItem(SCRUB_INTENT_KEY) ?? "[]");
-      if (Array.isArray(saved)) for (const scope of saved) if (scope === null || typeof scope === "string") this.pendingScrubs.add(scope ?? undefined);
-    } catch { this.pendingScrubs.add(undefined); }
+      if (!Array.isArray(saved)) throw new Error("invalid_scrub_intents");
+      for (const entry of saved) {
+        // Older intents contain only a scope and must still revoke all of its text.
+        if (entry === null || typeof entry === "string") this.pendingScrubs.set(entry ?? undefined, undefined);
+        else if (Array.isArray(entry) && entry.length === 2 &&
+          (entry[0] === null || typeof entry[0] === "string") && (entry[1] === null || typeof entry[1] === "string"))
+          this.pendingScrubs.set(entry[0] ?? undefined, entry[1] ?? undefined);
+        else throw new Error("invalid_scrub_intents");
+      }
+    } catch { this.pendingScrubs.set(undefined, undefined); }
   }
   now(): number { return (this.options.now ?? Date.now)(); }
   textConsentId(): string | undefined {
-    if (!this.producerReady || this.pendingScrubs.size) return undefined;
+    return this.pendingScrubs.size ? undefined : this.currentConsentId();
+  }
+  private currentConsentId(): string | undefined {
+    if (!this.producerReady) return undefined;
     try {
       const id = (this.options.storage ?? sessionStorage).getItem(DIAGNOSTIC_TEXT_KEY);
       // Each opt-in needs a fresh identity; the old boolean cannot distinguish off/on between flushes.
@@ -287,12 +298,12 @@ export class DiagnosticOutbox {
   private persistScrubs(): void {
     try {
       const storage = this.options.storage ?? sessionStorage;
-      if (this.pendingScrubs.size) storage.setItem(SCRUB_INTENT_KEY, JSON.stringify([...this.pendingScrubs].map(scope => scope ?? null)));
+      if (this.pendingScrubs.size) storage.setItem(SCRUB_INTENT_KEY, JSON.stringify([...this.pendingScrubs].map(([scope, keep]) => [scope ?? null, keep ?? null])));
       else storage.removeItem(SCRUB_INTENT_KEY);
     } catch { this.failed(new Error("diagnostics_storage_unavailable")); }
   }
   private async scrubText(scope?: string, keepConsentId?: string): Promise<void> {
-    this.pendingScrubs.add(scope); this.persistScrubs();
+    this.pendingScrubs.set(scope, keepConsentId); this.persistScrubs();
     for (const row of this.volatile.values()) if ((scope === undefined || row.textProducerId === scope) &&
       (!keepConsentId || row.textConsentId !== keepConsentId)) stripText(row);
     await this.queue.scrubText(scope, keepConsentId);
@@ -312,11 +323,11 @@ export class DiagnosticOutbox {
     try { await this.refreshPolicy(); } catch (error) { this.failed(error); }
     await this.work;
     const producerId = await this.producer;
-    const scrub = !this.policy ? null : !this.policy.enabled || !this.policy.textEnabled ? undefined : !this.textConsentId() ? producerId : null;
-    if (scrub !== null && !this.pendingScrubs.has(undefined)) this.pendingScrubs.add(scrub);
+    const scrub = !this.policy ? null : !this.policy.enabled || !this.policy.textEnabled ? undefined : !this.currentConsentId() ? producerId : null;
+    if (scrub !== null && !this.pendingScrubs.has(undefined)) this.pendingScrubs.set(scrub, undefined);
     const scrubs = [...this.pendingScrubs];
-    for (const scope of scrubs) {
-      try { await this.scrubText(scope); } catch { this.failed(new Error("diagnostics_storage_unavailable")); }
+    for (const [scope, keepConsentId] of scrubs) {
+      try { await this.scrubText(scope, keepConsentId); } catch { this.failed(new Error("diagnostics_storage_unavailable")); }
     }
     let rows: DiagnosticQueueRow[];
     try { rows = await this.queue.read(); } catch { rows = []; this.failed(new Error("diagnostics_storage_unavailable")); }
@@ -335,13 +346,14 @@ export class DiagnosticOutbox {
       try { await this.scrubText(peer); } catch { this.failed(new Error("diagnostics_storage_unavailable")); }
       for (const row of rows) if (row.textProducerId === peer) stripText(row);
     }
-    for (const row of rows) if (scrubs.some(scope => scope === undefined || row.textProducerId === scope)) stripText(row);
+    for (const row of rows) if (scrubs.some(([scope, keep]) => (scope === undefined || row.textProducerId === scope) &&
+      (!keep || row.textConsentId !== keep))) stripText(row);
     const consentId = this.textConsentId();
     if (consentId && rows.some(row => row.textProducerId === producerId && row.textConsentId !== consentId)) {
       try { await this.scrubText(producerId, consentId); } catch { this.failed(new Error("diagnostics_storage_unavailable")); }
     }
     // Only the producing tab can recheck its current consent; peer text waits for that tab or expiry.
-    const currentConsentId = this.textConsentId();
+    const currentConsentId = this.currentConsentId();
     for (const row of rows) if (!this.policy?.textEnabled || row.textProducerId === producerId &&
       (!currentConsentId || row.textConsentId !== currentConsentId)) stripText(row);
     rows = rows.filter(row => (row.event.text === undefined && row.event.textTruncated === undefined) || row.textProducerId === producerId);

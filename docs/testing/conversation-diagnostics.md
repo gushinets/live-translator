@@ -82,12 +82,16 @@ The setting is checked for each content event, so enabling it after the page bec
 idle works and revoking it stops subsequent text capture. Before replay, queued text is removed
 if either the current server policy or tab setting disallows it; event identities and
 technical fields are retained.
-If a durable scrub fails, its scope remains pending and is retried even after
-text is enabled again. Content-free revocation intents are also saved in the
+If a durable scrub fails, its scope and any consent UUID to preserve remain pending
+and are retried even after text is enabled again. Selective cleanup preserves queued
+text captured under that UUID while it remains the current consent, including in
+delivery copies and after reload; it does not turn a partial cleanup into a full revoke.
+Full revocations and older scope-only intents still remove all text in their scope.
+Content-free revocation intents are also saved in the
 tab's session storage for reload recovery when that storage is available; otherwise
 the current document keeps its pending intent in memory. Text capture stays off while an
-intent is pending. In-memory rows are scrubbed immediately, and queued read
-copies stay scrubbed for delivery until the durable scrub succeeds. New consent
+intent is pending. Revoked in-memory rows are scrubbed immediately, and queued read
+copies keep the same selective/full scrub for delivery until the durable scrub succeeds. New consent
 permits new test text after cleanup; it does not restore pre-revocation text.
 Scrubbed rows retain only `textRemoved: true`; reports show `textStatus: removed`
 and a `text_removed` warning, distinct from text never captured or expired on the server.

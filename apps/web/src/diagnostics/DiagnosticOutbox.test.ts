@@ -18,6 +18,64 @@ function fixture(options: { queue?: DiagnosticQueue; textEnabled?: boolean; prod
   return { outbox, queue, send, requests };
 }
 describe("diagnostic delivery", () => {
+  it.each(["tab", "server"])("a full %s revoke overrides a failed selective scrub across reload", async revoke => {
+    sessionStorage.setItem(DIAGNOSTIC_TEXT_KEY, crypto.randomUUID());
+    const f = fixture({ textEnabled: true, producerId: "same-tab" }), stream = f.outbox.stream();
+    stream.bind(crypto.randomUUID()); await Promise.resolve();
+    stream.emit("transcript.fragment", { kind: "input", fragmentId: "old", charCount: 7 }, "PRIVATE");
+    f.send.mockRejectedValue(new Error("offline")); await f.outbox.flush();
+    sessionStorage.setItem(DIAGNOSTIC_TEXT_KEY, crypto.randomUUID());
+    stream.emit("transcript.fragment", { kind: "input", fragmentId: "new", charCount: 7 }, "CURRENT");
+    const scrub = vi.spyOn(f.queue, "scrubText").mockRejectedValue(new Error("write denied"));
+    await f.outbox.flush();
+    if (revoke === "tab") sessionStorage.removeItem(DIAGNOSTIC_TEXT_KEY); else f.outbox.configure(active);
+    await f.outbox.flush(); f.outbox.stop(); scrub.mockRestore();
+    sessionStorage.setItem(DIAGNOSTIC_TEXT_KEY, crypto.randomUUID());
+    const next = fixture({ queue: f.queue, textEnabled: true, producerId: "same-tab" });
+    await next.outbox.flush(); await next.outbox.flush();
+    expect(JSON.stringify(next.requests)).not.toMatch(/PRIVATE|CURRENT/);
+    expect(next.requests.flat()).toEqual([expect.objectContaining({ seq: 1, textRemoved: true }),
+      expect.objectContaining({ seq: 2, textRemoved: true })]);
+    expect(await f.queue.read()).toEqual([]);
+  });
+  it.each(['["same-tab"]', '[null]', '[42]'])("preserves full revocation when restoring legacy or invalid intents: %s", async saved => {
+    sessionStorage.setItem(DIAGNOSTIC_TEXT_KEY, crypto.randomUUID());
+    const f = fixture({ textEnabled: true, producerId: "same-tab" }), stream = f.outbox.stream();
+    stream.bind(crypto.randomUUID()); await Promise.resolve();
+    stream.emit("transcript.fragment", { kind: "input", fragmentId: "old", charCount: 7 }, "PRIVATE");
+    f.send.mockRejectedValueOnce(new Error("offline")); await f.outbox.flush();
+    sessionStorage.setItem("liveTranslatorDiagnosticScrubs", saved);
+    const next = fixture({ queue: f.queue, textEnabled: true, producerId: "same-tab" }); f.outbox.stop();
+    await next.outbox.flush();
+    expect(next.requests.flat()).toContainEqual(expect.objectContaining({ seq: 1, textRemoved: true }));
+    expect(JSON.stringify(next.requests)).not.toContain("PRIVATE"); expect(await f.queue.read()).toEqual([]);
+  });
+  it.each([false, true])("preserves current-consent text through a failed selective scrub, reload=%s", async reload => {
+    sessionStorage.setItem(DIAGNOSTIC_TEXT_KEY, crypto.randomUUID());
+    const f = fixture({ textEnabled: true, producerId: "same-tab" }), stream = f.outbox.stream();
+    stream.bind(crypto.randomUUID()); await Promise.resolve();
+    stream.emit("transcript.fragment", { kind: "input", fragmentId: "old", charCount: 7 }, "PRIVATE");
+    f.send.mockRejectedValue(new Error("offline")); await f.outbox.flush();
+    sessionStorage.removeItem(DIAGNOSTIC_TEXT_KEY);
+    const consentId = crypto.randomUUID(); sessionStorage.setItem(DIAGNOSTIC_TEXT_KEY, consentId);
+    stream.emit("transcript.fragment", { kind: "input", fragmentId: "new", charCount: 7 }, "CURRENT");
+    const scrub = vi.spyOn(f.queue, "scrubText").mockRejectedValueOnce(new Error("write denied"));
+    await f.outbox.flush();
+    expect((JSON.parse(String(f.send.mock.calls.at(-1)![1]!.body)) as { events: DiagnosticEvent[] }).events)
+      .not.toContainEqual(expect.objectContaining({ seq: 2, textRemoved: true }));
+    const next = reload ? fixture({ queue: f.queue, textEnabled: true, producerId: "same-tab" }) : f;
+    if (reload) f.outbox.stop();
+    else f.send.mockImplementation(async (_url, init) => {
+      const events = (JSON.parse(String(init?.body)) as { events: DiagnosticEvent[] }).events; f.requests.push(events);
+      return new Response(JSON.stringify({ schemaVersion: 1, serverTime: Date.now(), accepted: events.map(({ streamId, seq }) => ({ streamId, seq })) }));
+    });
+    await next.outbox.flush(); await next.outbox.flush(); await next.outbox.flush();
+    expect(scrub).toHaveBeenLastCalledWith("same-tab", consentId);
+    expect(next.requests.flat()).toContainEqual(expect.objectContaining({ seq: 1, textRemoved: true }));
+    expect(next.requests.flat()).toContainEqual(expect.objectContaining({ seq: 2, text: "CURRENT" }));
+    expect(JSON.stringify(next.requests)).not.toContain("PRIVATE");
+    expect(await f.queue.read()).toEqual([]);
+  });
   it.each([false, true])("does not renew consent for queued text between flushes, reload=%s", async reload => {
     sessionStorage.setItem(DIAGNOSTIC_TEXT_KEY, crypto.randomUUID());
     const f = fixture({ textEnabled: true, producerId: "same-tab" }), old = f.outbox.stream();
