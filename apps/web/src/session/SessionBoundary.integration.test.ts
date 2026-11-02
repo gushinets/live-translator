@@ -2800,7 +2800,6 @@ describe("stage 5 hidden boundary", () => {
       render(jsx(ConversationScreen, { controller: f.controller }));
       const revision = f.controller.captionRevision, blocks = [...f.controller.captionBlocks];
       expect(blocks.length).toBeGreaterThan(0);
-      const rendered = vi.spyOn(f.controller, "recordCaptionRender");
       await act(async () => {
         f.setVisible(false);
         f.c.policy.backgroundSessionCloseEnabled = false;
@@ -2810,7 +2809,6 @@ describe("stage 5 hidden boundary", () => {
       });
       expect(f.controller.captionRevision).toBe(revision + 1);
       expect(f.controller.captionBlocks).toEqual([]);
-      expect(rendered).toHaveBeenCalledWith(revision + 1, 0);
       expect(enqueue).toHaveBeenCalledWith(expect.objectContaining({ type: "caption.render",
         liveSessionId: f.clients[0]!.id, data: { revision: revision + 1, blockCount: 0 } }));
       for (const block of blocks) expect(enqueue).toHaveBeenCalledWith(expect.objectContaining({ type: "caption.block",

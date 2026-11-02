@@ -112,10 +112,13 @@ export class SessionController {
   private lastPlaybackEdgeAt: number | null = null;
   private renderedCaptionRevision = -1;
   get captionRevision(): number { return this.dialogueTranscript.revision; }
-  recordCaptionRender(revision: number, blockCount: number): void {
-    if (revision === this.renderedCaptionRevision) return;
-    this.renderedCaptionRevision = revision;
-    observe(this.dialogueTranscript.revisionDiagnostics, "caption.render", { revision, blockCount });
+  captureCaptionRender(revision: number, blockCount: number): () => void {
+    const journal = this.dialogueTranscript.revisionDiagnostics;
+    return () => {
+      if (revision === this.renderedCaptionRevision) return;
+      this.renderedCaptionRevision = revision;
+      observe(journal, "caption.render", { revision, blockCount });
+    };
   }
   private currentSession: TranslationSession;
   private live: LiveClient;

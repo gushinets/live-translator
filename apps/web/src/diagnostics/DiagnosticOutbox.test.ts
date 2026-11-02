@@ -311,6 +311,11 @@ describe("diagnostic delivery", () => {
       type: "diagnostic.loss", data: { reason: "expired", count: 1, affectedStreamId: row.event.streamId },
     }));
     expect(f.requests.flat().filter(event => event.type === "diagnostic.loss" && event.conversationId === incoming.conversationId)).toEqual([]);
+    f.outbox.configure({ ...active, enabled: false }); f.outbox.configure(active);
+    await f.outbox.flush(); await f.outbox.flush(); await f.outbox.flush();
+    const boundaries = f.requests.flat().filter(event => event.type === "diagnostic.collection");
+    expect(boundaries).toContainEqual(expect.objectContaining({ conversationId: incoming.conversationId }));
+    expect(boundaries.filter(event => event.conversationId !== incoming.conversationId)).toEqual([]);
   });
   it("groups expiry during replay separately from expiry during enqueue", async () => {
     const queue = new IndexedDiagnosticQueue(5 * 1024 * 1024, () => 0), f = fixture({ queue });

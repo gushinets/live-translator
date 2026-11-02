@@ -28,7 +28,7 @@ interface Stream {
 /** Display-only transcript. Neither idle timers nor service Turn IDs define paragraphs. */
 export class DialogueTranscript {
   diagnostics: DiagnosticSink | undefined;
-  // Reset may replace the transport before React commits the cleared revision.
+  // Renderers capture this revision's journal before React commits it.
   revisionDiagnostics: DiagnosticSink | undefined;
   revision = 0;
   blocks: readonly DialogueBlock[] = [];

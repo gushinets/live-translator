@@ -21,6 +21,8 @@ Retired transports do not observe later policy transitions; genuinely late data
 still keeps its original stream and attempt identity.
 If late data was discarded while collection was disabled, re-enabling collection
 flushes that pending gap even when no further event arrives on the retired stream.
+Temporary streams used to report losses from an older document are also retired;
+later policy changes in a different conversation do not create gaps for them.
 
 The database is `/diagnostics/events.sqlite` in the separate `diagnostics-data`
 Compose volume. Local runs use `DIAGNOSTICS_DB_PATH=./.data/diagnostics/events.sqlite`
@@ -141,6 +143,10 @@ Look for the last confirmed stage:
 4. `attribution.decision`: candidates, chosen source, revisions/revocations/deadline.
 5. PCM pending, playback permission, playback activity and decoder/context state.
 6. `caption.block` revision/side and `caption.render` after React's layout commit.
+
+The screen captures the revision, visible block count and its journal during render,
+then records confirmation after commit. A transport switch before commit cannot move
+that confirmation to the replacement stream. Abandoned renders record no confirmation.
 
 Caption routing is observed separately from technical source attribution. Matching
 a translation to a source never proves that PCM belonged to that source.

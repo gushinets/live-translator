@@ -436,6 +436,37 @@ describe("conversation diagnostic observations", () => {
     expect(advancedRevision).toBeGreaterThan(committedRevision);
     expect(emit).toHaveBeenCalledWith("caption.render", { revision: committedRevision, blockCount: 1 }, undefined);
   });
+  it("keeps the committed caption on its original journal when a new transport publishes before commit", async () => {
+    const oldEmit = vi.fn(), newEmit = vi.fn();
+    const first = Object.assign(new FakeLive(), { journal: { emit: oldEmit } });
+    const second = Object.assign(new FakeLive(), { journal: { emit: newEmit } });
+    const { controller } = createController({ live: first });
+    await controller.startWithLanguages({ A: "ru", B: "es" });
+    first.emit({ type: "session.input_transcript.delta", delta: "Где вокзал?", start_ms: 0, end_ms: 1000 });
+    const committedRevision = controller.captionRevision;
+    let advancedRevision = committedRevision;
+    function SwitchBeforeCaptionCommit() {
+      useLayoutEffect(() => {
+        expect(oldEmit.mock.calls.some(([type]) => type === "caption.render")).toBe(false);
+        const switching = controller as unknown as { live: FakeLive; bindLive(): void };
+        switching.live = second; switching.bindLive();
+        second.emit({ type: "session.output_transcript.delta", delta: "¿Dónde está la estación?", start_ms: 500, end_ms: 1500 });
+        advancedRevision = controller.captionRevision;
+      }, []);
+      return null;
+    }
+    render(createElement(Fragment, null, createElement(SwitchBeforeCaptionCommit), createElement(ConversationScreen, { controller })));
+    expect(advancedRevision).toBeGreaterThan(committedRevision);
+    expect(oldEmit).toHaveBeenCalledWith("caption.block", expect.objectContaining({ revision: committedRevision }), expect.any(String));
+    expect(newEmit).toHaveBeenCalledWith("caption.block", expect.objectContaining({ revision: advancedRevision }), expect.any(String));
+    expect(oldEmit).toHaveBeenCalledWith("caption.render", { revision: committedRevision, blockCount: 1 }, undefined);
+    expect(newEmit).not.toHaveBeenCalledWith("caption.render", expect.objectContaining({ revision: committedRevision }), undefined);
+    act(() => (controller as unknown as { notify(): void }).notify());
+    expect(newEmit).toHaveBeenCalledWith("caption.render", { revision: advancedRevision, blockCount: 2 }, undefined);
+    act(() => (controller as unknown as { notify(): void }).notify());
+    expect(oldEmit.mock.calls.filter(([type]) => type === "caption.render")).toHaveLength(1);
+    expect(newEmit.mock.calls.filter(([type]) => type === "caption.render")).toHaveLength(1);
+  });
   it("links raw fragments, routing, caption side and committed render, then records the no-output deadline", async () => {
     vi.useFakeTimers();
     const emit = vi.fn<(type: DiagnosticType, data: unknown, text?: string) => void>();

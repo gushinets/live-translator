@@ -14,7 +14,7 @@ import type { PlaybackInputState } from "../audio/AudioController";
 
 export interface ConversationScreenController {
   readonly captionRevision?: number;
-  recordCaptionRender?(revision: number, blockCount: number): void;
+  captureCaptionRender?(revision: number, blockCount: number): () => void;
   readonly session: TranslationSession;
   readonly captionBlocks: readonly DialogueBlock[];
   readonly inputReady: boolean;
@@ -51,8 +51,9 @@ export function ConversationScreen({
   const captions = controller.captionBlocks;
   const captionRevision = controller.captionRevision;
   const captionBlockCount = captions.filter(block => block.text.trim() && (block.side !== undefined || block.kind === "output")).length;
+  const recordCaptionRender = captionRevision === undefined ? undefined : controller.captureCaptionRender?.(captionRevision, captionBlockCount);
   useLayoutEffect(() => { renderedSnapshot.current = snapshot; });
-  useLayoutEffect(() => { if (captionRevision !== undefined) controller.recordCaptionRender?.(captionRevision, captionBlockCount); }, [controller, captionRevision, captionBlockCount]);
+  useLayoutEffect(() => { recordCaptionRender?.(); }, [recordCaptionRender]);
   const previousRecovery = useRef<RetainedRecoveryState | undefined>(undefined);
   useEffect(() => {
     const unsubscribe = controller.subscribe(rerender);

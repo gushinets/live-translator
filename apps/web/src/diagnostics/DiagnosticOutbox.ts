@@ -232,7 +232,7 @@ export class DiagnosticOutbox {
   }
   private loss(event: DiagnosticEvent, reason: DiagnosticData["diagnostic.loss"]["reason"], count: number): void {
     let stream = this.streams.get(event.streamId);
-    if (!stream) { stream = this.stream(); stream.bind(event.conversationId, event.liveSessionId); }
+    if (!stream) { stream = this.stream(); stream.bind(event.conversationId, event.liveSessionId); stream.retire(); }
     stream.emit("diagnostic.loss", { reason, count, affectedStreamId: event.streamId });
   }
   private lossRows(rows: DiagnosticQueueRow[], reason: DiagnosticData["diagnostic.loss"]["reason"]): void {
