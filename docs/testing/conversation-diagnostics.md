@@ -216,8 +216,15 @@ when conversation cleanup fails. Final pagehide delivery is best effort.
 
 Client backlog is limited to 5 MiB / 24 hours. IndexedDB failure falls back to bounded
 memory. Loss markers identify the affected conversation, attempt and producer stream.
+If inserting a loss marker evicts another observation, that victim also gets its
+own scoped marker. Unexpired loss markers are protected from capacity eviction in
+both IndexedDB and memory, so this process ends rather than cycling through markers.
+The 5 MiB bound still applies: if only protected markers remain and the new record
+cannot fit, it is rejected. A dropped/expired marker is not recursively replaced;
+`loss_marker_dropped` produces a content-free local error at most once a minute.
+At that point the timeline is incomplete and loss counts can understate the total.
 Schema v2 upgrades the same database in place with a transactional byte counter and
-expiry index; appending does not read the full backlog. Text revocation uses one
+expiry index; appends below capacity do not read the full backlog. Text revocation uses one
 transaction over indexed text rows. These changes do not touch accounting storage.
 The server limits journal payload accounting to 1 GiB total / 20 MiB per conversation
 and also bounds SQLite page growth. Browser events have an aggregate 20 MiB allowance

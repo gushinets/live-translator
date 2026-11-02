@@ -345,6 +345,78 @@ describe("diagnostic delivery", () => {
     expect(boundaries).toContainEqual(expect.objectContaining({ conversationId: incoming.conversationId }));
     expect(boundaries.filter(event => event.conversationId !== incoming.conversationId)).toEqual([]);
   });
+  it("reports an IndexedDB observation displaced by the first overflow marker", async () => {
+    const limit = 5 * 1024 * 1024, queue = new IndexedDiagnosticQueue(limit, () => 0);
+    const victims = [0, 1].map(index => ({ key: `victim-${index}`, queuedAt: index, bytes: 800, event: {
+      schemaVersion: 1, source: "browser", conversationId: crypto.randomUUID(), liveSessionId: crypto.randomUUID(), streamId: crypto.randomUUID(),
+      seq: 1, wallMs: 0, monoMs: 0, type: "app.lifecycle", data: { phase: "end", generation: 0 },
+    } as DiagnosticEvent }));
+    for (const row of victims) await queue.put(row);
+    const filler = { ...victims[0]!.event, conversationId: crypto.randomUUID(), streamId: crypto.randomUUID() };
+    await queue.put({ key: `${filler.streamId}:${filler.seq}`, queuedAt: 2, bytes: limit - 1600, event: filler });
+    const put = vi.spyOn(queue, "put"), f = fixture({ queue, now: () => 3 }), incoming = f.outbox.stream();
+    incoming.bind(crypto.randomUUID()); incoming.emit("app.lifecycle", { phase: "start", generation: 0 });
+    await vi.waitFor(() => expect(put.mock.calls.filter(([row]) => row.event.type === "diagnostic.loss" && row.event.data.reason === "queue_overflow")).toHaveLength(2));
+    const retained = await queue.read();
+    expect(retained.reduce((sum, row) => sum + row.bytes, 0)).toBeLessThanOrEqual(limit);
+    expect(put).toHaveBeenCalledTimes(3);
+    for (let i = 0; i < 6; i++) await f.outbox.flush();
+    for (const row of victims) expect(f.requests.flat()).toContainEqual(expect.objectContaining({ conversationId: row.event.conversationId,
+      liveSessionId: row.event.liveSessionId, type: "diagnostic.loss", data: { reason: "queue_overflow", count: 1, affectedStreamId: row.event.streamId } }));
+  });
+  it("reports a volatile observation displaced by a loss marker without recursive marker churn", async () => {
+    sessionStorage.setItem(DIAGNOSTIC_TEXT_KEY, "1");
+    const limit = 5 * 1024 * 1024, queue = new IndexedDiagnosticQueue();
+    const put = vi.spyOn(queue, "put").mockRejectedValue(new Error("storage denied"));
+    vi.spyOn(queue, "read").mockRejectedValue(new Error("storage denied"));
+    const f = fixture({ queue, textEnabled: true, now: () => 0 }), deliver = f.send.getMockImplementation()!;
+    f.send.mockRejectedValue(new Error("offline"));
+    const make = (conversationId: string, seq: number, text: string) => ({ schemaVersion: 1 as const, source: "browser" as const,
+      conversationId, liveSessionId: conversationId, streamId: conversationId, seq, wallMs: 0, monoMs: 0, type: "transcript.fragment" as const,
+      data: { kind: "input" as const, fragmentId: String(seq), charCount: text.length }, text });
+    const bytes = (event: DiagnosticEvent) => new TextEncoder().encode(JSON.stringify(event)).byteLength + 128;
+    const victims = [make(crypto.randomUUID(), 1, "a".repeat(700)), make(crypto.randomUUID(), 1, "b".repeat(700))];
+    for (const event of victims) f.outbox.enqueue(event);
+    await f.outbox.flush();
+    await vi.waitFor(() => expect(put).toHaveBeenCalledTimes(3));
+    let size = put.mock.calls.reduce((sum, [row]) => sum + row.bytes, 0), seq = 0;
+    const filler = crypto.randomUUID();
+    while (limit - size > 8192) {
+      const event = make(filler, ++seq, "x".repeat(4096)); size += bytes(event); f.outbox.enqueue(event);
+    }
+    const tail = make(filler, ++seq, "x".repeat(Math.floor((limit - size) / 2) - 512));
+    size += bytes(tail); f.outbox.enqueue(tail);
+    const last = make(filler, seq + 1, "");
+    last.text = "x".repeat(limit - size - bytes(last)); last.data.charCount = last.text.length;
+    while (size + bytes(last) > limit) { last.text = last.text.slice(0, -1); last.data.charCount = last.text.length; }
+    f.outbox.enqueue(last); await f.outbox.flush();
+    expect(put.mock.calls.filter(([row]) => row.event.type === "diagnostic.loss" && row.event.data.reason === "queue_overflow")).toHaveLength(0);
+    f.outbox.enqueue(make(crypto.randomUUID(), 1, "new".repeat(160))); await f.outbox.flush();
+    await vi.waitFor(() => expect(put.mock.calls.filter(([row]) => row.event.type === "diagnostic.loss" && row.event.data.reason === "queue_overflow")).toHaveLength(2));
+    f.send.mockImplementation(async (url, init) => String(url).includes(filler) ? new Response(null, { status: 507 }) : deliver(url, init));
+    for (let i = 0; i < 8; i++) await f.outbox.flush();
+    for (const event of victims) expect(f.requests.flat()).toContainEqual(expect.objectContaining({ conversationId: event.conversationId,
+      liveSessionId: event.liveSessionId, type: "diagnostic.loss", data: { reason: "queue_overflow", count: 1, affectedStreamId: event.streamId } }));
+  });
+  it("keeps existing loss markers at capacity and stops reporting recursion with a bounded warning", async () => {
+    const queue = new IndexedDiagnosticQueue(1000, () => 0);
+    for (let i = 0; i < 2; i++) {
+      const event = { schemaVersion: 1, source: "browser", conversationId: crypto.randomUUID(), streamId: crypto.randomUUID(), seq: 1,
+        wallMs: 0, monoMs: 0, type: "diagnostic.loss", data: { reason: "queue_overflow", count: 1 } } as DiagnosticEvent;
+      await queue.put({ key: `${event.streamId}:1`, queuedAt: 0, bytes: 500, event });
+    }
+    const existing = await queue.read(), put = vi.spyOn(queue, "put"), error = vi.spyOn(console, "error").mockImplementation(() => {});
+    const f = fixture({ queue, now: () => 1 }), stream = f.outbox.stream(); stream.bind(crypto.randomUUID());
+    for (let i = 0; i < 2; i++) {
+      stream.emit("app.lifecycle", { phase: "start", generation: i });
+      await vi.waitFor(() => expect(put).toHaveBeenCalledTimes((i + 1) * 2));
+    }
+    expect(await queue.read()).toEqual(existing);
+    expect(error).toHaveBeenCalledExactlyOnceWith("Conversation diagnostics incomplete", { reason: "loss_marker_dropped" });
+    await queue.remove(existing.map(row => row.key));
+    stream.emit("app.lifecycle", { phase: "end", generation: 0 }); await f.outbox.flush();
+    expect(f.requests.flat()).toContainEqual(expect.objectContaining({ streamId: stream.id, type: "app.lifecycle" }));
+  });
   it("groups expiry during replay separately from expiry during enqueue", async () => {
     const queue = new IndexedDiagnosticQueue(5 * 1024 * 1024, () => 0), f = fixture({ queue });
     const owners = [crypto.randomUUID(), crypto.randomUUID()];

@@ -53,11 +53,16 @@ export class IndexedDiagnosticQueue implements DiagnosticQueue {
         const cursor = store.index("queuedAt").openCursor();
         cursor.onsuccess = () => {
           const entry = cursor.result;
-          if (!entry) { meta.put(bytes, "bytes"); return; }
+          if (!entry) {
+            if (bytes > this.maxBytes && row.bytes <= this.maxBytes) { store.delete(row.key); bytes -= row.bytes; overflow.push(row); }
+            meta.put(bytes, "bytes"); return;
+          }
           const old = entry.value as DiagnosticQueueRow;
           if (old.key === row.key) { entry.continue(); return; }
           const stale = old.queuedAt + TTL_MS <= this.now();
           if (!stale && bytes <= this.maxBytes) { meta.put(bytes, "bytes"); return; }
+          // Loss records survive capacity eviction so reporting a loss cannot churn other markers.
+          if (!stale && old.event.type === "diagnostic.loss") { entry.continue(); return; }
           entry.delete(); bytes -= old.bytes; (stale ? expired : overflow).push(old); entry.continue();
         };
       };
@@ -153,6 +158,7 @@ export class DiagnosticOutbox {
   private policyRefreshAt = 0;
   private disabledMaintenanceAt = 0;
   private lastWarningAt = -Infinity;
+  private lastLossWarningAt = -Infinity;
   constructor(private readonly options: { queue?: DiagnosticQueue; fetch?: typeof fetch; automatic?: boolean; now?: () => number; producerId?: Promise<string | null>; storage?: Storage } = {}) {
     this.queue = options.queue ?? new IndexedDiagnosticQueue();
     this.producerReady = options.producerId === undefined;
@@ -218,21 +224,21 @@ export class DiagnosticOutbox {
       if (!this.policy?.textEnabled || !this.textOptedIn()) stripText(row);
       try {
         const loss = await this.queue.put(row);
-        if (event.type !== "diagnostic.loss") {
-          this.lossRows(loss.expired, "expired");
-          this.lossRows(loss.overflow, "queue_overflow");
-        }
+        this.lossRows(loss.expired, "expired");
+        this.lossRows(loss.overflow, "queue_overflow");
       } catch {
         this.volatile.set(row.key, row);
         let size = [...this.volatile.values()].reduce((sum, value) => sum + value.bytes, 0);
         const lost: DiagnosticQueueRow[] = [];
         for (const [key, value] of this.volatile) {
           if (size <= MAX_BYTES) break;
+          if (value.event.type === "diagnostic.loss") continue;
           this.volatile.delete(key); size -= value.bytes; lost.push(value);
         }
+        if (size > MAX_BYTES) { this.volatile.delete(row.key); lost.push(row); }
         // One marker per degradation episode, rather than one per failed IndexedDB operation.
         if (event.type !== "diagnostic.loss" && this.volatile.size === 1) this.loss(event, "storage_unavailable", 1);
-        if (event.type !== "diagnostic.loss") this.lossRows(lost, "queue_overflow");
+        this.lossRows(lost, "queue_overflow");
       }
     }).catch(() => console.error("Conversation diagnostics incomplete"));
     if (urgent) void this.work.then(() => this.flush());
@@ -245,7 +251,12 @@ export class DiagnosticOutbox {
   private lossRows(rows: DiagnosticQueueRow[], reason: DiagnosticData["diagnostic.loss"]["reason"]): void {
     const groups = new Map<string, { event: DiagnosticEvent; count: number }>();
     for (const { event } of rows) {
-      if (event.type === "diagnostic.loss") continue;
+      if (event.type === "diagnostic.loss") {
+        if (this.now() - this.lastLossWarningAt >= 60000) {
+          this.lastLossWarningAt = this.now(); console.error("Conversation diagnostics incomplete", { reason: "loss_marker_dropped" });
+        }
+        continue;
+      }
       const key = `${event.conversationId}:${event.liveSessionId ?? ""}:${event.streamId}`;
       const group = groups.get(key) ?? { event, count: 0 }; group.count++; groups.set(key, group);
     }
