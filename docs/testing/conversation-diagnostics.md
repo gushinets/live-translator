@@ -19,6 +19,8 @@ interval can leave it at zero, which does not mean the timeline is complete. The
 boundary contains timestamps and a count only, even when text mode is enabled.
 Retired transports do not observe later policy transitions; genuinely late data
 still keeps its original stream and attempt identity.
+If late data was discarded while collection was disabled, re-enabling collection
+flushes that pending gap even when no further event arrives on the retired stream.
 
 The database is `/diagnostics/events.sqlite` in the separate `diagnostics-data`
 Compose volume. Local runs use `DIAGNOSTICS_DB_PATH=./.data/diagnostics/events.sqlite`

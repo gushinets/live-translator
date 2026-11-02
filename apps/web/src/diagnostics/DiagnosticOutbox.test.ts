@@ -112,10 +112,13 @@ describe("diagnostic delivery", () => {
     f.outbox.configure({ ...active, enabled: false });
     old.emit("transport.event", { type: "session.closed", phase: "received" });
     f.outbox.configure(active);
-    old.emit("transport.event", { type: "session.closed", phase: "dropped", reason: "closing" });
     await f.outbox.flush();
     expect(f.requests.flat()).toContainEqual(expect.objectContaining({ type: "diagnostic.collection", streamId: old.id,
       data: expect.objectContaining({ discardedCount: 1 }) }));
+    f.outbox.configure(active);
+    f.outbox.configure({ ...active, enabled: false }); f.outbox.configure(active);
+    await f.outbox.flush();
+    expect(f.requests.flat().filter(e => e.type === "diagnostic.collection" && e.streamId === old.id)).toHaveLength(1);
   });
   it("marks pre-policy losses and a disabled interval before identity is bound without retaining content", async () => {
     let now = Date.now();

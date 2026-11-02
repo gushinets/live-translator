@@ -406,7 +406,7 @@ export class DiagnosticStream implements DiagnosticSink {
     } catch { /* Observability must never throw into audio, rendering or transport callbacks. */ }
   }
   drain(policyChange = false): void {
-    if (this.disabled || policyChange && this.retired) return;
+    if (this.disabled || policyChange && this.retired && this.disabledAtMs === undefined) return;
     if (this.outbox.policy?.enabled === false) {
       this.disabledAtMs ??= this.outbox.now();
       this.discardedCount += this.pending.length + this.lost;
