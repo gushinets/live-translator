@@ -136,8 +136,9 @@ export class OutputAttribution {
     const outputStart = earliestFragmentStart(output.fragments);
     if (sourceStart !== undefined && outputStart !== undefined && output.fragments.every(part => part.endMs !== undefined)) {
       const outputEnd = Math.max(...output.fragments.map(part => part.endMs!));
-      // Audio intervals exclude their end; a zero-duration timestamp remains ambiguous at equality.
-      return sourceStart < outputEnd || (sourceStart === outputEnd && outputStart === outputEnd);
+      // A zero-duration or untimed fragment at the end stays ambiguous after grouping.
+      return sourceStart < outputEnd || (sourceStart === outputEnd && output.fragments.some(part =>
+        part.endMs === outputEnd && (part.startMs === undefined || part.startMs === outputEnd)));
     }
     // Local capture/VAD events do not correlate delayed ASR with a capture cycle.
     return true;

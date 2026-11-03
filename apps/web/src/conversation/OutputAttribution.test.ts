@@ -33,6 +33,33 @@ describe("output attribution evidence", () => {
     ledger.reconcile([a, source("b", 300, "B")], 1200);
     expect(output.sourceId).toBeUndefined();
   });
+  it.each([
+    { startMs: 300, completed: false },
+    { startMs: undefined, completed: false },
+    { startMs: 300, completed: true },
+    { startMs: undefined, completed: true },
+  ])("keeps a merged ambiguous output tail conservative: start=$startMs completed=$completed", ({ startMs, completed }) => {
+    const ledger = new OutputAttribution(), a = source("a", 0), b = source("b", 300);
+    const output = ledger.receive([{ ...fragment("first", 200, 300), text: "Hello " }], "B", [a], 1000);
+    expect(output.sourceId).toBe("a");
+    if (completed) { a.status = "completed"; a.turnCompletedAtMs = 1500; }
+    const merged = ledger.receive([{ ...fragment("tail", 300, 300, 2000), startMs, text: "there." }], "B", [a], 2000);
+    expect(merged.id).toBe(output.id);
+    expect(merged.fragments).toHaveLength(2);
+    ledger.reconcile([a], 2050, b.sourceFragments);
+    expect(merged.sourceId).toBeUndefined();
+    ledger.reconcile([a, b], 2100);
+    expect(merged).toMatchObject({ sourceId: undefined, candidateIds: ["a", "b"] });
+    expect(ledger.hasCompatibleOutput(b)).toBe(true);
+  });
+  it("keeps the merged output end exclusive when an earlier point does not touch that end", () => {
+    const ledger = new OutputAttribution(), a = source("a", 0), b = source("b", 300);
+    const output = ledger.receive([{ ...fragment("first", 200, 200), text: "Hello " }], "B", [a], 1000);
+    expect(ledger.receive([{ ...fragment("tail", 200, 300, 2000), text: "there." }], "B", [a, b], 2000).id).toBe(output.id);
+    ledger.reconcile([a, b], 2100, b.sourceFragments);
+    expect(output).toMatchObject({ sourceId: "a", candidateIds: ["a"] });
+    expect(ledger.hasCompatibleOutput(b)).toBe(false);
+  });
   it("revises the same receipt from A1 to uncertain to A2 without changing first receipt", () => {
     const ledger = new OutputAttribution();
     const a1 = source("a1", 0), a2 = source("a2", 50);
