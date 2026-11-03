@@ -8,6 +8,7 @@ import {
   evaluateTurnCompletion,
 } from "../conversation/TurnCompletion";
 import { createTranscriptFragment } from "../conversation/TurnBuffer";
+import { isSentenceComplete } from "../conversation/sentenceBoundaries";
 import { TranscriptRouter, type RoutedTranscript } from "../conversation/TranscriptRouter";
 import { OutputAttribution } from "../conversation/OutputAttribution";
 import { completeScriptSide, languageScripts, scriptPattern } from "../conversation/languageScripts";
@@ -1472,13 +1473,24 @@ export class SessionController {
     const generation = this.sessionGeneration;
     const epoch = this.lifecycleEpoch;
     if (this.sourceFragmentTimer !== null) window.clearTimeout(this.sourceFragmentTimer);
-    this.sourceFragmentTimer = window.setTimeout(() => {
+    const flush = () => {
       this.sourceFragmentTimer = null;
       if (generation !== this.sessionGeneration || epoch !== this.lifecycleEpoch ||
           !["listening", "outputting"].includes(this.currentSession.state)) return;
+      const pending = this.sourceRouter.pendingFragments;
+      const text = pending.map(part => part.text).join("");
+      const remainingMs = (pending[0]?.receivedAtMs ?? 0) + 2 * runtime.captionIdleMs - Date.now();
+      // Only an unowned source prefix gets an extra idle window; known corrections must still flush.
+      if (remainingMs > 0 && !/\p{L}/u.test(text) && /\p{N}/u.test(text) &&
+          /[,:،、٫٬\p{Dash_Punctuation}]\s*$/u.test(text.normalize("NFKC")) && !isSentenceComplete(text) &&
+          pending.every(part => this.findSourceTarget(part) === undefined)) {
+        this.sourceFragmentTimer = window.setTimeout(flush, remainingMs);
+        return;
+      }
       this.routeSource(this.sourceRouter.flush(this.languages));
       void this.considerTurnCompletion(Date.now());
-    }, runtime.captionIdleMs);
+    };
+    this.sourceFragmentTimer = window.setTimeout(flush, runtime.captionIdleMs);
   }
 
   private observeTranscriptRoute(kind: "input" | "output", fragments: readonly TranscriptFragment[], pending: boolean, side?: Side): void {

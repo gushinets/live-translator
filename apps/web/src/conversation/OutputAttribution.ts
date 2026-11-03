@@ -132,25 +132,30 @@ export class OutputAttribution {
     return this.changes.splice(0);
   }
 
-  private possible(source: Turn, output: AttributedOutput): boolean {
-    const sourceStart = earliestFragmentStart(source.sourceFragments), outputStart = earliestFragmentStart(output.fragments);
-    if (sourceStart !== undefined && outputStart !== undefined && output.fragments.every(part => part.endMs !== undefined))
-      return sourceStart <= Math.max(...output.fragments.map(part => part.endMs!));
+  private startsBeforeOutputEnd(sourceFragments: readonly TranscriptFragment[], output: AttributedOutput): boolean {
+    // Neutral prefixes cannot establish speech onset; an untimed speech opening stays unknown.
+    const sourceStart = sourceFragments.find(part => !/^[\p{P}\s]+$/u.test(part.text))?.startMs;
+    const outputStart = earliestFragmentStart(output.fragments);
+    if (sourceStart !== undefined && outputStart !== undefined && output.fragments.every(part => part.endMs !== undefined)) {
+      const outputEnd = Math.max(...output.fragments.map(part => part.endMs!));
+      // A zero-duration or untimed fragment at the end stays ambiguous after grouping.
+      return sourceStart < outputEnd || (sourceStart === outputEnd && output.fragments.some(part =>
+        part.endMs === outputEnd && (part.startMs === undefined || part.startMs === outputEnd)));
+    }
     // Local capture/VAD events do not correlate delayed ASR with a capture cycle.
     return true;
   }
 
   private hasPendingSource(output: AttributedOutput, pendingSources: readonly TranscriptFragment[]): boolean {
     return pendingSources.some(part => !/^[\p{P}\s]+$/u.test(part.text) &&
-      (part.startMs === undefined || output.fragments.some(fragment => fragment.endMs === undefined) ||
-        part.startMs <= Math.max(...output.fragments.map(fragment => fragment.endMs!))));
+      this.startsBeforeOutputEnd([part], output));
   }
 
   private isolatedDirections(sources: Turn[], pendingSources: readonly TranscriptFragment[]): Map<string, Set<Side>> {
     const directions = new Map<string, Set<Side>>();
     for (const previous of this.outputs) {
       if (previous.side === undefined || this.hasPendingSource(previous, pendingSources)) continue;
-      const candidates = sources.filter(source => this.possible(source, previous));
+      const candidates = sources.filter(source => this.startsBeforeOutputEnd(source.sourceFragments, previous));
       if (candidates.length !== 1) continue;
       const id = candidates[0]!.id;
       if (!directions.has(id)) directions.set(id, new Set());
@@ -163,7 +168,7 @@ export class OutputAttribution {
     isolatedDirections = this.isolatedDirections(turns.filter(turn => !turn.translationOnly), pendingSources)): boolean {
     const sources = turns.filter(turn => !turn.translationOnly);
     // Retired episodes remain competitors. A late transcript may add a previously unknown episode.
-    const possible = sources.filter(source => this.possible(source, output) &&
+    const possible = sources.filter(source => this.startsBeforeOutputEnd(source.sourceFragments, output) &&
       // A known opposite-direction translation already belonging to this source is independent evidence.
       !(source.speaker !== undefined && source.speaker === output.side &&
         isolatedDirections.get(source.id)?.has(output.side === "A" ? "B" : "A")));
@@ -206,7 +211,7 @@ export class OutputAttribution {
   }
 
   hasCompatibleOutput(source: Turn, atMs = Infinity): boolean {
-    return this.outputs.some(output => output.firstReceivedAtMs <= atMs && this.possible(source, output) &&
+    return this.outputs.some(output => output.firstReceivedAtMs <= atMs && this.startsBeforeOutputEnd(source.sourceFragments, output) &&
       (output.side === undefined || source.speaker === undefined || source.speaker !== output.side)) ||
       // PCM has neither a source correlation ID nor a provider-time interval.
       this.playback.some(receipt => receipt.atMs <= atMs);
