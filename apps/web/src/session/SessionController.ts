@@ -1480,9 +1480,10 @@ export class SessionController {
       const pending = this.sourceRouter.pendingFragments;
       const text = pending.map(part => part.text).join("");
       const remainingMs = (pending[0]?.receivedAtMs ?? 0) + 2 * runtime.captionIdleMs - Date.now();
-      // A source prefix gets one extra idle window; standalone numbers must still flush.
+      // Only an unowned source prefix gets an extra idle window; known corrections must still flush.
       if (remainingMs > 0 && !/\p{L}/u.test(text) && /\p{N}/u.test(text) &&
-          /[,:،、٫٬\p{Dash_Punctuation}]\s*$/u.test(text.normalize("NFKC")) && !isSentenceComplete(text)) {
+          /[,:،、٫٬\p{Dash_Punctuation}]\s*$/u.test(text.normalize("NFKC")) && !isSentenceComplete(text) &&
+          pending.every(part => this.findSourceTarget(part) === undefined)) {
         this.sourceFragmentTimer = window.setTimeout(flush, remainingMs);
         return;
       }

@@ -5576,6 +5576,49 @@ describe("PR32 timestamp routing follow-up", () => {
   });
 });
 
+it("retains translation ownership when an untimed source gains a timed suffix at the output end", async () => {
+  vi.useFakeTimers(); vi.setSystemTime(1000);
+  const { controller, live, audio } = createController();
+  await controller.startWithLanguages({ A: "ru", B: "en" });
+  emitVoice(audio, true);
+  live.emit({ type: "session.input_transcript.delta", delta: "Подскажите, где находится " });
+  const id = controller.session.activeTurn!.id;
+  live.emit({ type: "session.output_transcript.delta", delta: "Where is the station?", start_ms: 100, end_ms: 300 });
+  await vi.advanceTimersByTimeAsync(200);
+  live.emit({ type: "session.input_transcript.delta", delta: "вокзал?", start_ms: 300, end_ms: 500 });
+  emitVoice(audio, false);
+  await vi.advanceTimersByTimeAsync(runtime.noOutputTimeoutMs + 1);
+  expect(controller.session.recentTurns.find(turn => turn.id === id)).toMatchObject({
+    originalText: "Подскажите, где находится вокзал?", translatedText: "Where is the station?", status: "completed",
+  });
+  expect(controller.metrics.snapshot()).toMatchObject({ noObservedOutputDeadlineCount: 0, unresolvedSourceOutcomeCount: 0 });
+});
+
+it.each([false, true])("routes a historical numeric correction before the output deadline, priorOutput=%s", async priorOutput => {
+  vi.useFakeTimers(); vi.setSystemTime(1000);
+  const { controller, live, audio } = createController();
+  await controller.startWithLanguages({ A: "ru", B: "en" });
+  emitVoice(audio, true);
+  live.emit({ type: "session.input_transcript.delta", delta: "Я хочу забронировать номер ", start_ms: 0, end_ms: 1000 });
+  const id = controller.session.activeTurn!.id;
+  emitVoice(audio, false);
+  const output = { type: "session.output_transcript.delta" as const, delta: "I would like to book room twelve.", start_ms: 1100, end_ms: 1500 };
+  if (priorOutput) { live.emit(output); emitPlayback(audio, true); }
+  await vi.advanceTimersByTimeAsync(runtime.noOutputTimeoutMs - 1000);
+  live.emit({ type: "session.input_transcript.delta", delta: "12, ", start_ms: 800, end_ms: 900 });
+  if (!priorOutput) live.emit(output);
+  await vi.advanceTimersByTimeAsync(runtime.captionIdleMs + 1);
+  expect.soft(controller.session.activeTurn ?? controller.session.recentTurns.find(turn => turn.id === id))
+    .toMatchObject({ id, originalText: "Я хочу забронировать номер 12, ", translatedText: output.delta });
+  await vi.advanceTimersByTimeAsync(1000);
+  if (priorOutput) emitPlayback(audio, false);
+  await vi.advanceTimersByTimeAsync(runtime.audioStartGraceMs + runtime.captionIdleMs);
+  const turn = controller.session.recentTurns.find(turn => turn.id === id);
+  expect(turn).toMatchObject({ status: "completed", translatedText: output.delta });
+  expect(turn?.outputDeadline).toBeUndefined();
+  expect(controller.metrics.snapshot()).toMatchObject({ noObservedOutputDeadlineCount: 0, unresolvedSourceOutcomeCount: 0, failedTurnCount: 0 });
+});
+
 it.each(["42", "7:00", "12."])("routes an isolated numeric input %s before its output deadline", async text => {
   vi.useFakeTimers(); vi.setSystemTime(1000);
   const { controller, live, audio } = createController();

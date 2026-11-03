@@ -132,7 +132,9 @@ export class OutputAttribution {
     return this.changes.splice(0);
   }
 
-  private startsBeforeOutputEnd(sourceStart: number | undefined, output: AttributedOutput): boolean {
+  private startsBeforeOutputEnd(sourceFragments: readonly TranscriptFragment[], output: AttributedOutput): boolean {
+    // Ordered source fragments keep an untimed opening before later timed speech.
+    const sourceStart = sourceFragments[0]?.startMs;
     const outputStart = earliestFragmentStart(output.fragments);
     if (sourceStart !== undefined && outputStart !== undefined && output.fragments.every(part => part.endMs !== undefined)) {
       const outputEnd = Math.max(...output.fragments.map(part => part.endMs!));
@@ -146,14 +148,14 @@ export class OutputAttribution {
 
   private hasPendingSource(output: AttributedOutput, pendingSources: readonly TranscriptFragment[]): boolean {
     return pendingSources.some(part => !/^[\p{P}\s]+$/u.test(part.text) &&
-      this.startsBeforeOutputEnd(part.startMs, output));
+      this.startsBeforeOutputEnd([part], output));
   }
 
   private isolatedDirections(sources: Turn[], pendingSources: readonly TranscriptFragment[]): Map<string, Set<Side>> {
     const directions = new Map<string, Set<Side>>();
     for (const previous of this.outputs) {
       if (previous.side === undefined || this.hasPendingSource(previous, pendingSources)) continue;
-      const candidates = sources.filter(source => this.startsBeforeOutputEnd(earliestFragmentStart(source.sourceFragments), previous));
+      const candidates = sources.filter(source => this.startsBeforeOutputEnd(source.sourceFragments, previous));
       if (candidates.length !== 1) continue;
       const id = candidates[0]!.id;
       if (!directions.has(id)) directions.set(id, new Set());
@@ -166,7 +168,7 @@ export class OutputAttribution {
     isolatedDirections = this.isolatedDirections(turns.filter(turn => !turn.translationOnly), pendingSources)): boolean {
     const sources = turns.filter(turn => !turn.translationOnly);
     // Retired episodes remain competitors. A late transcript may add a previously unknown episode.
-    const possible = sources.filter(source => this.startsBeforeOutputEnd(earliestFragmentStart(source.sourceFragments), output) &&
+    const possible = sources.filter(source => this.startsBeforeOutputEnd(source.sourceFragments, output) &&
       // A known opposite-direction translation already belonging to this source is independent evidence.
       !(source.speaker !== undefined && source.speaker === output.side &&
         isolatedDirections.get(source.id)?.has(output.side === "A" ? "B" : "A")));
@@ -209,7 +211,7 @@ export class OutputAttribution {
   }
 
   hasCompatibleOutput(source: Turn, atMs = Infinity): boolean {
-    return this.outputs.some(output => output.firstReceivedAtMs <= atMs && this.startsBeforeOutputEnd(earliestFragmentStart(source.sourceFragments), output) &&
+    return this.outputs.some(output => output.firstReceivedAtMs <= atMs && this.startsBeforeOutputEnd(source.sourceFragments, output) &&
       (output.side === undefined || source.speaker === undefined || source.speaker !== output.side)) ||
       // PCM has neither a source correlation ID nor a provider-time interval.
       this.playback.some(receipt => receipt.atMs <= atMs);
