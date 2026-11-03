@@ -67,6 +67,49 @@ async function committedTextWithoutReceipt() {
   return { ...f, c, stream };
 }
 
+it.each(["tab", "rotate", "server"].flatMap(revoke => [false, true].map(scrubFails => ({ revoke, scrubFails }))))(
+  "removes acknowledged text after $revoke consent changes during the POST, scrubFails=$scrubFails", async ({ revoke, scrubFails }) => {
+  const f = await fixture(), c = await f.api.createConversation(crypto.randomUUID()), stream = f.outbox.stream();
+  stream.bind(c.conversationId);
+  const send = globalThis.fetch;
+  let release!: () => void, committed!: () => void, hold = true;
+  const held = new Promise<void>(resolve => { release = resolve; }), committedResponse = new Promise<void>(resolve => { committed = resolve; });
+  vi.stubGlobal("fetch", async (url: string, init?: RequestInit) => {
+    const response = await send(url, init);
+    if (hold && url.endsWith("/diagnostics")) { hold = false; committed(); await held; }
+    return response;
+  });
+  stream.emit("transcript.fragment", { kind: "input", fragmentId: "private", charCount: 14 }, "PRIVATE_CANARY");
+  stream.emit("audio.state", { phase: "capture_ready" });
+  const inFlight = f.outbox.flush();
+  try {
+    await committedResponse;
+    expect(f.journal.db.prepare("SELECT text FROM diagnostic_text WHERE stream_id=? AND seq=1").get(stream.id)?.text).toBe("PRIVATE_CANARY");
+    if (revoke === "tab") f.state.consent = false;
+    else if (revoke === "rotate") {
+      f.state.consentId = crypto.randomUUID();
+      stream.emit("transcript.fragment", { kind: "input", fragmentId: "new", charCount: 7 }, "CURRENT");
+    } else {
+      f.journal.options.textEnabled = false;
+      f.outbox.configure((await f.api.policy()).diagnostics);
+    }
+    if (scrubFails) vi.spyOn(f.queue, "scrubText").mockRejectedValueOnce(new Error("write denied"));
+  } finally { release(); await inFlight; }
+  const pending = await f.queue.read();
+  expect(pending).toContainEqual(expect.objectContaining({ event: expect.objectContaining({ streamId: stream.id, seq: 1,
+    ...(scrubFails ? { text: "PRIVATE_CANARY" } : { textRemoved: true }) }) }));
+  expect(pending.some(row => row.event.streamId === stream.id && row.event.seq === 2)).toBe(scrubFails);
+  f.outbox.stop();
+  const reload = new DiagnosticOutbox(f.options); cleanup.push(() => reload.stop()); reload.configure((await f.api.policy()).diagnostics);
+  await reload.flush(); await reload.flush();
+  expect(f.journal.db.prepare("SELECT 1 FROM diagnostic_text WHERE stream_id=? AND seq=1").get(stream.id)).toBeUndefined();
+  expect(buildDiagnosticReport(f.db, f.journal.db, { conversationId: c.conversationId }).events)
+    .toContainEqual(expect.objectContaining({ streamId: stream.id, seq: 1, textStatus: "removed" }));
+  if (revoke === "rotate") expect(f.journal.db.prepare("SELECT text FROM diagnostic_text WHERE stream_id=? AND seq=3").get(stream.id)?.text).toBe("CURRENT");
+  expect(JSON.stringify(f.batches.slice(1))).not.toContain("PRIVATE_CANARY");
+  expect(await f.queue.read()).toEqual([]);
+});
+
 it("removes committed text after renewed consent between flushes, including reload", async () => {
   const f = await committedTextWithoutReceipt(), sent = f.batches.length;
   f.state.consent = false;

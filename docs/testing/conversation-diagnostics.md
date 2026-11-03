@@ -100,6 +100,12 @@ a scrubbed replay with the same event identity also removes the server's retaine
 text and releases its quota before ACK. Technical fields must match the committed
 event; conflicts reject the entire batch. Repeated removal or an older text-bearing
 retry cannot restore the text, change original timestamps or release quota twice.
+Consent is checked again when a text-bearing request is acknowledged. If its UUID
+or the observed policy changed during the request, accepted text rows stay queued
+with the same identities for a `textRemoved` replay. This also survives a failed
+local scrub and reload; technical acknowledgements proceed normally when cleanup
+succeeds, and text captured under a new valid UUID is preserved. Uploads already
+acknowledged and removed from the local queue follow the seven-day text retention.
 Removal rows are sent in prioritized batches separate from ordinary additions.
 A 507 preserves text/removal rows for retry; after a removal batch hits quota,
 individual retries rotate past blocked rows so one unsaved event cannot hold up

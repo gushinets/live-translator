@@ -432,7 +432,12 @@ export class DiagnosticOutbox {
     if (receipt.schemaVersion !== 1 || !Array.isArray(receipt.accepted) || !Number.isFinite(receipt.serverTime)) throw new Error("invalid_diagnostics_receipt");
     const accepted = new Set(receipt.accepted.map(row => `${row.streamId}:${row.seq}`));
     const committed = batch.filter(row => accepted.has(row.key));
-    await this.remove(committed);
+    await this.work;
+    const acknowledgedConsentId = this.currentConsentId(), textAllowed = this.policy?.enabled && this.policy.textEnabled;
+    const revoked = new Set(committed.filter(row => hasText(row.event) && (!textAllowed || row.textConsentId !== acknowledgedConsentId)));
+    // A successful POST can outlast consent; keep the same identity queued until its removal is acknowledged.
+    if (revoked.size) await this.scrubText(textAllowed ? producerId : undefined, textAllowed ? acknowledgedConsentId : undefined);
+    await this.remove(committed.filter(row => !revoked.has(row)));
     if (committed.length && !removingText && !hasText(first.event)) this.prioritizeTechnical = false;
     const receivedAt = this.now(); this.retryAt = 0; this.failures = 0;
     const roundtrip = Math.max(0, performance.now() - sentMono);
