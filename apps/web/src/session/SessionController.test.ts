@@ -5690,6 +5690,46 @@ it("flushes an unfinished numeric source prefix after one extra idle window", as
   expect(controller.session.activeTurn?.originalText).toBe("The station is straight ahead.");
 });
 
+it.each([
+  { language: "ar", prefix: "١٢، ", reply: "المحطة تقع أمامك مباشرة." },
+  { language: "ja", prefix: "１２， ", reply: "駅はまっすぐ先にあります。" },
+  { language: "ja", prefix: "１２、 ", reply: "駅はまっすぐ先にあります。" },
+])("keeps a delayed $language reply with its localized numeric prefix $prefix", async ({ language, prefix, reply }) => {
+  vi.useFakeTimers(); vi.setSystemTime(1000);
+  const { controller, live, audio } = createController();
+  await controller.startWithLanguages({ A: "en", B: language });
+  emitVoice(audio, true);
+  live.emit({ type: "session.input_transcript.delta", delta: "I would like to book a table for", start_ms: 5200, end_ms: 12000 });
+  const original = controller.session.activeTurn!.id;
+  live.emit({ type: "session.input_transcript.delta", delta: prefix, start_ms: 12000, end_ms: 12200 });
+  await vi.advanceTimersByTimeAsync(runtime.captionIdleMs + 1);
+  expect.soft(controller.session.activeTurn?.id).toBe(original);
+  live.emit({ type: "session.input_transcript.delta", delta: reply, start_ms: 12200, end_ms: 13000 });
+  expect(controller.session.activeTurn).toMatchObject({ originalText: prefix + reply, speaker: "B" });
+});
+
+it("preserves the preceding translation at a deferred source prefix boundary", async () => {
+  vi.useFakeTimers(); vi.setSystemTime(1000);
+  const { controller, live, audio } = createController();
+  await controller.startWithLanguages({ A: "ru", B: "en" });
+  emitVoice(audio, true);
+  live.emit({ type: "session.input_transcript.delta", delta: "Хочу забронировать столик на", start_ms: 5200, end_ms: 12000 });
+  const firstId = controller.session.activeTurn!.id;
+  live.emit({ type: "session.output_transcript.delta", delta: "I would like to book a table.", start_ms: 6400, end_ms: 12000 });
+  expect(controller.session.activeTurn?.translatedText).toBe("I would like to book a table.");
+  live.emit({ type: "session.input_transcript.delta", delta: "12, ", start_ms: 12000, end_ms: 12200 });
+  await vi.advanceTimersByTimeAsync(runtime.captionIdleMs + 1);
+  expect.soft(controller.session.activeTurn?.translatedText).toBe("I would like to book a table.");
+  live.emit({ type: "session.input_transcript.delta", delta: "The station is straight ahead.", start_ms: 12200, end_ms: 13000 });
+  expect(controller.session.activeTurn).toMatchObject({ originalText: "12, The station is straight ahead.", speaker: "B" });
+  emitVoice(audio, false);
+  live.emit({ type: "session.output_transcript.delta", delta: "Вокзал находится прямо впереди.", start_ms: 13100, end_ms: 14000 });
+  await vi.advanceTimersByTimeAsync(runtime.noOutputTimeoutMs + 1);
+  expect(controller.session.recentTurns.find(turn => turn.id === firstId)).toMatchObject({ translatedText: "I would like to book a table.", status: "completed" });
+  expect(controller.session.recentTurns.filter(turn => turn.outputDeadline)).toEqual([]);
+  expect(controller.metrics.snapshot()).toMatchObject({ noObservedOutputDeadlineCount: 0, unresolvedSourceOutcomeCount: 0 });
+});
+
 describe("PR32 neutral fragment ownership", () => {
   beforeEach(() => { vi.useFakeTimers(); vi.setSystemTime(0); });
   it("retains neutral corrections inside a bounded historical interval beyond its last observed packet", async () => {

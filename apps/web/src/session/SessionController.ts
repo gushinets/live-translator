@@ -1482,7 +1482,7 @@ export class SessionController {
       const remainingMs = (pending[0]?.receivedAtMs ?? 0) + 2 * runtime.captionIdleMs - Date.now();
       // A source prefix gets one extra idle window; standalone numbers must still flush.
       if (remainingMs > 0 && !/\p{L}/u.test(text) && /\p{N}/u.test(text) &&
-          /[,:-]\s*$/u.test(text) && !isSentenceComplete(text)) {
+          /[,:،、٫٬\p{Dash_Punctuation}]\s*$/u.test(text.normalize("NFKC")) && !isSentenceComplete(text)) {
         this.sourceFragmentTimer = window.setTimeout(flush, remainingMs);
         return;
       }

@@ -12,6 +12,27 @@ const fragment = (id: string, startMs: number, endMs: number, receivedAtMs = 100
 const source = (id: string, startMs: number, speaker: "A" | "B" = "A", status: Turn["status"] = "streaming"): Turn => ({ ...createTurn({ id, speaker, sideSource: "language", nowMs: 0 }), status, originalText: "Source", sourceFragments: [fragment(id, startMs, startMs + 100)], languages: { A: "ru", B: "es" } });
 
 describe("output attribution evidence", () => {
+  it.each([299, 300, 301])("uses the same exclusive output end for pending and routed speech at %s", startMs => {
+    const ledger = new OutputAttribution(), a = source("a", 0);
+    const output = ledger.receive([fragment("output", 200, 300)], "B", [a], 1000);
+    const b = source("b", startMs, "B");
+    ledger.reconcile([a], 1100, [{ ...fragment("prefix", startMs, startMs + 50), text: "12, " }]);
+    expect(output.sourceId).toBe(startMs < 300 ? undefined : "a");
+    ledger.reconcile([a, b], 1200);
+    expect(output.sourceId).toBe(startMs < 300 ? undefined : "a");
+  });
+  it.each([
+    { startMs: 300, endMs: 300 },
+    { startMs: undefined, endMs: 300 },
+    { startMs: 200, endMs: undefined },
+  ])("keeps ambiguous output clocks conservative: $startMs..$endMs", clocks => {
+    const ledger = new OutputAttribution(), a = source("a", 0);
+    const output = ledger.receive([{ ...fragment("output", 200, 300), ...clocks }], "B", [a], 1000);
+    ledger.reconcile([a], 1100, [{ ...fragment("prefix", 300, 350), text: "12, " }]);
+    expect(output.sourceId).toBeUndefined();
+    ledger.reconcile([a, source("b", 300, "B")], 1200);
+    expect(output.sourceId).toBeUndefined();
+  });
   it("revises the same receipt from A1 to uncertain to A2 without changing first receipt", () => {
     const ledger = new OutputAttribution();
     const a1 = source("a1", 0), a2 = source("a2", 50);
