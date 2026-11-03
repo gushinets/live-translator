@@ -6,6 +6,26 @@ const languages = { A: "ru", B: "en" };
 const fragment = (text: string, startMs = 0): TranscriptFragment => ({ id: text, text, receivedAtMs: 1000, startMs, endMs: startMs + 50 });
 
 describe("streaming language evidence", () => {
+  it.each(["A", "B"] as const)("keeps a numeric prefix undecided at idle before side %s speaks", side => {
+    const router = new TranscriptRouter(), pair = { A: "ru", B: "en" };
+    const previousSide = side === "A" ? "B" : "A";
+    const prefix = fragment("12, ", 12000);
+    router.push(prefix, pair, previousSide, previousSide === "A" ? "Хочу забронировать столик на" : "I would like a table for");
+    expect(router.flush(pair)).toEqual([]);
+    expect(router.pendingFragments).toEqual([prefix]);
+    const phrase = fragment(side === "A" ? "Вокзал находится прямо впереди." : "The station is straight ahead.", 12200);
+    const routed = router.push(phrase, pair, previousSide);
+    expect(routed).toEqual([{ side, fragments: [prefix, phrase] }]);
+  });
+  it("preserves an undecided number on a forced flush and keeps the buffering limit", () => {
+    const router = new TranscriptRouter(), prefix = fragment("12, ");
+    router.push(prefix, languages, "A", "Хочу забронировать столик на");
+    expect(router.flush(languages)).toEqual([]);
+    expect(router.flush(languages, true)).toEqual([{ side: undefined, fragments: [prefix] }]);
+    const oversized = fragment("1".repeat(512));
+    expect(router.push(oversized, languages)).toEqual([{ side: undefined, fragments: [oversized] }]);
+    expect(router.hasPending).toBe(false);
+  });
   it.each(["A", "B"] as const)("resolves a short script-exclusive tail of known side %s at idle", side => {
     const router = new TranscriptRouter(), pair = side === "A" ? { A: "ru", B: "en" } : { A: "en", B: "ru" };
     const tail = fragment("ой-ой", 12000);

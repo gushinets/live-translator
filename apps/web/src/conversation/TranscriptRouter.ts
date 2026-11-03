@@ -73,6 +73,8 @@ export class TranscriptRouter {
     const side = this.resolve(evidence, languages);
     if (side !== undefined && this.hasEvidence(evidence, text, side, this.currentSide)) return { side };
     if (!flush) return text.length >= 512 ? {} : undefined;
+    // An idle gap cannot tell a trailing number from the next speaker's numeric prefix.
+    if (!force && text.length < 512 && !/\p{L}/u.test(text) && /\p{N}/u.test(text)) return undefined;
     const fullSide = this.resolve(text, languages);
     // An unreliable prefix is only a consistency check for a reliable full phrase;
     // it never establishes an author by itself. "Thank y" fails that check.

@@ -5576,7 +5576,7 @@ describe("PR32 timestamp routing follow-up", () => {
   });
 });
 
-it.each([" 7:00", " трое", " утра", "ой-ой"])("keeps a delayed adjacent source suffix %s from poisoning later translation attribution", async suffix => {
+it.each([" трое", " утра", "ой-ой"])("keeps a delayed adjacent source suffix %s from poisoning later translation attribution", async suffix => {
   vi.useFakeTimers(); vi.setSystemTime(1000);
   const { controller, live, audio } = createController();
   await controller.startWithLanguages({ A: "ru", B: "en" });
@@ -5607,7 +5607,7 @@ it.each([
   { name: "completed sentence", source: "Хочу забронировать столик.", endMs: 12000, startMs: 12000 },
   { name: "provider-time gap", source: "Хочу забронировать столик на", endMs: 12000, startMs: 12200 },
   { name: "missing preceding end", source: "Хочу забронировать столик на", endMs: undefined, startMs: 5200 },
-])("does not absorb a numeric prefix after $name", async ({ source, endMs, startMs }) => {
+])("keeps a numeric prefix pending after $name", async ({ source, endMs, startMs }) => {
   vi.useFakeTimers(); vi.setSystemTime(1000);
   const { controller, live, audio } = createController();
   await controller.startWithLanguages({ A: "ru", B: "en" });
@@ -5618,12 +5618,10 @@ it.each([
   emitVoice(audio, false); emitPlayback(audio, true);
   live.emit({ type: "session.input_transcript.delta", delta: " 7:00", start_ms: startMs, end_ms: startMs + 200 });
   await vi.advanceTimersByTimeAsync(runtime.captionIdleMs + 1);
-  expect(controller.session.activeTurn).toMatchObject({ originalText: " 7:00", speaker: undefined });
-  expect(controller.session.activeTurn?.id).not.toBe(original);
-  expect(controller.session.pendingTurns?.find(turn => turn.id === original)?.originalText).toBe(source);
+  expect(controller.session.activeTurn).toMatchObject({ id: original, originalText: source, speaker: "A" });
 });
 
-it("keeps a contiguous numeric prefix with its independently classified new speaker", async () => {
+it.each([0, runtime.captionIdleMs + 1])("keeps a contiguous numeric prefix with its independently classified new speaker after %s ms", async delayMs => {
   vi.useFakeTimers(); vi.setSystemTime(1000);
   const { controller, live, audio } = createController();
   await controller.startWithLanguages({ A: "ru", B: "en" });
@@ -5631,6 +5629,7 @@ it("keeps a contiguous numeric prefix with its independently classified new spea
   live.emit({ type: "session.input_transcript.delta", delta: "Хочу забронировать столик на", start_ms: 5200, end_ms: 12000 });
   const original = controller.session.activeTurn!.id;
   live.emit({ type: "session.input_transcript.delta", delta: "12, ", start_ms: 12000, end_ms: 12200 });
+  await vi.advanceTimersByTimeAsync(delayMs);
   live.emit({ type: "session.input_transcript.delta", delta: "The station is straight ahead.", start_ms: 12200, end_ms: 13000 });
   expect(controller.session.activeTurn).toMatchObject({ originalText: "12, The station is straight ahead.", speaker: "B" });
   expect(controller.session.pendingTurns?.find(turn => turn.id === original)?.originalText).toBe("Хочу забронировать столик на");
