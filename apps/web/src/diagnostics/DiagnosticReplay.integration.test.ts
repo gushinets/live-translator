@@ -246,6 +246,48 @@ it("does not let an uncommitted removal at capacity block removal of already com
   expect(await f.queue.read()).toEqual([]);
 });
 
+it.each(["cancel", "ownership", "cleanup"])("replays startup when preparation fails after conversation creation: %s", async failure => {
+  const f = await fixture(), stream = f.outbox.stream(), attempt = f.scope.newAttempt();
+  attempt.diagnostics = stream;
+  stream.emit("app.lifecycle", { phase: "start", generation: 0 });
+  stream.emit("audio.state", { phase: "capture_ready" });
+  const createConversation = f.api.createConversation.bind(f.api);
+  let release!: () => void, created!: (id: string) => void;
+  const held = new Promise<void>(resolve => { release = resolve; });
+  const committed = new Promise<string>(resolve => { created = resolve; });
+  vi.spyOn(f.api, "createConversation").mockImplementation(async requestId => {
+    const conversation = await createConversation(requestId);
+    created(conversation.conversationId); await held;
+    return failure === "ownership" ? { ...conversation, policy: { ...conversation.policy, backgroundSessionCloseEnabled: true } } : conversation;
+  });
+  const reserve = vi.spyOn(f.budget, "reserve"), create = vi.spyOn(f.api, "createSession");
+  const opening = attempt.create("never-sent-offer");
+  const rejected = expect(opening).rejects.toThrow(failure === "cancel" ? "Provider attempt cancelled" :
+    failure === "ownership" ? "Retained conversation ownership unavailable" : "Cleanup storage unavailable");
+  const conversationId = await committed;
+  try {
+    expect(f.ledger.getConversation(f.owner, conversationId).id).toBe(conversationId);
+    expect(stream.conversationId).toBeUndefined();
+    if (failure === "cancel") { await attempt.abandon("primary_startup_failed"); stream.retire(); }
+    if (failure === "cleanup") vi.spyOn(f.scope.outbox, "flush").mockRejectedValueOnce(new Error("Cleanup storage unavailable"));
+    f.state.offline = true;
+  } finally { release(); await rejected; }
+  stream.retire(); await f.outbox.flush();
+  expect((await f.queue.read()).map(row => row.event)).toEqual([
+    expect.objectContaining({ conversationId, liveSessionId: attempt.localId, type: "app.lifecycle" }),
+    expect.objectContaining({ conversationId, liveSessionId: attempt.localId, type: "audio.state" }),
+  ]);
+  f.outbox.stop(); f.state.offline = false;
+  const replay = new DiagnosticOutbox(f.options); cleanup.push(() => replay.stop()); replay.configure((await f.api.policy()).diagnostics);
+  await replay.flush();
+  expect(f.statuses).toEqual([200]); expect(await f.queue.read()).toEqual([]);
+  const report = buildDiagnosticReport(f.db, f.journal.db, { conversationId });
+  expect(report.events).toContainEqual(expect.objectContaining({ streamId: stream.id, liveSessionId: attempt.localId,
+    attemptStatus: "unconfirmed", type: "audio.state", data: { phase: "capture_ready" } }));
+  expect(f.db.prepare("SELECT 1 FROM live_sessions WHERE id=?").get(attempt.localId)).toBeUndefined();
+  expect(attempt.dispatched).toBe(false); expect(reserve).not.toHaveBeenCalled(); expect(create).not.toHaveBeenCalled(); expect(f.creator).not.toHaveBeenCalled();
+});
+
 it("replays startup under the known conversation after accounting reservation fails", async () => {
   const f = await fixture(), stream = f.outbox.stream(), attempt = f.scope.newAttempt();
   attempt.diagnostics = stream;

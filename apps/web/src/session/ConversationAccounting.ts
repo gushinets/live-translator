@@ -343,7 +343,10 @@ export class ConversationAccounting {
     }
     if (ends.length) throw new Error("Previous conversation End is pending");
     if (!this.current) this.creating ??= this.api.createConversation(this.requestId).catch(error => { this.creating = undefined; throw error; });
-    const c = this.current ?? await this.creating!; attempt.assertCurrent(); this.current = c;
+    const c = this.current ?? await this.creating!;
+    // Preserve startup evidence even if the remaining preparation checks reject this attempt.
+    attempt.diagnostics?.bind(c.conversationId, attempt.localId);
+    attempt.assertCurrent(); this.current = c;
     if (c.status !== "active" && !(c.status === "resuming" && this.resume?.id === attempt.localId))
       throw new Error("Conversation is not activatable");
     if (c.policy.backgroundSessionCloseEnabled &&
@@ -554,8 +557,6 @@ export class ProviderAccounting {
   }
   async create(sdp: string, beforeManagedCreate?: () => void): Promise<CreateLiveSessionResponse> {
     const c = await this.scope.prepare(this);
-    // Preserve startup evidence even if a local reservation or cancellation fails.
-    if (c) this.diagnostics?.bind(c.conversationId, this.localId);
     this.assertCurrent();
     if (!c) return new BackendClient().createLiveSession(sdp);
     this.conversation = c; this.attemptConversationId = c.conversationId; beforeManagedCreate?.();
