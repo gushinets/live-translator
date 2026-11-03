@@ -279,6 +279,23 @@ describe("conversation diagnostic ingestion", () => {
     expect(f.journal.db.prepare("SELECT text FROM diagnostic_text WHERE stream_id=? AND seq=1").get(first.streamId)!.text).toBe("PRIVATE_CANARY");
     expect(f.journal.db.prepare("SELECT text_expected FROM diagnostic_events WHERE stream_id=? AND seq=1").get(first.streamId)!.text_expected).toBe(1);
   });
+  it.each([undefined, false, true])("rejects duplicate truncation changes from %s without altering stored evidence", async textTruncated => {
+    const f = fixture({ textEnabled: true }), first = f.event(1, { text: "PRIVATE_CANARY", textTruncated });
+    await f.post([first]).expect(200);
+    const stored = f.journal.db.prepare("SELECT * FROM diagnostic_events WHERE stream_id=? AND seq=1").get(first.streamId);
+    await f.post([{ ...first, textTruncated: Boolean(textTruncated) }]).expect(200);
+    await f.post([{ ...first, textTruncated: textTruncated || undefined }]).expect(200);
+    const next = { ...first, seq: 2 };
+    for (const changed of textTruncated ? [false, undefined] : [true]) {
+      const response = await f.post([next, { ...first, textTruncated: changed }]).expect(409);
+      expect(response.body.code).toBe("diagnostics_identity_conflict");
+    }
+    expect(f.journal.db.prepare("SELECT * FROM diagnostic_events WHERE stream_id=? AND seq=1").get(first.streamId)).toEqual(stored);
+    expect(f.journal.db.prepare("SELECT 1 FROM diagnostic_events WHERE stream_id=? AND seq=2").get(first.streamId)).toBeUndefined();
+    expect(f.journal.db.prepare("SELECT text FROM diagnostic_text WHERE stream_id=? AND seq=1").get(first.streamId)!.text).toBe("PRIVATE_CANARY");
+    const report = buildDiagnosticReport(f.db, f.journal.db, { conversationId: f.c.id });
+    expect(report.warnings.includes(`${first.streamId}:1: text_truncated`)).toBe(Boolean(textTruncated));
+  });
   it("atomically removes duplicate text and releases its quota once without changing technical evidence", async () => {
     const f = fixture({ textEnabled: true }); await f.journal.flushServerEvents();
     const first = f.event(1, { text: "PRIVATE_CANARY".repeat(100), textTruncated: true });
@@ -302,6 +319,7 @@ describe("conversation diagnostic ingestion", () => {
     expect(f.journal.db.prepare("SELECT 1 FROM diagnostic_text WHERE stream_id=? AND seq=1").get(first.streamId)).toBeUndefined();
     const report = buildDiagnosticReport(f.db, f.journal.db, { conversationId: f.c.id });
     expect(report.events).toContainEqual(expect.objectContaining({ streamId: first.streamId, seq: 1, textStatus: "removed", textRemoved: true }));
+    expect(report.warnings).not.toContain(`${first.streamId}:1: text_truncated`);
   });
   it.each([{ maxBytes: 10000, conversationMaxBytes: 20000 }, { maxBytes: 20000, conversationMaxBytes: 10000 }])("reserves lifecycle capacity when browser traffic reaches a journal or conversation limit: %j", async limits => {
     const journal = new DiagnosticJournal(":memory:", { ...limits, automatic: false, logger: { error() {} } }); resources.push(() => journal.close());

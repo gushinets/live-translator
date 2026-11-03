@@ -98,8 +98,11 @@ and a `text_removed` warning, distinct from text never captured or expired on th
 If the original upload committed but its receipt or local queue removal was lost,
 a scrubbed replay with the same event identity also removes the server's retained
 text and releases its quota before ACK. Technical fields must match the committed
-event; conflicts reject the entire batch. Repeated removal or an older text-bearing
-retry cannot restore the text, change original timestamps or release quota twice.
+event; conflicts reject the entire batch. Ordinary retries must also preserve the
+truncation flag (`false` and omission are equivalent). Privacy removal clears that
+flag; already removed rows accept stale retries without restoring text or truncation.
+Repeated removal or an older text-bearing retry cannot change original timestamps
+or release quota twice.
 Consent is checked again when a text-bearing request is acknowledged. If its UUID
 or the observed policy changed during the request, accepted text rows stay queued
 with the same identities for a `textRemoved` replay. This also survives a failed

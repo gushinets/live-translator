@@ -152,6 +152,7 @@ export class DiagnosticJournal {
           if (existing) {
             if (existing.wall_ms !== event.wallMs || existing.mono_ms !== event.monoMs || existing.type !== event.type ||
                 existing.client_build_id !== (event.clientBuildId ?? null) ||
+                (!event.textRemoved && existing.text_expected !== 2 && Boolean(existing.text_truncated) !== Boolean(event.textTruncated)) ||
                 !isDeepStrictEqual(JSON.parse(String(existing.data_json)), JSON.parse(JSON.stringify(event.data))))
               throw new DiagnosticError("diagnostics_identity_conflict", 409);
             if (event.textRemoved && existing.text_expected !== 2) {
