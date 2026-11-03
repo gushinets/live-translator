@@ -3,6 +3,7 @@ WORKDIR /src
 RUN corepack enable && corepack prepare pnpm@10.34.1 --activate
 COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
 COPY tsconfig.base.json ./
+COPY types types
 COPY apps/api/package.json apps/api/package.json
 COPY apps/web/package.json apps/web/package.json
 RUN pnpm install --frozen-lockfile --filter @live-translator/api...
@@ -14,7 +15,7 @@ FROM node:24-bookworm-slim AS runtime
 WORKDIR /opt/api
 ENV NODE_ENV=production
 COPY --from=build /opt/api ./
-RUN mkdir -p /data && chown node:node /data
+RUN mkdir -p /data /diagnostics && chown node:node /data /diagnostics
 USER node
 # Assert the deployed production artifact contains the explicit optional SDK dependency and SQL.
 RUN node --input-type=module -e "await import('ws'); await import('openai/resources/live/sideband/ws'); const {openUsageDatabase}=await import('./dist/persistence/database.js'); const db=openUsageDatabase(':memory:'); db.close()"

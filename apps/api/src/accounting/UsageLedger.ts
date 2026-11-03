@@ -1,5 +1,7 @@
 import { mergeUsage, mergeAppMetrics, type UsageReport } from "./mergeUsage.js";
 import type { ClientMetadata } from "./clientMetadata.js";
+import type { DiagnosticJournal } from "../diagnostics/DiagnosticJournal.js";
+import type { DiagnosticData } from "../../../../types/diagnostics.js";
 import { randomUUID } from "node:crypto";
 import type { DatabaseSync, SQLInputValue } from "node:sqlite";
 import { transaction } from "../persistence/database.js";
@@ -15,6 +17,8 @@ const strength = (s: ObservationSource | null) => s === "sideband" ? 2 : s === "
 
 /** SQL is authoritative for lifecycle and recovery; network work is outside transactions. */
 export class UsageLedger {
+  diagnosticJournal: DiagnosticJournal | undefined;
+  private diagnosticChanges: Array<{ conversationId: string; liveSessionId?: string; type: "server.conversation" | "server.attempt"; data: DiagnosticData["server.conversation"] | DiagnosticData["server.attempt"] }> = [];
   private readonly clock: () => number;
   private readonly pricingPolicies: readonly PricingPolicy[];
   readonly policy: LedgerPolicy;
@@ -26,7 +30,15 @@ export class UsageLedger {
   now() { return this.clock(); }
   private atomic<T>(work: () => T | LedgerError): T {
     // Domain rejection may follow a committed expiry/fence. Throwing inside would undo that fence.
-    const result = transaction(this.db, work);
+    this.diagnosticChanges = [];
+    let result: T | LedgerError;
+    try { result = transaction(this.db, work); }
+    catch (error) { this.diagnosticChanges = []; throw error; }
+    const changes = this.diagnosticChanges; this.diagnosticChanges = [];
+    for (const change of changes) {
+      try { this.diagnosticJournal?.record(this.conversation(change.conversationId), change.type, change.data, change.liveSessionId); }
+      catch { /* A diagnostic observer cannot change a committed ledger result. */ }
+    }
     if (result instanceof LedgerError) throw result;
     return result;
   }
@@ -58,11 +70,24 @@ export class UsageLedger {
     // Keys are typed literals from server transition code, never request body keys.
     this.db.prepare(`UPDATE live_sessions SET ${entries.map(([key]) => `${key}=?`).join(",")} WHERE id=?`)
       .run(...entries.map(([, value]) => value as SQLInputValue), id);
+    if (this.diagnosticJournal && entries.some(([key]) => ["state", "handoff_acknowledged_at", "cleanup_reason", "cleanup_last_result", "cleanup_retry_exhausted_at", "resume_outcome", "openai_session_id", "app_end_reason"].includes(key)))
+      this.observeAttempt(this.attempt(id), "updated");
   }
   private updateConversation(id: string, fields: Partial<ConversationRow>): void {
     const entries = Object.entries(fields);
     this.db.prepare(`UPDATE conversations SET ${entries.map(([key]) => `${key}=?`).join(",")} WHERE id=?`)
       .run(...entries.map(([, value]) => value as SQLInputValue), id);
+    if (this.diagnosticJournal && (fields.status !== undefined || fields.version !== undefined)) this.observeConversation(this.conversation(id));
+  }
+  private observeConversation(c: ConversationRow): void {
+    if (this.diagnosticJournal) this.diagnosticChanges.push({ conversationId: c.id, type: "server.conversation",
+      data: { status: c.status, version: c.version, ...(c.end_reason ? { reason: c.end_reason } : {}) } });
+  }
+  private observeAttempt(s: SessionRow, phase: DiagnosticData["server.attempt"]["phase"], rearmCause?: DiagnosticData["server.attempt"]["rearmCause"]): void {
+    if (this.diagnosticJournal) this.diagnosticChanges.push({ conversationId: s.conversation_id, liveSessionId: s.id, type: "server.attempt",
+      data: { state: s.state, generation: s.generation, phase, ...(rearmCause ? { rearmCause } : {}), ...(s.cleanup_reason ? { cleanupReason: s.cleanup_reason } : {}),
+        cleanupExhausted: s.cleanup_retry_exhausted_at !== null, ...(s.cleanup_last_result ? { cleanupResult: s.cleanup_last_result } : {}), ...(s.resume_outcome ? { resumeOutcome: s.resume_outcome } : {}),
+        ...(s.openai_session_id ? { providerSessionId: s.openai_session_id } : {}), ...(s.app_end_reason ? { reason: s.app_end_reason } : {}) } });
   }
   getConversation(owner: string, id: string): ConversationRow {
     this.owned(owner, id); this.atomic(() => this.expireConversationInternal(id, this.now()));
@@ -83,6 +108,7 @@ export class UsageLedger {
       const id = randomUUID();
       this.db.prepare("INSERT INTO conversations(id,anonymous_user_id,create_request_id,status,created_at,app_version,conversation_policy_version,policy_json) VALUES(?,?,?,'active',?,?,?,?)")
         .run(id, owner, requestId, this.now(), appVersion, this.policy.policyVersion, JSON.stringify(this.policy));
+      this.observeConversation(this.conversation(id));
       return this.conversation(id);
     });
   }
@@ -99,6 +125,7 @@ export class UsageLedger {
     this.db.prepare(`INSERT INTO live_sessions(id,conversation_id,generation,state,initial_mode,start_reason,model,transport,prompt_version,app_version,creation_requested_at,resume_claimed_at,resume_claim_expires_at,resume_claim_version,resume_outcome,usage_identity_version)
       VALUES(?,?,?,'creating',?,?,'gpt-live-1','webrtc','silent-pre-interpreter-v1',?,?,?,?,?,?,?)`)
       .run(id, c.id, generation, mode, reason, c.app_version, this.now(), resume ? this.now() : null, resume?.expires ?? null, resume?.version ?? null, resume ? "pending" : null, usageIdentityVersion ?? null);
+    this.observeAttempt(this.attempt(id), "registered");
     return this.attempt(id);
   }
   registerAttempt(owner: string, input: AttemptInput): SessionRow {
@@ -148,7 +175,9 @@ export class UsageLedger {
       const dispatchedAt = this.now();
       this.updateAttempt(id, { provider_request_dispatched_at: dispatchedAt, lease_id: leaseId, lease_expires_at: leaseExpiresAt,
         pricing_policy_version: assignPricingPolicyVersion(s.model, dispatchedAt, this.pricingPolicies) });
-      return this.attempt(id);
+      const dispatched = this.attempt(id);
+      this.observeAttempt(dispatched, "dispatched");
+      return dispatched;
     });
   }
   recordProviderCreated(id: string, providerId: string, expiresAt?: number): SessionRow {
@@ -353,7 +382,10 @@ export class UsageLedger {
   }
   rearmBlockedCleanup(cause: "startup" | "config_reload" | "credential_refresh" | "operator_retry"): void {
     if (!["startup", "config_reload", "credential_refresh", "operator_retry"].includes(cause)) throw new LedgerError("invalid_rearm_cause", 400);
-    this.atomic(() => { this.db.prepare("UPDATE live_sessions SET cleanup_blocked_at=NULL,cleanup_last_result=NULL,cleanup_last_error_code=NULL,cleanup_next_attempt_at=? WHERE cleanup_blocked_at IS NOT NULL AND cleanup_retry_exhausted_at IS NULL AND cleanup_retry_expires_at>? AND state NOT IN ('closed','failed')").run(this.now(), this.now()); });
+    this.atomic(() => {
+      const rows = this.db.prepare("UPDATE live_sessions SET cleanup_blocked_at=NULL,cleanup_last_result=NULL,cleanup_last_error_code=NULL,cleanup_next_attempt_at=? WHERE cleanup_blocked_at IS NOT NULL AND cleanup_retry_exhausted_at IS NULL AND cleanup_retry_expires_at>? AND state NOT IN ('closed','failed') RETURNING *").all(this.now(), this.now()) as unknown as SessionRow[];
+      for (const row of rows) this.observeAttempt(row, "rearmed", cause);
+    });
   }
   private endInternal(c: ConversationRow, reason: EndReason, now: number): void {
     if (c.status === "ended") return;

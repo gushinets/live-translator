@@ -135,6 +135,19 @@ describe("AudioController with explicit direct playback", () => {
     vi.restoreAllMocks();
   });
 
+  it.each([false, true])("keeps pending microphone observations on the requesting stream, failure=%s", async failure => {
+    const first = vi.fn(), replacement = vi.fn();
+    controller.diagnostics = { emit: first };
+    let resolve!: (stream: MediaStream) => void, reject!: (error: Error) => void;
+    getUserMedia.mockImplementationOnce(() => new Promise((ok, fail) => { resolve = ok; reject = fail; }));
+    const capturing = controller.startCapture();
+    controller.diagnostics = { emit: replacement };
+    if (failure) { reject(new Error("microphone unavailable")); await expect(capturing).rejects.toThrow("microphone unavailable"); }
+    else { resolve(fakeStream(track)); await capturing; }
+    expect(first).toHaveBeenCalledWith("audio.state", expect.objectContaining({ phase: failure ? "capture_failed" : "capture_ready" }), undefined);
+    expect(replacement.mock.calls.some(([, data]) => ["capture_failed", "capture_ready"].includes(data.phase))).toBe(false);
+  });
+
   it("requests the microphone with echo cancellation and without noise suppression", async () => {
     await controller.startCapture();
 
@@ -146,6 +159,54 @@ describe("AudioController with explicit direct playback", () => {
     });
     const constraints = getUserMedia.mock.calls[0]?.[0] as MediaStreamConstraints;
     expect(constraints.audio).not.toHaveProperty("autoGainControl");
+  });
+  it("flushes partial microphone levels to the original stream before transport replacement", async () => {
+    vi.useFakeTimers();
+    const first = vi.fn(), replacement = vi.fn();
+    controller.diagnostics = { emit: first };
+    await controller.startCapture();
+    audioContext.analysers[0]!.fill(.01);
+    nowMs = 50; await vi.advanceTimersByTimeAsync(50);
+    controller.setCaptureEnabled(false);
+    controller.diagnostics = { emit: replacement };
+    controller.setCaptureEnabled(true);
+    audioContext.analysers[0]!.fill(.04);
+    nowMs = 1100; await vi.advanceTimersByTimeAsync(50);
+    controller.diagnostics = undefined;
+    const oldLevels = first.mock.calls.filter(([type]) => type === "audio.level").map(([, data]) => data);
+    const newLevels = replacement.mock.calls.filter(([type]) => type === "audio.level").map(([, data]) => data);
+    expect(oldLevels).toEqual([expect.objectContaining({ fromMs: 50, toMs: 50, samples: 1, meanRms: expect.closeTo(.01) })]);
+    expect(newLevels).toEqual([expect.objectContaining({ fromMs: 1100, toMs: 1100, samples: 1, meanRms: expect.closeTo(.04) })]);
+  });
+  it("does not report playback when priming without remote media", async () => {
+    const emit = vi.fn(); controller.diagnostics = { emit };
+    audioElement.srcObject = null;
+    await controller.primeOutput();
+    expect(audioContext.resume).toHaveBeenCalled();
+    expect(audioElement.play).not.toHaveBeenCalled();
+    expect(emit.mock.calls.some(([, data]) => ["play_requested", "play_started"].includes(data.phase))).toBe(false);
+    controller.attachRemoteStream(fakeStream(new FakeAudioTrack()));
+    await controller.playOutput();
+    expect(emit).toHaveBeenCalledWith("audio.state", { phase: "play_started" }, undefined);
+  });
+  it.each(["resume", "audio_less", "ended", "source"])("records a terminal microphone startup failure and releases tracks: %s", async failure => {
+    const emit = vi.fn(); controller.diagnostics = { emit };
+    if (failure === "resume") audioContext.resume.mockRejectedValueOnce(new Error("resume failed"));
+    if (failure === "ended") track.readyState = "ended";
+    if (failure === "audio_less") getUserMedia.mockResolvedValueOnce({ getAudioTracks: () => [], getTracks: () => [track] } as unknown as MediaStream);
+    if (failure === "source") vi.spyOn(audioContext, "createMediaStreamSource").mockImplementationOnce(() => { throw new Error("source failed"); });
+    await expect(controller.startCapture()).rejects.toThrow();
+    expect(emit).toHaveBeenCalledWith("audio.state", { phase: "capture_failed" }, undefined);
+    expect(emit.mock.calls.some(([, data]) => data.phase === "capture_ready")).toBe(false);
+    expect(track.stop).toHaveBeenCalledOnce(); expect(controller.getCaptureStream()).toBeNull();
+  });
+  it("releases a permission result arriving after AudioContext resume already failed", async () => {
+    let resolve!: (stream: MediaStream) => void;
+    getUserMedia.mockImplementationOnce(() => new Promise<MediaStream>(ok => { resolve = ok; }));
+    audioContext.resume.mockRejectedValueOnce(new Error("resume failed"));
+    await expect(controller.startCapture()).rejects.toThrow("resume failed");
+    resolve(fakeStream(track)); await Promise.resolve();
+    expect(track.stop).toHaveBeenCalledOnce(); expect(controller.getCaptureStream()).toBeNull();
   });
 
   it("records only non-content microphone settings diagnostics", async () => {
@@ -496,6 +557,27 @@ describe("buffered audio output", () => {
     const generation = node.port.postMessage.mock.calls.filter(([m]) => m.generation !== undefined).at(-1)![0].generation;
     node.port.onmessage!({ data: { type: "playback", value, requestId, generation } } as MessageEvent);
   }
+  it("splits microphone levels at both playback-input gate transitions", async () => {
+    vi.useFakeTimers();
+    const { controller, context, nodes } = setup(), emit = vi.fn();
+    controller.diagnostics = { emit };
+    try {
+      await controller.primeOutput(); await controller.startCapture();
+      controller.attachRemoteStream(fakeStream(new FakeAudioTrack())); controller.setOutputAudible(true);
+      await vi.advanceTimersByTimeAsync(100);
+      sendPlayback(nodes[0]!, true);
+      await vi.advanceTimersByTimeAsync(100);
+      sendPlayback(nodes[0]!, false);
+      await vi.advanceTimersByTimeAsync(runtime.playbackEchoTailMs);
+      await vi.advanceTimersByTimeAsync(100);
+      controller.setCaptureEnabled(false);
+      const levels = emit.mock.calls.filter(([type]) => type === "audio.level").map(([, data]) => data);
+      expect(levels.map(data => data.blocked)).toEqual([false, true, false]);
+      expect(levels[0]!.toMs).toBeLessThanOrEqual(levels[1]!.fromMs);
+      expect(levels[1]!.toMs).toBeLessThanOrEqual(levels[2]!.fromMs);
+      expect(context.state).toBe("running");
+    } finally { controller.dispose(); }
+  });
   it.each([0, 250, 299])("does not transmit the tail of speech starting %s ms into microphone release", async startMs => {
     vi.useFakeTimers();
     const { controller, context, nodes } = setup();
@@ -822,6 +904,23 @@ describe("buffered audio output", () => {
     expect(element.play).toHaveBeenCalledOnce();
     controller.dispose();
   });
+  it.each([false, true])("keeps pending audible playback on the initiating stream, failure=%s", async failure => {
+    const { controller, element } = setup(), first = vi.fn(), replacement = vi.fn();
+    try {
+      await controller.primeOutput(); controller.attachRemoteStream(fakeStream(new FakeAudioTrack()));
+      controller.diagnostics = { emit: first };
+      let resolve!: () => void, reject!: (error: Error) => void;
+      vi.mocked(element.play).mockImplementationOnce(() => new Promise<void>((ok, fail) => { resolve = ok; reject = fail; }));
+      const playing = controller.playOutput();
+      await vi.waitFor(() => expect(element.play).toHaveBeenCalledOnce());
+      controller.attachRemoteStream(fakeStream(new FakeAudioTrack())); controller.diagnostics = { emit: replacement };
+      if (failure) { reject(new Error("old playback failed")); await expect(playing).rejects.toThrow("old playback failed"); }
+      else { resolve(); await playing; }
+      expect(replacement).not.toHaveBeenCalled();
+      if (failure) expect(first).toHaveBeenCalledWith("audio.state", { phase: "play_failed" }, undefined);
+      else expect(first.mock.calls.some(([, data]) => data.phase === "play_started")).toBe(false);
+    } finally { controller.dispose(); }
+  });
   it("does not play a replacement stream from a retired decoder's pending startup", async () => {
     const { controller, element } = setup();
     await controller.primeOutput();
@@ -837,9 +936,10 @@ describe("buffered audio output", () => {
     controller.dispose();
   });
   it("forwards hidden decoder errors and removes retired decoder handlers", async () => {
-    const { controller } = setup();
+    const { controller } = setup(), first = vi.fn(), replacementDiagnostics = vi.fn();
     try {
       await controller.primeOutput();
+      controller.diagnostics = { emit: first };
       controller.attachRemoteStream(fakeStream(new FakeAudioTrack()));
       await controller.playOutput();
       const decoder = vi.mocked(HTMLMediaElement.prototype.play).mock.contexts[0] as HTMLAudioElement;
@@ -850,11 +950,14 @@ describe("buffered audio output", () => {
       decoder.dispatchEvent(new Event("error"));
       expect(observed).toHaveBeenCalledExactlyOnceWith(error);
       const stale = decoder.onerror!;
+      controller.diagnostics = { emit: replacementDiagnostics };
       controller.attachRemoteStream(fakeStream(new FakeAudioTrack()));
       expect(decoder.onerror).toBeNull();
       decoder.dispatchEvent(new Event("error"));
       stale.call(decoder, new Event("error"));
       expect(observed).toHaveBeenCalledOnce();
+      expect(first.mock.calls.filter(([, data]) => data.phase === "decoder_error")).toHaveLength(2);
+      expect(replacementDiagnostics.mock.calls.some(([, data]) => data.phase === "decoder_error")).toBe(false);
       await controller.playOutput();
       const replacement = vi.mocked(HTMLMediaElement.prototype.play).mock.contexts[1] as HTMLAudioElement;
       Object.defineProperty(replacement, "error", { configurable: true, value: error });

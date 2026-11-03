@@ -1,3 +1,5 @@
+import { resolve } from "node:path";
+
 /**
  * Resolve the browser origin accepted by the API.
  *
@@ -74,6 +76,13 @@ function dbPath(): string {
 }
 const usageLedgerEnabled = booleanEnv("USAGE_LEDGER_ENABLED", false);
 const backgroundSessionCloseEnabled = booleanEnv("BACKGROUND_SESSION_CLOSE_ENABLED", false);
+const diagnosticsEnabled = booleanEnv("CONVERSATION_DIAGNOSTICS_ENABLED", false);
+const diagnosticsTextEnabled = booleanEnv("CONVERSATION_DIAGNOSTICS_TEXT_ENABLED", false);
+const diagnosticsDbPath = process.env.DIAGNOSTICS_DB_PATH ?? "/diagnostics/events.sqlite";
+if (!diagnosticsDbPath.trim()) throw new Error("DIAGNOSTICS_DB_PATH must not be empty");
+if (resolve(diagnosticsDbPath) === resolve(dbPath())) throw new Error("Diagnostics and usage databases must use separate paths");
+if (diagnosticsEnabled && !usageLedgerEnabled) throw new Error("CONVERSATION_DIAGNOSTICS_ENABLED requires USAGE_LEDGER_ENABLED");
+if (diagnosticsTextEnabled && !diagnosticsEnabled) throw new Error("CONVERSATION_DIAGNOSTICS_TEXT_ENABLED requires CONVERSATION_DIAGNOSTICS_ENABLED");
 if (backgroundSessionCloseEnabled && !usageLedgerEnabled) {
   throw new Error("BACKGROUND_SESSION_CLOSE_ENABLED requires USAGE_LEDGER_ENABLED");
 }
@@ -82,6 +91,9 @@ export const apiConfig = {
   usageLedgerEnabled,
   backgroundSessionCloseEnabled,
   usageDbPath: dbPath(),
+  diagnosticsEnabled,
+  diagnosticsTextEnabled,
+  diagnosticsDbPath,
   conversationRetentionMs: positiveIntegerEnv("CONVERSATION_RETENTION_MS", 300000, 2147483647),
   maxProviderSessionMs: positiveIntegerEnv("MAX_PROVIDER_SESSION_MS", 900000, 2147483647),
   maxConversationElapsedMs: positiveIntegerEnv("MAX_CONVERSATION_ELAPSED_MS", 900000, 2147483647),

@@ -2,6 +2,7 @@ import { IDBFactory } from "fake-indexeddb";
 import { describe, expect, it, vi } from "vitest";
 import { AccountingRequestError, type ConversationMetadata } from "../api/AccountingBackend";
 import { ResumeSnapshotStore, type ResumeSnapshotInput } from "./ResumeSnapshotStore";
+import { DIAGNOSTIC_TEXT_KEY } from "../diagnostics/DiagnosticOutbox";
 
 class TabStorage implements Storage {
   private values = new Map<string, string>();
@@ -258,8 +259,11 @@ describe("retained conversation snapshot", () => {
 
   it("rotates a duplicated or opener tab immediately while the original document is frozen", async () => {
     const f = fixture(), owner = await f.open(); await seed(owner);
-    const clone = await f.open(f.tab.clone());
+    f.tab.setItem(DIAGNOSTIC_TEXT_KEY, "1");
+    const copied = f.tab.clone(), clone = await f.open(copied);
     expect(clone.clientInstanceId).not.toBe(owner.clientInstanceId);
+    expect(copied.getItem(DIAGNOSTIC_TEXT_KEY)).toBeNull();
+    expect(f.tab.getItem(DIAGNOSTIC_TEXT_KEY)).toBe("1");
     expect(await clone.readForResume(async () => paused())).toBeNull();
     expect(await owner.readForResume(async () => paused())).not.toBeNull();
   });

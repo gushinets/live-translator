@@ -13,6 +13,8 @@ import type { DialogueBlock } from "../conversation/DialogueTranscript";
 import type { PlaybackInputState } from "../audio/AudioController";
 
 export interface ConversationScreenController {
+  readonly captionRevision?: number;
+  captureCaptionRender?(revision: number, blockCount: number): () => void;
   readonly session: TranslationSession;
   readonly captionBlocks: readonly DialogueBlock[];
   readonly inputReady: boolean;
@@ -46,7 +48,12 @@ export function ConversationScreen({
   const endRef = useRef<HTMLButtonElement>(null);
   const renderedSnapshot = useRef<unknown[]>([]);
   const snapshot = uiSnapshot(controller);
+  const captions = controller.captionBlocks;
+  const captionRevision = controller.captionRevision;
+  const captionBlockCount = captions.filter(block => block.text.trim() && (block.side !== undefined || block.kind === "output")).length;
+  const recordCaptionRender = captionRevision === undefined ? undefined : controller.captureCaptionRender?.(captionRevision, captionBlockCount);
   useLayoutEffect(() => { renderedSnapshot.current = snapshot; });
+  useLayoutEffect(() => { recordCaptionRender?.(); }, [recordCaptionRender]);
   const previousRecovery = useRef<RetainedRecoveryState | undefined>(undefined);
   useEffect(() => {
     const unsubscribe = controller.subscribe(rerender);
@@ -59,7 +66,6 @@ export function ConversationScreen({
   }, [controller.retainedRecoveryState]);
 
   const session = controller.session;
-  const captions = controller.captionBlocks;
   const unassigned = useMemo(() => captions.filter(block => block.kind === "output" && block.side === undefined), [captions]);
   const unassignedScroll = useCaptionScroll(unassigned);
   const recoverySide = controller.recoveryPromptSide;

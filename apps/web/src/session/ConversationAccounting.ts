@@ -1,4 +1,5 @@
 import { UsageReporter, type ProductObservation } from "../metrics/UsageReporter";
+import type { DiagnosticOutbox, DiagnosticStream } from "../diagnostics/DiagnosticOutbox";
 import { UsageOutbox } from "../metrics/UsageOutbox";
 import type { UsageObservation } from "../metrics/UsageTypes";
 import { AccountingBackend, AccountingRequestError, type LedgerApi, type ConversationMetadata, type ResumeClaimMetadata, type ResumeAbortReason, type ProviderCreateBody } from "../api/AccountingBackend";
@@ -36,6 +37,7 @@ interface PendingEndBoundary {
 
 /** One product controller owns this scope; provider attempts keep immutable local IDs. */
 export class ConversationAccounting {
+  readonly diagnostics: DiagnosticOutbox | undefined;
   readonly api: LedgerApi;
   readonly budget: MetadataDeliveryBudget;
   readonly outbox: CleanupIntentOutbox;
@@ -63,7 +65,8 @@ export class ConversationAccounting {
   private readonly pendingNoProviderFinalizations = new Map<string, { localId: string; conversationId: string }>();
   private readonly directRetirementProofs = new Set<string>();
   private snapshotStore: Promise<ResumeSnapshotStore> | undefined;
-  constructor(options: { api?: LedgerApi; budget?: MetadataDeliveryBudget; autoDelivery?: boolean } = {}) {
+  constructor(options: { api?: LedgerApi; budget?: MetadataDeliveryBudget; autoDelivery?: boolean; diagnostics?: DiagnosticOutbox } = {}) {
+    this.diagnostics = options.diagnostics;
     this.api = options.api ?? new AccountingBackend();
     this.producerId = options.budget?.ownerProducerId ?? crypto.randomUUID();
     this.budget = options.budget ?? new MetadataDeliveryBudget({ producerId: this.producerId });
@@ -103,6 +106,7 @@ export class ConversationAccounting {
   }
   async loadPolicy(): Promise<void> {
     this.enabled ??= this.api.policy().then(p => {
+      this.diagnostics?.configure(p.diagnostics);
       if (p.creationPaused) throw new Error("New sessions are temporarily paused");
       if (typeof p.usageLedgerEnabled !== "boolean") throw new Error("Invalid accounting policy");
       if (p.backgroundSessionCloseEnabled && !p.usageLedgerEnabled) throw new Error("Background close requires the usage ledger");
@@ -110,6 +114,10 @@ export class ConversationAccounting {
       return p.usageLedgerEnabled;
     }).catch(error => { this.enabled = undefined; throw error; });
     await this.enabled;
+  }
+  startDiagnostics(): void { this.diagnostics?.start(async () => (await this.api.policy()).diagnostics); }
+  bindResumeDiagnostics(stream: DiagnosticStream): void {
+    if (this.resume && this.current?.resumeAttemptId === this.resume.id) stream.bind(this.current.conversationId, this.resume.id);
   }
   beginBackgroundPause(): void { this.pausing = true; }
   beginResume(claim: ResumeClaimMetadata): void {
@@ -335,7 +343,10 @@ export class ConversationAccounting {
     }
     if (ends.length) throw new Error("Previous conversation End is pending");
     if (!this.current) this.creating ??= this.api.createConversation(this.requestId).catch(error => { this.creating = undefined; throw error; });
-    const c = this.current ?? await this.creating!; attempt.assertCurrent(); this.current = c;
+    const c = this.current ?? await this.creating!;
+    // Preserve startup evidence even if the remaining preparation checks reject this attempt.
+    attempt.diagnostics?.bind(c.conversationId, attempt.localId);
+    attempt.assertCurrent(); this.current = c;
     if (c.status !== "active" && !(c.status === "resuming" && this.resume?.id === attempt.localId))
       throw new Error("Conversation is not activatable");
     if (c.policy.backgroundSessionCloseEnabled &&
@@ -520,6 +531,7 @@ export class ConversationAccounting {
   }
 }
 export class ProviderAccounting {
+  diagnostics: DiagnosticStream | undefined;
   readonly localId: string;
   managed = false;
   dispatched = false;
@@ -544,7 +556,8 @@ export class ProviderAccounting {
     if (this.cancelled || this.scope.isPausing || !this.scope.isCurrent(this.epoch) || (typeof document !== "undefined" && document.visibilityState === "hidden" && this.managed)) throw new Error("Provider attempt cancelled");
   }
   async create(sdp: string, beforeManagedCreate?: () => void): Promise<CreateLiveSessionResponse> {
-    const c = await this.scope.prepare(this); this.assertCurrent();
+    const c = await this.scope.prepare(this);
+    this.assertCurrent();
     if (!c) return new BackendClient().createLiveSession(sdp);
     this.conversation = c; this.attemptConversationId = c.conversationId; beforeManagedCreate?.();
     this.reservation = this.scope.budget.reserve(this.localId, c.conversationId, this.scope.usageOutbox !== undefined);

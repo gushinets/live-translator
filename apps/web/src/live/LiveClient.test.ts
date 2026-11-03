@@ -10,6 +10,8 @@ import {
 } from "./LiveEvents";
 import { STARTUP_TRACE_STORAGE_KEY } from "./StartupTrace";
 import type { CleanupReason } from "../session/MetadataDeliveryBudget";
+import type { DiagnosticStream } from "../diagnostics/DiagnosticOutbox";
+import { INTERPRETER_PROMPT_ID } from "../config/BuildInfo";
 
 class FakeDataChannel extends EventTarget {
   readyState: RTCDataChannelState = "open";
@@ -177,6 +179,48 @@ describe("LiveClient.connect", () => {
       onRemoteStream,
     });
   }
+
+  it("records exactly one first-steering acknowledgment with its prompt version", async () => {
+    const { backend } = makeFakeBackend(), emit = vi.fn();
+    const client = new LiveClient({ backend, peerFactory: () => peer as unknown as RTCPeerConnection,
+      onRemoteStream, journal: { enabled: true, emit } as unknown as DiagnosticStream });
+    try {
+      const connecting = client.connect(makeFakeStream());
+      await vi.waitFor(() => expect(peer.calls).toContain("setRemoteDescription"));
+      peer.dataChannel!.emitMessage({ type: "session.started", session: { id: "test" } }); await connecting;
+      const appending = client.appendInstructions("private instructions", { kind: "first_steering", sessionState: "listening" });
+      await vi.waitFor(() => expect(peer.dataChannel!.sendCalls).toHaveLength(1));
+      const command = JSON.parse(peer.dataChannel!.sendCalls[0]!) as { event_id: string };
+      peer.dataChannel!.emitMessage({ type: "session.instructions.appended", client_event_id: command.event_id });
+      await appending;
+      const acks = emit.mock.calls.filter(([type, data]) => type === "transport.command" && data.phase === "ack");
+      expect(acks).toHaveLength(1);
+      expect(acks[0]![1]).toMatchObject({ commandId: command.event_id, promptId: INTERPRETER_PROMPT_ID });
+    } finally { await client.disconnectImmediately(); }
+  });
+
+  it("samples packet and decode counters separately, records unknown fields as unavailable, and stops polling on teardown", async () => {
+    vi.useFakeTimers();
+    try {
+      const { backend } = makeFakeBackend(), emit = vi.fn();
+      const getStats = vi.fn(async () => new Map([
+        ["out", { type: "outbound-rtp", kind: "audio", packetsSent: 10, bytesSent: 1000 }],
+        ["in", { type: "inbound-rtp", kind: "audio", packetsReceived: 20, bytesReceived: 2000, totalSamplesReceived: 0, jitterBufferEmittedCount: 0 }],
+      ]));
+      Object.assign(peer, { getStats });
+      const client = new LiveClient({ backend, peerFactory: () => peer as unknown as RTCPeerConnection,
+        onRemoteStream, journal: { enabled: true, emit } as unknown as DiagnosticStream });
+      const connecting = client.connect(makeFakeStream());
+      await vi.waitFor(() => expect(peer.calls).toContain("setRemoteDescription"));
+      peer.dataChannel!.emitMessage({ type: "session.started", session: { id: "test" } }); await connecting;
+      await vi.advanceTimersByTimeAsync(5000);
+      expect(emit).toHaveBeenCalledWith("transport.stats", expect.objectContaining({ packetsSent: 10, packetsReceived: 20, totalSamplesReceived: 0, jitterBufferEmittedCount: 0, packetsLost: null }));
+      await client.disconnectImmediately();
+      const count = getStats.mock.calls.length;
+      await vi.advanceTimersByTimeAsync(10000);
+      expect(getStats).toHaveBeenCalledTimes(count);
+    } finally { vi.useRealTimers(); }
+  });
 
   it("follows the official connect sequence and resolves only after session.started", async () => {
     const { backend, calls: backendCalls } = makeFakeBackend();
@@ -1442,11 +1486,11 @@ describe("LiveClient.close", () => {
     vi.restoreAllMocks();
   });
 
-  async function connectedClient() {
+  async function connectedClient(journal?: DiagnosticStream) {
     const peer = new FakePeerConnection();
     const { backend, releaseCalls } = makeFakeBackend();
     const client = new LiveClient({
-      backend,
+      backend, journal,
       peerFactory: () => peer as unknown as RTCPeerConnection,
       onRemoteStream: vi.fn(),
     });
@@ -1462,6 +1506,20 @@ describe("LiveClient.close", () => {
     if (peer.dataChannel === null) throw new Error("data channel missing");
     return { client, peer, channel: peer.dataChannel, releaseCalls };
   }
+
+  it.each(["mute", "append"])("records a local command cancellation when %s races close", async kind => {
+    const emit = vi.fn();
+    const { client, channel } = await connectedClient({ emit } as unknown as DiagnosticStream);
+    const closing = client.close();
+    const command = kind === "mute" ? client.setInputMuted(true)
+      : client.appendThinking("private context", { kind: "startup_interpreter" });
+    await expect(command).rejects.toThrow("closing");
+    const type = kind === "mute" ? "session.input_audio.mute" : "session.thinking.append";
+    expect(emit).toHaveBeenCalledWith("transport.command", { type, phase: "cancelled", commandId: expect.any(String) }, undefined);
+    expect(channel.sendCalls.some(raw => JSON.parse(raw).type === type)).toBe(false);
+    channel.emitMessage({ type: "session.closed", reason: "user_requested", usage: { seconds: 0 } });
+    await closing;
+  });
 
   it("is idempotent after peer creation fails before any transport exists", async () => {
     const { backend } = makeFakeBackend();
@@ -1520,6 +1578,22 @@ describe("LiveClient.close", () => {
     );
   });
 
+  it.each(["replacement", "remote", "local"])("retires the diagnostic observer after %s teardown while observing late data", async mode => {
+    const emit = vi.fn(), retire = vi.fn();
+    const { client, channel } = await connectedClient({ emit, retire } as unknown as DiagnosticStream);
+    if (mode === "replacement") await client.disconnectImmediately();
+    else {
+      const closing = mode === "local" ? client.close() : undefined;
+      channel.emitMessage({ type: "session.closed", reason: "user_requested", usage_seconds: 1 });
+      await closing;
+    }
+    expect(retire).toHaveBeenCalledOnce();
+    emit.mockClear();
+    channel.emitMessage({ type: "session.output_transcript.delta", delta: "late" });
+    expect(emit).toHaveBeenCalledWith("transport.event", expect.objectContaining({ type: "session.output_transcript.delta", phase: "received" }));
+    await client.close();
+    expect(retire).toHaveBeenCalledOnce();
+  });
   it("disconnectImmediately tears down without waiting for session.closed and releases the lease", async () => {
     const { client, peer, channel, releaseCalls } = await connectedClient();
 
@@ -1567,7 +1641,8 @@ describe("LiveClient.close", () => {
 
   it("finalizes as false after waiting 15 seconds without session.closed", async () => {
     vi.useFakeTimers();
-    const { client, peer, channel } = await connectedClient();
+    const emit = vi.fn();
+    const { client, peer, channel } = await connectedClient({ emit } as unknown as DiagnosticStream);
 
     const closePromise = client.close();
     const assertion = expect(closePromise).resolves.toMatchObject({
@@ -1577,6 +1652,7 @@ describe("LiveClient.close", () => {
     await assertion;
     expect(channel.closeCalls).toBe(1);
     expect(peer.closeCalls).toBe(1);
+    expect(emit).toHaveBeenCalledWith("transport.command", { type: "session.close", phase: "timeout" });
   });
 
   it("stops accepting new commands once close() has been called", async () => {
@@ -1684,7 +1760,8 @@ describe("LiveClient.close", () => {
   });
 
   it("still tears down the transport if sending session.close throws, and does not leave close() stuck on a rejected promise", async () => {
-    const { client, peer, channel } = await connectedClient();
+    const emit = vi.fn();
+    const { client, peer, channel } = await connectedClient({ emit } as unknown as DiagnosticStream);
     channel.send = () => {
       throw new Error("channel is not open");
     };
@@ -1695,6 +1772,7 @@ describe("LiveClient.close", () => {
     });
     expect(channel.closeCalls).toBe(1);
     expect(peer.closeCalls).toBe(1);
+    expect(emit).toHaveBeenCalledWith("transport.command", { type: "session.close", phase: "send_failed" });
 
     // A second call must return the cached result immediately, not the
     // same broken send attempt again.

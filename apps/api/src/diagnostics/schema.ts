@@ -1,0 +1,52 @@
+import { z } from "zod";
+import type { DiagnosticData, DiagnosticEvent } from "../../../../types/diagnostics.js";
+
+const n = z.number().finite().min(0).max(Number.MAX_SAFE_INTEGER), integer = n.int();
+const id = z.string().min(1).max(160).regex(/^[a-zA-Z0-9:_.-]+$/);
+const language = z.string().regex(/^[a-z]{2,3}(?:-[A-Za-z]{2,8})?$/);
+const side = z.enum(["A", "B"]), kind = z.enum(["input", "output"]);
+const state = z.enum(["idle", "connecting", "context", "bootstrap", "listening", "outputting", "suspended", "error", "ending", "ended"]);
+const contextState = z.enum(["running", "suspended", "interrupted", "closed"]);
+const action = z.enum(["CONNECT", "CONTEXT_READY", "SKIP_CONTEXT", "BOOTSTRAP_READY", "INTERPRETER_READY", "SOURCE_ACTIVE", "SOURCE_FRAGMENT", "SOURCE_HANDOFF", "SOURCE_TARGETED_FRAGMENT", "SOURCE_BOUNDARY", "SOURCE_IDLE", "OUTPUT_ACTIVE", "OUTPUT_DELTA", "OUTPUT_STANDALONE", "AUDIO_STARTED", "AUDIO_INTERRUPTED", "PLAYBACK_ENDED", "OUTPUT_IDLE", "TURN_CLOSED", "TURN_FAILED", "OUTPUT_ATTRIBUTION", "OUTPUT_DEADLINE", "SUSPEND", "RESUME", "SESSION_ERROR", "END", "ENDED"]);
+const command = z.enum(["session.close", "session.instructions.append", "session.thinking.append", "session.commentary.append", "session.input_audio.mute", "session.input_audio.unmute"]);
+const cleanupReason = z.enum(["response_not_received", "primary_startup_failed", "abandoned_connect", "hidden", "user_end", "cancelled", "replacement", "server_shutdown", "client_disconnected", "handoff_timeout", "handoff_not_activatable", "resume_claim_expired"]);
+const endReason = z.enum(["user_end", "setup_cancel", "background_timeout", "max_duration", "transport_failure", "abandoned", "media_not_ready", "provider_creation_failed", "webrtc_failed", "restore_ack_failed", "hidden", "claim_timeout", "interrupted_by_restart"]);
+export const diagnosticDataSchemas = {
+  "app.state": z.strictObject({ action, from: state, to: state, generation: integer, turnId: id.optional(), speaker: side.optional(), fragmentId: id.optional(), endMs: n.optional(), inputReady: z.boolean(), gateBMuted: z.boolean() }),
+  "app.lifecycle": z.strictObject({ phase: z.enum(["hidden", "visible", "orientation", "audio_interruption", "audio_restored", "reset", "start", "cancel", "end", "resume"]), generation: integer }),
+  "app.snapshot": z.strictObject({ state, visible: z.boolean(), inputReady: z.boolean(), gateBMuted: z.boolean(), trackLive: z.boolean().nullable(), trackEnabled: z.boolean().nullable(), contextState: contextState.nullable(), muted: z.boolean(), paused: z.boolean(), pendingPlayback: z.boolean(), playbackInputState: z.enum(["idle", "playing", "tail", "waiting", "repeat"]), lastInputAt: n.nullable(), lastOutputAt: n.nullable(), lastPcmQueueStartAt: n.nullable(), lastPlaybackEdgeAt: n.nullable() }),
+  "turn.wait": z.strictObject({ turnId: id, decision: z.enum(["continue", "complete", "fail-retry"]), blockedBy: z.enum(["unattributed_playback", "queued_audio"]).optional(), retryAtMs: n.optional(), sourceIdle: z.boolean(), audioStarted: z.boolean(), playbackIdle: z.boolean(), captionIdle: z.boolean(), hasOutputText: z.boolean(), sourceIdleAtMs: n.optional(), playbackIdleAtMs: n.optional(), lastOutputActivityAtMs: n.optional() }),
+  "turn.timer": z.strictObject({ timer: z.enum(["completion", "caption", "max_source", "no_output"]), phase: z.enum(["armed", "fired", "cleared"]), deadlineAtMs: n.optional(), turnId: id.optional() }),
+  "transcript.fragment": z.strictObject({ kind, fragmentId: id, charCount: integer, startMs: n.optional(), endMs: n.optional() }),
+  "transcript.split": z.strictObject({ parentFragmentId: id, headFragmentId: id, tailFragmentId: id, splitOffset: integer.positive(), charCount: integer.positive() }),
+  "transcript.route": z.strictObject({ kind, fragmentIds: z.array(id).max(128), side: side.optional(), language: language.optional(), pending: z.boolean() }),
+  "attribution.decision": z.strictObject({ generation: z.uuid(), kind: z.enum(["text", "pcm", "decision", "revoked", "deadline"]), atMs: n, outputId: id.optional(), sourceId: id.optional(), revision: integer.optional(), candidateIds: z.array(id).max(16).optional(), candidatesTruncated: z.boolean().optional(), compatibleOutput: z.boolean().optional(), firstReceivedAtMs: n.optional(), matchedAtMs: n.optional(), deadlineAtMs: n.optional(), played: z.boolean().optional(), basis: z.enum(["isolated_episode", "uncertain"]).optional() }),
+  "caption.block": z.strictObject({ revision: integer, blockId: id, kind, side: side.optional(), language: language.optional(), outputId: id.optional(), attribution: z.enum(["matched", "unattributed"]).optional(), charCount: integer, removed: z.boolean() }),
+  "caption.render": z.strictObject({ revision: integer, blockCount: integer }),
+  "audio.state": z.strictObject({ phase: z.enum(["capture_requested", "capture_ready", "capture_failed", "capture_stopped", "capture_ended", "track_muted", "track_unmuted", "capture_gate", "playback_input", "output_gate", "context", "baseline_reset", "pcm_pending", "playback_request", "playback_permission", "playback_activity", "playback_reset", "buffer_error", "decoder_error", "play_requested", "play_started", "play_failed"]), enabled: z.boolean().optional(), active: z.boolean().optional(), turnId: id.optional(), requestId: integer.optional(), generation: integer.optional(), contextState: contextState.optional(), reason: z.enum(["controller", "playback", "echo_tail", "speech", "not_running"]).optional(), echoCancellation: z.boolean().optional(), noiseSuppression: z.boolean().optional(), autoGainControl: z.boolean().optional(), channelCount: integer.optional(), sampleRate: n.optional(), code: integer.optional() }),
+  "audio.vad": z.strictObject({ stage: z.enum(["raw", "reported"]), active: z.boolean(), atMs: n, rms: n, noiseFloor: n.nullable(), enterThreshold: n, quietThreshold: n, quietStartedAtMs: n.nullable(), tailStartedAtMs: n.nullable() }),
+  "audio.level": z.strictObject({ fromMs: n, toMs: n, samples: integer, minRms: n, maxRms: n, meanRms: n, blocked: z.boolean() }),
+  "transport.state": z.strictObject({ kind: z.enum(["peer", "ice", "gathering", "channel"]), state: z.enum(["new", "connecting", "connected", "disconnected", "failed", "closed", "checking", "completed", "gathering", "complete", "open", "closing"]) }),
+  "transport.command": z.strictObject({ type: command, phase: z.enum(["sent", "send_failed", "ack", "timeout", "rejected", "cancelled"]), commandId: z.uuid().optional(), promptId: z.string().regex(/^sha256:[a-f0-9]{64}$/).optional() }),
+  "transport.event": z.strictObject({ type: z.enum(["session.started", "session.input_transcript.delta", "session.output_transcript.delta", "session.instructions.appended", "session.thinking.appended", "session.commentary.appended", "session.input_audio.muted", "session.input_audio.unmuted", "session.usage.updated", "session.closed", "error", "unknown", "invalid"]), phase: z.enum(["received", "dropped"]), reason: z.enum(["stale_generation", "closing", "awaiting_handoff", "inactive", "leftover_output", "empty", "setup_content"]).optional(), fragmentId: id.optional(), commandId: z.uuid().optional(), charCount: integer.optional() }),
+  "transport.stats": z.strictObject({ available: z.boolean(), packetsSent: n.nullable(), packetsReceived: n.nullable(), packetsLost: z.number().finite().nullable(), bytesSent: n.nullable(), bytesReceived: n.nullable(), totalSamplesReceived: n.nullable(), jitterBufferEmittedCount: n.nullable() }),
+  "diagnostic.loss": z.strictObject({ reason: z.enum(["storage_unavailable", "queue_overflow", "expired", "identity_lost", "oversize", "server_limit", "invalid_event"]), count: integer.positive(), affectedStreamId: z.uuid().optional() }),
+  "diagnostic.clock": z.strictObject({ offsetMs: z.number().finite(), uncertaintyMs: n }),
+  "diagnostic.collection": z.strictObject({ disabledAtMs: integer, resumedAtMs: integer, discardedCount: integer }),
+  "server.conversation": z.strictObject({ status: z.enum(["active", "paused", "resuming", "ended"]), version: integer.positive(), reason: endReason.optional() }),
+  "server.attempt": z.strictObject({ state: z.enum(["creating", "active", "closing", "closed", "failed", "unknown"]), generation: integer.positive(), phase: z.enum(["registered", "dispatched", "updated", "rearmed"]), rearmCause: z.enum(["startup", "config_reload", "credential_refresh", "operator_retry"]).optional(), cleanupReason: cleanupReason.optional(), cleanupExhausted: z.boolean().optional(), cleanupResult: z.enum(["closed_observed", "terminal_not_live", "retryable_error", "blocked_auth_config"]).optional(), resumeOutcome: z.enum(["pending", "committed", "aborted", "expired"]).optional(), providerSessionId: id.optional(), reason: endReason.optional() }),
+} satisfies { [K in keyof DiagnosticData]: z.ZodType<DiagnosticData[K]> };
+type Assert<T extends true> = T;
+/** Also reject widening shared payloads beyond what ingestion accepts. */
+export type DiagnosticSchemaCompatibility = Assert<DiagnosticData extends { [K in keyof DiagnosticData]: z.infer<typeof diagnosticDataSchemas[K]> } ? true : false>;
+
+const envelope = z.strictObject({ schemaVersion: z.literal(1), source: z.literal("browser"), conversationId: z.uuid(), liveSessionId: z.uuid().optional(), streamId: z.uuid(), seq: integer.positive(), wallMs: integer, monoMs: n, type: z.enum(Object.keys(diagnosticDataSchemas) as [keyof DiagnosticData, ...Array<keyof DiagnosticData>]), data: z.unknown(), text: z.string().max(4096).optional(), textTruncated: z.boolean().optional(), textRemoved: z.literal(true).optional(), clientBuildId: z.string().min(1).max(64).regex(/^[A-Za-z0-9:_.-]+$/).optional() });
+export const diagnosticBatchSchema = z.strictObject({ schemaVersion: z.literal(1), events: z.array(envelope).min(1).max(100) });
+export function parseDiagnosticEvent(value: z.infer<typeof envelope>, textEnabled: boolean): DiagnosticEvent {
+  if (value.type.startsWith("server.")) throw new Error("invalid_event");
+  const data = diagnosticDataSchemas[value.type].parse(value.data);
+  if (value.textRemoved && (value.text !== undefined || value.textTruncated !== undefined || !["transcript.fragment", "caption.block"].includes(value.type))) throw new Error("invalid_event");
+  if ((value.text !== undefined || value.textTruncated !== undefined) &&
+      (!textEnabled || !["transcript.fragment", "caption.block"].includes(value.type))) throw new Error("text_not_allowed");
+  return { ...value, data } as DiagnosticEvent;
+}

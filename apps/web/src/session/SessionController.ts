@@ -32,6 +32,8 @@ import {
 } from "../live/LivePrompts";
 import { traceAckErrorType, traceBeginInterpreter } from "../live/StartupTrace";
 import { ConversationMetrics } from "../metrics/ConversationMetrics";
+import { observe } from "../diagnostics/observe";
+import type { DiagnosticData } from "../../../../types/diagnostics.js";
 import { OrientationController } from "../platform/OrientationController";
 import { VisibilityController } from "../platform/VisibilityController";
 import { WakeLockController } from "../platform/WakeLockController";
@@ -70,6 +72,8 @@ export interface SessionControllerDeps {
     | "audioElement"
     | "resetVoiceActivityBaseline"
   > & {
+    diagnostics?: AudioController["diagnostics"];
+    diagnosticContextState?: AudioController["diagnosticContextState"];
     onSourceSample?: AudioController["onSourceSample"];
     onPlaybackInputBlocked?: AudioController["onPlaybackInputBlocked"];
     playbackInputBlocked?: boolean;
@@ -100,6 +104,22 @@ export interface SessionControllerDeps {
  * Binding spec 1.2.1 §3.1–§4.5, §5.4–§5.5, §9–§10.
  */
 export class SessionController {
+  private diagnosticWaits = new Map<string, string>();
+  private diagnosticPendingRoutes = { input: new Set<string>(), output: new Set<string>() };
+  private lastInputAt: number | null = null;
+  private lastOutputAt: number | null = null;
+  private lastPcmQueueStartAt: number | null = null;
+  private lastPlaybackEdgeAt: number | null = null;
+  private renderedCaptionRevision = -1;
+  get captionRevision(): number { return this.dialogueTranscript.revision; }
+  captureCaptionRender(revision: number, blockCount: number): () => void {
+    const journal = this.dialogueTranscript.revisionDiagnostics;
+    return () => {
+      if (revision === this.renderedCaptionRevision) return;
+      this.renderedCaptionRevision = revision;
+      observe(journal, "caption.render", { revision, blockCount });
+    };
+  }
   private currentSession: TranslationSession;
   private live: LiveClient;
   private contextBuffer = "";
@@ -213,14 +233,17 @@ export class SessionController {
     this.visibility = deps.visibility ?? new VisibilityController();
     this.wakeLock = deps.wakeLock ?? new WakeLockController();
     this.orientation.onChange = (orientation) => {
+      observe(this.live.journal, "app.lifecycle", { phase: "orientation", generation: this.sessionGeneration });
       void this.handleOrientationChange(orientation);
     };
     this.visibility.onHidden = () => {
+      observe(this.live.journal, "app.lifecycle", { phase: "hidden", generation: this.sessionGeneration });
       this.onVisibilityHidden();
       if (!this.backgroundCloseEnabled && !this.platformStarted) return;
       void this.handleVisibilityHidden();
     };
     this.visibility.onVisible = () => {
+      observe(this.live.journal, "app.lifecycle", { phase: "visible", generation: this.sessionGeneration });
       if (!this.backgroundCloseEnabled && !this.platformStarted) return;
       void this.handleVisibilityVisible();
     };
@@ -264,6 +287,9 @@ export class SessionController {
     this.retainedResumePhase = "media";
     const current = () => this.backgroundResumeCurrent(generation);
     if (!current()) throw new Error("Resume cancelled");
+    this.retainProviderDiagnostics();
+    const live = this.live = this.deps.createLive();
+    this.bindLive();
     await (primedOutput ?? this.audio.primeOutput());
     if (!current()) throw new Error("Resume cancelled");
     this.audio.setOutputAudible(false);
@@ -273,9 +299,6 @@ export class SessionController {
     if (!stream) throw new Error("Microphone capture stream is unavailable");
     this.assertCaptureStreamLive(stream);
     this.audio.setCaptureEnabled(false);
-    this.retainProviderDiagnostics();
-    const live = this.live = this.deps.createLive();
-    this.bindLive();
     this.retainedProductDeadlineAt = snapshot.productDeadlineAt;
     this.conversationMetrics = new ConversationMetrics();
     this.conversationMetrics.restoreCounters(snapshot.counters);
@@ -1316,11 +1339,28 @@ export class SessionController {
   }
 
   private bindLive(): void {
+    this.lastInputAt = this.lastOutputAt = this.lastPcmQueueStartAt = this.lastPlaybackEdgeAt = null;
     const live = this.live;
     const generation = this.sessionGeneration;
+    this.audio.diagnostics = live.journal;
+    this.attribution.diagnostics = live.journal;
+    this.dialogueTranscript.diagnostics = live.journal;
+    this.sourceRouter.diagnostics = this.outputRouter.diagnostics = live.journal;
+    this.diagnosticPendingRoutes = { input: new Set<string>(), output: new Set<string>() };
+    live.onDiagnosticTick = () => {
+      if (this.live !== live || this.sessionGeneration !== generation) return;
+      const track = this.audio.getCaptureStream()?.getAudioTracks()[0];
+      observe(live.journal, "app.snapshot", { state: this.currentSession.state, visible: !this.visibility.isHidden(),
+        inputReady: this.inputReady, gateBMuted: this.gateBMuted, trackLive: track ? track.readyState === "live" : null,
+        trackEnabled: track?.enabled ?? null, contextState: this.audio.diagnosticContextState ?? null,
+        muted: this.audio.audioElement.muted, paused: this.audio.audioElement.paused, pendingPlayback: this.audio.hasPendingPlayback ?? false,
+        playbackInputState: this.playbackInputState, lastInputAt: this.lastInputAt, lastOutputAt: this.lastOutputAt,
+        lastPcmQueueStartAt: this.lastPcmQueueStartAt, lastPlaybackEdgeAt: this.lastPlaybackEdgeAt });
+    };
     this.liveProductGeneration = generation;
     this.live.onTranscriptDelta = (event) => {
       if (this.live !== live || this.sessionGeneration !== generation) {
+        observe(live.journal, "transport.event", { type: event.type, phase: "dropped", reason: "stale_generation", fragmentId: event.diagnosticId });
         return;
       }
       this.handleTranscriptDelta(event);
@@ -1364,6 +1404,7 @@ export class SessionController {
       void this.handlePlaybackActivity(event);
     };
     this.audio.onPcmReceived = atMs => {
+      this.lastPcmQueueStartAt = Date.now();
       if (this.backgroundPaused || this.leftoverOutputDraining ||
           !["listening", "outputting"].includes(this.currentSession.state)) return;
       this.attribution.observeReceivedPlayback(atMs);
@@ -1380,9 +1421,11 @@ export class SessionController {
       this.maybeFinishLeftoverOutputDrain();
     };
     this.audio.onAudioInterruption = () => {
+      observe(this.live.journal, "app.lifecycle", { phase: "audio_interruption", generation: this.sessionGeneration });
       void this.handleAudioInterruption();
     };
     this.audio.onAudioRestored = () => {
+      observe(this.live.journal, "app.lifecycle", { phase: "audio_restored", generation: this.sessionGeneration });
       void this.handleAudioRestored();
     };
     this.audio.onCaptureEnded = () => {
@@ -1391,16 +1434,19 @@ export class SessionController {
   }
 
   private handleTranscriptDelta(event: TranscriptDeltaEvent): void {
+    if (event.type === "session.input_transcript.delta") this.lastInputAt = Date.now(); else this.lastOutputAt = Date.now();
     if (event.type === "session.input_transcript.delta") {
       if (
         this.capturingContext &&
         !this.contextFrozenByUser &&
         this.currentSession.state === "context"
       ) {
+        observe(this.live.journal, "transport.event", { type: event.type, phase: "dropped", reason: "setup_content", fragmentId: event.diagnosticId });
         this.applyContextText(this.contextBuffer + event.delta);
         return;
       }
       if (this.capturingBootstrap && this.currentSession.state === "bootstrap") {
+        observe(this.live.journal, "transport.event", { type: event.type, phase: "dropped", reason: "setup_content", fragmentId: event.diagnosticId });
         this.bootstrapBuffer += event.delta;
         this.notify();
         return;
@@ -1412,8 +1458,11 @@ export class SessionController {
   }
 
   private handleConversationInputDelta(event: TranscriptDeltaEvent): void {
-    if (!event.delta || !["listening", "outputting"].includes(this.currentSession.state) || this.turnClosing) return;
-    const fragment = createTranscriptFragment({ text: event.delta, nowMs: Date.now(), startMs: event.start_ms, endMs: event.end_ms });
+    if (!event.delta || !["listening", "outputting"].includes(this.currentSession.state) || this.turnClosing) {
+      observe(this.live.journal, "transport.event", { type: event.type, phase: "dropped", reason: !event.delta ? "empty" : this.turnClosing ? "closing" : "inactive", fragmentId: event.diagnosticId }); return;
+    }
+    const fragment = createTranscriptFragment({ id: event.diagnosticId, text: event.delta, nowMs: Date.now(), startMs: event.start_ms, endMs: event.end_ms });
+    observe(this.live.journal, "transcript.fragment", { kind: "input", fragmentId: fragment.id, charCount: fragment.text.length, startMs: fragment.startMs, endMs: fragment.endMs }, fragment.text);
     this.dialogueTranscript.push("input", fragment, this.languages);
     const active = this.currentSession.activeTurn;
     const activeStart = earliestFragmentStart(active?.sourceFragments);
@@ -1432,7 +1481,22 @@ export class SessionController {
     }, runtime.captionIdleMs);
   }
 
+  private observeTranscriptRoute(kind: "input" | "output", fragments: readonly TranscriptFragment[], pending: boolean, side?: Side): void {
+    if (!this.live.journal || this.live.journal.enabled === false) return;
+    if (pending) {
+      const previous = this.diagnosticPendingRoutes[kind];
+      this.diagnosticPendingRoutes[kind] = new Set(fragments.map(part => part.id));
+      fragments = fragments.filter(part => !previous.has(part.id));
+    }
+    for (let offset = 0; offset < fragments.length; offset += 128) observe(this.live.journal, "transcript.route", {
+      kind, fragmentIds: fragments.slice(offset, offset + 128).map(part => part.diagnosticId ?? part.id), pending, side,
+      language: side ? this.languages[side] : undefined,
+    });
+  }
+
   private routeSource(groups: RoutedTranscript[], considerCompletion = true): void {
+    for (const group of groups) this.observeTranscriptRoute("input", group.fragments, false, group.side);
+    this.observeTranscriptRoute("input", this.sourceRouter.pendingFragments, true);
     const updatingSource = groups.length > 0 || this.sourceRouter.hasPending;
     this.sourceUpdateInProgress = updatingSource;
     try {
@@ -1550,10 +1614,13 @@ export class SessionController {
   }
 
   private handleConversationOutputDelta(event: TranscriptDeltaEvent): void {
-    if (!event.delta || !["listening", "outputting"].includes(this.currentSession.state)) return;
-    if (this.leftoverOutputDraining) { this.noteLeftoverCaption(); return; }
+    if (!event.delta || !["listening", "outputting"].includes(this.currentSession.state)) {
+      observe(this.live.journal, "transport.event", { type: event.type, phase: "dropped", reason: !event.delta ? "empty" : "inactive", fragmentId: event.diagnosticId }); return;
+    }
+    if (this.leftoverOutputDraining) { observe(this.live.journal, "transport.event", { type: event.type, phase: "dropped", reason: "leftover_output", fragmentId: event.diagnosticId }); this.noteLeftoverCaption(); return; }
     if (event.delta.trim()) this.providerRecoveryGeneration = undefined;
-    const fragment = createTranscriptFragment({ text: event.delta, nowMs: Date.now(), startMs: event.start_ms, endMs: event.end_ms });
+    const fragment = createTranscriptFragment({ id: event.diagnosticId, text: event.delta, nowMs: Date.now(), startMs: event.start_ms, endMs: event.end_ms });
+    observe(this.live.journal, "transcript.fragment", { kind: "output", fragmentId: fragment.id, charCount: fragment.text.length, startMs: fragment.startMs, endMs: fragment.endMs }, fragment.text);
 
     const pending = this.outputRouter.pendingFragments;
     const continuous = pending.some(part => part.startMs !== undefined && part.endMs !== undefined &&
@@ -1591,6 +1658,8 @@ export class SessionController {
   }
 
   private routeOutput(groups: RoutedTranscript[], considerCompletion = true): void {
+    for (const group of groups) this.observeTranscriptRoute("output", group.fragments, false, group.side);
+    this.observeTranscriptRoute("output", this.outputRouter.pendingFragments, true);
     // Includes timer and lifecycle flushes, not only newly received deltas.
     this.expireOutputDeadlines(Date.now(), false);
     for (const { side, fragments } of groups) {
@@ -1706,6 +1775,7 @@ export class SessionController {
     if (!this.acceptRemotePlaybackActivity(event)) {
       return;
     }
+    this.lastPlaybackEdgeAt = Date.now();
     this.playbackActive = event.active;
     if (event.retired) {
       this.playbackTurnId = undefined;
@@ -1759,20 +1829,24 @@ export class SessionController {
     const nextDeadline = this.expireOutputDeadlines(nowMs);
     const playback = this.playbackTurnId ? findSessionTurn(this.currentSession, this.playbackTurnId) : undefined;
     if (this.playbackActive && (!playback || ["completed", "failed", "discarded", "unresolved"].includes(playback.status))) {
+      this.observeBlockedTurns("unattributed_playback", nowMs, nextDeadline);
       // Audio before its caption is not silence. Wait for the idle edge rather
       // than inventing an owner or closing text-only turns under playing audio.
       this.armCompletionTimer(nextDeadline, nowMs);
       return;
     }
     if (this.audio.hasPendingPlayback) {
+      this.observeBlockedTurns("queued_audio", nowMs, nextDeadline);
       this.armCompletionTimer(Math.min(nextDeadline ?? Infinity, nowMs + 50), nowMs);
       return;
     }
     const turns = [...(this.currentSession.pendingTurns ?? []), ...(this.currentSession.activeTurn ? [this.currentSession.activeTurn] : [])];
     let retryAtMs = nextDeadline;
     for (const turn of turns) {
-      const decision = evaluateTurnCompletion(buildTurnCompletionSnapshot({ turn,
-        playbackActive: this.playbackActive && this.playbackTurnId === turn.id, nowMs }), nowMs);
+      const completionSnapshot = buildTurnCompletionSnapshot({ turn, playbackActive: this.playbackActive && this.playbackTurnId === turn.id, nowMs });
+      const decision = evaluateTurnCompletion(completionSnapshot, nowMs);
+      const wait = { turnId: turn.id, decision: decision.kind, ...completionSnapshot, ...(decision.kind === "continue" && decision.retryAtMs !== undefined ? { retryAtMs: decision.retryAtMs } : {}) };
+      this.observeTurnWait(wait);
       if (decision.kind === "continue") {
         if (decision.retryAtMs !== undefined) retryAtMs = Math.min(retryAtMs ?? Infinity, decision.retryAtMs);
         continue;
@@ -1794,6 +1868,19 @@ export class SessionController {
       const language = this.pendingInterlocutorLanguage;
       await this.changeInterlocutorLanguage(language).catch(error => console.error("Language change after turn failed", { error }));
     }
+  }
+
+  private observeTurnWait(wait: DiagnosticData["turn.wait"]): void {
+    const signature = JSON.stringify(wait);
+    if (this.diagnosticWaits.get(wait.turnId) === signature) return;
+    this.diagnosticWaits.set(wait.turnId, signature);
+    observe(this.live.journal, "turn.wait", wait);
+  }
+  private observeBlockedTurns(blockedBy: "unattributed_playback" | "queued_audio", nowMs: number, retryAtMs?: number): void {
+    if (!this.live.journal) return;
+    for (const turn of [...(this.currentSession.pendingTurns ?? []), ...(this.currentSession.activeTurn ? [this.currentSession.activeTurn] : [])])
+      this.observeTurnWait({ turnId: turn.id, decision: "continue", blockedBy, retryAtMs,
+        ...buildTurnCompletionSnapshot({ turn, playbackActive: this.playbackActive && this.playbackTurnId === turn.id, nowMs }) });
   }
 
   private expireOutputDeadlines(nowMs: number, inclusive = true): number | undefined {
@@ -1831,6 +1918,8 @@ export class SessionController {
 
   private failTurnNoOutput(turn: Turn): void {
     if (findSessionTurn(this.currentSession, turn.id)?.outputDeadline) return;
+    observe(this.live.journal, "turn.timer", { timer: "no_output", phase: "fired", turnId: turn.id,
+      deadlineAtMs: turn.sourceIdleAtMs === undefined ? undefined : turn.sourceIdleAtMs + runtime.noOutputTimeoutMs });
     const atMs = (turn.sourceIdleAtMs ?? Date.now()) + runtime.noOutputTimeoutMs;
     const unresolved = this.attribution.hasCompatibleOutput(turn, atMs);
     this.attribution.observeDeadline(turn, atMs);
@@ -2016,7 +2105,9 @@ export class SessionController {
 
   private armMaxSourceTimer(): void {
     this.clearMaxSourceTimer();
+    observe(this.live.journal, "turn.timer", { timer: "max_source", phase: "armed", deadlineAtMs: Date.now() + runtime.maxSourceMs, turnId: this.currentSession.activeTurn?.id });
     this.maxSourceTimer = window.setTimeout(() => {
+      observe(this.live.journal, "turn.timer", { timer: "max_source", phase: "fired", turnId: this.currentSession.activeTurn?.id });
       void this.handleMaxSourceTimeout();
     }, runtime.maxSourceMs);
   }
@@ -2032,6 +2123,7 @@ export class SessionController {
       return;
     }
     this.completionTimer = window.setTimeout(() => {
+      if (!this.audio.hasPendingPlayback) observe(this.live.journal, "turn.timer", { timer: "completion", phase: "fired", deadlineAtMs: retryAtMs });
       void this.considerTurnCompletion(Date.now());
     }, delayMs);
   }
@@ -2039,6 +2131,7 @@ export class SessionController {
   private armCaptionIdleTimer(): void {
     this.clearCaptionIdleTimer();
     this.captionIdleTimer = window.setTimeout(() => {
+      observe(this.live.journal, "turn.timer", { timer: "caption", phase: "fired" });
       void this.considerTurnCompletion(Date.now());
     }, runtime.captionIdleMs);
   }
@@ -2132,6 +2225,8 @@ export class SessionController {
     this.routingTurnIds.clear();
     this.retiredAttributionTrace = this.attributionTrace;
     this.attribution = new OutputAttribution();
+    this.attribution.diagnostics = this.live.journal;
+    this.diagnosticWaits.clear();
     this.noOutputHints.clear();
     this.refreshNoOutputHints();
     this.providerRecoveryGeneration = undefined;
@@ -3075,6 +3170,7 @@ export class SessionController {
   }
 
   private resetSession(options: { preserveOwnerError?: boolean; preserveDialogue?: boolean } = {}): void {
+    observe(this.live.journal, "app.lifecycle", { phase: "reset", generation: this.sessionGeneration });
     const review = options.preserveDialogue === true && (this.enteredInterpreter || this.currentSession.state === "ended");
     const { participantA, participantB } = this.currentSession;
     this.retainedProductDeadlineAt = null;
@@ -3132,11 +3228,18 @@ export class SessionController {
   }
 
   protected dispatch(action: SessionAction): void {
+    const from = this.currentSession.state;
     const presentedHintId = this.presentedNoOutputHintId;
     const previousTurn = "turnId" in action ? findSessionTurn(this.currentSession, action.turnId) : this.currentSession.activeTurn;
     const previousUnfinished = [...(this.currentSession.pendingTurns ?? []),
       ...(this.currentSession.activeTurn ? [this.currentSession.activeTurn] : [])];
     this.currentSession = sessionReducer(this.currentSession, action);
+    const target = "turnId" in action ? action.turnId : this.currentSession.activeTurn?.id;
+    observe(this.live.journal, "app.state", { action: action.type, from, to: this.currentSession.state, generation: this.sessionGeneration,
+      turnId: target, speaker: "speaker" in action ? action.speaker : target ? findSessionTurn(this.currentSession, target)?.speaker : undefined,
+      fragmentId: "fragment" in action ? action.fragment?.diagnosticId ?? action.fragment?.id : undefined, endMs: "endMs" in action ? action.endMs : undefined,
+      inputReady: this.inputReady, gateBMuted: this.gateBMuted });
+    if (["AUDIO_STARTED", "PLAYBACK_ENDED"].includes(action.type)) this.lastPlaybackEdgeAt = Date.now();
     if (action.type === "SESSION_ERROR" && this.currentSession.state === "error") {
       this.audio.setOutputAudible(false);
       this.detachRemotePlayback();

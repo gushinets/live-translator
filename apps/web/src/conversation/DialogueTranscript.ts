@@ -1,4 +1,5 @@
 import { eld } from "eld/extrasmall";
+import { observe, type DiagnosticSink } from "../diagnostics/observe";
 import { runtime } from "../config/runtime";
 import { hasSentenceTerminator, isSentenceComplete } from "./sentenceBoundaries";
 import type { ConversationLanguages } from "../side/SideResolver";
@@ -26,6 +27,10 @@ interface Stream {
 
 /** Display-only transcript. Neither idle timers nor service Turn IDs define paragraphs. */
 export class DialogueTranscript {
+  diagnostics: DiagnosticSink | undefined;
+  // Renderers capture this revision's journal before React commits it.
+  revisionDiagnostics: DiagnosticSink | undefined;
+  revision = 0;
   blocks: readonly DialogueBlock[] = [];
   private history: DialogueBlock[] = [];
   private streams: Partial<Record<DialogueBlock["kind"], Stream>> = {};
@@ -132,9 +137,9 @@ export class DialogueTranscript {
   clear(): void {
     this.history = [];
     this.streams = {};
-    this.blocks = [];
     this.outputs.clear();
     this.outputRuns.clear();
+    this.publish();
   }
 
   private publish(): void {
@@ -194,6 +199,22 @@ export class DialogueTranscript {
       if (!available.length) break;
       const next = available.reduce((a, b) => a.blocks[a.index]!.receivedAtMs <= b.blocks[b.index]!.receivedAtMs ? a : b);
       blocks.push(next.blocks[next.index++]!);
+    }
+    const before = new Map(this.blocks.map(block => [block.id, block]));
+    const after = new Map(blocks.map(block => [block.id, block]));
+    const changed = blocks.filter(block => {
+      const previous = before.get(block.id);
+      return !previous || previous.text !== block.text || previous.side !== block.side || previous.language !== block.language ||
+        previous.attribution !== block.attribution || previous.outputId !== block.outputId || previous.kind !== block.kind;
+    });
+    const removed = this.blocks.filter(block => !after.has(block.id));
+    if (changed.length || removed.length) {
+      this.revision++;
+      this.revisionDiagnostics = this.diagnostics;
+      for (const [removedBlock, values] of [[false, changed], [true, removed]] as const) for (const block of values)
+        observe(this.diagnostics, "caption.block", { revision: this.revision, blockId: block.id, kind: block.kind,
+          side: block.side, language: block.language, outputId: block.outputId, attribution: block.attribution,
+          charCount: block.text.length, removed: removedBlock }, removedBlock ? undefined : block.text);
     }
     this.blocks = blocks;
   }

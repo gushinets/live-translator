@@ -56,7 +56,7 @@ export interface SessionRow {
   lease_id: string | null; lease_expires_at: number | null; lease_released_at: number | null;
   close_requested_at: number | null; closed_observed_at: number | null; last_report_received_at: number | null;
   close_confirmed: number; close_confirmation_source: ObservationSource | null;
-  provider_close_reason: string | null; provider_close_reason_source: ObservationSource | null; app_end_reason: string | null;
+  provider_close_reason: string | null; provider_close_reason_source: ObservationSource | null; app_end_reason: EndReason | ResumeAbortReason | null;
   provider_checkpoint_seconds: number | null; provider_final_seconds: number | null;
   provider_checkpoint_source: ObservationSource | null; provider_final_source: ObservationSource | null;
   usage_conflict: number; usage_conflict_details: string | null;

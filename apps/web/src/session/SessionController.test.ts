@@ -1,4 +1,4 @@
-import { createElement, Profiler } from "react";
+import { createElement, Fragment, Profiler, useLayoutEffect } from "react";
 import { act, cleanup, render } from "@testing-library/react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { ConversationScreen } from "../screens/ConversationScreen";
@@ -27,6 +27,7 @@ import type { OrientationController } from "../platform/OrientationController";
 import type { VisibilityController } from "../platform/VisibilityController";
 import type { WakeLockController } from "../platform/WakeLockController";
 import { SessionController } from "./SessionController";
+import type { DiagnosticType } from "../../../../types/diagnostics.js";
 import {
   CONNECTION_ERROR_MESSAGE,
   INCOMPLETE_FINALIZATION_MESSAGE,
@@ -150,7 +151,7 @@ function createFakeAudio() {
       load: vi.fn(),
     } as unknown as HTMLAudioElement,
     onVoiceActivity: null as ((event: { active: boolean; atMs: number }) => void) | null,
-    onPlaybackActivity: null as ((event: { active: boolean; atMs: number }) => void) | null,
+    onPlaybackActivity: null as AudioController["onPlaybackActivity"],
     onPcmReceived: null as ((atMs: number) => void) | null,
     onAudioInterruption: null as (() => void) | null,
     onAudioRestored: null as (() => void) | null,
@@ -334,6 +335,213 @@ function createController<
   controllerHarnesses.set(controller, { live, audio });
   return { controller, live, audio, orientation, visibility, wakeLock };
 }
+
+describe("conversation diagnostic observations", () => {
+  it("starts replacement snapshots without the previous attempt's transcript, PCM or playback edges", async () => {
+    vi.useFakeTimers();
+    const oldEmit = vi.fn(), newEmit = vi.fn();
+    const first = Object.assign(new FakeLive(), { journal: { emit: oldEmit }, onDiagnosticTick: undefined as (() => void) | undefined });
+    const second = Object.assign(new FakeLive(), { journal: { emit: newEmit }, onDiagnosticTick: undefined as (() => void) | undefined });
+    const { controller, audio } = createController({ lives: [first, second] });
+    await controller.startBootstrap();
+    first.emit({ type: "session.input_transcript.delta", delta: "Где вокзал?", start_ms: 0, end_ms: 1000 });
+    first.emit({ type: "session.output_transcript.delta", delta: "¿Dónde está la estación?", start_ms: 0, end_ms: 1000 });
+    audio.onPcmReceived?.(Date.now());
+    audio.onPlaybackActivity?.({ active: true, atMs: Date.now(), owned: true });
+    first.onDiagnosticTick?.();
+    expect(oldEmit).toHaveBeenCalledWith("app.snapshot", expect.objectContaining({ lastInputAt: Date.now(), lastOutputAt: Date.now(),
+      lastPcmQueueStartAt: Date.now(), lastPlaybackEdgeAt: Date.now() }), undefined);
+    await controller.startBootstrap();
+    expect(first.close).toHaveBeenCalledWith("replacement"); expect(second.connect).toHaveBeenCalledOnce();
+    second.onDiagnosticTick?.();
+    expect(newEmit).toHaveBeenCalledWith("app.snapshot", expect.objectContaining({ lastInputAt: null, lastOutputAt: null,
+      lastPcmQueueStartAt: null, lastPlaybackEdgeAt: null }), undefined);
+    first.emit({ type: "session.input_transcript.delta", delta: "late" });
+    vi.setSystemTime(Date.now() + 1000);
+    second.emit({ type: "session.input_transcript.delta", delta: "Nueva entrada" });
+    second.onDiagnosticTick?.();
+    expect(newEmit.mock.calls.filter(([type]) => type === "app.snapshot").at(-1)![1]).toMatchObject({
+      lastInputAt: Date.now(), lastOutputAt: null, lastPcmQueueStartAt: null, lastPlaybackEdgeAt: null,
+    });
+  });
+  it.each(["input", "output"] as const)("correlates every fragment of long pending and routed %s phrases", async kind => {
+    vi.useFakeTimers();
+    const emit = vi.fn<(type: DiagnosticType, data: unknown, text?: string) => void>();
+    const live = Object.assign(new FakeLive(), { journal: { emit } });
+    const { controller } = createController({ live });
+    await controller.startWithLanguages({ A: "en", B: "es" });
+    for (let index = 0; index < 512; index++) live.emit({ type: kind === "input" ? "session.input_transcript.delta" : "session.output_transcript.delta", delta: "0" });
+    const fragments = emit.mock.calls.filter(([type]) => type === "transcript.fragment").map(([, data]) => (data as { fragmentId: string }).fragmentId);
+    const routedIds = (pending: boolean) => emit.mock.calls.filter(([type, data]) => type === "transcript.route" && (data as { pending: boolean }).pending === pending)
+      .flatMap(([, data]) => (data as { fragmentIds: string[] }).fragmentIds);
+    expect(fragments).toHaveLength(512);
+    expect(new Set(routedIds(true))).toEqual(new Set(fragments.slice(0, -1)));
+    expect(routedIds(true)).toHaveLength(511);
+    await vi.advanceTimersByTimeAsync(runtime.captionIdleMs + 1);
+    expect(new Set(routedIds(false))).toEqual(new Set(fragments));
+    expect(emit.mock.calls.filter(([type]) => type === "transcript.route").every(([, data]) => (data as { fragmentIds: string[] }).fragmentIds.length <= 128)).toBe(true);
+    const envelope = { schemaVersion: 1, source: "browser", conversationId: crypto.randomUUID(), liveSessionId: crypto.randomUUID(), streamId: crypto.randomUUID(),
+      seq: 1000, wallMs: Date.now(), monoMs: performance.now(), clientBuildId: "offline-budget-test" };
+    const queuedBytes = emit.mock.calls.reduce((bytes, [type, data]) => bytes + new TextEncoder().encode(JSON.stringify({ ...envelope, type, data })).byteLength + 128, 0);
+    expect(queuedBytes).toBeLessThan(5 * 1024 * 1024);
+  });
+  it.each(["input", "output"] as const)("maps split %s packet parts to their original fragment and offsets", async kind => {
+    vi.useFakeTimers();
+    const emit = vi.fn<(type: DiagnosticType, data: unknown, text?: string) => void>();
+    const live = Object.assign(new FakeLive(), { journal: { emit } });
+    const { controller } = createController({ live });
+    await controller.startWithLanguages({ A: "en", B: "es" });
+    const parent = crypto.randomUUID();
+    const text = "No. Sí. ".repeat(30).trim();
+    live.emit({ type: kind === "input" ? "session.input_transcript.delta" : "session.output_transcript.delta", delta: text, diagnosticId: parent });
+    await vi.advanceTimersByTimeAsync(runtime.captionIdleMs + 1);
+    const splits = emit.mock.calls.filter(([type]) => type === "transcript.split").map(([, data]) => data as {
+      parentFragmentId: string; headFragmentId: string; tailFragmentId: string; splitOffset: number; charCount: number;
+    });
+    expect(splits.length).toBeGreaterThan(25);
+    const routes = emit.mock.calls.filter(([type]) => type === "transcript.route").flatMap(([, data]) => (data as { fragmentIds: string[] }).fragmentIds);
+    const parts = new Map<string, string>([[parent, text]]), ids = new Set<string>([parent]);
+    for (const split of splits) {
+      const parentText = parts.get(split.parentFragmentId)!;
+      expect(split.charCount).toBe(parentText.length);
+      for (const id of [split.headFragmentId, split.tailFragmentId]) {
+        expect(id.length).toBeLessThanOrEqual(160); expect(ids.has(id)).toBe(false); ids.add(id);
+      }
+      parts.set(split.headFragmentId, parentText.slice(0, split.splitOffset));
+      parts.set(split.tailFragmentId, parentText.slice(split.splitOffset)); parts.delete(split.parentFragmentId);
+    }
+    expect(new Set(routes)).toEqual(new Set(parts.keys()));
+    expect(routes.map(id => parts.get(id)).join("")).toBe(text);
+    for (const [, data] of emit.mock.calls) {
+      const fragmentId = (data as { fragmentId?: string }).fragmentId;
+      if (fragmentId !== undefined) { expect(fragmentId.length).toBeLessThanOrEqual(160); expect(ids.has(fragmentId)).toBe(true); }
+    }
+  });
+  it("labels PCM queue activation and playback edges without claiming continuous receipt times", async () => {
+    vi.useFakeTimers();
+    const emit = vi.fn<(type: DiagnosticType, data: unknown, text?: string) => void>();
+    const live = Object.assign(new FakeLive(), { journal: { emit }, onDiagnosticTick: undefined as (() => void) | undefined });
+    const { controller, audio } = createController({ live });
+    await controller.startWithLanguages({ A: "ru", B: "es" });
+    const activatedAt = Date.now(); audio.onPcmReceived?.(activatedAt);
+    await vi.advanceTimersByTimeAsync(10000);
+    live.onDiagnosticTick?.();
+    const snapshot = emit.mock.calls.filter(([type]) => type === "app.snapshot").at(-1)![1];
+    expect(snapshot).toMatchObject({ lastPcmQueueStartAt: activatedAt, lastPlaybackEdgeAt: null });
+    expect(snapshot).not.toHaveProperty("lastPcmAt"); expect(snapshot).not.toHaveProperty("lastPlaybackAt");
+  });
+  it("records accepted playback edges before any turn can own the audio", async () => {
+    vi.useFakeTimers();
+    const emit = vi.fn<(type: DiagnosticType, data: unknown, text?: string) => void>();
+    const live = Object.assign(new FakeLive(), { journal: { emit }, onDiagnosticTick: undefined as (() => void) | undefined });
+    const { controller, audio } = createController({ live });
+    await controller.startWithLanguages({ A: "ru", B: "es" });
+    for (const active of [true, false]) {
+      vi.setSystemTime(Date.now() + 1000);
+      audio.onPlaybackActivity?.({ active, atMs: Date.now(), owned: true });
+      live.onDiagnosticTick?.();
+      expect(emit.mock.calls.filter(([type]) => type === "app.snapshot").at(-1)![1]).toMatchObject({ lastPlaybackEdgeAt: Date.now() });
+      expect(controller.session.activeTurn).toBeUndefined();
+    }
+  });
+  it("records the committed caption snapshot even after the transcript advances before commit", async () => {
+    const emit = vi.fn<(type: DiagnosticType, data: unknown, text?: string) => void>();
+    const live = Object.assign(new FakeLive(), { journal: { emit } });
+    const { controller } = createController({ live });
+    await controller.startWithLanguages({ A: "ru", B: "es" });
+    live.emit({ type: "session.input_transcript.delta", delta: "Где вокзал?", start_ms: 0, end_ms: 1000 });
+    const committedRevision = controller.captionRevision;
+    let advancedRevision = committedRevision;
+    function AdvanceBeforeCaptionCommit() {
+      useLayoutEffect(() => {
+        live.emit({ type: "session.output_transcript.delta", delta: "¿Dónde está la estación?", start_ms: 500, end_ms: 1500 });
+        advancedRevision = controller.captionRevision;
+      }, []);
+      return null;
+    }
+    render(createElement(Fragment, null, createElement(AdvanceBeforeCaptionCommit), createElement(ConversationScreen, { controller })));
+    expect(advancedRevision).toBeGreaterThan(committedRevision);
+    expect(emit).toHaveBeenCalledWith("caption.render", { revision: committedRevision, blockCount: 1 }, undefined);
+  });
+  it("keeps the committed caption on its original journal when a new transport publishes before commit", async () => {
+    const oldEmit = vi.fn(), newEmit = vi.fn();
+    const first = Object.assign(new FakeLive(), { journal: { emit: oldEmit } });
+    const second = Object.assign(new FakeLive(), { journal: { emit: newEmit } });
+    const { controller } = createController({ live: first });
+    await controller.startWithLanguages({ A: "ru", B: "es" });
+    first.emit({ type: "session.input_transcript.delta", delta: "Где вокзал?", start_ms: 0, end_ms: 1000 });
+    const committedRevision = controller.captionRevision;
+    let advancedRevision = committedRevision;
+    function SwitchBeforeCaptionCommit() {
+      useLayoutEffect(() => {
+        expect(oldEmit.mock.calls.some(([type]) => type === "caption.render")).toBe(false);
+        const switching = controller as unknown as { live: FakeLive; bindLive(): void };
+        switching.live = second; switching.bindLive();
+        second.emit({ type: "session.output_transcript.delta", delta: "¿Dónde está la estación?", start_ms: 500, end_ms: 1500 });
+        advancedRevision = controller.captionRevision;
+      }, []);
+      return null;
+    }
+    render(createElement(Fragment, null, createElement(SwitchBeforeCaptionCommit), createElement(ConversationScreen, { controller })));
+    expect(advancedRevision).toBeGreaterThan(committedRevision);
+    expect(oldEmit).toHaveBeenCalledWith("caption.block", expect.objectContaining({ revision: committedRevision }), expect.any(String));
+    expect(newEmit).toHaveBeenCalledWith("caption.block", expect.objectContaining({ revision: advancedRevision }), expect.any(String));
+    expect(oldEmit).toHaveBeenCalledWith("caption.render", { revision: committedRevision, blockCount: 1 }, undefined);
+    expect(newEmit).not.toHaveBeenCalledWith("caption.render", expect.objectContaining({ revision: committedRevision }), undefined);
+    act(() => (controller as unknown as { notify(): void }).notify());
+    expect(newEmit).toHaveBeenCalledWith("caption.render", { revision: advancedRevision, blockCount: 2 }, undefined);
+    act(() => (controller as unknown as { notify(): void }).notify());
+    expect(oldEmit.mock.calls.filter(([type]) => type === "caption.render")).toHaveLength(1);
+    expect(newEmit.mock.calls.filter(([type]) => type === "caption.render")).toHaveLength(1);
+  });
+  it("links raw fragments, routing, caption side and committed render, then records the no-output deadline", async () => {
+    vi.useFakeTimers();
+    const emit = vi.fn<(type: DiagnosticType, data: unknown, text?: string) => void>();
+    const live = Object.assign(new FakeLive(), { journal: { emit } });
+    const { controller, audio } = createController({ live });
+    await controller.startWithLanguages({ A: "ru", B: "es" });
+    emitVoice(audio, true);
+    live.emit({ type: "session.input_transcript.delta", delta: "Подскажите, где находится вокзал?", start_ms: 0, end_ms: 1000 });
+    live.emit({ type: "session.output_transcript.delta", delta: "¿Dónde está la estación?", start_ms: 500, end_ms: 1500 });
+    render(createElement(ConversationScreen, { controller }));
+    expect(emit).toHaveBeenCalledWith("transcript.fragment", expect.objectContaining({ kind: "input", startMs: 0, endMs: 1000 }), "Подскажите, где находится вокзал?");
+    expect(emit).toHaveBeenCalledWith("transcript.route", expect.objectContaining({ kind: "output", side: "B", language: "es" }), undefined);
+    expect(emit).toHaveBeenCalledWith("caption.block", expect.objectContaining({ kind: "output", side: "B", revision: controller.captionRevision }), "¿Dónde está la estación?");
+    expect(emit).toHaveBeenCalledWith("caption.render", expect.objectContaining({ revision: controller.captionRevision }), undefined);
+    await act(async () => { emitVoice(audio, false); await vi.advanceTimersByTimeAsync(runtime.noOutputTimeoutMs + 1); });
+    await act(async () => {
+      emitVoice(audio, true);
+      live.emit({ type: "session.input_transcript.delta", delta: "Спасибо за помощь.", start_ms: 10000, end_ms: 11000 });
+      emitVoice(audio, false);
+      await vi.advanceTimersByTimeAsync(runtime.noOutputTimeoutMs + runtime.captionIdleMs + 1);
+    });
+    expect(emit).toHaveBeenCalledWith("turn.timer", expect.objectContaining({ timer: "no_output", phase: "fired" }), undefined);
+    expect(emit).toHaveBeenCalledWith("attribution.decision", expect.objectContaining({ kind: "deadline" }), undefined);
+  });
+  it("keeps a stale callback on the original stream after a new transport is allocated", async () => {
+    const oldEmit = vi.fn(), newEmit = vi.fn();
+    const first = Object.assign(new FakeLive(), { journal: { emit: oldEmit } });
+    const second = Object.assign(new FakeLive(), { journal: { emit: newEmit } });
+    const { controller } = createController({ lives: [first, second] });
+    await controller.startWithLanguages({ A: "ru", B: "es" });
+    const late = first.onTranscriptDelta!;
+    await controller.cancel();
+    late({ type: "session.output_transcript.delta", delta: "late", diagnosticId: crypto.randomUUID() });
+    expect(oldEmit).toHaveBeenCalledWith("transport.event", expect.objectContaining({ phase: "dropped", reason: "stale_generation" }), undefined);
+    expect(newEmit.mock.calls.some(([type]) => type === "transport.event")).toBe(false);
+    expect(controller.captionBlocks).toEqual([]);
+  });
+  it("does not change conversation behavior when the diagnostic observer throws", async () => {
+    const live = Object.assign(new FakeLive(), { journal: { emit: () => { throw new Error("diagnostics unavailable"); } } });
+    const { controller, audio } = createController({ live });
+    await controller.startWithLanguages({ A: "ru", B: "es" });
+    emitVoice(audio, true);
+    live.emit({ type: "session.input_transcript.delta", delta: "Где находится вокзал?" });
+    live.emit({ type: "session.output_transcript.delta", delta: "¿Dónde está la estación?" });
+    expect(controller.captionBlocks.some(block => block.side === "B" && block.text.includes("estación"))).toBe(true);
+    await controller.cancel();
+  });
+});
 
 describe("SessionController", () => {
   it("does not disable buffered playback when ending and starting another conversation", async () => {

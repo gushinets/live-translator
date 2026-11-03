@@ -1,4 +1,5 @@
 import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react";
+import { useLayoutEffect } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { sessionReducer } from "../session/sessionReducer";
 import type { Side, Turn } from "../conversation/Turn";
@@ -73,6 +74,42 @@ class FakeConversationController implements ConversationScreenController {
 
 describe("default independent captions", () => {
   afterEach(() => { window.history.replaceState({}, "", "/"); });
+
+  it("counts only nonempty captions mounted in a participant pane or the unassigned output surface", () => {
+    const recorded = vi.fn();
+    const controller = Object.assign(new FakeConversationController(), { captionRevision: 1,
+      captureCaptionRender: (revision: number, blockCount: number) => () => recorded(revision, blockCount) });
+    controller.captionBlocks = [
+      { id: "hidden", kind: "input", text: "Unassigned input", receivedAtMs: 0 },
+      { id: "empty", kind: "input", text: "  ", side: "A", receivedAtMs: 0 },
+      { id: "a", kind: "input", text: "Visible input", side: "A", receivedAtMs: 0 },
+      { id: "b", kind: "output", text: "Visible translation", side: "B", receivedAtMs: 0 },
+      { id: "center", kind: "output", text: "Unassigned output", receivedAtMs: 0 },
+    ];
+    render(<ConversationScreen controller={controller} />);
+    expect(screen.queryByText("Unassigned input")).not.toBeInTheDocument();
+    expect(screen.getAllByRole("listitem")).toHaveLength(3);
+    expect(recorded).toHaveBeenCalledWith(1, 3);
+  });
+
+  it("reports the caption revision from the render pass when the controller advances before commit", () => {
+    const recorded = vi.fn();
+    const controller = Object.assign(new FakeConversationController(), { captionRevision: 1,
+      captureCaptionRender: (revision: number, blockCount: number) => () => recorded(revision, blockCount) });
+    controller.captionBlocks = [{ id: "block", kind: "input", text: "First revision", side: "A", receivedAtMs: 0 }];
+    function AdvanceBeforeCaptionCommit() {
+      useLayoutEffect(() => {
+        controller.captionRevision = 2;
+        controller.captionBlocks = [{ ...controller.captionBlocks[0]!, text: "Second revision" }];
+      }, []);
+      return null;
+    }
+    render(<><AdvanceBeforeCaptionCommit /><ConversationScreen controller={controller} /></>);
+    expect(recorded).toHaveBeenNthCalledWith(1, 1, 1);
+    act(() => controller.notify());
+    expect(screen.getByText("Second revision")).toBeInTheDocument();
+    expect(recorded).toHaveBeenLastCalledWith(2, 1);
+  });
 
   it("follows fresh unknown captions after language refinement removes a manually scrolled region", () => {
     vi.spyOn(HTMLElement.prototype, "scrollHeight", "get").mockReturnValue(1000);

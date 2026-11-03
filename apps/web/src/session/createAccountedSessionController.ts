@@ -1,4 +1,5 @@
 import type { ProductObservation } from "../metrics/UsageReporter";
+import { DiagnosticOutbox, type DiagnosticStream } from "../diagnostics/DiagnosticOutbox";
 import type { UsageObservation } from "../metrics/UsageTypes";
 import { BackendClient } from "../api/BackendClient";
 import { AudioController } from "../audio/AudioController";
@@ -21,12 +22,13 @@ class LazyAccounting implements NonNullable<LiveClientDeps["accounting"]> {
   observeProduct(value: ProductObservation) { this.lastProduct = value; this.attempt?.observeProduct(value); }
   observeUsage(value: UsageObservation) { this.attempt?.observeUsage(value); }
   providerStarted() { this.attempt?.providerStarted(); }
-  constructor(private readonly scope: ConversationAccounting) {}
+  constructor(private readonly scope: ConversationAccounting, private readonly diagnostics?: DiagnosticStream) {}
   get closeTimeoutMs() { return this.attempt?.closeTimeoutMs; }
   get managed() { return this.attempt?.managed ?? false; }
   create(sdp: string, beforeDispatch?: () => void) {
     if (this.cancelled) return Promise.reject(new Error("Provider attempt cancelled"));
     this.attempt ??= this.scope.newAttempt();
+    this.attempt.diagnostics = this.diagnostics;
     if (this.lastProduct) this.attempt.observeProduct(this.lastProduct);
     return this.attempt.create(sdp, beforeDispatch);
   }
@@ -65,6 +67,7 @@ export class AccountedSessionController extends SessionController {
   start(): void {
     if (this.started) return;
     this.started = true;
+    this.accounting.startDiagnostics();
     this.startEarlyVisibility();
     this.recoveryChecking = true;
     this.notify();
@@ -242,6 +245,7 @@ export class AccountedSessionController extends SessionController {
         await store?.discard(intent.conversationId);
       }
     } finally {
+      this.accounting.diagnostics?.stop();
       this.accounting.outbox.stop();
       this.accounting.usageOutbox?.stop();
       await this.snapshotStore.then(store => store.dispose(), () => undefined);
@@ -710,11 +714,17 @@ export class AccountedSessionController extends SessionController {
   }
 }
 export function createAccountedSessionController(): AccountedSessionController {
-  const audio = new AudioController(), scope = new ConversationAccounting();
+  const snapshotStore = ResumeSnapshotStore.open();
+  const diagnostics = new DiagnosticOutbox({ producerId: snapshotStore.then(store => store.ownsDocument ? store.clientInstanceId : null) });
+  const audio = new AudioController(), scope = new ConversationAccounting({ diagnostics });
   const controller = new AccountedSessionController({
-    createLive: () => new LiveClient({ backend: new BackendClient(), accounting: new LazyAccounting(scope),
-      peerFactory: () => new RTCPeerConnection(), onRemoteStream: (stream, source) => controller.handleRemoteStream(stream, source) }),
+    createLive: () => {
+      const journal = diagnostics.stream();
+      scope.bindResumeDiagnostics(journal);
+      return new LiveClient({ backend: new BackendClient(), accounting: new LazyAccounting(scope, journal), journal,
+        peerFactory: () => new RTCPeerConnection(), onRemoteStream: (stream, source) => controller.handleRemoteStream(stream, source) });
+    },
     audio,
-  }, scope);
+  }, scope, snapshotStore);
   return controller;
 }

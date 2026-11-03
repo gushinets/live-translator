@@ -2,6 +2,7 @@ import type { ConversationMetadata } from "../api/AccountingBackend";
 import { APPEND_CHAR_BUDGET, assertAppendWithinBudget } from "../live/LiveEvents";
 import { buildAuthoritativeContext } from "../live/LivePrompts";
 import { COUNTER_NAMES, type MetricCounters } from "../metrics/UsageTypes";
+import { DIAGNOSTIC_TEXT_KEY } from "../diagnostics/DiagnosticOutbox";
 
 const TAB_KEY = "live-translator-client-instance-v1";
 const CONVERSATION_KEY = "live-translator-retained-conversation-v1";
@@ -116,6 +117,7 @@ export class ResumeSnapshotStore {
     const store = new ResumeSnapshotStore(id, storage, options.indexedDB === undefined ? globalThis.indexedDB ?? null : options.indexedDB,
       options.name ?? "live-translator-resume-v1", options.now ?? Date.now);
     const disabled = () => {
+      storage?.removeItem(DIAGNOSTIC_TEXT_KEY);
       id = crypto.randomUUID();
       storage?.setItem(TAB_KEY, id);
       const unowned = new ResumeSnapshotStore(id, storage, store.factory, store.name, store.now, existing);
@@ -150,6 +152,7 @@ export class ResumeSnapshotStore {
       id = crypto.randomUUID();
     }
     try {
+      if (collided) storage?.removeItem(DIAGNOSTIC_TEXT_KEY);
       if (collided || existing !== id) {
         storage?.removeItem(CONVERSATION_KEY);
         storage?.removeItem(CONVERSATION_VERSION_KEY);
