@@ -4,7 +4,7 @@ import { isSentenceComplete, splitSentences } from "./sentenceBoundaries";
 import type { ConversationLanguages } from "../side/SideResolver";
 import type { Side } from "./Turn";
 import type { TranscriptFragment } from "./TranscriptFragment";
-import { completeScriptSide, shortReplyEvidence, isExplicitShortReply, languageScripts, splitLanguageSentences, languageDetectionSample, isDottedTokenContinuation } from "./languageScripts";
+import { completeScriptSide, shortReplyEvidence, isExplicitShortReply, languageScripts, scriptPattern, splitLanguageSentences, languageDetectionSample, isDottedTokenContinuation } from "./languageScripts";
 
 export interface RoutedTranscript {
   side: Side | undefined;
@@ -82,6 +82,13 @@ export class TranscriptRouter {
     // complete. A pause cannot make an unfinished Latin word Spanish or English.
     const distinctScripts = !languageScripts(languages.A).some(script => languageScripts(languages.B).includes(script));
     if (distinctScripts && fullSide !== undefined && this.hasEvidence(text, text, fullSide, this.currentSide)) return { side: fullSide };
+    // An unclassified same-script tail still belongs to the known unfinished phrase.
+    if (this.currentSide !== undefined && this.sourceText && !isSentenceComplete(this.sourceText)) {
+      const own = scriptPattern(languageScripts(languages[this.currentSide]));
+      const other = scriptPattern(languageScripts(languages[this.currentSide === "A" ? "B" : "A"]));
+      const letters = text.match(/\p{L}/gu) ?? [];
+      if (letters.length && letters.every(letter => own?.test(letter) && !other?.test(letter))) return { side: this.currentSide };
+    }
     if (!force && fullSide !== undefined && /\p{L}$/u.test(text)) return undefined;
     return {};
   }

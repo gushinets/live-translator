@@ -5576,6 +5576,66 @@ describe("PR32 timestamp routing follow-up", () => {
   });
 });
 
+it.each([" 7:00", " трое", " утра", "ой-ой"])("keeps a delayed adjacent source suffix %s from poisoning later translation attribution", async suffix => {
+  vi.useFakeTimers(); vi.setSystemTime(1000);
+  const { controller, live, audio } = createController();
+  await controller.startWithLanguages({ A: "ru", B: "en" });
+  emitVoice(audio, true);
+  const opening = " Раз, два, три, четыре, пять. Вышел зайчик погулять. Вдруг охотник выбегает прямо к зайчику и стреляет. Пиф-паф, ой-";
+  live.emit({ type: "session.input_transcript.delta", delta: opening, start_ms: 5200, end_ms: 12000 });
+  const firstId = controller.session.activeTurn!.id;
+  live.emit({ type: "session.output_transcript.delta", delta: " One, two, three, four, five. The bunny went out for a walk. Suddenly the hunter runs out straight toward the bunny and shoots. Bang-bang, oh-oh-oh.", start_ms: 6400, end_ms: 12000 });
+  emitVoice(audio, false); emitPlayback(audio, true);
+  await vi.advanceTimersByTimeAsync(200);
+  live.emit({ type: "session.input_transcript.delta", delta: suffix, start_ms: 12000, end_ms: 12200 });
+  await vi.advanceTimersByTimeAsync(runtime.captionIdleMs + 1);
+  expect.soft(controller.session.activeTurn).toMatchObject({ id: firstId, speaker: "A", originalText: opening + suffix });
+  emitPlayback(audio, false);
+  await vi.advanceTimersByTimeAsync(runtime.noOutputTimeoutMs + 1);
+  emitVoice(audio, true);
+  live.emit({ type: "session.input_transcript.delta", delta: " Hey, hey, who are you", start_ms: 29800, end_ms: 30800 });
+  const secondId = controller.session.activeTurn!.id;
+  emitVoice(audio, false);
+  live.emit({ type: "session.output_transcript.delta", delta: " Эй, эй, ты кто?", start_ms: 31000, end_ms: 32000 });
+  await vi.advanceTimersByTimeAsync(runtime.noOutputTimeoutMs + 1);
+  expect.soft(controller.attributionTrace.some(entry => entry.sourceId === secondId && entry.basis === "isolated_episode")).toBe(true);
+  expect(controller.session.recentTurns.filter(turn => turn.outputDeadline)).toEqual([]);
+  expect(controller.metrics.snapshot()).toMatchObject({ unresolvedSourceOutcomeCount: 0, noObservedOutputDeadlineCount: 0 });
+});
+
+it.each([
+  { name: "completed sentence", source: "Хочу забронировать столик.", endMs: 12000, startMs: 12000 },
+  { name: "provider-time gap", source: "Хочу забронировать столик на", endMs: 12000, startMs: 12200 },
+  { name: "missing preceding end", source: "Хочу забронировать столик на", endMs: undefined, startMs: 5200 },
+])("does not absorb a numeric prefix after $name", async ({ source, endMs, startMs }) => {
+  vi.useFakeTimers(); vi.setSystemTime(1000);
+  const { controller, live, audio } = createController();
+  await controller.startWithLanguages({ A: "ru", B: "en" });
+  emitVoice(audio, true);
+  live.emit({ type: "session.input_transcript.delta", delta: source, start_ms: 5200, ...(endMs === undefined ? {} : { end_ms: endMs }) });
+  const original = controller.session.activeTurn!.id;
+  live.emit({ type: "session.output_transcript.delta", delta: "I want to book a table.", start_ms: 6400, end_ms: 12000 });
+  emitVoice(audio, false); emitPlayback(audio, true);
+  live.emit({ type: "session.input_transcript.delta", delta: " 7:00", start_ms: startMs, end_ms: startMs + 200 });
+  await vi.advanceTimersByTimeAsync(runtime.captionIdleMs + 1);
+  expect(controller.session.activeTurn).toMatchObject({ originalText: " 7:00", speaker: undefined });
+  expect(controller.session.activeTurn?.id).not.toBe(original);
+  expect(controller.session.pendingTurns?.find(turn => turn.id === original)?.originalText).toBe(source);
+});
+
+it("keeps a contiguous numeric prefix with its independently classified new speaker", async () => {
+  vi.useFakeTimers(); vi.setSystemTime(1000);
+  const { controller, live, audio } = createController();
+  await controller.startWithLanguages({ A: "ru", B: "en" });
+  emitVoice(audio, true);
+  live.emit({ type: "session.input_transcript.delta", delta: "Хочу забронировать столик на", start_ms: 5200, end_ms: 12000 });
+  const original = controller.session.activeTurn!.id;
+  live.emit({ type: "session.input_transcript.delta", delta: "12, ", start_ms: 12000, end_ms: 12200 });
+  live.emit({ type: "session.input_transcript.delta", delta: "The station is straight ahead.", start_ms: 12200, end_ms: 13000 });
+  expect(controller.session.activeTurn).toMatchObject({ originalText: "12, The station is straight ahead.", speaker: "B" });
+  expect(controller.session.pendingTurns?.find(turn => turn.id === original)?.originalText).toBe("Хочу забронировать столик на");
+});
+
 describe("PR32 neutral fragment ownership", () => {
   beforeEach(() => { vi.useFakeTimers(); vi.setSystemTime(0); });
   it("retains neutral corrections inside a bounded historical interval beyond its last observed packet", async () => {
@@ -5639,7 +5699,7 @@ describe("PR32 neutral fragment ownership", () => {
     expect(controller.session.activeTurn).toMatchObject({ id: current, originalText: next });
     expect(controller.session.recentTurns.find(turn => turn.id === previous)?.originalText).toBe(original + neutral + late);
   });
-  it.each([undefined, 2100])("keeps a new neutral prefix with new speech when its timestamp is %s", async startMs => {
+  it.each([undefined, 500, 2100])("keeps a new neutral prefix with new speech when its timestamp is %s", async startMs => {
     const { controller, live, audio } = createController();
     await controller.startWithLanguages({ A: "ru", B: "en" });
     emitVoice(audio, true);

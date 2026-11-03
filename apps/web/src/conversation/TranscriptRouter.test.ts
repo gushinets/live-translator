@@ -6,6 +6,22 @@ const languages = { A: "ru", B: "en" };
 const fragment = (text: string, startMs = 0): TranscriptFragment => ({ id: text, text, receivedAtMs: 1000, startMs, endMs: startMs + 50 });
 
 describe("streaming language evidence", () => {
+  it.each(["A", "B"] as const)("resolves a short script-exclusive tail of known side %s at idle", side => {
+    const router = new TranscriptRouter(), pair = side === "A" ? { A: "ru", B: "en" } : { A: "en", B: "ru" };
+    const tail = fragment("ой-ой", 12000);
+    expect(router.push(tail, pair, side, "Пиф-паф, ой-")).toEqual([]);
+    expect(router.flush(pair)).toEqual([{ side, fragments: [tail] }]);
+  });
+  it.each([
+    { pair: { A: "ru", B: "en" }, side: undefined, text: "Пиф-паф, ой-", tail: "ой-ой" },
+    { pair: { A: "ru", B: "en" }, side: "A", text: "Пиф-паф.", tail: "ой-ой" },
+    { pair: { A: "en", B: "ru" }, side: "A", text: "I say ", tail: "ой-ой" },
+    { pair: { A: "en", B: "es" }, side: "A", text: "I say ", tail: "tra-la" },
+  ] as const)("does not infer an unrelated or shared-script tail: $text $tail", ({ pair, side, text, tail }) => {
+    const router = new TranscriptRouter(), part = fragment(tail);
+    router.push(part, pair, side, text);
+    expect(router.flush(pair, true)).toEqual([{ side: undefined, fragments: [part] }]);
+  });
   it("uses the configured pair without changing the general setup detector", () => {
     const router = new TranscriptRouter();
     expect(router.push(fragment("Подскажите, пожалуйста, мне нужна информация."), languages)[0]?.side).toBe("A");

@@ -33,6 +33,7 @@ import {
 import { traceAckErrorType, traceBeginInterpreter } from "../live/StartupTrace";
 import { ConversationMetrics } from "../metrics/ConversationMetrics";
 import { observe } from "../diagnostics/observe";
+import { isSentenceComplete } from "../conversation/sentenceBoundaries";
 import type { DiagnosticData } from "../../../../types/diagnostics.js";
 import { OrientationController } from "../platform/OrientationController";
 import { VisibilityController } from "../platform/VisibilityController";
@@ -1575,9 +1576,14 @@ export class SessionController {
       if (!preceding || (preceding.sourceEndMs !== undefined && fragment.startMs >= preceding.sourceEndMs)) return undefined;
       const observedEnd = Math.max(...preceding.sourceFragments.map(part => part.endMs ?? part.startMs ?? -Infinity));
       // The gap before a later source can also contain that source's delayed
-      // opening. Extend beyond observed audio only with matching language evidence.
+      // opening. Known language can extend ownership through that gap.
       const intervalEnd = side !== undefined && side === preceding.speaker ? preceding.sourceEndMs ?? observedEnd : observedEnd;
-      return (fragment.endMs ?? fragment.startMs) <= intervalEnd ? preceding : undefined;
+      // A contiguous number can finish the open sentence after VAD has gone quiet.
+      const continuesActive = preceding.id === this.currentSession.activeTurn?.id && preceding.speaker !== undefined &&
+        (side === undefined || side === preceding.speaker) && preceding.sourceEndMs === undefined &&
+        fragment.startMs === observedEnd && preceding.sourceFragments.some(part => part.endMs === observedEnd) &&
+        !isSentenceComplete(preceding.originalText);
+      return (fragment.endMs ?? fragment.startMs) <= intervalEnd || continuesActive ? preceding : undefined;
     }
     // Fresh speech, whether VAD- or transcript-first, must claim forward packets before a retired,
     // open-ended interval can mistake it for a correction. Overlapping timestamps
