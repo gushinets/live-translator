@@ -5576,6 +5576,32 @@ describe("PR32 timestamp routing follow-up", () => {
   });
 });
 
+it.each([" ", "« "])("retains both translations when timed speech has an untimed neutral prefix %j", async prefix => {
+  vi.useFakeTimers(); vi.setSystemTime(1000);
+  const { controller, live, audio } = createController();
+  await controller.startWithLanguages({ A: "ru", B: "en" });
+  emitVoice(audio, true);
+  live.emit({ type: "session.input_transcript.delta", delta: "Подскажите, где находится вокзал?", start_ms: 0, end_ms: 100 });
+  const a = controller.session.activeTurn!.id;
+  live.emit({ type: "session.output_transcript.delta", delta: "Where is the station?", start_ms: 200, end_ms: 500 });
+  emitVoice(audio, false);
+  await vi.advanceTimersByTimeAsync(runtime.audioStartGraceMs + runtime.captionIdleMs);
+  expect(controller.session.recentTurns.find(turn => turn.id === a)?.status).toBe("completed");
+  emitVoice(audio, true);
+  live.emit({ type: "session.input_transcript.delta", delta: prefix });
+  live.emit({ type: "session.input_transcript.delta", delta: "The station is straight ahead.", start_ms: 2000, end_ms: 2500 });
+  const b = controller.session.activeTurn!.id;
+  live.emit({ type: "session.output_transcript.delta", delta: "Вокзал находится прямо впереди.", start_ms: 2600, end_ms: 3000 });
+  emitVoice(audio, false);
+  await vi.advanceTimersByTimeAsync(runtime.noOutputTimeoutMs + 1);
+  expect(controller.session.recentTurns.find(turn => turn.id === a)).toMatchObject({ translatedText: "Where is the station?", status: "completed" });
+  expect(controller.session.recentTurns.find(turn => turn.id === b)).toMatchObject({
+    originalText: prefix + "The station is straight ahead.", translatedText: "Вокзал находится прямо впереди.", status: "completed",
+  });
+  expect(controller.currentAttribution).toMatchObject({ matchedTextOutputs: 2, unattributedTextOutputs: 0 });
+  expect(controller.metrics.snapshot()).toMatchObject({ noObservedOutputDeadlineCount: 0, unresolvedSourceOutcomeCount: 0 });
+});
+
 it("retains translation ownership when an untimed source gains a timed suffix at the output end", async () => {
   vi.useFakeTimers(); vi.setSystemTime(1000);
   const { controller, live, audio } = createController();

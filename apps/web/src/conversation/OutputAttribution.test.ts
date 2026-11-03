@@ -12,22 +12,35 @@ const fragment = (id: string, startMs: number, endMs: number, receivedAtMs = 100
 const source = (id: string, startMs: number, speaker: "A" | "B" = "A", status: Turn["status"] = "streaming"): Turn => ({ ...createTurn({ id, speaker, sideSource: "language", nowMs: 0 }), status, originalText: "Source", sourceFragments: [fragment(id, startMs, startMs + 100)], languages: { A: "ru", B: "es" } });
 
 describe("output attribution evidence", () => {
-  it("keeps an untimed source prefix compatible after a timed continuation reaches the output end", () => {
+  it.each(["Source ", "12, "])("keeps an untimed source prefix %j compatible after a timed continuation reaches the output end", prefix => {
     const ledger = new OutputAttribution(), a = source("a", 300);
-    a.sourceFragments.unshift({ id: "opening", text: "Source ", receivedAtMs: 500 });
+    a.sourceFragments.unshift({ id: "opening", text: prefix, receivedAtMs: 500 });
     const output = ledger.receive([fragment("output", 200, 300)], "B", [a], 1000);
     ledger.reconcile([a], 1100);
     expect(output).toMatchObject({ sourceId: "a", candidateIds: ["a"] });
     expect(ledger.hasCompatibleOutput(a)).toBe(true);
   });
-  it("does not derive an isolated direction by excluding a mixed-clock source", () => {
+  it.each(["Source ", "12, "])("does not derive an isolated direction by excluding a mixed-clock source with prefix %j", prefix => {
     const ledger = new OutputAttribution(), a = source("a", 0), b = source("b", 300, "B");
     const first = ledger.receive([fragment("first", 200, 300)], "B", [a], 1000);
-    b.sourceFragments.unshift({ id: "opening", text: "Source ", receivedAtMs: 500 });
+    b.sourceFragments.unshift({ id: "opening", text: prefix, receivedAtMs: 500 });
     ledger.reconcile([a, b], 1100);
     const second = ledger.receive([fragment("second", 320, 400)], "A", [a, b], 1200);
     expect(first).toMatchObject({ sourceId: undefined, candidateIds: ["a", "b"] });
     expect(second).toMatchObject({ sourceId: undefined, candidateIds: ["a", "b"] });
+  });
+  it.each([" ", "« "])("ignores an untimed neutral prefix %j when locating timed speech", prefix => {
+    const ledger = new OutputAttribution(), a = source("a", 0), b = source("b", 300, "B");
+    const first = ledger.receive([fragment("first", 200, 300)], "B", [a], 1000);
+    const opening = { id: "opening", text: prefix, receivedAtMs: 1050 };
+    ledger.reconcile([a], 1100, [opening]);
+    expect(first.sourceId).toBe("a");
+    b.sourceFragments.unshift(opening);
+    ledger.reconcile([a, b], 1200);
+    expect(first).toMatchObject({ sourceId: "a", candidateIds: ["a"] });
+    expect(ledger.hasCompatibleOutput({ ...b, speaker: undefined })).toBe(false);
+    const second = ledger.receive([fragment("second", 420, 500)], "A", [a, b], 1300);
+    expect(second).toMatchObject({ sourceId: "b", candidateIds: ["b"] });
   });
   it("keeps a known source opening exclusive when only its later tail is untimed", () => {
     const ledger = new OutputAttribution(), a = source("a", 0), b = source("b", 300);

@@ -133,8 +133,8 @@ export class OutputAttribution {
   }
 
   private startsBeforeOutputEnd(sourceFragments: readonly TranscriptFragment[], output: AttributedOutput): boolean {
-    // Ordered source fragments keep an untimed opening before later timed speech.
-    const sourceStart = sourceFragments[0]?.startMs;
+    // Neutral prefixes cannot establish speech onset; an untimed speech opening stays unknown.
+    const sourceStart = sourceFragments.find(part => !/^[\p{P}\s]+$/u.test(part.text))?.startMs;
     const outputStart = earliestFragmentStart(output.fragments);
     if (sourceStart !== undefined && outputStart !== undefined && output.fragments.every(part => part.endMs !== undefined)) {
       const outputEnd = Math.max(...output.fragments.map(part => part.endMs!));
