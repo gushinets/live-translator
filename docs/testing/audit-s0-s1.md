@@ -229,3 +229,18 @@ create остаётся F24/S4. Основания опубликованы в i
 в этом повторе сессия закрыта с `closeConfirmed=true`, источником `sideband` и
 финальным usage 15 секунд. Локальные подтверждения: `.data/pr50-review-tests.json`,
 `.data/pr50-node245-tests.log`, `.data/pr50-sideband-live.log`.
+
+Второй новый reviewer повторно проверил весь PR (34 файла) и нашёл оставшийся
+вариант той же P2: `--use-env-proxy` без `NODE_USE_ENV_PROXY=1` выбирал глобальный
+агент, поэтому pending CONNECT/TLS socket оставался вне очистки. Теперь отдельный
+агент получает публичную proxy/TLS конфигурацию глобального агента, в том числе
+при запуске через `NODE_OPTIONS`; поздняя загрузка opt-in из env-file сохранена.
+Глобальный агент не меняется и не уничтожается.
+
+Восемь subprocess-регрессий CLI/NODE_OPTIONS × CONNECT/TLS × timeout/abort
+воспроизводят утечку до исправления и проходят после. Они требуют наблюдаемый
+CONNECT/ClientHello и ноль открытых proxy sockets до завершения дочернего
+процесса. Дополнительно проверены `NO_PROXY` и наследование TLS-настроек.
+На Node 24.18.0 и настоящем 24.5.0 прошли 28/28 sideband/cleanupWorker тестов;
+API TypeScript, ESLint и `git diff --check` прошли. Полный повтор: 2528/2528,
+0 skipped; `.data/pr50-review-final-tests.json`.

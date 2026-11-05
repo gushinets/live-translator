@@ -26,10 +26,12 @@ export function makeOrphanCloser(client?: OpenAI, timeoutMs = 15000): OrphanClos
     try {
       const api = client ?? new OpenAI({ maxRetries: 0 });
       const http = new URL(api.baseURL).protocol === "http:";
-      // --env-file can enable proxying after Node creates its global agents. ws also
-      // bypasses the default agent, so initialize and pass one explicitly after env loading.
-      if (process.env.NODE_USE_ENV_PROXY === "1") {
-        ownedAgent = http ? new HttpAgent({ proxyEnv: process.env }) : new HttpsAgent({ proxyEnv: process.env });
+      const globalAgent = http ? httpAgent : httpsAgent;
+      const options = (globalAgent as HttpAgent & { options: HttpsAgent["options"] }).options;
+      // CLI/NODE_OPTIONS proxy settings live on the global agent; --env-file can enable them later.
+      const proxyEnv = process.env.NODE_USE_ENV_PROXY === "1" ? process.env : options.proxyEnv;
+      if (proxyEnv) {
+        ownedAgent = http ? new HttpAgent({ ...options, proxyEnv }) : new HttpsAgent({ ...options, proxyEnv });
         const createConnection = ownedAgent.createConnection.bind(ownedAgent);
         // CONNECT/TLS sockets are not in the agent pool until the tunnel is ready.
         ownedAgent.createConnection = (options, callback) => {
@@ -37,7 +39,7 @@ export function makeOrphanCloser(client?: OpenAI, timeoutMs = 15000): OrphanClos
           return ownedSocket;
         };
       }
-      const agent = ownedAgent ?? (http ? httpAgent : httpsAgent);
+      const agent = ownedAgent ?? globalAgent;
       channel = new SidebandWS(api, { session_id: providerId }, { reconnect: null, agent });
       channel.on("error", () => finish({ kind: "retryable_error", code: "sideband_error" }));
       channel.on("close", () => finish({ kind: "retryable_error", code: "transport_closed" }));
