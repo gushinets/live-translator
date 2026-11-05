@@ -42,7 +42,7 @@ body,
   background: #26312e;
 }
 
-.conversation-center button {
+.conversation-center button, .rotate-overlay button {
   max-width: 100%;
   min-width: 44px;
   min-height: 44px;
@@ -61,15 +61,15 @@ body,
 .conversation-center button:hover:not(:disabled) { background: #354d4c; }
 .conversation-center button:active:not(:disabled) { transform: translateY(1px); }
 .conversation-center button:disabled { cursor: wait; opacity: 0.46; }
-.conversation-center .conversation-end-action { border-color: #a8564a; border-radius: 0.625rem; padding: 0.5rem 1.625rem; background: #934c43; color: #fff8f5; font-size: 0.875rem; }
-.conversation-center .conversation-end-action:hover:not(:disabled) { background: #a8564a; }
+.conversation-center .conversation-end-action, .rotate-overlay .conversation-end-action { border-color: #a8564a; border-radius: 0.625rem; padding: 0.5rem 1.625rem; background: #934c43; color: #fff8f5; font-size: 0.875rem; }
+.conversation-center .conversation-end-action:hover:not(:disabled), .rotate-overlay .conversation-end-action:hover { background: #a8564a; }
 .conversation-end-action, .conversation-home-action { display: inline-grid; align-items: center; }
 .conversation-end-action > span, .conversation-home-action > span { grid-area: 1 / 1; }
 .conversation-end-size { visibility: hidden; padding-left: 1.3125rem; }
 .conversation-end-label { display: inline-flex; align-items: center; justify-content: center; gap: 0.5rem; }
 .conversation-end-label i { flex: 0 0 auto; box-sizing: border-box; width: 0.8125rem; height: 0.8125rem; border: 1px solid currentColor; border-radius: 2px; background: #f5b2a4; }
 
-.conversation-center button:focus-visible { outline: 2px solid #ace2c9; outline-offset: -3px; }
+.conversation-center button:focus-visible, .rotate-overlay button:focus-visible { outline: 2px solid #ace2c9; outline-offset: -3px; }
 .participant-scroll:focus-visible,
 .participant-guidance:focus-visible { outline: 2px solid var(--participant-accent); outline-offset: -3px; }
 
@@ -161,6 +161,7 @@ body,
   inset: 0;
   z-index: 20;
   display: flex;
+  flex-direction: column;
   align-items: center;
   justify-content: center;
   margin: 0;

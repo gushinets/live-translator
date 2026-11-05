@@ -1,4 +1,6 @@
 import OpenAI from "openai";
+import { Agent as HttpAgent, globalAgent as httpAgent } from "node:http";
+import { Agent as HttpsAgent, globalAgent as httpsAgent } from "node:https";
 import { SidebandWS } from "openai/resources/live/sideband/ws";
 import type { OrphanCloser } from "../accounting/CleanupWorker.js";
 
@@ -8,17 +10,27 @@ export function makeOrphanCloser(client?: OpenAI, timeoutMs = 15000): OrphanClos
     if (signal.aborted) { resolve({ kind: "retryable_error", code: "cancelled" }); return; }
     let done = false;
     let channel: SidebandWS | undefined;
+    let ownedAgent: HttpAgent | undefined;
     let timer: ReturnType<typeof setTimeout> | undefined;
     const finish = (result: Parameters<typeof resolve>[0]) => {
       if (done) return; done = true;
       if (timer) clearTimeout(timer); signal.removeEventListener("abort", abort);
       resolve(result);
       if (channel) { channel.close(); channel.socket.platformSocket.terminate(); }
+      ownedAgent?.destroy();
     };
     const abort = () => finish({ kind: "retryable_error", code: "cancelled" });
     signal.addEventListener("abort", abort, { once: true });
     try {
-      channel = new SidebandWS(client ?? new OpenAI({ maxRetries: 0 }), { session_id: providerId }, { reconnect: null });
+      const api = client ?? new OpenAI({ maxRetries: 0 });
+      const http = new URL(api.baseURL).protocol === "http:";
+      // --env-file can enable proxying after Node creates its global agents. ws also
+      // bypasses the default agent, so initialize and pass one explicitly after env loading.
+      if (process.env.NODE_USE_ENV_PROXY === "1") {
+        ownedAgent = http ? new HttpAgent({ proxyEnv: process.env }) : new HttpsAgent({ proxyEnv: process.env });
+      }
+      const agent = ownedAgent ?? (http ? httpAgent : httpsAgent);
+      channel = new SidebandWS(api, { session_id: providerId }, { reconnect: null, agent });
       channel.on("error", () => finish({ kind: "retryable_error", code: "sideband_error" }));
       channel.on("close", () => finish({ kind: "retryable_error", code: "transport_closed" }));
       channel.socket.platformSocket.on("unexpected-response", (_req, response) => {

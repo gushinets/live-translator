@@ -7,6 +7,8 @@ import { fileURLToPath } from "node:url";
 const WEB_ORIGIN = "http://127.0.0.1:4173";
 const PORTRAIT_VIEWPORT = { width: 390, height: 844 };
 const databasePath = join(tmpdir(), `live-translator-real-${randomUUID()}.sqlite`);
+const backgroundClose = process.env.REAL_LIVE_BACKGROUND_CLOSE ?? "true";
+if (!["true", "false"].includes(backgroundClose)) throw new Error("REAL_LIVE_BACKGROUND_CLOSE must be true or false");
 
 export default defineConfig({
   testDir: "./tests/real",
@@ -40,7 +42,7 @@ export default defineConfig({
         WEB_ORIGIN,
         USAGE_DB_PATH: databasePath,
         USAGE_LEDGER_ENABLED: "true",
-        BACKGROUND_SESSION_CLOSE_ENABLED: "true",
+        BACKGROUND_SESSION_CLOSE_ENABLED: backgroundClose,
         SESSION_CLOSE_TIMEOUT_MS: "15000",
       },
     },

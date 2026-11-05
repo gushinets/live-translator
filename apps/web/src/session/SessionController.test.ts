@@ -127,6 +127,7 @@ function createFakeAudio() {
     captureStream,
     captureTrack,
     primeOutput: vi.fn(async () => {}),
+    cancelPendingMedia: vi.fn(),
     setOutputAudible: vi.fn(),
     setCaptureEnabled: vi.fn((enabled: boolean) => {
       captureTrack.enabled = enabled;
@@ -1113,7 +1114,7 @@ describe("SessionController", () => {
     try {
       await controller.startWithLanguages({ A: "ru", B: "en" });
       controller.handleRemoteStream(audio.getCaptureStream()!, live as unknown as LiveClient);
-      await flushMicrotasks();
+      await flushLifecycle();
       const readiness = () => (controller as unknown as { remotePlaybackState: string }).remotePlaybackState;
       expect(readiness()).toBe("ready");
       audio.setNonInterrupting(enabled);
@@ -1122,7 +1123,7 @@ describe("SessionController", () => {
       Object.defineProperty(decoder, "error", { configurable: true, get: () => error });
       decoder.load = vi.fn(() => { error = null; });
       decoder.dispatchEvent(new Event("error"));
-      await flushMicrotasks();
+      await flushLifecycle();
       expect(decoder.load).toHaveBeenCalledOnce();
       expect(HTMLMediaElement.prototype.play).toHaveBeenCalledTimes(2);
       expect(readiness()).toBe("ready");
@@ -1316,6 +1317,7 @@ describe("SessionController", () => {
         return live as unknown as LiveClient;
       },
       audio: audio as unknown as AudioController,
+      orientation: new FakeOrientation() as unknown as OrientationController,
     });
     const first = created[0];
     if (first === undefined) {
@@ -1522,6 +1524,7 @@ describe("SessionController", () => {
         return live as unknown as LiveClient;
       },
       audio: audio as unknown as AudioController,
+      orientation: new FakeOrientation() as unknown as OrientationController,
     });
     const first = created[0];
     if (first === undefined) {
@@ -1584,6 +1587,7 @@ describe("SessionController", () => {
         return live as unknown as LiveClient;
       },
       audio: audio as unknown as AudioController,
+      orientation: new FakeOrientation() as unknown as OrientationController,
     });
 
     await controller.startBootstrap();
@@ -3467,6 +3471,7 @@ describe("SessionController max session duration", () => {
     const controller = new SessionController({
       createLive,
       audio: audio as unknown as AudioController,
+      orientation: new FakeOrientation() as unknown as OrientationController,
     });
     const staleSessionStarted = firstLive.onSessionStarted;
     expect(staleSessionStarted).toBeTypeOf("function");
@@ -3588,6 +3593,7 @@ describe("SessionController runtime connection errors", () => {
     const controller = new SessionController({
       createLive,
       audio: audio as unknown as AudioController,
+      orientation: new FakeOrientation() as unknown as OrientationController,
     });
     await enterListening(controller);
     const staleSessionClosed = firstLive.onSessionClosed;
@@ -4207,7 +4213,7 @@ describe("SessionController PWA lifecycle suspension (§11.3 / §19)", () => {
       wakeLock: new FakeWakeLock(),
     });
 
-    await enterListening(controller);
+    await controller.startWithLanguages({ A: "ru", B: "en" });
 
     expect(controller.session.state).toBe("suspended");
     expect(controller.suspendReason).toBe("orientation");
@@ -4426,7 +4432,7 @@ describe("SessionController PWA lifecycle suspension (§11.3 / §19)", () => {
     try {
       await controller.startWithLanguages({ A: "en", B: "es" });
       controller.handleRemoteStream(audio.getCaptureStream()!, live as unknown as LiveClient);
-      await flushMicrotasks();
+      await flushLifecycle();
       audio.setNonInterrupting(enabled);
       emitVoice(audio, true);
       live.emit({ type: "session.input_transcript.delta", delta: "Where is the station?" });
@@ -8072,5 +8078,399 @@ it.each([false, true])("completes a queued language change after deadline expiry
   expect(live.appendInstructions).toHaveBeenLastCalledWith(buildSteering({ A: "ru", B: "de" }), expect.anything());
   expect(controller.inputReady).toBe(true);
   expect(controller.session.state).toBe("listening");
+  await controller.endConversation();
+});
+
+describe("terminal retirement and input activation boundaries", () => {
+  it.each(["startup", "initial-mute", "language", "resume"] as const)("retires the provider after %s failure while preserving the error screen", async path => {
+    const { controller, live, audio, orientation, wakeLock } = createController();
+    if (path === "startup") live.appendInstructions.mockRejectedValueOnce(new Error("startup refused"));
+    if (path === "initial-mute") live.setInputMuted.mockRejectedValueOnce(new Error("mute refused"));
+    if (path === "startup" || path === "initial-mute") {
+      await expect(controller.startWithLanguages({ A: "ru", B: "en" })).rejects.toThrow();
+    } else {
+      await controller.startWithLanguages({ A: "ru", B: "en" });
+      live.appendInstructions.mockRejectedValueOnce(new Error("control refused"));
+      if (path === "language") await expect(controller.changeInterlocutorLanguage("es")).rejects.toThrow();
+      else {
+        orientation.emit("landscape"); await flushLifecycle();
+        orientation.emit("portrait"); await flushLifecycle();
+      }
+    }
+    expect(controller.session.state).toBe("error");
+    expect(controller.ownerError).toBeDefined();
+    expect(controller.inputReady).toBe(false);
+    expect(controller.isConnectInFlight).toBe(false);
+    expect(controller.isInterpreterStarting).toBe(false);
+    expect(audio.getCaptureStream()).toBeNull();
+    expect(live.close).toHaveBeenCalledWith("primary_startup_failed");
+    expect(wakeLock.release).toHaveBeenCalled();
+    await controller.cancel();
+  });
+
+  it("keeps a late startup unmute from reopening capture after terminal failure", async () => {
+    const { controller, live, audio } = createController();
+    let unmute!: () => void;
+    live.setInputMuted.mockImplementation(muted => muted ? Promise.resolve() : new Promise(resolve => { unmute = resolve; }));
+    const starting = controller.startWithLanguages({ A: "ru", B: "en" });
+    for (let i = 0; i < 30 && !unmute; i++) await Promise.resolve();
+    expect(unmute).toBeTypeOf("function");
+    live.onError?.({ type: "error", error: { message: "network failed" }, transportFailure: true });
+    audio.setCaptureEnabled.mockClear();
+    unmute(); await starting;
+    expect(controller.session.state).toBe("error");
+    expect(audio.setCaptureEnabled).not.toHaveBeenCalledWith(true);
+    expect(controller.isConnectInFlight).toBe(false);
+    expect(controller.isInterpreterStarting).toBe(false);
+    await controller.cancel();
+  });
+
+  it.each(["steering", "unmute"] as const)("does not open startup input when hidden during %s and resumes on return", async stage => {
+    const { controller, live, audio, visibility } = createController();
+    let release!: () => void;
+    if (stage === "steering") live.appendInstructions.mockImplementation(async (_text, policy) => {
+      if (policy?.kind === "first_steering") await new Promise<void>(resolve => { release = resolve; });
+      return { eventId: "ack" };
+    });
+    else live.setInputMuted.mockImplementation(muted => muted ? Promise.resolve() : new Promise(resolve => { release = resolve; }));
+    const starting = controller.startWithLanguages({ A: "ru", B: "en" });
+    for (let i = 0; i < 30 && !release; i++) await Promise.resolve();
+    expect(release).toBeTypeOf("function");
+    visibility.hide(); audio.setCaptureEnabled.mockClear();
+    release(); await starting; await flushLifecycle();
+    expect(audio.setCaptureEnabled).not.toHaveBeenCalledWith(true);
+    expect(controller.session.state).toBe("suspended");
+    expect(controller.inputReady).toBe(false);
+    expect(live.setInputMuted).toHaveBeenLastCalledWith(true);
+    live.setInputMuted.mockResolvedValue(undefined);
+    visibility.show(); await flushLifecycle();
+    expect(controller.session.state).toBe("listening");
+    expect(controller.inputReady).toBe(true);
+    await controller.cancel();
+  });
+
+  it.each(["context", "bootstrap"] as const)("retires hidden %s setup before delayed connection opens capture", async stage => {
+    const { controller, live, audio, visibility } = createController();
+    let connected!: (value: { sessionId: string }) => void;
+    live.connect.mockImplementationOnce(() => new Promise(resolve => { connected = resolve; }));
+    const start = stage === "context" ? controller.startContextCapture() : controller.startBootstrap();
+    const rejected = expect(start).rejects.toThrow();
+    for (let i = 0; i < 30 && !connected; i++) await Promise.resolve();
+    visibility.hide(); audio.setCaptureEnabled.mockClear(); connected({ sessionId: "sess" });
+    await rejected;
+    expect(controller.session.state).toBe("error");
+    expect(audio.setCaptureEnabled).not.toHaveBeenCalledWith(true);
+    expect(live.close).toHaveBeenCalledWith("primary_startup_failed");
+    await controller.cancel();
+  });
+
+  it.each(["context", "bootstrap"] as const)("closes active %s capture immediately when hidden", async stage => {
+    const { controller, live, audio, visibility } = createController();
+    await (stage === "context" ? controller.startContextCapture() : controller.startBootstrap());
+    visibility.hide();
+    expect(audio.captureTrack.enabled).toBe(false);
+    expect(controller.session.state).toBe("error");
+    await flushLifecycle();
+    expect(live.close).toHaveBeenCalledWith("primary_startup_failed");
+    await controller.cancel();
+  });
+});
+
+it("keeps manual source-timeout resume closed until portrait returns", async () => {
+  vi.useFakeTimers();
+  const { controller, audio, orientation } = createController();
+  await controller.startWithLanguages({ A: "ru", B: "en" });
+  audio.onVoiceActivity?.({ active: true, atMs: Date.now() });
+  await vi.advanceTimersByTimeAsync(runtime.maxSourceMs);
+  orientation.emit("landscape"); await flushLifecycle();
+  audio.setCaptureEnabled.mockClear();
+  await controller.resumeFromSourceTimeout();
+  expect(controller.session.state).toBe("suspended");
+  expect(controller.inputReady).toBe(false);
+  expect(audio.setCaptureEnabled).not.toHaveBeenCalledWith(true);
+  orientation.emit("portrait"); await flushLifecycle();
+  expect(controller.session.state).toBe("suspended");
+  await controller.resumeFromSourceTimeout();
+  expect(controller.session.state).toBe("listening");
+  await controller.cancel();
+});
+
+it("keeps the terminal error stable past the old maximum-session deadline", async () => {
+  vi.useFakeTimers();
+  const { controller, live, wakeLock } = createController();
+  await controller.startWithLanguages({ A: "ru", B: "en" });
+  live.onSessionStarted?.({ type: "session.started", session: { id: "session" } });
+  live.appendInstructions.mockRejectedValueOnce(new Error("control refused"));
+  await expect(controller.changeInterlocutorLanguage("es")).rejects.toThrow();
+  const error = controller.ownerError;
+  const closeCount = live.close.mock.calls.length;
+  await vi.advanceTimersByTimeAsync(runtime.maxSessionMs + 1);
+  expect(controller.session.state).toBe("error");
+  expect(controller.ownerError).toBe(error);
+  expect(live.close).toHaveBeenCalledTimes(closeCount);
+  expect(wakeLock.release).toHaveBeenCalled();
+  await controller.cancel();
+});
+
+it("does not request a wake lock after End while initial orientation lock was pending", async () => {
+  const { controller, orientation, wakeLock } = createController();
+  let unlock!: () => void;
+  orientation.lockPortrait.mockImplementationOnce(() => new Promise<void>(resolve => { unlock = resolve; }));
+  const start = controller.startWithLanguages({ A: "ru", B: "en" });
+  for (let i = 0; i < 40 && !unlock; i++) await Promise.resolve();
+  expect(unlock).toBeTypeOf("function");
+  await controller.endConversation();
+  unlock(); await start;
+  expect(controller.session.state).toBe("ended");
+  expect(wakeLock.request).not.toHaveBeenCalled();
+});
+
+describe("cancellable audio readiness", () => {
+  it("does not let unconsumed gesture priming cancel a later start", async () => {
+    vi.useFakeTimers();
+    const { controller, audio } = createController();
+    let release!: () => void;
+    audio.primeOutput.mockReturnValueOnce(new Promise<void>(resolve => { release = resolve; }));
+    // Accounting can decline policy/claim preflight after this synchronous gesture call.
+    const primed = (controller as unknown as { beginOutputPriming(): Promise<void> }).beginOutputPriming();
+    await controller.startWithLanguages({ A: "ru", B: "en" });
+    const cancellations = audio.cancelPendingMedia.mock.calls.length;
+    await vi.advanceTimersByTimeAsync(runtime.audioReadyTimeoutMs);
+    expect(audio.cancelPendingMedia).toHaveBeenCalledTimes(cancellations);
+    expect(controller.session.state).toBe("listening");
+    expect(controller.inputReady).toBe(true);
+    release(); await primed;
+    await controller.endConversation();
+  });
+
+  it("preserves a supplied priming rejection even without a reason", async () => {
+    const { controller, audio, live } = createController();
+    await expect(controller.startWithLanguages({ A: "ru", B: "en" }, Promise.reject(undefined))).rejects.toBeUndefined();
+    expect(controller.session.state).toBe("error");
+    expect(controller.ownerError).toBe(STARTUP_ERROR_MESSAGE);
+    expect(audio.startCapture).not.toHaveBeenCalled();
+    expect(live.connect).not.toHaveBeenCalled();
+    await controller.cancel();
+  });
+
+  it.each([false, true])("fails startup after the output-readiness budget, supplied prime=%s", async supplied => {
+    vi.useFakeTimers();
+    const { controller, audio, live } = createController();
+    const pending = new Promise<void>(() => {});
+    if (!supplied) audio.primeOutput.mockReturnValueOnce(pending);
+    const starting = controller.startWithLanguages({ A: "ru", B: "en" }, supplied ? pending : undefined).catch(error => error);
+    await vi.advanceTimersByTimeAsync(runtime.audioReadyTimeoutMs);
+    expect(await starting).toMatchObject({ message: "Audio output readiness timed out" });
+    expect(controller.session.state).toBe("error");
+    expect(controller.ownerError).toBe(STARTUP_ERROR_MESSAGE);
+    expect(controller.isConnectInFlight).toBe(false);
+    expect(audio.cancelPendingMedia).toHaveBeenCalled();
+    expect(audio.startCapture).not.toHaveBeenCalled();
+    expect(live.connect).not.toHaveBeenCalled();
+    await controller.cancel();
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it.each([false, true])("cancels output priming without waiting for its timeout or native result, supplied=%s", async supplied => {
+    vi.useFakeTimers();
+    const { controller, audio, live } = createController();
+    let release!: () => void;
+    const pending = new Promise<void>(resolve => { release = resolve; });
+    if (!supplied) audio.primeOutput.mockReturnValueOnce(pending);
+    const starting = controller.startWithLanguages({ A: "ru", B: "en" }, supplied ? pending : undefined);
+    await controller.cancel();
+    await starting;
+    expect(controller.session.state).toBe("idle");
+    expect(audio.startCapture).not.toHaveBeenCalled();
+    expect(live.connect).not.toHaveBeenCalled();
+    expect(vi.getTimerCount()).toBe(0);
+    await controller.startWithLanguages({ A: "ru", B: "es" });
+    release(); await Promise.resolve(); await Promise.resolve();
+    expect(controller.session.state).toBe("listening");
+    expect(controller.ownerError).toBeUndefined();
+    expect(live.connect).toHaveBeenCalledOnce();
+    await controller.endConversation();
+  });
+
+  it("keeps permission waiting beyond the audio deadline but cancels it before the grant", async () => {
+    vi.useFakeTimers();
+    let grant!: (stream: MediaStream) => void;
+    const { audio, track } = createDispatchableAudio(() => new Promise(resolve => { grant = resolve; }));
+    const { controller, live } = createController({ audio });
+    const starting = controller.startWithLanguages({ A: "ru", B: "en" });
+    await vi.advanceTimersByTimeAsync(runtime.audioReadyTimeoutMs + 1);
+    expect(grant).toBeTypeOf("function");
+    expect(controller.ownerError).toBeUndefined();
+    expect(controller.isConnectInFlight).toBe(true);
+    await controller.cancel(); await starting;
+    expect(controller.isConnectInFlight).toBe(false);
+    grant({ getAudioTracks: () => [track], getTracks: () => [track] } as unknown as MediaStream);
+    await Promise.resolve(); await Promise.resolve();
+    expect(track.stop).toHaveBeenCalledOnce();
+    expect(audio.getCaptureStream()).toBeNull();
+    expect(live.connect).not.toHaveBeenCalled();
+    audio.dispose();
+  });
+
+  it("ends during pending lifecycle prime and ignores its late rejection", async () => {
+    vi.useFakeTimers();
+    const { controller, audio, orientation } = createController();
+    await controller.startWithLanguages({ A: "ru", B: "en" });
+    orientation.emit("landscape"); await flushLifecycle();
+    let reject!: (error: Error) => void;
+    audio.primeOutput.mockImplementationOnce(() => new Promise<void>((_, fail) => { reject = fail; }));
+    orientation.emit("portrait"); await flushLifecycle();
+    expect(reject).toBeTypeOf("function");
+    await controller.endConversation(); await flushLifecycle();
+    expect(controller.session.state).toBe("ended");
+    expect(vi.getTimerCount()).toBe(0);
+    reject(new Error("old native resume failed")); await flushLifecycle();
+    expect(controller.session.state).toBe("ended");
+    expect(controller.ownerError).toBeUndefined();
+    expect(audio.getCaptureStream()).toBeNull();
+  });
+
+  it("retires an active lifecycle resume whose output never becomes ready", async () => {
+    vi.useFakeTimers();
+    const { controller, audio, live, orientation } = createController();
+    await controller.startWithLanguages({ A: "ru", B: "en" });
+    orientation.emit("landscape"); await flushLifecycle();
+    audio.primeOutput.mockReturnValueOnce(new Promise<void>(() => {}));
+    orientation.emit("portrait"); await flushLifecycle();
+    await vi.advanceTimersByTimeAsync(runtime.audioReadyTimeoutMs);
+    expect(controller.session.state).toBe("error");
+    expect(controller.ownerError).toBe(CONNECTION_ERROR_MESSAGE);
+    expect(controller.inputReady).toBe(false);
+    expect(audio.getCaptureStream()).toBeNull();
+    expect(live.close).toHaveBeenCalledWith("primary_startup_failed");
+    await controller.cancel();
+  });
+
+  it("settles first remote play timeout without accepting its later success", async () => {
+    vi.useFakeTimers();
+    const { controller, audio, live } = createController();
+    await controller.startWithLanguages({ A: "ru", B: "en" });
+    let played!: () => void;
+    audio.audioElement.play = vi.fn(() => new Promise<void>(resolve => { played = resolve; }));
+    controller.handleRemoteStream(fakeRemoteStream("remote"), live as unknown as LiveClient);
+    await vi.advanceTimersByTimeAsync(runtime.audioReadyTimeoutMs);
+    expect((controller as unknown as { remotePlaybackState: string }).remotePlaybackState).toBe("failed");
+    expect(audio.setOutputAudible).toHaveBeenLastCalledWith(false);
+    played(); await flushLifecycle();
+    expect((controller as unknown as { remotePlaybackState: string }).remotePlaybackState).toBe("failed");
+    expect(controller.session.state).toBe("listening");
+    await controller.endConversation();
+  });
+
+  it("ignores an expired remote play attempt superseded by decoder recovery", async () => {
+    vi.useFakeTimers();
+    const { controller, audio, live } = createController();
+    await controller.startWithLanguages({ A: "ru", B: "en" });
+    audio.audioElement.play = vi.fn().mockReturnValueOnce(new Promise<void>(() => {})).mockResolvedValue(undefined);
+    controller.handleRemoteStream(fakeRemoteStream("remote"), live as unknown as LiveClient);
+    let error: MediaError | null = { code: 3 } as MediaError;
+    Object.defineProperty(audio.audioElement, "error", { get: () => error, configurable: true });
+    vi.mocked(audio.audioElement.load).mockImplementation(() => { error = null; });
+    audio.audioElement.onerror?.call(audio.audioElement, new Event("error"));
+    await flushLifecycle();
+    expect((controller as unknown as { remotePlaybackState: string }).remotePlaybackState).toBe("ready");
+    const cancellations = audio.cancelPendingMedia.mock.calls.length;
+    await vi.advanceTimersByTimeAsync(runtime.audioReadyTimeoutMs);
+    expect((controller as unknown as { remotePlaybackState: string }).remotePlaybackState).toBe("ready");
+    expect(audio.cancelPendingMedia).toHaveBeenCalledTimes(cancellations);
+    expect(controller.session.state).toBe("listening");
+    await controller.endConversation();
+  });
+});
+
+it.each(["orientation", "wake"] as const)("does not wait for a pending initial %s hint before opening input", async hint => {
+  const { controller, audio, orientation, wakeLock } = createController();
+  const pending = new Promise<void>(() => {});
+  if (hint === "orientation") orientation.lockPortrait.mockReturnValueOnce(pending);
+  else wakeLock.request.mockReturnValueOnce(pending);
+  await controller.startWithLanguages({ A: "ru", B: "en" });
+  expect(controller.session.state).toBe("listening");
+  expect(controller.inputReady).toBe(true);
+  expect(audio.captureTrack.enabled).toBe(true);
+  await controller.endConversation();
+});
+
+it("does not wait for a pending wake hint before resuming input", async () => {
+  const { controller, audio, orientation, wakeLock } = createController();
+  await controller.startWithLanguages({ A: "ru", B: "en" });
+  orientation.emit("landscape"); await flushLifecycle();
+  wakeLock.reacquire.mockReturnValueOnce(new Promise<void>(() => {}));
+  orientation.emit("portrait"); await flushLifecycle();
+  expect(controller.session.state).toBe("listening");
+  expect(controller.inputReady).toBe(true);
+  expect(audio.captureTrack.enabled).toBe(true);
+  await controller.endConversation();
+});
+
+it.each(["visibility", "audio"] as const)("does not reacquire a wake lock from queued %s restoration after terminal failure", async kind => {
+  const { controller, live, audio, visibility, wakeLock } = createController();
+  await controller.startWithLanguages({ A: "ru", B: "en" });
+  let muted!: () => void;
+  live.setInputMuted.mockImplementationOnce(() => new Promise<void>(resolve => { muted = resolve; }));
+  if (kind === "visibility") visibility.hide(); else audio.onAudioInterruption?.();
+  await flushLifecycle();
+  expect(muted).toBeTypeOf("function");
+  if (kind === "visibility") visibility.show(); else audio.onAudioRestored?.();
+  live.onError?.({ type: "error", error: { message: "network failed" }, transportFailure: true });
+  expect(controller.session.state).toBe("error");
+  expect(wakeLock.release).toHaveBeenCalled();
+  muted(); await flushLifecycle();
+  expect(controller.session.state).toBe("error");
+  expect(wakeLock.reacquire).not.toHaveBeenCalled();
+  expect(audio.captureTrack.enabled).toBe(false);
+  await controller.cancel();
+});
+
+it("opens interpreter input when output captions arrive during initial orientation lock", async () => {
+  const { controller, audio, live, orientation } = createController();
+  let unlock!: () => void;
+  orientation.lockPortrait.mockImplementationOnce(() => new Promise<void>(resolve => { unlock = resolve; }));
+  const starting = controller.startWithLanguages({ A: "ru", B: "en" });
+  for (let i = 0; i < 40 && !unlock; i++) await Promise.resolve();
+  expect(unlock).toBeTypeOf("function");
+  live.emit({ type: "session.output_transcript.delta", delta: "Hello there, how are you today?" });
+  expect(controller.session.state).toBe("outputting");
+  unlock(); await starting;
+  expect(audio.captureTrack.enabled).toBe(true);
+  expect(audio.setOutputAudible).toHaveBeenLastCalledWith(true);
+  expect(controller.suspendReason).toBeUndefined();
+  await controller.endConversation();
+});
+
+it.each([
+  { nextConversation: false, stage: "startup_interpreter" },
+  { nextConversation: false, stage: "first_steering" },
+  { nextConversation: true, stage: "startup_interpreter" },
+  { nextConversation: true, stage: "first_steering" },
+])("opens input after early transcripts before $stage ACK (next conversation: $nextConversation)", async ({ nextConversation, stage }) => {
+  const { controller, audio, live } = createController();
+  if (nextConversation) {
+    await controller.startWithLanguages({ A: "ru", B: "en" });
+    await controller.endConversation();
+    await controller.cancel();
+  }
+  let acknowledge!: () => void;
+  live.appendInstructions.mockImplementation(async (_text, policy) => {
+    if (policy?.kind === stage) await new Promise<void>(resolve => { acknowledge = resolve; });
+    return { eventId: "evt-instructions" };
+  });
+  const starting = controller.startWithLanguages({ A: "ru", B: "en" });
+  await flushLifecycle();
+  expect(acknowledge).toBeTypeOf("function");
+  expect(controller.session.state).toBe("bootstrap");
+  live.emit({ type: "session.input_transcript.delta", delta: "a 3" });
+  live.emit({ type: "session.output_transcript.delta", delta: " Ну " });
+  expect(controller.session.state).toBe("bootstrap");
+  acknowledge(); await starting;
+  expect(controller.session.state).toBe("listening");
+  expect(controller.inputReady).toBe(true);
+  expect(audio.captureTrack.enabled).toBe(true);
+  expect(live.setInputMuted).toHaveBeenLastCalledWith(false);
+  expect(controller.suspendReason).toBeUndefined();
   await controller.endConversation();
 });

@@ -272,7 +272,7 @@ describe("ConversationScreen orientation and status", () => {
     expect(resume).toBeInTheDocument();
     expect(resume).toBeDisabled();
     expect(end).toBeInTheDocument();
-    expect(end).toBeDisabled();
+    expect(end).toBeEnabled();
   });
   it("offers retained resume from a paused interpreter screen", () => {
     const controller = new FakeConversationController(session({ state: "suspended" }));
@@ -678,6 +678,40 @@ describe("ConversationScreen actions", () => {
     hidden.suspendReason = "visibility";
     render(<ConversationScreen controller={hidden} />);
     expect(screen.queryByTestId("rotate-overlay")).not.toBeInTheDocument();
+  });
+
+  it("keeps End reachable and focused inside the rotate dialog", () => {
+    const controller = new FakeConversationController(session({ state: "suspended" }));
+    controller.suspendReason = "orientation";
+    render(<ConversationScreen controller={controller} />);
+    const dialog = screen.getByRole("dialog", { name: "Поверните телефон вертикально" });
+    const end = within(dialog).getByRole("button", { name: "Завершить" });
+    expect(end).toHaveFocus();
+    fireEvent.keyDown(end, { key: "Tab" });
+    expect(end).toHaveFocus();
+    fireEvent.keyDown(end, { key: "Tab", shiftKey: true });
+    expect(end).toHaveFocus();
+    fireEvent.click(end);
+    expect(controller.endConversation).toHaveBeenCalledOnce();
+    act(() => {
+      controller.suspendReason = undefined;
+      controller.session = { ...controller.session, state: "ending" };
+      controller.notify();
+    });
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Завершаю…" })).toBeDisabled();
+  });
+
+  it("returns keyboard focus to End after the phone becomes portrait", () => {
+    const controller = new FakeConversationController(session({ state: "suspended" }));
+    controller.suspendReason = "orientation";
+    render(<ConversationScreen controller={controller} />);
+    act(() => {
+      controller.suspendReason = undefined;
+      controller.session = { ...controller.session, state: "listening" };
+      controller.notify();
+    });
+    expect(screen.getByRole("button", { name: "Завершить" })).toHaveFocus();
   });
 });
 

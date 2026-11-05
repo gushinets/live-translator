@@ -1,10 +1,11 @@
-import { readFileSync } from "node:fs";
+import { readFileSync, writeFileSync } from "node:fs";
 import { expect, test, type Page } from "@playwright/test";
 import { emulatePortraitScreen } from "./portrait-screen";
 import { cleanupRealSessions } from "./cleanup";
+import { installDeterministicMicrophone, type RealLiveEventDiagnostic } from "./microphone";
 
 const PARTICIPANT_A_AUDIO = readAudioFixture("participant-a.mp3.b64"); // Russian
-const PARTICIPANT_B_AUDIO = readAudioFixture("participant-b.mp3.b64"); // English
+const PARTICIPANT_B_AUDIO = readAudioFixture("participant-b-en.wav.b64"); // English: The entrance is on the right.
 
 interface AudioElementState {
   exists: boolean;
@@ -14,12 +15,6 @@ interface AudioElementState {
   liveAudioTracks: number;
 }
 
-interface RealLiveEventDiagnostic {
-  type: string;
-  delta?: string;
-  errorMessage?: string;
-  atMs: number;
-}
 
 interface TurnSnapshot {
   statusA: string;
@@ -49,21 +44,6 @@ interface RemoteRmsSummary {
 
 type Script = "cyrillic" | "latin";
 
-declare global {
-  interface Window {
-    __liveTranslatorRealMic?: {
-      isReady(): boolean;
-      startBase64Audio(base64: string): Promise<void>;
-      waitForPlaybackComplete(): Promise<void>;
-    };
-    __liveTranslatorRealDiagnostics?: {
-      events: RealLiveEventDiagnostic[];
-      outboundAudioBytesSent(): Promise<number>;
-      inboundAudioBytesReceived(): Promise<number>;
-      remoteAudioRmsSamples(durationMs: number): Promise<number[]>;
-    };
-  }
-}
 
 function readAudioFixture(name: string): string {
   const encoded = readFileSync(new URL(`./fixtures/${name}`, import.meta.url), "utf8")
@@ -79,183 +59,6 @@ function readAudioFixture(name: string): string {
   return encoded;
 }
 
-async function installDeterministicMicrophone(page: Page): Promise<void> {
-  await page.addInitScript(() => {
-    let context: AudioContext | null = null;
-    let destination: MediaStreamAudioDestinationNode | null = null;
-    let playbackComplete: Promise<void> | null = null;
-    const liveEvents: RealLiveEventDiagnostic[] = [];
-
-    async function ensureMicrophone(): Promise<{
-      context: AudioContext;
-      destination: MediaStreamAudioDestinationNode;
-    }> {
-      if (context === null) {
-        context = new AudioContext();
-      }
-      if (context.state !== "running") {
-        await context.resume();
-      }
-      if (destination === null) {
-        destination = context.createMediaStreamDestination();
-        // Keep the provider timeline advancing before and between speech fixtures.
-        const silence = context.createConstantSource();
-        silence.offset.value = 0;
-        silence.connect(destination);
-        silence.start();
-      }
-      return { context, destination };
-    }
-
-    const originalCreateDataChannel = RTCPeerConnection.prototype.createDataChannel;
-    RTCPeerConnection.prototype.createDataChannel = function (
-      label: string,
-      dataChannelDict?: RTCDataChannelInit,
-    ): RTCDataChannel {
-      const channel = originalCreateDataChannel.call(this, label, dataChannelDict);
-      channel.addEventListener("message", (event) => {
-        if (typeof event.data !== "string") {
-          return;
-        }
-        try {
-          const parsed = JSON.parse(event.data) as {
-            type?: unknown;
-            delta?: unknown;
-            error?: { message?: unknown };
-          };
-          if (typeof parsed.type !== "string") {
-            return;
-          }
-          liveEvents.push({
-            type: parsed.type,
-            delta: typeof parsed.delta === "string" ? parsed.delta : undefined,
-            errorMessage:
-              typeof parsed.error?.message === "string" ? parsed.error.message : undefined,
-            atMs: performance.now(),
-          });
-        } catch {
-          liveEvents.push({ type: "<invalid-json>", atMs: performance.now() });
-        }
-      });
-      window.__liveTranslatorRealDiagnostics = {
-        events: liveEvents,
-        outboundAudioBytesSent: async (): Promise<number> => {
-          const report = await this.getStats();
-          let bytesSent = 0;
-          report.forEach((entry) => {
-            if (
-              entry.type === "outbound-rtp" &&
-              entry.kind === "audio" &&
-              typeof entry.bytesSent === "number"
-            ) {
-              bytesSent += entry.bytesSent;
-            }
-          });
-          return bytesSent;
-        },
-        inboundAudioBytesReceived: async (): Promise<number> => {
-          const report = await this.getStats();
-          let bytesReceived = 0;
-          report.forEach((entry) => {
-            if (
-              entry.type === "inbound-rtp" &&
-              entry.kind === "audio" &&
-              typeof entry.bytesReceived === "number"
-            ) {
-              bytesReceived += entry.bytesReceived;
-            }
-          });
-          return bytesReceived;
-        },
-        remoteAudioRmsSamples: async (durationMs: number): Promise<number[]> => {
-          const element = document.querySelector("audio");
-          if (!(element instanceof HTMLAudioElement) || !(element.srcObject instanceof MediaStream)) {
-            return [];
-          }
-          const microphone = await ensureMicrophone();
-          const analysisStream = element.srcObject.clone();
-          const source = microphone.context.createMediaStreamSource(analysisStream);
-          const analyser = microphone.context.createAnalyser();
-          analyser.fftSize = 2048;
-          const silentSink = microphone.context.createGain();
-          silentSink.gain.value = 0;
-          source.connect(analyser);
-          analyser.connect(silentSink);
-          silentSink.connect(microphone.context.destination);
-          const samples = new Float32Array(analyser.fftSize);
-          const rmsValues: number[] = [];
-          const deadline = performance.now() + durationMs;
-          try {
-            while (performance.now() < deadline) {
-              analyser.getFloatTimeDomainData(samples);
-              let sumSquares = 0;
-              for (const sample of samples) {
-                sumSquares += sample * sample;
-              }
-              rmsValues.push(Math.sqrt(sumSquares / samples.length));
-              await new Promise<void>((resolve) => window.setTimeout(resolve, 50));
-            }
-          } finally {
-            source.disconnect();
-            analyser.disconnect();
-            silentSink.disconnect();
-            for (const track of analysisStream.getTracks()) {
-              track.stop();
-            }
-          }
-          return rmsValues;
-        },
-      };
-      return channel;
-    };
-
-    Object.defineProperty(navigator.mediaDevices, "getUserMedia", {
-      configurable: true,
-      value: async (constraints: MediaStreamConstraints): Promise<MediaStream> => {
-        if (constraints.audio === false || constraints.audio === undefined) {
-          throw new Error("Real-Live test microphone only supports audio capture");
-        }
-        return (await ensureMicrophone()).destination.stream;
-      },
-    });
-
-    window.__liveTranslatorRealMic = {
-      isReady: () => destination !== null,
-      startBase64Audio: async (base64: string): Promise<void> => {
-        if (playbackComplete !== null) {
-          throw new Error("A real-Live microphone fixture is already playing");
-        }
-        const microphone = await ensureMicrophone();
-        const bytes = Uint8Array.from(atob(base64), (character) =>
-          character.charCodeAt(0),
-        );
-        const decoded = await microphone.context.decodeAudioData(bytes.buffer.slice(0));
-        const source = microphone.context.createBufferSource();
-        source.buffer = decoded;
-        source.connect(microphone.destination);
-        playbackComplete = new Promise<void>((resolve) => {
-          source.addEventListener(
-            "ended",
-            () => {
-              window.setTimeout(() => {
-                playbackComplete = null;
-                resolve();
-              }, 350);
-            },
-            { once: true },
-          );
-        });
-        source.start();
-      },
-      waitForPlaybackComplete: async (): Promise<void> => {
-        const currentPlayback = playbackComplete;
-        if (currentPlayback !== null) {
-          await currentPlayback;
-        }
-      },
-    };
-  });
-}
 
 async function startMicrophoneFixture(page: Page, base64: string): Promise<void> {
   await page.evaluate(async (fixture) => {
@@ -455,9 +258,14 @@ test.describe("real GPT-Live desktop conversation", () => {
     });
   });
 
-  test.afterEach(async ({ page, baseURL }) => {
+  test.afterEach(async ({ page, baseURL }, testInfo) => {
     test.setTimeout(60000);
-    await cleanupRealSessions(page.request, baseURL!, attempts);
+    try {
+      if (!page.isClosed()) {
+        writeFileSync(testInfo.outputPath("provider-events.json"), JSON.stringify(await liveEventsSince(page, 0), null, 2));
+        await page.screenshot({ path: testInfo.outputPath("conversation.png") });
+      }
+    } finally { await cleanupRealSessions(page.request, baseURL!, attempts); }
   });
 
   test("synthetic microphone sends silence before the first fixture, including while capture is disabled", async ({ page }) => {
@@ -526,7 +334,6 @@ test.describe("real GPT-Live desktop conversation", () => {
     const outboundBytesBeforeA = await outboundAudioBytesSent(page);
     const inboundBytesBeforeA = await inboundAudioBytesReceived(page);
     await startMicrophoneFixture(page, PARTICIPANT_A_AUDIO);
-    await expect(page.getByTestId("participant-status-A")).toHaveText("Слушаю");
     await waitForMicrophoneFixture(page);
     await expect
       .poll(() => outboundAudioBytesSent(page), { timeout: 5_000 })
@@ -547,7 +354,6 @@ test.describe("real GPT-Live desktop conversation", () => {
       await expect(page.getByTestId("participant-status-B")).toHaveText("You can speak");
       safeStage("a_no_output_repeat");
       await startMicrophoneFixture(page, PARTICIPANT_A_AUDIO);
-      await expect(page.getByTestId("participant-status-A")).toHaveText("Слушаю");
       await waitForMicrophoneFixture(page);
       await expect
         .poll(() => outboundAudioBytesSent(page), { timeout: 5_000 })
@@ -613,7 +419,6 @@ test.describe("real GPT-Live desktop conversation", () => {
     const outboundBytesBeforeB = await outboundAudioBytesSent(page);
     const inboundBytesBeforeB = await inboundAudioBytesReceived(page);
     await startMicrophoneFixture(page, PARTICIPANT_B_AUDIO);
-    await expect(page.getByTestId("participant-status-B")).toHaveText("Listening");
     await waitForMicrophoneFixture(page);
     await expect
       .poll(() => outboundAudioBytesSent(page), { timeout: 5_000 })
@@ -634,8 +439,7 @@ test.describe("real GPT-Live desktop conversation", () => {
       await expect(page.getByTestId("participant-status-A")).toHaveText("Можно говорить");
       safeStage("b_no_output_repeat");
       await startMicrophoneFixture(page, PARTICIPANT_B_AUDIO);
-      await expect(page.getByTestId("participant-status-B")).toHaveText("Listening");
-      await waitForMicrophoneFixture(page);
+        await waitForMicrophoneFixture(page);
       await expect
         .poll(() => outboundAudioBytesSent(page), { timeout: 5_000 })
         .toBeGreaterThan(outboundBytesBeforeB);

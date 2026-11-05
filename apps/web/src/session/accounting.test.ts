@@ -2,13 +2,18 @@ import { IDBFactory } from "fake-indexeddb";
 import { existsSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { DatabaseSync } from "node:sqlite";
-import { describe, expect, it, vi } from "vitest";
+import { setImmediate as settle } from "node:timers/promises";
+import { describe, expect, it, vi, type MockInstance } from "vitest";
 import { MetadataDeliveryBudget, METADATA_TTL_MS, noProviderProofDatabaseName } from "./MetadataDeliveryBudget";
 import { ATTEMPT_REGISTRATION_GRACE_MS, CleanupIntentOutbox, type CleanupTransport } from "./CleanupIntentOutbox";
 import { ConversationAccounting } from "./ConversationAccounting";
 import type { DiagnosticStream } from "../diagnostics/DiagnosticOutbox";
 import { AccountingRequestError, type LedgerApi, type ConversationMetadata } from "../api/AccountingBackend";
-import type { ResumeSnapshotStore } from "./ResumeSnapshotStore";
+import { ResumeSnapshotStore } from "./ResumeSnapshotStore";
+import { AccountedSessionController } from "./createAccountedSessionController";
+import type { SessionControllerDeps } from "./SessionController";
+import { LiveClient } from "../live/LiveClient";
+import type { BackendClient } from "../api/BackendClient";
 import { UsageLedger } from "../../../api/src/accounting/UsageLedger";
 import { LedgerError } from "../../../api/src/accounting/types";
 
@@ -2018,4 +2023,96 @@ describe("stage 4 durable lifecycle boundary", () => {
     expect((await f.budget.ends()).some(e => e.conversationId === "c")).toBe(false); await f.budget.close();
   });
 
+});
+
+describe("retained media cancellation", () => {
+  it.each([false, true])("ends a claimed resume while output priming stays pending (explicit=%s)", async explicit => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
+    const visible = vi.spyOn(document, "visibilityState", "get").mockReturnValue("visible");
+    const f = fixture();
+    f.c.conversationId = crypto.randomUUID();
+    f.c.policy.backgroundSessionCloseEnabled = true;
+    f.api.policy.mockResolvedValue({ usageLedgerEnabled: true, backgroundSessionCloseEnabled: true });
+    const storage = new Map<string, string>();
+    const store = await ResumeSnapshotStore.open({ indexedDB: new IDBFactory(), name: crypto.randomUUID(),
+      sessionStorage: { getItem: key => storage.get(key) ?? null, setItem: (key, value) => { storage.set(key, value); },
+        removeItem: key => { storage.delete(key); } } as Storage,
+      locks: { request: async (_name: string, _options: unknown, callback: (lock: object) => unknown) => callback({}) } as LockManager });
+    await store.save({ conversationId: f.c.conversationId, conversationVersion: 1, policyVersion: f.c.policy.policyVersion,
+      participantA: { language: "ru", hasAcceptedConversationSpeech: true },
+      participantB: { language: "en", hasAcceptedConversationSpeech: true }, contextText: "", setupStage: "interpreter",
+      enteredInterpreter: true, interruptedUtterance: false, productDeadlineAt: null, counters: {} });
+    await store.markHidden(f.c.conversationId, Date.now(), f.c.policy.conversationRetentionMs);
+    Object.assign(f.c, { status: "paused", version: 2, resumeExpiresAt: Date.now() + 300000 });
+    await store.confirmPause(f.c);
+    f.api.claimResume.mockImplementation(async (_id, version, id, mode) => {
+      Object.assign(f.c, { status: "resuming", version: version + 1, resumeAttemptId: id });
+      return { ...f.c, attempt: { liveSessionId: id, state: "creating", initialMode: mode,
+        resumeOutcome: "pending", resumeClaimVersion: f.c.version, resumeClaimExpiresAt: Date.now() + 60000 } };
+    });
+    f.api.end.mockImplementation(async (_id, version) => {
+      if (f.c.status === "ended") return { ...f.c };
+      expect(version).toBe(f.c.version);
+      Object.assign(f.c, { status: "ended", version: version + 1, resumeAttemptId: null, resumeExpiresAt: null });
+      return { ...f.c };
+    });
+    await f.scope.loadPolicy();
+    let releasePrime!: () => void;
+    const prime = new Promise<void>(resolve => { releasePrime = resolve; });
+    const audio: SessionControllerDeps["audio"] = {
+      primeOutput: vi.fn(() => prime), startCapture: vi.fn(async () => {}), stopCapture: vi.fn(),
+      getCaptureStream: () => null, setCaptureEnabled: vi.fn(), setOutputAudible: vi.fn(),
+      attachRemoteStream: vi.fn(), audioElement: document.createElement("audio"), resetVoiceActivityBaseline: vi.fn(),
+      onVoiceActivity: null, onPlaybackActivity: null, onAudioInterruption: null, onAudioRestored: null, onCaptureEnded: null,
+    };
+    const connections: MockInstance<LiveClient["connect"]>[] = [];
+    const createLive = vi.fn(() => {
+      const client = new LiveClient({ backend: {} as BackendClient, accounting: f.scope.newAttempt(),
+        peerFactory: () => { throw new Error("Cancelled resume must not create a peer"); }, onRemoteStream: vi.fn() });
+      connections.push(vi.spyOn(client, "connect"));
+      return client;
+    });
+    const controller = new AccountedSessionController({ audio, createLive,
+      visibility: { isHidden: () => false, start() {}, stop() {}, onHidden: null, onVisible: null } as unknown as SessionControllerDeps["visibility"],
+      orientation: { isPortrait: () => true, start() {}, stop() {}, onChange: null, lockPortrait: async () => {} } as unknown as SessionControllerDeps["orientation"],
+      wakeLock: { request: async () => {}, reacquire: async () => {}, release: async () => {} } as SessionControllerDeps["wakeLock"],
+    }, f.scope, Promise.resolve(store));
+    let resuming: Promise<unknown> | undefined, ending: Promise<void> | undefined;
+    try {
+      controller.start();
+      for (let i = 0; i < 50 && controller.retainedRecoveryState === "checking"; i++) await settle();
+      expect(controller.retainedRecoveryState).toBe("paused");
+      resuming = controller.resumeRetainedConversation(explicit).catch(error => error);
+      for (let i = 0; i < 50 && (f.scope.conversationStatus !== "resuming" || createLive.mock.calls.length < 2); i++) await settle();
+      expect(f.api.claimResume).toHaveBeenCalledOnce();
+      expect(audio.primeOutput).toHaveBeenCalledOnce();
+      expect(controller.retainedRecoveryState).toBe("resuming");
+      let ended = false, endError: unknown;
+      ending = controller.endConversation().then(() => { ended = true; }, error => { endError = error; });
+      // Drain IDB work without advancing a media deadline or resolving the pending prime.
+      for (let i = 0; i < 100 && !ended && endError === undefined; i++) await settle();
+      expect(endError).toBeUndefined();
+      expect(ended).toBe(true);
+      expect(f.c.status).toBe("ended");
+      expect(f.api.end).toHaveBeenCalledWith(f.c.conversationId, 3, "user_end");
+      expect(controller.retainedRecoveryState).toBeUndefined();
+      expect(await f.budget.ends()).toHaveLength(0);
+      const terminalState = controller.session.state, clientsAfterEnd = createLive.mock.calls.length;
+      expect(["idle", "ended"]).toContain(terminalState);
+      releasePrime();
+      await resuming;
+      await settle();
+      expect(controller.session.state).toBe(terminalState);
+      expect(controller.retainedRecoveryState).toBeUndefined();
+      expect(createLive).toHaveBeenCalledTimes(clientsAfterEnd);
+      expect(audio.startCapture).not.toHaveBeenCalled();
+      expect(connections.every(connect => connect.mock.calls.length === 0)).toBe(true);
+      expect(f.api.createSession).not.toHaveBeenCalled();
+      expect(f.api.completeResume).not.toHaveBeenCalled();
+    } finally {
+      releasePrime(); await resuming; await ending;
+      await controller.dispose().catch(() => undefined);
+      await f.budget.close(); visible.mockRestore(); vi.useRealTimers();
+    }
+  });
 });

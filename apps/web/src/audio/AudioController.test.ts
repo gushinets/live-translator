@@ -102,6 +102,12 @@ function fakeStream(track: FakeAudioTrack): MediaStream {
   } as unknown as MediaStream;
 }
 
+function deferred<T>() {
+  let resolve!: (value: T | PromiseLike<T>) => void, reject!: (error: Error) => void;
+  const promise = new Promise<T>((ok, fail) => { resolve = ok; reject = fail; });
+  return { promise, resolve, reject };
+}
+
 describe("AudioController with explicit direct playback", () => {
   let track: FakeAudioTrack;
   let audioContext: FakeAudioContext;
@@ -207,6 +213,47 @@ describe("AudioController with explicit direct playback", () => {
     await expect(controller.startCapture()).rejects.toThrow("resume failed");
     resolve(fakeStream(track)); await Promise.resolve();
     expect(track.stop).toHaveBeenCalledOnce(); expect(controller.getCaptureStream()).toBeNull();
+  });
+
+  it("retires late permission results without disturbing a newer capture", async () => {
+    const permission = deferred<MediaStream>();
+    getUserMedia.mockReturnValueOnce(permission.promise);
+    const stale = controller.startCapture().catch(error => error);
+    controller.cancelPendingMedia();
+    const replacement = new FakeAudioTrack(), replacementStream = fakeStream(replacement);
+    getUserMedia.mockResolvedValueOnce(replacementStream);
+    await controller.startCapture();
+    permission.resolve(fakeStream(track));
+    expect(await stale).toMatchObject({ name: "AbortError" });
+    expect(track.stop).toHaveBeenCalledOnce();
+    expect(replacement.stop).not.toHaveBeenCalled();
+    expect(controller.getCaptureStream()).toBe(replacementStream);
+    expect(audioContext.sources).toHaveLength(1);
+  });
+
+  it("stops an acquired microphone immediately when its context resume is still pending", async () => {
+    const resume = deferred<void>();
+    audioContext.resume.mockReturnValueOnce(resume.promise);
+    const capture = controller.startCapture().catch(error => error);
+    await Promise.resolve();
+    controller.cancelPendingMedia();
+    expect(track.stop).toHaveBeenCalledOnce();
+    expect(controller.getCaptureStream()).toBeNull();
+    expect(audioContext.sources).toHaveLength(0);
+    resume.resolve();
+    expect(await capture).toMatchObject({ name: "AbortError" });
+    expect(track.stop).toHaveBeenCalledOnce();
+    expect(audioContext.sources).toHaveLength(0);
+  });
+
+  it("rejects a concurrent capture start without acquiring a second microphone", async () => {
+    const permission = deferred<MediaStream>();
+    getUserMedia.mockReturnValueOnce(permission.promise);
+    const first = controller.startCapture();
+    await expect(controller.startCapture()).rejects.toThrow("already started");
+    expect(getUserMedia).toHaveBeenCalledOnce();
+    permission.resolve(fakeStream(track));
+    await first;
   });
 
   it("records only non-content microphone settings diagnostics", async () => {
@@ -547,6 +594,79 @@ describe("buffered audio output", () => {
     return { context, controller, element, nodes, destinationStream };
   }
   const requestIds = new WeakMap<object, number>();
+
+  it.each(["cancel", "dispose"] as const)("does not prepare or revive output after pending resume is retired by %s", async boundary => {
+    const { controller, context, element } = setup(), resume = deferred<void>();
+    const addModule = vi.fn(async () => {});
+    Object.assign(context, { audioWorklet: { addModule } });
+    context.resume.mockReturnValueOnce(resume.promise);
+    const prime = controller.primeOutput().catch(error => error);
+    if (boundary === "dispose") controller.dispose(); else controller.cancelPendingMedia();
+    resume.resolve();
+    expect(await prime).toMatchObject({ name: "AbortError" });
+    expect(addModule).not.toHaveBeenCalled();
+    expect(element.play).not.toHaveBeenCalled();
+    expect(context.addEventListener).toHaveBeenCalledOnce();
+    controller.dispose();
+  });
+
+  it.each([false, true])("keeps late worklet preparation from changing its replacement, rejection=%s", async rejection => {
+    const { controller, context, nodes } = setup(), oldModule = deferred<void>(), nextModule = deferred<void>();
+    const addModule = vi.fn().mockReturnValueOnce(oldModule.promise).mockReturnValueOnce(nextModule.promise);
+    Object.assign(context, { audioWorklet: { addModule } });
+    const stale = controller.primeOutput().catch(error => error);
+    await Promise.resolve();
+    expect(addModule).toHaveBeenCalledOnce();
+    controller.cancelPendingMedia();
+    const next = controller.primeOutput();
+    await Promise.resolve();
+    expect(addModule).toHaveBeenCalledTimes(2);
+    if (rejection) oldModule.reject(new Error("retired worklet fetch")); else oldModule.resolve();
+    expect(await stale).toMatchObject({ name: "AbortError" });
+    const failed = vi.fn(); controller.onPlaybackBufferError = failed;
+    controller.attachRemoteStream(fakeStream(new FakeAudioTrack()));
+    expect(nodes).toHaveLength(0); // The old module cannot make the new pending operation ready.
+    expect(failed).toHaveBeenCalledOnce();
+    nextModule.resolve(); await next;
+    await controller.primeOutput();
+    expect(addModule).toHaveBeenCalledTimes(2); // The old rejection cannot clear the new preparation.
+    controller.attachRemoteStream(fakeStream(new FakeAudioTrack()));
+    expect(nodes).toHaveLength(1);
+    controller.dispose();
+  });
+
+  it("does not play current output from a cancelled decoder startup", async () => {
+    const { controller, element } = setup(), decoderPlay = deferred<void>();
+    await controller.primeOutput(); controller.attachRemoteStream(fakeStream(new FakeAudioTrack()));
+    vi.mocked(HTMLMediaElement.prototype.play).mockReturnValueOnce(decoderPlay.promise);
+    const stale = controller.playOutput().catch(error => error);
+    controller.cancelPendingMedia();
+    decoderPlay.resolve();
+    expect(await stale).toMatchObject({ name: "AbortError" });
+    expect(element.play).not.toHaveBeenCalled();
+    await controller.playOutput();
+    expect(element.play).toHaveBeenCalledOnce();
+    controller.dispose();
+  });
+
+  it("does not report cancelled audible playback as ready after the next operation succeeds", async () => {
+    const { controller, element } = setup(), audiblePlay = deferred<void>(), emit = vi.fn();
+    await controller.primeOutput(); controller.attachRemoteStream(fakeStream(new FakeAudioTrack()));
+    controller.diagnostics = { emit };
+    vi.mocked(element.play).mockReturnValueOnce(audiblePlay.promise);
+    const stale = controller.playOutput().catch(error => error);
+    await Promise.resolve();
+    expect(element.play).toHaveBeenCalledOnce();
+    controller.cancelPendingMedia();
+    await controller.playOutput();
+    audiblePlay.resolve();
+    expect(await stale).toMatchObject({ name: "AbortError" });
+    expect(element.play).toHaveBeenCalledTimes(2);
+    expect(emit.mock.calls.filter(([, data]) => data.phase === "play_started")).toHaveLength(1);
+    expect(element.pause).toHaveBeenCalledOnce(); // Only initial attachment, never the stale continuation.
+    controller.dispose();
+  });
+
   function sendReset(node: ReturnType<typeof setup>["nodes"][number]) {
     const generation = node.port.postMessage.mock.calls.filter(([m]) => m.generation !== undefined).at(-1)![0].generation;
     node.port.onmessage!({ data: { type: "reset", generation } } as MessageEvent);

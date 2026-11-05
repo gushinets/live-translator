@@ -170,6 +170,7 @@ export class LiveClient {
   private pendingConnectReject: ((error: Error) => void) | null = null;
   /** True only once a `session.started` message has actually been received. */
   private started = false;
+  private startupTimedOut = false;
   private accountingReady = false;
   private inputMeteringUnmuted = false;
   private inputMeteringRequest: string | null = null;
@@ -187,7 +188,7 @@ export class LiveClient {
   private pendingProductStarted: SessionStartedEvent | null = null;
   private pendingRemoteStream: MediaStream | null = null;
   private readonly onEarlyHidden = () => {
-    if (this.deps.accounting?.managed && (!this.started || !this.accountingReady) && document.visibilityState === "hidden") {
+    if (this.deps.accounting?.managed && !this.startupTimedOut && (!this.started || !this.accountingReady) && document.visibilityState === "hidden") {
       void this.disconnectImmediately("hidden").catch(() => console.error("Abandoned startup cleanup incomplete"));
     }
   };
@@ -234,6 +235,10 @@ export class LiveClient {
       return null;
     }
     return this.channel.readyState;
+  }
+
+  get pendingClose(): Promise<LiveCloseResult> | null {
+    return this.closeResult === null ? this.closePromise : null;
   }
 
   async appendInstructions(
@@ -301,8 +306,9 @@ export class LiveClient {
    * backend rejecting session creation, or a signaling error such as
    * `setRemoteDescription` throwing — the peer and data channel created for
    * this attempt are torn down before the error is re-raised, so a failed
-   * connect() never leaves a lingering peer connection with microphone
-   * tracks still attached. Every signaling step after `sessionStartedPromise`
+   * connect() never leaves an unbounded peer connection. A session.started
+   * timeout keeps an open channel only for the bounded graceful-close wait.
+   * Every signaling step after `sessionStartedPromise`
    * is created (`createOffer`, `setLocalDescription`, `waitForIceComplete`,
    * the backend POST, `setRemoteDescription`) is raced against that
    * promise's rejection, so a channel close, peer failure, or early
@@ -319,6 +325,7 @@ export class LiveClient {
     if (this.deps.accounting) document.addEventListener("visibilitychange", this.onEarlyHidden);
 
     let createPromise: Promise<CreateLiveSessionResponse> | null = null;
+    const sessionStartedTimeout = new Error("Timed out waiting for session.started");
     try {
       const peer = this.deps.peerFactory();
       this.peer = peer;
@@ -417,10 +424,23 @@ export class LiveClient {
           this.onSessionStarted?.(pending);
         }
       }
-      const startedEvent = await sessionStartedPromise;
+      const startedTimer = setTimeout(() => {
+        this.rejectPendingConnect(sessionStartedTimeout);
+      }, runtime.sessionStartedTimeoutMs);
+      let startedEvent: SessionStartedEvent;
+      try { startedEvent = await sessionStartedPromise; }
+      finally { clearTimeout(startedTimer); }
       if (this.deps.accounting?.managed && (this.closing || this.torndown || document.visibilityState === "hidden")) throw new Error("Managed startup no longer activatable");
       return { sessionId: startedEvent.session.id };
     } catch (error) {
+      if (error === sessionStartedTimeout) {
+        this.startupTimedOut = true;
+        if (this.sessionId !== null && this.channel?.readyState === "open" && !this.torndown) {
+          // Keep the primary channel for close proof without delaying the startup failure.
+          void this.close("abandoned_connect").catch(() => console.error("Timed-out startup cleanup incomplete"));
+          throw error;
+        }
+      }
       if (createPromise !== null && this.sessionId === null) {
         this.watchAbandonedSessionCreation(createPromise);
       }
@@ -791,8 +811,10 @@ export class LiveClient {
     serverEvent: LiveServerEvent,
     rawServerEvent: unknown,
   ): void {
+    if (this.startupTimedOut && serverEvent.type !== "session.closed" && serverEvent.type !== "session.usage.updated") return;
     switch (serverEvent.type) {
       case "session.started":
+        if (this.closing || this.torndown) return;
         this.started = true;
         try { this.deps.accounting?.providerStarted?.(); } catch { console.error("Provider start metrics failed"); }
         this.pendingSessionStarted?.(serverEvent);
@@ -905,6 +927,7 @@ export class LiveClient {
   }
 
   private handleMalformedServerEvent(message: string): void {
+    if (this.startupTimedOut) return;
     this.journal?.emit("transport.event", { type: "invalid", phase: "received" });
     const error = new Error(message);
     if (!this.closing) {

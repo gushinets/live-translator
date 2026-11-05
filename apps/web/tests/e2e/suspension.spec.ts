@@ -368,4 +368,29 @@ test.describe("PWA suspension", () => {
     await expect(page.getByText("Please repeat")).toBeVisible();
     await expect(page.getByTestId("participant-status-A")).toHaveText("You can speak");
   });
+
+  test.describe("ending from the rotate dialog", () => {
+    test.use({ hasTouch: true });
+    for (const activation of ["tap", "Enter", "Space"] as const) {
+      test(`keeps End reachable by ${activation} in landscape`, async ({ page }) => {
+        await installLiveStubs(page);
+        await startListeningConversation(page);
+        await page.setViewportSize({ width: 844, height: 390 });
+        await page.evaluate(() => window.__setOrientation?.("landscape-primary"));
+        const dialog = page.getByRole("dialog", { name: "Turn your phone upright" });
+        const end = dialog.getByRole("button", { name: "End", exact: true });
+        await expect(end).toBeVisible();
+        await expect(end).toBeFocused();
+        expect((await end.boundingBox())!.height).toBeGreaterThanOrEqual(44);
+        await page.keyboard.press("Tab");
+        await expect(end).toBeFocused();
+        await page.keyboard.press("Shift+Tab");
+        await expect(end).toBeFocused();
+        if (activation === "tap") await end.tap();
+        else await page.keyboard.press(activation);
+        await expect(dialog).toBeHidden();
+        await expect(page.getByRole("button", { name: "Back to start" })).toBeVisible();
+      });
+    }
+  });
 });

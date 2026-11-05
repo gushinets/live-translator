@@ -46,6 +46,9 @@ export function ConversationScreen({
 }) {
   const [, rerender] = useReducer((count: number) => count + 1, 0);
   const endRef = useRef<HTMLButtonElement>(null);
+  const rotateEndRef = useRef<HTMLButtonElement>(null);
+  const previousRotation = useRef(false);
+  const rotateVisible = controller.suspendReason === "orientation" && controller.session.state === "suspended";
   const renderedSnapshot = useRef<unknown[]>([]);
   const snapshot = uiSnapshot(controller);
   const captions = controller.captionBlocks;
@@ -64,6 +67,11 @@ export function ConversationScreen({
     if (previousRecovery.current !== undefined && controller.retainedRecoveryState === undefined) endRef.current?.focus();
     previousRecovery.current = controller.retainedRecoveryState;
   }, [controller.retainedRecoveryState]);
+  useEffect(() => {
+    if (rotateVisible) rotateEndRef.current?.focus();
+    else if (previousRotation.current) endRef.current?.focus();
+    previousRotation.current = rotateVisible;
+  }, [rotateVisible]);
 
   const session = controller.session;
   const unassigned = useMemo(() => captions.filter(block => block.kind === "output" && block.side === undefined), [captions]);
@@ -102,18 +110,36 @@ export function ConversationScreen({
       : undefined;
   const statusA = statusForSide("A");
   const statusB = statusForSide("B");
+  const handleEnd = () => {
+    void (ended ? controller.cancel() : controller.endConversation()).catch((error: unknown) => {
+      console.error(ended ? "Return to setup failed" : "End conversation failed", {
+        error,
+        state: session.state,
+      });
+    });
+  };
 
   return (
     <section className="conversation-screen" lang={ownerLocale}>
-      {controller.suspendReason === "orientation" ? (
+      {rotateVisible ? (
         <div
           className="rotate-overlay"
           data-testid="rotate-overlay"
           role="dialog"
           aria-modal="true"
+          aria-label={t("Поверните телефон вертикально")}
+          onKeyDown={event => {
+            if (event.key === "Tab") {
+              event.preventDefault();
+              rotateEndRef.current?.focus();
+            }
+          }}
           style={{ transform: "none" }}
         >
           <p>{t("Поверните телефон вертикально")}</p>
+          <button ref={rotateEndRef} className="conversation-end-action" type="button" onClick={handleEnd}>
+            {t("Завершить")}
+          </button>
         </div>
       ) : null}
       <ParticipantPane
@@ -142,14 +168,7 @@ export function ConversationScreen({
           type="button"
           disabled={ending}
           aria-busy={ending}
-          onClick={() => {
-            void (ended ? controller.cancel() : controller.endConversation()).catch((error: unknown) => {
-              console.error(ended ? "Return to setup failed" : "End conversation failed", {
-                error,
-                state: session.state,
-              });
-            });
-          }}
+          onClick={handleEnd}
         >
           <span aria-hidden="true" className="conversation-end-size">{t(ended ? "На начальный экран" : "Завершаю…")}</span>
           <span aria-live="polite" className="conversation-end-label">{!ended ? <i aria-hidden="true" /> : null}{t(ended ? "На начальный экран" : ending ? "Завершаю…" : "Завершить")}</span>
