@@ -110,7 +110,8 @@ export class AccountedSessionController extends SessionController {
     this.recoveryProbe = probe;
   }
   get retainedRecoveryState(): "checking" | "paused" | "resuming" | "ending" | "failed" | "active" | "pending_end" | "no_provider_end" | "pending_claim" | "blocked" | "unresolved_create" | "unavailable" | "storage_unavailable" | "ownership_unavailable" | undefined {
-    if (this.retainedEndWork || this.session.state === "ending" && (this.retainedPaused || this.retainedActive)) return "ending";
+    if (this.retainedEndWork || this.session.state === "ending" && (this.retainedPaused || this.retainedActive) &&
+      !this.pendingEnd && !this.recoveryBlocked) return "ending";
     if (this.recoveryChecking || this.verificationWork) return "checking";
     if (this.resumeWork) return "resuming";
     if (this.storageUnavailable) return "storage_unavailable";

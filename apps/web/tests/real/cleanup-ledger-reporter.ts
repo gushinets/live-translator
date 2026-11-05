@@ -29,6 +29,7 @@ export default class CleanupLedgerReporter implements Reporter {
       const db = new DatabaseSync(this.options.databasePath, { readOnly: true, timeout: 1000 });
       try {
         allTerminal = !db.prepare("SELECT 1 FROM live_sessions WHERE state IS NULL OR state NOT IN ('closed','failed') LIMIT 1").get();
+        console.log(`[real-live-ledger] ${JSON.stringify(db.prepare("SELECT state, COUNT(*) AS attempts FROM live_sessions GROUP BY state").all())}`);
       } finally { db.close(); }
     } catch { /* An unreadable ledger must remain available for recovery. */ }
     if (!allTerminal) {

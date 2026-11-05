@@ -6,6 +6,10 @@
 export const runtime = {
   /** Application-level timeout waiting for ICE gathering to complete. */
   iceGatherTimeoutMs: 10_000,
+  /** Provider event wait after SDP/handoff; excludes HTTP creation and ICE. */
+  sessionStartedTimeoutMs: 10_000,
+  /** One output-readiness budget for resume/worklet/play, not microphone permission. */
+  audioReadyTimeoutMs: 10_000,
   /** §5.5: acknowledgment timeout for startup and explicit control updates. */
   steeringAckTimeoutMs: 3_000,
   /** §4.5: closes an abandoned CONTEXT-phase session. */

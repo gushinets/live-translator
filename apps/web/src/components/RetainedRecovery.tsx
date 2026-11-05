@@ -1,9 +1,11 @@
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import "./RetainedRecovery.css";
 import { translate } from "../i18n/messages";
 
 export type RetainedRecoveryState = "checking" | "paused" | "resuming" | "ending" | "failed" |
   "active" | "pending_end" | "no_provider_end" | "pending_claim" | "blocked" | "unresolved_create" | "unavailable" | "storage_unavailable" | "ownership_unavailable";
+
+type RecoveryAction = "resume" | "verify" | "end";
 
 const messages: Record<RetainedRecoveryState, string> = {
   checking: "Проверяем сохранённый разговор…",
@@ -31,16 +33,24 @@ export function RetainedRecovery({ state, surface, onResume, onVerify, onEnd, la
   language?: string;
 }) {
   const t = (text: string) => translate(text, language);
-  const flight = useRef(false);
+  const flight = useRef<{ kind: RecoveryAction } | null>(null);
   const lastPrimary = useRef<"resume" | "verify" | null>(null);
-  const [busy, setBusy] = useState(false);
-  const processing = busy || state === "checking" || state === "resuming" || state === "ending";
-  const run = (action: () => Promise<void>) => {
-    if (flight.current || processing) return;
-    flight.current = true;
-    setBusy(true);
-    void action().catch(error => console.error("Retained conversation action failed", { error }))
-      .finally(() => { flight.current = false; setBusy(false); });
+  const [busy, setBusy] = useState<RecoveryAction | null>(null);
+  useEffect(() => () => { flight.current = null; }, []);
+  const processing = busy !== null || state === "checking" || state === "resuming" || state === "ending";
+  const endProcessing = busy === "end" || busy === "verify" || state === "checking" || state === "ending";
+  const run = (kind: RecoveryAction, action: () => Promise<void>) => {
+    if (kind === "end" ? endProcessing || (flight.current !== null && flight.current.kind !== "resume") : flight.current !== null || processing) return;
+    const operation = { kind };
+    flight.current = operation;
+    setBusy(kind);
+    void (async () => {
+      try { await action(); }
+      catch (error) { console.error("Retained conversation action failed", { error }); }
+      finally {
+        if (flight.current === operation) { flight.current = null; setBusy(null); }
+      }
+    })();
   };
   const resume = state === "paused" || state === "failed" || state === "pending_claim";
   const verify = state === "pending_end" || state === "no_provider_end" || state === "blocked";
@@ -54,16 +64,16 @@ export function RetainedRecovery({ state, surface, onResume, onVerify, onEnd, la
     <p className="retained-recovery__message" role={alert ? "alert" : "status"}>{t(messages[state])}</p>
     <div className="retained-recovery__actions">
       {showResume && onResume ? <button className={`${surface === "setup" ? "setup-primary-action " : ""}retained-recovery__primary`}
-        type="button" disabled={processing} onClick={() => run(onResume)}>
+        type="button" disabled={processing} onClick={() => run("resume", onResume)}>
         {t(state === "failed" ? "Повторить восстановление" : "Продолжить разговор")}
       </button> : null}
       {showVerify && onVerify ? <button className={`${surface === "setup" ? "setup-primary-action " : ""}retained-recovery__primary`}
-        type="button" disabled={processing} onClick={() => run(onVerify)}>{t("Повторить проверку")}</button> : null}
+        type="button" disabled={processing} onClick={() => run("verify", onVerify)}>{t("Повторить проверку")}</button> : null}
       {state === "unavailable" || state === "storage_unavailable" || state === "ownership_unavailable" ? <button className={`${surface === "setup" ? "setup-primary-action " : ""}retained-recovery__primary`}
         type="button" autoFocus onClick={() => window.location.reload()}>{t("Обновить страницу")}</button> : null}
       {!showResume && !showVerify && state !== "unresolved_create" && state !== "unavailable" && state !== "storage_unavailable" && state !== "ownership_unavailable" ? <span className="retained-recovery__placeholder" aria-hidden="true" /> : null}
       {state !== "unresolved_create" && state !== "unavailable" && state !== "storage_unavailable" && state !== "ownership_unavailable" && state !== "no_provider_end" ? <button className={`${surface === "setup" ? "setup-secondary-action " : ""}retained-recovery__danger`}
-        type="button" disabled={processing} onClick={() => run(onEnd)}>
+        type="button" disabled={endProcessing} onClick={() => run("end", onEnd)}>
         {t("Завершить сохранённый разговор")}
       </button> : null}
     </div>

@@ -17,6 +17,7 @@ import type { SessionControllerDeps } from "./SessionController";
 import { VisibilityController } from "../platform/VisibilityController";
 import { ContextScreen, type ContextScreenController } from "../screens/ContextScreen";
 import { ConversationScreen } from "../screens/ConversationScreen";
+import { RetainedRecovery } from "../components/RetainedRecovery";
 import type { OrientationController } from "../platform/OrientationController";
 import type { WakeLockController } from "../platform/WakeLockController";
 import { DatabaseSync } from "node:sqlite";
@@ -474,6 +475,90 @@ describe("stage 4 transport/accounting integration", () => {
 });
 
 describe("stage 5 hidden boundary", () => {
+  it.each(["proof", "deadline", "end", "unconfirmed end"] as const)("preserves timed-out retained startup close until %s while stopping local media", async outcome => {
+    const f = fixture(2000, true); configureResume(f);
+    await f.controller.startWithLanguages({ A: "ru", B: "en" });
+    f.setVisible(false);
+    await vi.waitFor(() => expect(f.clients[0]!.peer.channel.sent).toContain("session.close"));
+    f.clients[0]!.peer.channel.emit({ type: "session.closed" });
+    await vi.waitFor(() => expect(f.c.status).toBe("paused"));
+    const recoveryProps = { surface: "conversation" as const, onResume: () => f.controller.resumeRetainedConversation(),
+      onEnd: () => f.controller.endConversation() };
+    const recovery = render(jsx(RetainedRecovery, { ...recoveryProps, state: "paused" }));
+    vi.spyOn(Peer.prototype, "setRemoteDescription").mockImplementation(async function (this: Peer) {
+      this.emitRemoteTrack(f.stream);
+    });
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
+    try {
+      f.setVisible(true);
+      for (let i = 0; i < 100 && f.api.handoff.mock.calls.length < 2; i++) await settle();
+      expect(f.api.handoff).toHaveBeenCalledTimes(2);
+      await vi.advanceTimersByTimeAsync(runtime.sessionStartedTimeoutMs);
+      for (let i = 0; i < 20; i++) await settle();
+      const resumed = f.clients.at(-1)!;
+      expect(resumed.peer.channel.sent.filter(type => type === "session.close")).toHaveLength(1);
+      expect(f.track.enabled).toBe(false);
+      expect(f.audio.getCaptureStream()).toBeNull();
+      expect(f.audio.audioElement.srcObject).toBeNull();
+      expect(resumed.peer.close).not.toHaveBeenCalled();
+      recovery.rerender(jsx(RetainedRecovery, { ...recoveryProps, state: f.controller.retainedRecoveryState! }));
+      expect(screen.getByRole("button", { name: /Продолжить разговор|Повторить восстановление/ })).toBeDisabled();
+      expect(screen.getByRole("button", { name: "Завершить сохранённый разговор" })).toBeEnabled();
+      expect(f.controller.retainedRecoveryState).toBe("resuming");
+      expect(f.api.abortResume).not.toHaveBeenCalled();
+      resumed.peer.channel.emit({ type: "session.started", session: { id: "late-provider" } });
+      resumed.peer.channel.emit({ type: "session.output_transcript.delta", delta: "late output" });
+      expect(f.track.enabled).toBe(false);
+      if (outcome === "proof") resumed.peer.channel.emit({ type: "session.closed", usage: { seconds: 12 } });
+      else if (outcome === "deadline") await vi.advanceTimersByTimeAsync(2000);
+      else {
+        if (outcome === "unconfirmed end") f.api.cleanup.mockRejectedValue(new Error("Cleanup offline"));
+        let ended = false, endError: unknown;
+        const ending = f.controller.endConversation().then(() => { ended = true; }, error => { endError = error; });
+        for (let i = 0; i < 20; i++) await settle();
+        expect(f.controller.retainedRecoveryState).toBe("ending");
+        expect(f.audio.getCaptureStream()).toBeNull();
+        expect(resumed.peer.close).not.toHaveBeenCalled();
+        expect(ended).toBe(false);
+        if (outcome === "unconfirmed end") await vi.advanceTimersByTimeAsync(2000);
+        else resumed.peer.channel.emit({ type: "session.closed", usage: { seconds: 12 } });
+        for (let i = 0; i < 100 && !ended && endError === undefined; i++) await settle();
+        if (outcome === "unconfirmed end") {
+          expect(endError).toEqual(new Error("Conversation End is not confirmed"));
+          expect(ended).toBe(false);
+          expect(f.api.end).not.toHaveBeenCalled();
+          expect(await f.budget.get(resumed.id)).toMatchObject({ cleanup: { reason: "abandoned_connect" } });
+        } else { expect(endError).toBeUndefined(); expect(ended).toBe(true); }
+        await ending;
+      }
+      for (let i = 0; i < 100 && f.controller.retainedRecoveryState === "resuming"; i++) await settle();
+      for (let i = 0; i < 30; i++) await settle();
+      await f.scope.outbox.flush();
+      expect(resumed.peer.close).toHaveBeenCalledOnce();
+      expect(f.api.completeResume).not.toHaveBeenCalled();
+      if (outcome === "proof") {
+        expect(f.api.closed).toHaveBeenCalledWith(resumed.id, { seconds: 12 });
+        expect(f.api.cleanup.mock.calls.some(([id]) => id === resumed.id)).toBe(false);
+        expect(f.api.abortResume).toHaveBeenCalledOnce();
+      } else if (outcome === "deadline") {
+        expect(f.api.cleanup).toHaveBeenCalledWith(resumed.id, "abandoned_connect");
+        expect(f.api.abortResume).toHaveBeenCalledOnce();
+      }
+      expect(f.controller.retainedRecoveryState).toBe(outcome === "end" ? undefined : outcome === "unconfirmed end" ? "pending_end" : "failed");
+      if (outcome === "proof" || outcome === "deadline") {
+        recovery.rerender(jsx(RetainedRecovery, { ...recoveryProps, state: f.controller.retainedRecoveryState! }));
+        expect(screen.getByRole("button", { name: "Повторить восстановление" })).toBeEnabled();
+      }
+      expect(f.controller.ownerError).toBeUndefined();
+    } finally {
+      await vi.advanceTimersByTimeAsync(2000);
+      vi.useRealTimers();
+      f.api.cleanup.mockResolvedValue({ cleanupRequestedAt: Date.now() });
+      await f.scope.outbox.flush();
+      await f.controller.dispose(); await f.budget.close();
+    }
+  });
+
   it("A5.5 refuses a stale committed receipt after the conversation advances again", async () => {
     const f = fixture(40, true), id = crypto.randomUUID();
     f.scope.beginResume({ ...f.c, status: "resuming", version: 3, resumeAttemptId: id,
@@ -3532,16 +3617,23 @@ describe("stage 5 hidden boundary", () => {
     await f.budget.close();
   });
 
-  it("leaves flag-off setup and visibility behavior on the legacy path", async () => {
-    const f = fixture(40, false);
+  it("retires hidden flag-off setup without opting into retained background recovery", async () => {
+    const f = fixture(2000, false);
     await f.controller.startContextCapture();
     f.setVisible(false);
     await settle();
-    expect(f.controller.session.state).toBe("context");
+    expect(f.controller.session.state).toBe("error");
+    expect(f.track.enabled).toBe(false);
+    expect(f.track.stop).toHaveBeenCalledOnce();
+    expect(f.clients[0]!.peer.channel.sent.filter(type => type === "session.close")).toHaveLength(1);
+    expect(f.api.closed).not.toHaveBeenCalled();
     expect(f.api.pause).not.toHaveBeenCalled();
+    expect(f.controller.retainedRecoveryState).toBeUndefined();
     const ending = f.controller.cancel();
     f.clients[0]!.peer.channel.emit({ type: "session.closed" });
     await ending;
+    expect(f.api.pause).not.toHaveBeenCalled();
+    expect(f.api.claimResume).not.toHaveBeenCalled();
     await f.budget.close();
   });
   it.each([false, true])("handles denied sessionStorage with background close %s", async background => {

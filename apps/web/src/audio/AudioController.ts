@@ -108,6 +108,8 @@ export class AudioController {
   private readonly rawPlaybackDetector = new PlaybackActivityDetector();
 
   private audioContext: AudioContext | null = null;
+  private mediaGeneration = 0;
+  private pendingCaptureCleanup: (() => void) | null = null;
   private captureStream: MediaStream | null = null;
   private captureTrack: MediaStreamTrack | null = null;
   private microphoneSettings: MicrophoneSettingsDiagnostics | null = null;
@@ -241,16 +243,48 @@ export class AudioController {
     catch { console.error("Source reset metadata observer failed"); }
   }
 
+  /** Retire pending native work; its late results must not attach to the next conversation. */
+  cancelPendingMedia(): void {
+    this.mediaGeneration++;
+    const cleanup = this.pendingCaptureCleanup;
+    this.pendingCaptureCleanup = null;
+    if (!this.workletReady) this.workletPreparation = null;
+    try { cleanup?.(); }
+    catch { console.error("Microphone startup cleanup incomplete"); }
+  }
+
+  private assertMediaCurrent(generation: number, context: AudioContext | null): void {
+    if (generation !== this.mediaGeneration || context !== this.audioContext) {
+      throw new DOMException("Audio operation cancelled", "AbortError");
+    }
+  }
+
   async startCapture(): Promise<void> {
-    if (this.captureTrack !== null) {
+    if (this.captureTrack !== null || this.pendingCaptureCleanup !== null) {
       throw new Error("Microphone capture has already started");
     }
 
-    const diagnostics = this.diagnostics;
-    observe(diagnostics, "audio.state", { phase: "capture_requested" });
+    const diagnostics = this.diagnostics, generation = this.mediaGeneration;
     let stream: MediaStream | null = null, analysisStream: MediaStream | null = null, micSource: MediaStreamAudioSourceNode | null = null;
     let failed = false;
+    const cleanup = () => {
+      failed = true;
+      const captured = stream, analysed = analysisStream, source = micSource;
+      stream = analysisStream = null; micSource = null;
+      if (captured && this.captureStream === captured && this.captureTrack && this.micSource) this.stopCapture();
+      else {
+        for (const track of captured?.getAudioTracks() ?? []) {
+          track.removeEventListener("ended", this.handleCaptureEnded);
+          track.removeEventListener("mute", this.handleCaptureMute);
+          track.removeEventListener("unmute", this.handleCaptureUnmute);
+        }
+        source?.disconnect(); stopTracks(analysed); stopTracks(captured);
+      }
+    };
+    this.pendingCaptureCleanup = cleanup;
+    observe(diagnostics, "audio.state", { phase: "capture_requested" });
     try {
+      this.assertMediaCurrent(generation, this.audioContext);
       const context = this.ensureAudioContext(), resumeStarted = context.resume();
       void resumeStarted.catch(() => undefined);
       const mediaStarted = this.getUserMedia({
@@ -259,9 +293,10 @@ export class AudioController {
           noiseSuppression: false,
         },
       });
-      void mediaStarted.then(value => { stream = value; if (failed) stopTracks(value); }, () => undefined)
+      void mediaStarted.then(value => { if (failed) stopTracks(value); else stream = value; }, () => undefined)
         .catch(() => console.error("Microphone startup cleanup incomplete"));
       const [, captured] = await Promise.all([resumeStarted, mediaStarted]);
+      this.assertMediaCurrent(generation, context);
       stream = captured;
 
       const track = stream.getAudioTracks()[0];
@@ -288,21 +323,12 @@ export class AudioController {
       this.syncSampler();
       observe(diagnostics, "audio.state", { phase: "capture_ready", ...this.microphoneSettings });
     } catch (error) {
-      failed = true;
       observe(diagnostics, "audio.state", { phase: "capture_failed" });
-      try {
-        if (stream && this.captureStream === stream && this.captureTrack && this.micSource) this.stopCapture();
-        else {
-          for (const track of stream?.getAudioTracks() ?? []) {
-            track.removeEventListener("ended", this.handleCaptureEnded);
-            track.removeEventListener("mute", this.handleCaptureMute);
-            track.removeEventListener("unmute", this.handleCaptureUnmute);
-          }
-          micSource?.disconnect(); stopTracks(analysisStream); stopTracks(stream);
-        }
-      } catch { console.error("Microphone startup cleanup incomplete"); }
+      try { cleanup(); } catch { console.error("Microphone startup cleanup incomplete"); }
       console.error("Microphone capture failed", { error });
       throw error;
+    } finally {
+      if (this.pendingCaptureCleanup === cleanup) this.pendingCaptureCleanup = null;
     }
   }
 
@@ -451,17 +477,20 @@ export class AudioController {
     this.playbackNode.port.postMessage({ type: "speaking", value: this.sourceSpeaking });
   }
 
-  private async preparePlayback(): Promise<void> {
+  private async preparePlayback(context: AudioContext, generation: number): Promise<void> {
     if (this.workletPreparation) return this.workletPreparation;
-    const context = this.ensureAudioContext();
     if (!context.audioWorklet) return;
-    this.workletPreparation = context.audioWorklet.addModule(playbackWorkletUrl)
-      .then(() => { if (this.audioContext === context) this.workletReady = true; })
+    const current = () => this.audioContext === context && this.mediaGeneration === generation && this.workletPreparation === preparation;
+    const preparation: Promise<void> = context.audioWorklet.addModule(playbackWorkletUrl)
+      .then(() => { if (current()) this.workletReady = true; })
       .catch(() => {
-        if (this.audioContext === context) this.workletPreparation = null;
-        console.warn("Buffered playback is unavailable in this browser");
+        if (current()) {
+          this.workletPreparation = null;
+          console.warn("Buffered playback is unavailable in this browser");
+        }
       });
-    return this.workletPreparation;
+    this.workletPreparation = preparation;
+    return preparation;
   }
 
   private releasePlayback(): void {
@@ -622,14 +651,18 @@ export class AudioController {
   }
 
   async primeOutput(): Promise<void> {
-    const context = this.ensureAudioContext();
+    const context = this.ensureAudioContext(), generation = this.mediaGeneration;
     await context.resume();
-    await this.preparePlayback();
+    this.assertMediaCurrent(generation, context);
+    await this.preparePlayback(context, generation);
+    this.assertMediaCurrent(generation, context);
     await this.playOutput();
+    this.assertMediaCurrent(generation, context);
   }
 
   async playOutput(): Promise<void> {
     const diagnostics = this.diagnostics, decoder = this.remoteDecoder, stream = this.audioElement.srcObject;
+    const generation = this.mediaGeneration, context = this.audioContext;
     if (decoder === null && stream === null) return;
     const current = () => diagnostics === this.diagnostics && decoder === this.remoteDecoder && stream === this.audioElement.srcObject;
     observe(diagnostics, "audio.state", { phase: "play_requested" });
@@ -637,17 +670,20 @@ export class AudioController {
       if (decoder) {
         if (decoder.error !== null) decoder.load();
         await decoder.play();
+        this.assertMediaCurrent(generation, context);
         if (!current()) return;
       }
       if (stream !== null) {
         if (this.audioElement.error !== null) this.audioElement.load();
         await this.audioElement.play();
+        this.assertMediaCurrent(generation, context);
       }
       if (current()) observe(diagnostics, "audio.state", { phase: "play_started" });
     } catch (error) { observe(diagnostics, "audio.state", { phase: "play_failed" }); throw error; }
   }
 
   dispose(): void {
+    this.cancelPendingMedia();
     this.captureEnabled = false;
     if (this.captureTrack !== null) {
       this.stopCapture();

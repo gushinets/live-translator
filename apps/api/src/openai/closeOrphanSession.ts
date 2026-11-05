@@ -1,4 +1,6 @@
 import OpenAI from "openai";
+import { Agent as HttpAgent, globalAgent as httpAgent } from "node:http";
+import { Agent as HttpsAgent, globalAgent as httpsAgent } from "node:https";
 import { SidebandWS } from "openai/resources/live/sideband/ws";
 import type { OrphanCloser } from "../accounting/CleanupWorker.js";
 
@@ -8,17 +10,37 @@ export function makeOrphanCloser(client?: OpenAI, timeoutMs = 15000): OrphanClos
     if (signal.aborted) { resolve({ kind: "retryable_error", code: "cancelled" }); return; }
     let done = false;
     let channel: SidebandWS | undefined;
+    let ownedAgent: HttpAgent | undefined;
+    let ownedSocket: ReturnType<HttpAgent["createConnection"]>;
     let timer: ReturnType<typeof setTimeout> | undefined;
     const finish = (result: Parameters<typeof resolve>[0]) => {
       if (done) return; done = true;
       if (timer) clearTimeout(timer); signal.removeEventListener("abort", abort);
       resolve(result);
       if (channel) { channel.close(); channel.socket.platformSocket.terminate(); }
+      ownedAgent?.destroy();
+      ownedSocket?.destroy();
     };
     const abort = () => finish({ kind: "retryable_error", code: "cancelled" });
     signal.addEventListener("abort", abort, { once: true });
     try {
-      channel = new SidebandWS(client ?? new OpenAI({ maxRetries: 0 }), { session_id: providerId }, { reconnect: null });
+      const api = client ?? new OpenAI({ maxRetries: 0 });
+      const http = new URL(api.baseURL).protocol === "http:";
+      const globalAgent = http ? httpAgent : httpsAgent;
+      const options = (globalAgent as HttpAgent & { options: HttpsAgent["options"] }).options;
+      // CLI/NODE_OPTIONS proxy settings live on the global agent; --env-file can enable them later.
+      const proxyEnv = process.env.NODE_USE_ENV_PROXY === "1" ? process.env : options.proxyEnv;
+      if (proxyEnv) {
+        ownedAgent = http ? new HttpAgent({ ...options, proxyEnv }) : new HttpsAgent({ ...options, proxyEnv });
+        const createConnection = ownedAgent.createConnection.bind(ownedAgent);
+        // CONNECT/TLS sockets are not in the agent pool until the tunnel is ready.
+        ownedAgent.createConnection = (options, callback) => {
+          ownedSocket = createConnection(options, callback);
+          return ownedSocket;
+        };
+      }
+      const agent = ownedAgent ?? globalAgent;
+      channel = new SidebandWS(api, { session_id: providerId }, { reconnect: null, agent });
       channel.on("error", () => finish({ kind: "retryable_error", code: "sideband_error" }));
       channel.on("close", () => finish({ kind: "retryable_error", code: "transport_closed" }));
       channel.socket.platformSocket.on("unexpected-response", (_req, response) => {
