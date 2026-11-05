@@ -11,6 +11,7 @@ export function makeOrphanCloser(client?: OpenAI, timeoutMs = 15000): OrphanClos
     let done = false;
     let channel: SidebandWS | undefined;
     let ownedAgent: HttpAgent | undefined;
+    let ownedSocket: ReturnType<HttpAgent["createConnection"]>;
     let timer: ReturnType<typeof setTimeout> | undefined;
     const finish = (result: Parameters<typeof resolve>[0]) => {
       if (done) return; done = true;
@@ -18,6 +19,7 @@ export function makeOrphanCloser(client?: OpenAI, timeoutMs = 15000): OrphanClos
       resolve(result);
       if (channel) { channel.close(); channel.socket.platformSocket.terminate(); }
       ownedAgent?.destroy();
+      ownedSocket?.destroy();
     };
     const abort = () => finish({ kind: "retryable_error", code: "cancelled" });
     signal.addEventListener("abort", abort, { once: true });
@@ -28,6 +30,12 @@ export function makeOrphanCloser(client?: OpenAI, timeoutMs = 15000): OrphanClos
       // bypasses the default agent, so initialize and pass one explicitly after env loading.
       if (process.env.NODE_USE_ENV_PROXY === "1") {
         ownedAgent = http ? new HttpAgent({ proxyEnv: process.env }) : new HttpsAgent({ proxyEnv: process.env });
+        const createConnection = ownedAgent.createConnection.bind(ownedAgent);
+        // CONNECT/TLS sockets are not in the agent pool until the tunnel is ready.
+        ownedAgent.createConnection = (options, callback) => {
+          ownedSocket = createConnection(options, callback);
+          return ownedSocket;
+        };
       }
       const agent = ownedAgent ?? (http ? httpAgent : httpsAgent);
       channel = new SidebandWS(api, { session_id: providerId }, { reconnect: null, agent });

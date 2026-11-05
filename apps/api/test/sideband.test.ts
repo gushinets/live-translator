@@ -3,6 +3,7 @@ import { execFile } from "node:child_process";
 import { mkdtempSync, rmdirSync, unlinkSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 import { globalAgent as httpsAgent } from "node:https";
+import net, { type Socket } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
@@ -30,6 +31,18 @@ describe("pinned SDK transient sideband", () => {
     await closer("known", new AbortController().signal);
     expect(agentConnect).toHaveBeenCalledOnce();
     expect(directTls).not.toHaveBeenCalled();
+  });
+  it("honors NO_PROXY when the environment proxy is enabled", async () => {
+    vi.stubEnv("NODE_USE_ENV_PROXY", "1");
+    for (const key of ["HTTPS_PROXY", "https_proxy"]) vi.stubEnv(key, "http://127.0.0.1:1");
+    for (const key of ["NO_PROXY", "no_proxy"]) vi.stubEnv(key, "provider.invalid");
+    const directTls = vi.spyOn(tls, "connect").mockImplementation(() => { throw new Error("Offline direct TLS probe"); });
+    const proxyConnect = vi.spyOn(net, "connect").mockImplementation(() => { throw new Error("Unexpected proxy connection"); });
+    const closer = makeOrphanCloser(new OpenAI({ apiKey: "local-fake-key", maxRetries: 0,
+      baseURL: "https://provider.invalid/v1" }), 100);
+    await closer("known", new AbortController().signal);
+    expect(directTls).toHaveBeenCalledOnce();
+    expect(proxyConnect).not.toHaveBeenCalled();
   });
   it("routes sideband through a proxy enabled by the child's env file", async () => {
     const proxy = createServer();
@@ -60,6 +73,47 @@ describe("pinned SDK transient sideband", () => {
     } finally {
       await new Promise<void>(resolve => proxy.close(() => resolve()));
       unlinkSync(envFile); rmdirSync(directory);
+    }
+  });
+  it.each([
+    ["CONNECT", "timeout"], ["TLS", "timeout"],
+    ["CONNECT", "abort"], ["TLS", "abort"],
+  ])("closes a pending proxy %s socket on %s", async (phase, stop) => {
+    const proxy = createServer(), sockets = new Set<Socket>(), tunnels: string[] = [];
+    let reachedPhase = false;
+    proxy.on("connection", socket => {
+      sockets.add(socket);
+      socket.on("error", () => {});
+      socket.once("end", () => socket.end());
+      socket.once("close", () => sockets.delete(socket));
+    });
+    proxy.on("connect", (request, socket) => {
+      tunnels.push(request.url!);
+      // Drain the TLS ClientHello and FIN without completing the handshake.
+      socket.on("data", () => { reachedPhase = true; });
+      socket.resume();
+      if (phase === "TLS") socket.write("HTTP/1.1 200 Connection Established\r\n\r\n");
+      else reachedPhase = true;
+    });
+    proxy.listen(0, "127.0.0.1"); await once(proxy, "listening");
+    const address = proxy.address(); if (!address || typeof address === "string") throw new Error("Unexpected proxy address");
+    const controller = new AbortController();
+    try {
+      vi.stubEnv("NODE_USE_ENV_PROXY", "1");
+      for (const key of ["HTTP_PROXY", "http_proxy", "HTTPS_PROXY", "https_proxy"]) vi.stubEnv(key, `http://127.0.0.1:${address.port}`);
+      for (const key of ["NO_PROXY", "no_proxy"]) vi.stubEnv(key, "");
+      const closer = makeOrphanCloser(new OpenAI({ apiKey: "local-fake-key", maxRetries: 0,
+        baseURL: "https://provider.invalid/v1" }), stop === "timeout" ? 250 : 2000);
+      const result = closer("known", controller.signal);
+      await vi.waitFor(() => expect(reachedPhase).toBe(true), { timeout: 1000 });
+      if (stop === "abort") controller.abort();
+      expect(await result).toEqual({ kind: "retryable_error", code: stop === "timeout" ? "close_timeout" : "cancelled" });
+      expect(tunnels).toEqual(["provider.invalid:443"]);
+      await vi.waitFor(() => expect(sockets.size).toBe(0), { timeout: 500 });
+    } finally {
+      controller.abort();
+      for (const socket of sockets) socket.destroy();
+      await new Promise<void>(resolve => proxy.close(() => resolve()));
     }
   });
   it("uses the WebRTC attach route and persists only close metadata", async () => {
